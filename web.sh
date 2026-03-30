@@ -2,7 +2,7 @@
 set -e
 cd "$(dirname "$0")"
 
-emcc -std=c99 -O2 \
+emcc -std=c99 -O2 -DSLAP_SDL \
   -s USE_SDL=2 \
   -s ASYNCIFY \
   -s ASYNCIFY_STACK_SIZE=65536 \
