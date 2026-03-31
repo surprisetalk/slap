@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>slap</title>
+<style>
+  body { margin: 0; background: #111; display: flex; justify-content: center; align-items: center; height: 100vh; }
+  canvas { image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+var Module = {
+  print: function(t) { console.log(t); },
+  printErr: function(t) { console.error(t); },
+  onRuntimeInitialized: async function() {
+    var resp = await fetch('program.slap');
+    var code = await resp.text();
+    var ptr = Module.stringToNewUTF8(code);
+    var result = Module._slap_init(ptr);
+    Module._free(ptr);
+    if (result === 1) { document.title = 'slap — type error'; return; }
+    if (result === 2) { document.title = 'slap — done'; return; }
+
+    var W = 640, H = 480;
+    var cvs = document.getElementById('c');
+    cvs.width = W; cvs.height = H;
+    cvs.style.width = (W * 2) + 'px';
+    cvs.style.height = (H * 2) + 'px';
+    var ctx = cvs.getContext('2d');
+    var img = ctx.createImageData(W, H);
+
+    var PAL = [0,0,0, 85,85,85, 170,170,170, 255,255,255];
+    var KEY_MAP = {
+      ArrowRight: 1073741903, ArrowLeft: 1073741904,
+      ArrowDown: 1073741905, ArrowUp: 1073741906,
+      Escape: 27
+    };
+
+    document.addEventListener('keydown', function(e) {
+      var k = KEY_MAP[e.key];
+      if (k === undefined && e.key.length === 1) k = e.key.charCodeAt(0);
+      if (k !== undefined) Module._slap_keydown(k);
+      if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault();
+    });
+
+    function frame() {
+      Module._slap_frame();
+      var cp = Module._slap_canvas_ptr();
+      var buf = Module.HEAPU8.subarray(cp, cp + W * H);
+      var d = img.data;
+      for (var i = 0, j = 0; i < W * H; i++, j += 4) {
+        var c = (buf[i] & 3) * 3;
+        d[j] = PAL[c]; d[j+1] = PAL[c+1]; d[j+2] = PAL[c+2]; d[j+3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  }
+};
+</script>
+<script src="slap.js"></script>
+</body>
+</html>
