@@ -186,9 +186,20 @@ iplus           -- word: looks up name, executes or pushes
 
 ## Build
 
+`slap.c` is a C99 library. Frontends include it directly.
+
 ```bash
-gcc -std=c99 -O2 -lm slap.c -o slap
-./slap program.slap --test
+# Desktop (requires SDL2)
+gcc -std=c99 -O2 $(pkg-config --cflags --libs sdl2) -lm sdl.c -o slap
+./slap program.slap          # SDL window
+./slap program.slap --test   # headless (one tick + render, then exit)
+
+# WASM (requires emscripten)
+./wasm.sh                         # default: examples/life.slap
+./wasm.sh examples/program.slap   # specify program
+cd web && python3 -m http.server 8080
+
+# Tests
 ./run-tests.sh
 ```
 

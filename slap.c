@@ -1,5 +1,5 @@
 // slap — a minimal concatenative language with linear types
-// C99 + SDL2. Single file.
+// C99 library. Include from sdl.c or wasm.c.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,9 +12,6 @@
 #include <unistd.h>
 #include <time.h>
 
-#ifdef SLAP_SDL
-#include <SDL.h>
-#endif
 
 // ── Limits ──────────────────────────────────────────────────────────────────
 
@@ -172,21 +169,29 @@ static bool val_is_linear(Val v) {
 
 // ── Pool allocation ────────────────────────────────────────────────────────
 
-#define POOL_ALLOC(idx, count, flist, fcnt, max, label) \
-    do { if ((fcnt) > 0) (idx) = (uint32_t)(flist)[--(fcnt)]; \
-    else { if ((count) >= (max)) slap_panic(label " pool full"); \
-    (idx) = (uint32_t)(count)++; } } while(0)
+#define POOL_DECL(type, name, max) \
+    static type name[max]; \
+    static int name##_count = 1, name##_free = -1; \
+    static const int name##_max = max
+
+#define POOL_ALLOC(idx, name) \
+    do { if (name##_free >= 0) { (idx) = (uint32_t)name##_free; \
+    name##_free = *(int*)&name[idx]; } else { \
+    if (name##_count >= name##_max) slap_panic(#name " pool full"); \
+    (idx) = (uint32_t)name##_count++; } } while(0)
+
+#define POOL_FREE(name, idx) do { \
+    *(int*)&name[idx] = name##_free; \
+    name##_free = (int)(idx); } while(0)
 
 // ── Pool: Slices (shared by T_SLICE and T_DICE) ────────────────────────────
 
 typedef struct { Val *data; int len; int rc; } SliceObj;
-static SliceObj slices[MAX_SLICES];
-static int slice_count = 1; // 0 unused
-static int slice_freelist[MAX_SLICES], slice_free_count;
+POOL_DECL(SliceObj, slices, MAX_SLICES);
 
 static uint32_t slice_new(Val *data, int len) {
     uint32_t idx;
-    POOL_ALLOC(idx, slice_count, slice_freelist, slice_free_count, MAX_SLICES, "slice");
+    POOL_ALLOC(idx, slices);
     slices[idx].len = len;
     slices[idx].rc = 1;
     slices[idx].data = NULL;
@@ -215,16 +220,14 @@ typedef struct {
     uint32_t compose_with;
     int rc;
 } TupleObj;
-static TupleObj tuples[MAX_TUPLES];
-static int tuple_count = 1;
-static int tuple_freelist[MAX_TUPLES], tuple_free_count;
+POOL_DECL(TupleObj, tuples, MAX_TUPLES);
 
 static uint32_t sym_def_id, sym_let_id, sym_recur_id;
 static bool tuple_body_needs_scope(int start, int len); // defined after Node
 
 static uint32_t tuple_new(int start, int len, uint32_t env, bool owns) {
     uint32_t idx;
-    POOL_ALLOC(idx, tuple_count, tuple_freelist, tuple_free_count, MAX_TUPLES, "tuple");
+    POOL_ALLOC(idx, tuples);
     bool ns = (sym_def_id == 0) ? true : tuple_body_needs_scope(start, len);
     tuples[idx] = (TupleObj){start, len, env, owns, ns, NONE, 1};
     return idx;
@@ -233,13 +236,11 @@ static uint32_t tuple_new(int start, int len, uint32_t env, bool owns) {
 // ── Pool: Records ───────────────────────────────────────────────────────────
 
 typedef struct { uint32_t *keys; Val *vals; int count, cap, rc; } RecObj;
-static RecObj recs[MAX_RECS];
-static int rec_count = 1;
-static int rec_freelist[MAX_RECS], rec_free_count;
+POOL_DECL(RecObj, recs, MAX_RECS);
 
 static uint32_t rec_new(void) {
     uint32_t idx;
-    POOL_ALLOC(idx, rec_count, rec_freelist, rec_free_count, MAX_RECS, "record");
+    POOL_ALLOC(idx, recs);
     recs[idx] = (RecObj){NULL, NULL, 0, 0, 1};
     return idx;
 }
@@ -270,13 +271,11 @@ static bool rec_get(uint32_t r, uint32_t key, Val *out) {
 // ── Pool: Lists (mutable) ──────────────────────────────────────────────────
 
 typedef struct { Val *data; int len, cap; } ListObj;
-static ListObj lists[MAX_LISTS];
-static int list_count = 1;
-static int list_freelist[MAX_LISTS], list_free_count;
+POOL_DECL(ListObj, lists, MAX_LISTS);
 
 static uint32_t list_new(Val *data, int len) {
     uint32_t idx;
-    POOL_ALLOC(idx, list_count, list_freelist, list_free_count, MAX_LISTS, "list");
+    POOL_ALLOC(idx, lists);
     int cap = len > 8 ? len : 8;
     lists[idx].data = malloc((size_t)cap * sizeof(Val));
     lists[idx].len = len;
@@ -290,9 +289,7 @@ static uint32_t list_new(Val *data, int len) {
 #define DICT_INIT_CAP 16
 
 typedef struct { Val *keys; Val *vals; bool *used; int count, cap; } DictObj;
-static DictObj dicts[MAX_DICTS];
-static int dict_count = 1;
-static int dict_freelist[MAX_DICTS], dict_free_count;
+POOL_DECL(DictObj, dicts, MAX_DICTS);
 
 static uint32_t val_hash(Val v) {
     switch (v.type) {
@@ -340,7 +337,7 @@ static bool val_eq(Val a, Val b) {
 
 static uint32_t dict_new(void) {
     uint32_t idx;
-    POOL_ALLOC(idx, dict_count, dict_freelist, dict_free_count, MAX_DICTS, "dict");
+    POOL_ALLOC(idx, dicts);
     dicts[idx].cap = DICT_INIT_CAP;
     dicts[idx].count = 0;
     dicts[idx].keys = malloc(DICT_INIT_CAP * sizeof(Val));
@@ -383,16 +380,6 @@ static void dict_set(uint32_t di, Val key, Val val) {
     d->keys[h] = key; d->vals[h] = val; d->used[h] = true; d->count++;
 }
 
-static bool dict_lookup(uint32_t di, Val key, Val *out) {
-    DictObj *d = &dicts[di];
-    uint32_t h = val_hash(key) & (uint32_t)(d->cap - 1);
-    for (int i = 0; i < d->cap; i++) {
-        if (!d->used[h]) return false;
-        if (val_eq(d->keys[h], key)) { *out = d->vals[h]; return true; }
-        h = (h + 1) & (uint32_t)(d->cap - 1);
-    }
-    return false;
-}
 
 static bool dict_remove(uint32_t di, Val key) {
     DictObj *d = &dicts[di];
@@ -420,13 +407,11 @@ static bool dict_remove(uint32_t di, Val key) {
 // ── Pool: Strings (mutable byte array) ─────────────────────────────────────
 
 typedef struct { uint8_t *data; int len, cap; } StrObj;
-static StrObj strs[MAX_STRS];
-static int str_count = 1;
-static int str_freelist[MAX_STRS], str_free_count;
+POOL_DECL(StrObj, strs, MAX_STRS);
 
 static uint32_t str_new(const uint8_t *data, int len) {
     uint32_t idx;
-    POOL_ALLOC(idx, str_count, str_freelist, str_free_count, MAX_STRS, "string");
+    POOL_ALLOC(idx, strs);
     int cap = len > 16 ? len : 16;
     strs[idx].data = malloc((size_t)cap);
     strs[idx].len = len;
@@ -438,12 +423,11 @@ static uint32_t str_new(const uint8_t *data, int len) {
 // ── Heap (Boxes) ────────────────────────────────────────────────────────────
 
 typedef struct { Val val; bool alive; } HeapSlot;
-static HeapSlot heap[MAX_HEAP];
-static int heap_count;
+POOL_DECL(HeapSlot, heap, MAX_HEAP);
 
 static uint32_t heap_alloc(Val v) {
-    if (heap_count >= MAX_HEAP) slap_panic("heap full");
-    uint32_t idx = (uint32_t)heap_count++;
+    uint32_t idx;
+    POOL_ALLOC(idx, heap);
     heap[idx] = (HeapSlot){v, true};
     return idx;
 }
@@ -482,9 +466,7 @@ static void val_free(Val v) {
             if (--tu->rc <= 0) {
                 if (tu->owns_env) scope_release(tu->env);
                 if (tu->compose_with != NONE) val_free(VAL_TUPLE(tu->compose_with));
-                tu->body_start = 0; tu->body_len = 0; tu->env = NONE;
-                tu->owns_env = false; tu->compose_with = NONE;
-                tuple_freelist[tuple_free_count++] = (int)v.tuple;
+                POOL_FREE(tuples, v.tuple);
             }
             return;
         }
@@ -492,8 +474,8 @@ static void val_free(Val v) {
             SliceObj *sl = &slices[v.slice];
             if (--sl->rc <= 0) {
                 for (int i = 0; i < sl->len; i++) val_free(sl->data[i]);
-                free(sl->data); sl->data = NULL; sl->len = 0;
-                slice_freelist[slice_free_count++] = (int)v.slice;
+                free(sl->data);
+                POOL_FREE(slices, v.slice);
             }
             return;
         }
@@ -502,8 +484,7 @@ static void val_free(Val v) {
             if (--rc->rc <= 0) {
                 for (int i = 0; i < rc->count; i++) val_free(rc->vals[i]);
                 free(rc->keys); free(rc->vals);
-                rc->keys = NULL; rc->vals = NULL; rc->count = 0; rc->cap = 0;
-                rec_freelist[rec_free_count++] = (int)v.rec;
+                POOL_FREE(recs, v.rec);
             }
             return;
         }
@@ -511,12 +492,13 @@ static void val_free(Val v) {
             if (!heap[v.box].alive) slap_panic("double-free on Box %u", v.box);
             val_free(heap[v.box].val);
             heap[v.box].alive = false;
+            POOL_FREE(heap, v.box);
             return;
         case T_LIST: {
             ListObj *li = &lists[v.list];
             for (int i = 0; i < li->len; i++) val_free(li->data[i]);
-            free(li->data); li->data = NULL; li->len = 0; li->cap = 0;
-            list_freelist[list_free_count++] = (int)v.list;
+            free(li->data);
+            POOL_FREE(lists, v.list);
             return;
         }
         case T_DICT: {
@@ -525,14 +507,12 @@ static void val_free(Val v) {
                 if (d->used[i]) { val_free(d->keys[i]); val_free(d->vals[i]); }
             }
             free(d->keys); free(d->vals); free(d->used);
-            d->keys = NULL; d->vals = NULL; d->used = NULL; d->count = 0; d->cap = 0;
-            dict_freelist[dict_free_count++] = (int)v.dict;
+            POOL_FREE(dicts, v.dict);
             return;
         }
         case T_STR: {
-            StrObj *st = &strs[v.str];
-            free(st->data); st->data = NULL; st->len = 0; st->cap = 0;
-            str_freelist[str_free_count++] = (int)v.str;
+            free(strs[v.str].data);
+            POOL_FREE(strs, v.str);
             return;
         }
     }
@@ -671,9 +651,7 @@ static bool tuple_body_needs_scope(int start, int len) {
 
 typedef struct { uint32_t name; Val val; bool is_def; } Binding;
 typedef struct { uint32_t parent; Binding *binds; int count, cap; bool owns_parent; } Scope;
-static Scope scopes[MAX_SCOPES];
-static int scope_count = 1; // 0 unused
-static int scope_freelist[MAX_SCOPES], scope_free_count;
+POOL_DECL(Scope, scopes, MAX_SCOPES);
 static uint32_t global_scope;
 
 // Fast lookup table for global scope: indexed by symbol ID
@@ -681,7 +659,7 @@ static Binding *global_lookup[MAX_SYMS];
 
 static uint32_t scope_new(uint32_t parent) {
     uint32_t idx;
-    POOL_ALLOC(idx, scope_count, scope_freelist, scope_free_count, MAX_SCOPES, "scope");
+    POOL_ALLOC(idx, scopes);
     Scope *s = &scopes[idx];
     s->parent = parent;
     s->count = 0;          // keep binds+cap from previous use
@@ -696,9 +674,7 @@ static void scope_release(uint32_t sc) {
     bool owns = s->owns_parent;
     for (int i = 0; i < s->count; i++)
         if (s->binds[i].val.type >= T_TUPLE) val_free(s->binds[i].val);
-    s->count = 0;           // keep binds+cap for reuse
-    s->owns_parent = false;
-    scope_freelist[scope_free_count++] = (int)sc;
+    POOL_FREE(scopes, sc);
     if (owns) scope_release(parent);
 }
 
@@ -771,7 +747,15 @@ static char src_next(void) {
 }
 static bool src_eof(void) { return src[src_pos] == '\0'; }
 
-static void skip_ws(void) {
+static bool is_word_char(char c) {
+    return c && !isspace((unsigned char)c) && c != '(' && c != ')' &&
+           c != '[' && c != ']' && c != '{' && c != '}' && c != '"';
+}
+
+// ── Parser ──────────────────────────────────────────────────────────────────
+
+static Token curtok;
+static void advance(void) {
     while (!src_eof()) {
         if (isspace((unsigned char)src_peek())) { src_next(); continue; }
         if (src_peek() == '-' && src_pos + 1 < (int)strlen(src) && src[src_pos + 1] == '-') {
@@ -780,30 +764,21 @@ static void skip_ws(void) {
         }
         break;
     }
-}
-
-static bool is_word_char(char c) {
-    return c && !isspace((unsigned char)c) && c != '(' && c != ')' &&
-           c != '[' && c != ']' && c != '{' && c != '}' && c != '"';
-}
-
-static Token next_token(void) {
-    skip_ws();
     Token t = {0};
     t.line = src_line; t.col = src_col;
-    if (src_eof()) { t.type = TOK_EOF; return t; }
+    if (src_eof()) { t.type = TOK_EOF; curtok = t; return; }
     char c = src_peek();
 
-    if (c == '(') { src_next(); t.type = TOK_LPAREN; return t; }
-    if (c == ')') { src_next(); t.type = TOK_RPAREN; return t; }
-    if (c == '[') { src_next(); t.type = TOK_LBRACKET; return t; }
-    if (c == ']') { src_next(); t.type = TOK_RBRACKET; return t; }
-    if (c == '{') { src_next(); t.type = TOK_LBRACE; return t; }
-    if (c == '}') { src_next(); t.type = TOK_RBRACE; return t; }
+    if (c == '(') { src_next(); t.type = TOK_LPAREN; curtok = t; return; }
+    if (c == ')') { src_next(); t.type = TOK_RPAREN; curtok = t; return; }
+    if (c == '[') { src_next(); t.type = TOK_LBRACKET; curtok = t; return; }
+    if (c == ']') { src_next(); t.type = TOK_RBRACKET; curtok = t; return; }
+    if (c == '{') { src_next(); t.type = TOK_LBRACE; curtok = t; return; }
+    if (c == '}') { src_next(); t.type = TOK_RBRACE; curtok = t; return; }
 
     // string literal
     if (c == '"') {
-        src_next(); // skip opening "
+        src_next();
         int i = 0;
         while (!src_eof() && src_peek() != '"') {
             char ch = src_next();
@@ -819,22 +794,22 @@ static Token next_token(void) {
             }
             if (i < SYM_NAME_MAX - 1) t.word[i++] = ch;
         }
-        if (!src_eof()) src_next(); // skip closing "
+        if (!src_eof()) src_next();
         t.word[i] = '\0';
         t.type = TOK_STRING;
-        return t;
+        curtok = t; return;
     }
 
     // symbol: 'name
     if (c == '\'') {
-        src_next(); // skip '
+        src_next();
         int i = 0;
         while (!src_eof() && is_word_char(src_peek()))
             if (i < SYM_NAME_MAX - 1) t.word[i++] = src_next();
             else src_next();
         t.word[i] = '\0';
         t.type = TOK_SYMBOL;
-        return t;
+        curtok = t; return;
     }
 
     // number or negative number
@@ -851,7 +826,7 @@ static Token next_token(void) {
         t.word[i] = '\0';
         if (is_float) { t.type = TOK_FLOAT; t.fval = strtod(t.word, NULL); }
         else { t.type = TOK_INT; t.ival = strtoll(t.word, NULL, 10); }
-        return t;
+        curtok = t; return;
     }
 
     // word
@@ -861,17 +836,12 @@ static Token next_token(void) {
             if (i < SYM_NAME_MAX - 1) t.word[i++] = src_next();
             else src_next();
         t.word[i] = '\0';
-        if (strcmp(t.word, "true") == 0) { t.type = TOK_INT; t.ival = 1; return t; }
-        if (strcmp(t.word, "false") == 0) { t.type = TOK_INT; t.ival = 0; return t; }
+        if (strcmp(t.word, "true") == 0) { t.type = TOK_INT; t.ival = 1; curtok = t; return; }
+        if (strcmp(t.word, "false") == 0) { t.type = TOK_INT; t.ival = 0; curtok = t; return; }
         t.type = TOK_WORD;
-        return t;
+        curtok = t;
     }
 }
-
-// ── Parser ──────────────────────────────────────────────────────────────────
-
-static Token curtok;
-static void advance(void) { curtok = next_token(); }
 
 static void parse_body(TokType close);
 
@@ -880,65 +850,58 @@ static void emit_push(Val v, int line, int col) {
     nodes[node_count++] = (Node){.type = N_PUSH, .line = line, .col = col, .literal = v};
 }
 
-static void emit_word(uint32_t sym, int line, int col) {
-    if (node_count >= MAX_NODES) slap_panic("node overflow");
-    nodes[node_count++] = (Node){.type = N_WORD, .line = line, .col = col, .sym = sym, .cached_prim = NULL};
-}
-
-static void parse_one(void) {
-    Token t = curtok;
-    switch (t.type) {
-        case TOK_INT:
-            emit_push(VAL_INT(t.ival), t.line, t.col);
-            advance();
-            break;
-        case TOK_FLOAT:
-            emit_push(VAL_FLOAT(t.fval), t.line, t.col);
-            advance();
-            break;
-        case TOK_SYMBOL:
-            emit_push(VAL_SYM(sym_intern(t.word)), t.line, t.col);
-            advance();
-            break;
-        case TOK_STRING: {
-            int slen = (int)strlen(t.word);
-            Val *data = NULL;
-            if (slen > 0) {
-                data = malloc((size_t)slen * sizeof(Val));
-                for (int i = 0; i < slen; i++) data[i] = VAL_INT((uint8_t)t.word[i]);
-            }
-            uint32_t s = slice_new(data, slen);
-            free(data);
-            emit_push(VAL_SLICE(s), t.line, t.col);
-            advance();
-            break;
-        }
-        case TOK_WORD:
-            emit_word(sym_intern(t.word), t.line, t.col);
-            advance();
-            break;
-        case TOK_LPAREN: case TOK_LBRACKET: case TOK_LBRACE: {
-            static const struct { TokType close; const char *ch; NodeType nt; }
-                bk[] = { [TOK_LPAREN]={TOK_RPAREN,")",N_TUPLE}, [TOK_LBRACKET]={TOK_RBRACKET,"]",N_SLICE}, [TOK_LBRACE]={TOK_RBRACE,"}",N_RECORD} };
-            advance();
-            int placeholder = node_count++;
-            if (placeholder >= MAX_NODES) slap_panic("node overflow");
-            int body_start = node_count;
-            parse_body(bk[t.type].close);
-            if (curtok.type != bk[t.type].close) slap_panic("expected '%s' at line %d, col %d", bk[t.type].ch, curtok.line, curtok.col);
-            advance();
-            nodes[placeholder] = (Node){.type = bk[t.type].nt, .line = t.line, .col = t.col,
-                                         .body = {body_start, node_count - body_start}};
-            break;
-        }
-        default:
-            slap_panic("unexpected token at line %d, col %d", t.line, t.col);
-    }
-}
-
 static void parse_body(TokType close) {
-    while (curtok.type != close && curtok.type != TOK_EOF)
-        parse_one();
+    while (curtok.type != close && curtok.type != TOK_EOF) {
+        Token t = curtok;
+        switch (t.type) {
+            case TOK_INT:
+                emit_push(VAL_INT(t.ival), t.line, t.col);
+                advance();
+                break;
+            case TOK_FLOAT:
+                emit_push(VAL_FLOAT(t.fval), t.line, t.col);
+                advance();
+                break;
+            case TOK_SYMBOL:
+                emit_push(VAL_SYM(sym_intern(t.word)), t.line, t.col);
+                advance();
+                break;
+            case TOK_STRING: {
+                int slen = (int)strlen(t.word);
+                Val *data = NULL;
+                if (slen > 0) {
+                    data = malloc((size_t)slen * sizeof(Val));
+                    for (int i = 0; i < slen; i++) data[i] = VAL_INT((uint8_t)t.word[i]);
+                }
+                uint32_t s = slice_new(data, slen);
+                free(data);
+                emit_push(VAL_SLICE(s), t.line, t.col);
+                advance();
+                break;
+            }
+            case TOK_WORD:
+                if (node_count >= MAX_NODES) slap_panic("node overflow");
+                nodes[node_count++] = (Node){.type = N_WORD, .line = t.line, .col = t.col, .sym = sym_intern(t.word), .cached_prim = NULL};
+                advance();
+                break;
+            case TOK_LPAREN: case TOK_LBRACKET: case TOK_LBRACE: {
+                static const struct { TokType close; const char *ch; NodeType nt; }
+                    bk[] = { [TOK_LPAREN]={TOK_RPAREN,")",N_TUPLE}, [TOK_LBRACKET]={TOK_RBRACKET,"]",N_SLICE}, [TOK_LBRACE]={TOK_RBRACE,"}",N_RECORD} };
+                advance();
+                int placeholder = node_count++;
+                if (placeholder >= MAX_NODES) slap_panic("node overflow");
+                int body_start = node_count;
+                parse_body(bk[t.type].close);
+                if (curtok.type != bk[t.type].close) slap_panic("expected '%s' at line %d, col %d", bk[t.type].ch, curtok.line, curtok.col);
+                advance();
+                nodes[placeholder] = (Node){.type = bk[t.type].nt, .line = t.line, .col = t.col,
+                                             .body = {body_start, node_count - body_start}};
+                break;
+            }
+            default:
+                slap_panic("unexpected token at line %d, col %d", t.line, t.col);
+        }
+    }
 }
 
 static int parse_source(const char *source) {
@@ -2199,171 +2162,6 @@ static void p_random(void) {
     push(VAL_INT((int64_t)(rand() % (unsigned)max)));
 }
 
-// ── Fantasy Console ────────────────────────────────────────────────────────
-
-#ifdef SLAP_SDL
-
-#define CANVAS_W 640
-#define CANVAS_H 480
-#define WINDOW_W 640
-#define WINDOW_H 480
-#define CANVAS_SIZE (CANVAS_W * CANVAS_H)
-
-static uint8_t canvas[CANVAS_W * CANVAS_H];
-
-#define MAX_HANDLERS 16
-typedef struct { uint32_t event_sym; Val handler; } EventHandler;
-static EventHandler sdl_handlers[MAX_HANDLERS];
-static int sdl_handler_count = 0;
-static bool sdl_test_mode = false;
-
-static void p_clear(void) {
-    int64_t color = pop_int();
-    memset(canvas, (uint8_t)(color & 3), CANVAS_SIZE);
-}
-
-static void p_pixel(void) {
-    int64_t color = pop_int();
-    int64_t y = pop_int();
-    int64_t x = pop_int();
-    if (x >= 0 && x < CANVAS_W && y >= 0 && y < CANVAS_H)
-        canvas[y * CANVAS_W + x] = (uint8_t)(color & 3);
-}
-
-static void p_millis(void) {
-    push(VAL_INT((int64_t)SDL_GetTicks()));
-}
-
-static void p_on(void) {
-    Val handler = pop();
-    EXPECT(handler, T_TUPLE);
-    uint32_t event_name = pop_sym();
-    // model stays on stack
-    for (int i = 0; i < sdl_handler_count; i++) {
-        if (sdl_handlers[i].event_sym == event_name) {
-            val_free(sdl_handlers[i].handler);
-            sdl_handlers[i].handler = handler;
-            return;
-        }
-    }
-    if (sdl_handler_count >= MAX_HANDLERS)
-        slap_panic("on: too many event handlers (max %d)", MAX_HANDLERS);
-    sdl_handlers[sdl_handler_count++] = (EventHandler){event_name, handler};
-}
-
-static EventHandler *find_handler(uint32_t sym) {
-    for (int i = 0; i < sdl_handler_count; i++)
-        if (sdl_handlers[i].event_sym == sym) return &sdl_handlers[i];
-    return NULL;
-}
-
-static void p_show(void) {
-    Val render_fn = pop();
-    EXPECT(render_fn, T_TUPLE);
-    Val model = pop();
-
-    uint32_t sym_keydown = sym_intern("keydown");
-    uint32_t sym_tick = sym_intern("tick");
-
-    if (sdl_test_mode) {
-        // headless: run tick + render once, then return
-        EventHandler *tick_h = find_handler(sym_tick);
-        if (tick_h) {
-            push(VAL_INT(0));
-            push(model);
-            exec_tuple(val_clone(tick_h->handler));
-            model = pop();
-        }
-        memset(canvas, 0, CANVAS_SIZE);
-        Val snap = val_is_linear(model) ? linear_snapshot(model) : val_clone(model);
-        push(snap);
-        exec_tuple(val_clone(render_fn));
-        val_free(render_fn);
-        val_free(model);
-        for (int i = 0; i < sdl_handler_count; i++) val_free(sdl_handlers[i].handler);
-        sdl_handler_count = 0;
-        return;
-    }
-
-    // -- SDL init --
-    if (SDL_Init(SDL_INIT_VIDEO) < 0)
-        slap_panic("show: SDL_Init failed: %s", SDL_GetError());
-    SDL_Window *win = SDL_CreateWindow("slap",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        WINDOW_W, WINDOW_H, 0);
-    if (!win) slap_panic("show: SDL_CreateWindow failed: %s", SDL_GetError());
-    SDL_Renderer *ren = SDL_CreateRenderer(win, -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!ren) slap_panic("show: SDL_CreateRenderer failed: %s", SDL_GetError());
-    SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
-        SDL_TEXTUREACCESS_STREAMING, CANVAS_W, CANVAS_H);
-
-    static const uint32_t palette[4] = {
-        0xFF000000,  // 0: black
-        0xFF555555,  // 1: dark gray
-        0xFFAAAAAA,  // 2: light gray
-        0xFFFFFFFF,  // 3: white
-    };
-    uint32_t *pixels = malloc(CANVAS_SIZE * sizeof(uint32_t));
-    int64_t frame = 0;
-
-    bool running = true;
-    while (running) {
-        SDL_Event ev;
-        while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_QUIT) { running = false; break; }
-            if (ev.type == SDL_KEYDOWN) {
-                if (ev.key.keysym.sym == SDLK_ESCAPE) { running = false; break; }
-                EventHandler *h = find_handler(sym_keydown);
-                if (h) {
-                    push(VAL_INT((int64_t)ev.key.keysym.sym));
-                    push(model);
-                    exec_tuple(val_clone(h->handler));
-                    model = pop();
-                }
-            }
-        }
-        if (!running) break;
-
-        // tick
-        EventHandler *tick_h = find_handler(sym_tick);
-        if (tick_h) {
-            push(VAL_INT(frame));
-            push(model);
-            exec_tuple(val_clone(tick_h->handler));
-            model = pop();
-        }
-
-        // render
-        memset(canvas, 0, CANVAS_SIZE);
-        Val snap = val_is_linear(model) ? linear_snapshot(model) : val_clone(model);
-        push(snap);
-        exec_tuple(val_clone(render_fn));
-
-        // blit canvas to pixels (upscale handled by SDL_RenderCopy stretching)
-        for (int i = 0; i < CANVAS_SIZE; i++)
-            pixels[i] = palette[canvas[i] & 3];
-        SDL_UpdateTexture(tex, NULL, pixels, CANVAS_W * sizeof(uint32_t));
-        SDL_RenderClear(ren);
-        SDL_RenderCopy(ren, tex, NULL, NULL);
-        SDL_RenderPresent(ren);
-        frame++;
-    }
-
-    free(pixels);
-    val_free(render_fn);
-    val_free(model);
-    for (int i = 0; i < sdl_handler_count; i++) val_free(sdl_handlers[i].handler);
-    sdl_handler_count = 0;
-    SDL_DestroyTexture(tex);
-    SDL_DestroyRenderer(ren);
-    SDL_DestroyWindow(win);
-    SDL_Quit();
-    exit(0);
-}
-
-#endif // SLAP_SDL
-
 // ── Primitive registration ──────────────────────────────────────────────────
 
 #define PRIMITIVES \
@@ -2399,18 +2197,9 @@ static void p_show(void) {
     X("print", p_print) X("print-stack", p_print_stack) X("assert", p_assert) X("halt", p_halt) \
     X("random", p_random)
 
-#ifdef SLAP_SDL
-#define SDL_PRIMITIVES \
-    X("clear", p_clear) X("pixel", p_pixel) X("millis", p_millis) \
-    X("on", p_on) X("show", p_show)
-#else
-#define SDL_PRIMITIVES
-#endif
-
 static void init_primitives(void) {
     #define X(name, fn) prim_table[sym_intern(name)] = fn;
     PRIMITIVES
-    SDL_PRIMITIVES
     #undef X
     sym_def_id = sym_intern("def");
     sym_let_id = sym_intern("let");
@@ -2842,10 +2631,6 @@ static uint32_t tc_inst_r(InstMap *m, uint32_t t) {
     return t;
 }
 
-static StackEff tc_inst(StackEff eff) {
-    InstMap m = {.n = 0};
-    return (StackEff){tc_inst_r(&m, eff.in), tc_inst_r(&m, eff.out)};
-}
 
 // Type environment
 static uint32_t tenv_new(uint32_t parent) {
@@ -2863,165 +2648,8 @@ static void tenv_bind(uint32_t env, uint32_t name, uint32_t type, bool poly, boo
     e->binds[e->count++] = (TCBinding){name, type, poly, is_def, false, 0, 0};
 }
 typedef struct { uint32_t type; bool poly, is_def, freed, was_used, found; TCBinding *binding; } TLookup;
-static TLookup tenv_lookup(uint32_t env, uint32_t name) {
-    while (env != TN_NONE) {
-        TCEnv *e = &tenvs[env];
-        for (int i = 0; i < e->count; i++)
-            if (e->binds[i].name == name) {
-                TCBinding *b = &e->binds[i];
-                bool was = b->used;
-                b->used = true;
-                return (TLookup){b->type, b->poly, b->is_def, b->freed, was, true, b};
-            }
-        env = e->parent;
-    }
-    return (TLookup){0, false, false, false, false, false, NULL};
-}
+typedef struct { StackEff eff; uint32_t copy_var, linear_var; } PrimScheme;
 
-// Primitive type schemes
-typedef struct { StackEff eff; uint32_t copy_var; bool has_copy; uint32_t linear_var; bool has_linear; } PrimScheme;
-
-static PrimScheme tc_prim_scheme(uint32_t sym_id) {
-    PrimScheme p = {0};
-    const char *nm = sym_names[sym_id];
-    #define S tn_svar()
-    #define T tn_var()
-    #define INT tn_int()
-    #define FLT tn_float()
-    #define SYM_ tn_sym()
-    #define SL(e) tn_slice(e)
-    #define BX(e) tn_box(e)
-    #define LS(e) tn_list(e)
-    #define DI(k,v) tn_dice(k,v)
-    #define DT(k,v) tn_dict_t(k,v)
-    #define TU(i,o) tn_tuple(i,o)
-    #define C(h,t) tn_scons(h,t)
-    #define RC(r) tn_rec(r)
-    #define STR_ tn_str()
-    #define NM(s) (strcmp(nm, s) == 0)
-    #define EFF(i,o) do { p.eff = (StackEff){i, o}; } while(0)
-    #define COPY(v) do { p.has_copy = true; p.copy_var = v; } while(0)
-    #define LINEAR(v) do { p.has_linear = true; p.linear_var = v; } while(0)
-
-    // Stack
-    if (NM("dup"))  { uint32_t s=S,a=T; EFF(C(a,s), C(a,C(a,s))); COPY(a); }
-    else if (NM("drop")) { uint32_t s=S,a=T; EFF(C(a,s), s); COPY(a); }
-    else if (NM("swap")) { uint32_t s=S,a=T,b=T; EFF(C(b,C(a,s)), C(a,C(b,s))); }
-    else if (NM("dip"))  { uint32_t s=S,r=S,a=T; EFF(C(TU(s,r),C(a,s)), C(a,r)); }
-    // Control
-    else if (NM("apply")) { uint32_t s=S,r=S; EFF(C(TU(s,r),s), r); }
-    else if (NM("if"))    { uint32_t s=S,r=S; EFF(C(TU(s,r),C(TU(s,r),C(INT,s))), r); }
-    else if (NM("loop"))  { uint32_t s=S; EFF(C(TU(s,C(INT,s)),s), s); }
-    else if (NM("while")) { uint32_t s=S; EFF(C(TU(s,s),C(TU(s,C(INT,s)),s)), s); }
-    // cond and match are special-cased in tc_infer
-    // Bool
-    else if (NM("not"))   { uint32_t s=S; EFF(C(INT,s), C(INT,s)); }
-    else if (NM("and") || NM("or")) { uint32_t s=S; EFF(C(INT,C(INT,s)), C(INT,s)); }
-    // Compare
-    else if (NM("eq"))    { uint32_t s=S,a=T; EFF(C(a,C(a,s)), C(INT,s)); COPY(a); }
-    else if (NM("lt"))    { uint32_t s=S,a=T; EFF(C(a,C(a,s)), C(INT,s)); COPY(a); }
-    // Polymorphic math
-    else if (NM("plus")||NM("sub")||NM("mul")||NM("div")) { uint32_t s=S,a=T; EFF(C(a,C(a,s)), C(a,s)); COPY(a); }
-    else if (NM("mod")) { uint32_t s=S; EFF(C(INT,C(INT,s)), C(INT,s)); }
-    // Int math
-    else if (NM("iplus")||NM("isub")||NM("imul")) { uint32_t s=S; EFF(C(INT,C(INT,s)), C(INT,s)); }
-    else if (NM("idiv")||NM("imod")) { uint32_t s=S; EFF(C(INT,C(INT,s)), C(INT,s)); }
-    // Float math
-    else if (NM("fplus")||NM("fsub")||NM("fmul")||NM("fdiv")) { uint32_t s=S; EFF(C(FLT,C(FLT,s)), C(FLT,s)); }
-    else if (NM("fsqrt")||NM("fsin")||NM("fcos")||NM("ftan")||NM("ffloor")||NM("fceil")||NM("fround")||NM("fexp")||NM("flog")) { uint32_t s=S; EFF(C(FLT,s), C(FLT,s)); }
-    else if (NM("fpow")||NM("fatan2")) { uint32_t s=S; EFF(C(FLT,C(FLT,s)), C(FLT,s)); }
-    // Conversion
-    else if (NM("itof")) { uint32_t s=S; EFF(C(INT,s), C(FLT,s)); }
-    else if (NM("ftoi")) { uint32_t s=S; EFF(C(FLT,s), C(INT,s)); }
-    // Tuples
-    else if (NM("compose")) { uint32_t a=S,b=S,c=S,s=S; EFF(C(TU(b,c),C(TU(a,b),s)), C(TU(a,c),s)); }
-    else if (NM("cons")) { uint32_t s=S,s2=S,r=S,a=T; EFF(C(a,C(TU(s2,r),s)), C(TU(s2,C(a,r)),s)); }
-    else if (NM("car"))  { uint32_t s=S,s2=S,r=S,a=T; EFF(C(TU(s2,C(a,r)),s), C(a,C(TU(s2,r),s))); }
-    // Records
-    else if (NM("rec"))  { uint32_t s=S; EFF(C(TU(S,S),s), C(RC(tn_rvar()),s)); } // simplified
-    // get and set are special-cased in tc_infer
-    // Slices
-    else if (NM("len"))  { uint32_t s=S; EFF(C(T,s), C(INT,s)); } // works on Slice and Dice
-    else if (NM("fold")) { uint32_t s=S,a=T,b=T; EFF(C(TU(C(a,C(b,s)),C(b,s)),C(b,C(SL(a),s))), C(b,s)); }
-    else if (NM("reduce")) { uint32_t s=S,a=T; EFF(C(TU(C(a,C(a,s)),C(a,s)),C(SL(a),s)), C(a,s)); }
-    else if (NM("at"))   { uint32_t s=S,a=T; EFF(C(a,C(INT,C(SL(a),s))), C(a,s)); }
-    else if (NM("put"))  { uint32_t s=S,a=T; EFF(C(a,C(INT,C(SL(a),s))), C(SL(a),s)); }
-    else if (NM("each")) { uint32_t s=S,a=T; EFF(C(TU(C(a,s),s),C(SL(a),s)), s); }
-    else if (NM("map"))  { uint32_t s=S,a=T,b=T; EFF(C(TU(C(a,s),C(b,s)),C(SL(a),s)), C(SL(b),s)); }
-    else if (NM("filter")) { uint32_t s=S,a=T; EFF(C(TU(C(a,s),C(INT,s)),C(SL(a),s)), C(SL(a),s)); }
-    else if (NM("range")) { uint32_t s=S; EFF(C(INT,C(INT,s)), C(SL(INT),s)); }
-
-    else if (NM("sort"))    { uint32_t s=S,a=T; EFF(C(SL(a),s), C(SL(a),s)); }
-    else if (NM("cat"))     { uint32_t s=S,a=T; EFF(C(SL(a),C(SL(a),s)), C(SL(a),s)); }
-    else if (NM("take")||NM("drop-n")||NM("rotate")) { uint32_t s=S,a=T; EFF(C(INT,C(SL(a),s)), C(SL(a),s)); }
-
-    else if (NM("scan")) { uint32_t s=S,a=T,b=T; EFF(C(TU(C(a,C(b,s)),C(b,s)),C(b,C(SL(a),s))), C(SL(b),s)); }
-    // select: Slice(Int) Slice(a) -> Slice(a)
-    else if (NM("select")) { uint32_t s=S,a=T; EFF(C(SL(INT),C(SL(a),s)), C(SL(a),s)); }
-    // keep-mask: Slice(Bool) Slice(a) -> Slice(a)
-    else if (NM("keep-mask")) { uint32_t s=S,a=T; EFF(C(SL(INT),C(SL(a),s)), C(SL(a),s)); }
-    else if (NM("windows")||NM("reshape")) { uint32_t s=S,a=T; EFF(C(INT,C(SL(a),s)), C(SL(SL(a)),s)); }
-    else if (NM("rise")||NM("fall")||NM("shape")) { uint32_t s=S,a=T; EFF(C(SL(a),s), C(SL(INT),s)); }
-    else if (NM("index-of")) { uint32_t s=S,a=T; EFF(C(SL(a),C(a,s)), C(INT,s)); COPY(a); }
-    else if (NM("transpose")) { uint32_t s=S,a=T; EFF(C(SL(SL(a)),s), C(SL(SL(a)),s)); }
-    else if (NM("classify")) { uint32_t s=S,a=T; EFF(C(SL(a),s), C(SL(INT),s)); COPY(a); }
-    else if (NM("pick")) { uint32_t s=S,a=T,b=T; EFF(C(SL(INT),C(a,s)), C(b,s)); }
-    else if (NM("group")||NM("partition")) { uint32_t s=S,a=T; EFF(C(SL(INT),C(SL(a),s)), C(SL(SL(a)),s)); }
-
-    // Dices
-    else if (NM("dice"))   { uint32_t s=S,a=T,b=T; EFF(C(SL(T),s), C(DI(a,b),s)); }
-    else if (NM("grab"))   { uint32_t s=S,a=T,b=T; EFF(C(b,C(a,C(DI(a,b),s))), C(b,s)); }
-    else if (NM("ifsert")) { uint32_t s=S,a=T,b=T; EFF(C(b,C(a,C(DI(a,b),s))), C(DI(a,b),s)); }
-    // Memory (lend is special-cased in tc_infer)
-    else if (NM("clone")) { uint32_t s=S,l=T; EFF(C(l,s), C(l,C(l,s))); LINEAR(l); }
-    else if (NM("free"))  { uint32_t s=S,a=T; EFF(C(a,s), s); LINEAR(a); }
-    // Box
-    else if (NM("box"))   { uint32_t s=S,a=T; EFF(C(a,s), C(BX(a),s)); }
-    // Lists
-    else if (NM("list"))  { uint32_t s=S,a=T; EFF(C(SL(a),s), C(LS(a),s)); }
-    else if (NM("list-zero"))  { uint32_t s=S; EFF(C(INT,s), C(LS(INT),s)); }
-    else if (NM("list-concat"))  { uint32_t s=S,a=T; EFF(C(SL(a),C(LS(a),s)), C(LS(a),s)); }
-    else if (NM("list-assign"))  { uint32_t s=S,a=T; EFF(C(a,C(INT,C(LS(a),s))), C(LS(a),s)); }
-    else if (NM("list-at"))      { uint32_t s=S,a=T; EFF(C(a,C(INT,C(LS(a),s))), C(a,C(LS(a),s))); }
-    // Dicts
-    else if (NM("dict"))  { uint32_t s=S,a=T,b=T; EFF(C(DI(a,b),s), C(DT(a,b),s)); }
-    else if (NM("dict-insert")) { uint32_t s=S,a=T,b=T; EFF(C(b,C(a,C(DT(a,b),s))), C(DT(a,b),s)); }
-    else if (NM("dict-remove")) { uint32_t s=S,a=T; EFF(C(a,C(DT(a,T),s)), C(DT(a,T),s)); }
-    // Strings
-    else if (NM("str"))   { uint32_t s=S; EFF(C(SL(INT),s), C(STR_,s)); }
-    else if (NM("str-concat"))  { uint32_t s=S; EFF(C(SL(INT),C(STR_,s)), C(STR_,s)); }
-    else if (NM("str-assign"))  { uint32_t s=S; EFF(C(INT,C(INT,C(STR_,s))), C(STR_,s)); }
-    // IO
-    else if (NM("print")) { uint32_t s=S,a=T; EFF(C(a,s), s); }
-    else if (NM("assert")) { uint32_t s=S; EFF(C(INT,s), s); }
-    else if (NM("halt") || NM("print-stack")) { uint32_t s=S; EFF(s, s); }
-    // Random
-    else if (NM("random")) { uint32_t s=S; EFF(C(INT,s), C(INT,s)); }
-    // Console (on/show are special-cased in tc_infer)
-    else if (NM("clear")) { uint32_t s=S; EFF(C(INT,s), s); }
-    else if (NM("pixel")) { uint32_t s=S; EFF(C(INT,C(INT,C(INT,s))), s); }
-    else if (NM("millis")) { uint32_t s=S; EFF(s, C(INT,s)); }
-    else { return p; }
-
-    #undef S
-    #undef T
-    #undef INT
-    #undef FLT
-    #undef SYM_
-    #undef SL
-    #undef BX
-    #undef LS
-    #undef DI
-    #undef DT
-    #undef TU
-    #undef C
-    #undef RC
-    #undef STR_
-    #undef NM
-    #undef EFF
-    #undef COPY
-    return p;
-}
 
 // Known symbol tracking for def/let
 typedef struct { uint32_t tnode; uint32_t sym_id; } KnownSym;
@@ -3082,6 +2710,8 @@ static uint32_t tc_lit_type(Val *v) {
 }
 
 // Inference
+#define EMIT_CC(v,w) do { if (tc_cc_count < MAX_TCOPY) tc_cc[tc_cc_count++] = (CopyConst){v, w, n->line, n->col}; } while(0)
+#define EMIT_LC(v,w) do { if (tc_lc_count < MAX_TCOPY) tc_lc[tc_lc_count++] = (CopyConst){v, w, n->line, n->col}; } while(0)
 static StackEff tc_infer(int start, int len, uint32_t env, int depth) {
     uint32_t cur = tn_svar();
     uint32_t base = cur;
@@ -3184,9 +2814,7 @@ static StackEff tc_infer(int start, int len, uint32_t env, int depth) {
                 if (ns != TN_NONE) {
                     uint32_t rt = tn_resolve(val_t);
                     bool is_tup = tnodes[rt].kind == TN_TUPLE;
-                    // Fix 2: non-tuple def values must be copyable (prevents aliasing linear values)
-                    if (!is_tup && tc_cc_count < MAX_TCOPY)
-                        tc_cc[tc_cc_count++] = (CopyConst){val_t, "def", n->line, n->col};
+                    if (!is_tup) EMIT_CC(val_t, "def");
                     tenv_bind(env, ns, is_tup ? rt : val_t, depth == 0, true);
                     // Fix 3: propagate body constraints through polymorphic tuple bindings
                     if (is_tup && depth == 0) {
@@ -3214,9 +2842,7 @@ static StackEff tc_infer(int start, int len, uint32_t env, int depth) {
                 uint32_t sym_t = tc_pop(&cur);
                 uint32_t val_t = tc_pop(&cur);
                 tc_ut(sym_t, tn_sym());
-                // let bindings clone on use, so the value must be copyable
-                if (tc_cc_count < MAX_TCOPY)
-                    tc_cc[tc_cc_count++] = (CopyConst){val_t, "let", n->line, n->col};
+                EMIT_CC(val_t, "let");
                 uint32_t ns = ks_lookup(known, known_n, sym_t);
                 if (ns != TN_NONE) tenv_bind(env, ns, val_t, false, false);
                 i++; continue;
@@ -3233,8 +2859,7 @@ static StackEff tc_infer(int start, int len, uint32_t env, int depth) {
                 uint32_t s = tn_svar();
                 uint32_t a = tn_var(), b = tn_var(), l = tn_var();
                 tc_ust(cur, tn_scons(tn_tuple(tn_scons(a,s), tn_scons(b,s)), tn_scons(l, s)));
-                if (tc_lc_count < MAX_TCOPY)
-                    tc_lc[tc_lc_count++] = (CopyConst){l, "lend", n->line, n->col};
+                EMIT_LC(l, "lend");
                 uint32_t snap = tc_snapshot_of(tn_resolve(l));
                 if (snap != TN_NONE) tc_ut(a, snap);
                 cur = tn_scons(b, tn_scons(l, s));
@@ -3254,9 +2879,7 @@ static StackEff tc_infer(int start, int len, uint32_t env, int depth) {
                     bool closed;
                     uint32_t field_t = tc_row_find(tnodes[rec_r].arg, known_label, &closed);
                     if (field_t != TN_NONE) {
-                        // get clones the value, so it must be copyable
-                        if (tc_cc_count < MAX_TCOPY)
-                            tc_cc[tc_cc_count++] = (CopyConst){field_t, "get", n->line, n->col};
+                        EMIT_CC(field_t, "get");
                         cur = tn_scons(field_t, cur);
                     } else if (closed) {
                         tc_err("'get': field '%s not found in record", sym_names[known_label]);
@@ -3267,8 +2890,7 @@ static StackEff tc_infer(int start, int len, uint32_t env, int depth) {
                         // extend the row with this field
                         uint32_t new_row = tn_rext(known_label, ft, tn_rvar());
                         tc_ur(tnodes[rec_r].arg, new_row);
-                        if (tc_cc_count < MAX_TCOPY)
-                            tc_cc[tc_cc_count++] = (CopyConst){ft, "get", n->line, n->col};
+                        EMIT_CC(ft, "get");
                         cur = tn_scons(ft, cur);
                     }
                 } else {
@@ -3382,12 +3004,24 @@ static StackEff tc_infer(int start, int len, uint32_t env, int depth) {
                 i++; continue;
             }
             // Lookup in env
-            TLookup lu = tenv_lookup(env, n->sym);
+            TLookup lu = {0, false, false, false, false, false, NULL};
+            { uint32_t lu_env = env;
+              while (lu_env != TN_NONE) {
+                  TCEnv *e = &tenvs[lu_env];
+                  for (int j = 0; j < e->count; j++)
+                      if (e->binds[j].name == n->sym) {
+                          TCBinding *b = &e->binds[j];
+                          bool was = b->used;
+                          b->used = true;
+                          lu = (TLookup){b->type, b->poly, b->is_def, b->freed, was, true, b};
+                          goto lu_done;
+                      }
+                  lu_env = e->parent;
+              }
+              lu_done:; }
             if (lu.found) {
                 uint32_t t = lu.type;
-                // let-bindings used more than once require copyable type
-                if (lu.was_used && !lu.is_def && !lu.poly && tc_cc_count < MAX_TCOPY)
-                    tc_cc[tc_cc_count++] = (CopyConst){t, sym_names[n->sym], n->line, n->col};
+                if (lu.was_used && !lu.is_def && !lu.poly) EMIT_CC(t, sym_names[n->sym]);
                 if (lu.poly) {
                     InstMap im = {.n = 0};
                     if (tnodes[tn_resolve(t)].kind == TN_TUPLE) {
@@ -3425,19 +3059,121 @@ static StackEff tc_infer(int start, int len, uint32_t env, int depth) {
                 i++; continue;
             }
             // Primitive
-            PrimScheme ps = tc_prim_scheme(n->sym);
-            if (ps.eff.in == 0 && ps.eff.out == 0) { tc_err("unknown word: %s", sym_names[n->sym]); i++; continue; }
-            InstMap im = {.n = 0};
-            StackEff e = {tc_inst_r(&im, ps.eff.in), tc_inst_r(&im, ps.eff.out)};
-            tc_ust(cur, e.in);
-            cur = e.out;
-            if (ps.has_copy && tc_cc_count < MAX_TCOPY) {
-                uint32_t cv = tc_inst_r(&im, ps.copy_var);
-                tc_cc[tc_cc_count++] = (CopyConst){cv, sym_names[n->sym], n->line, n->col};
-            }
-            if (ps.has_linear && tc_lc_count < MAX_TCOPY) {
-                uint32_t lv = tc_inst_r(&im, ps.linear_var);
-                tc_lc[tc_lc_count++] = (CopyConst){lv, sym_names[n->sym], n->line, n->col};
+            { PrimScheme ps = {.copy_var = TN_NONE, .linear_var = TN_NONE};
+              const char *nm = sym_names[n->sym];
+              #define S tn_svar()
+              #define T tn_var()
+              #define INT tn_int()
+              #define FLT tn_float()
+              #define SYM_ tn_sym()
+              #define SL(e) tn_slice(e)
+              #define BX(e) tn_box(e)
+              #define LS(e) tn_list(e)
+              #define DI(k,v) tn_dice(k,v)
+              #define DT(k,v) tn_dict_t(k,v)
+              #define TU(i,o) tn_tuple(i,o)
+              #define C(h,t) tn_scons(h,t)
+              #define RC(r) tn_rec(r)
+              #define STR_ tn_str()
+              #define NM(s) (strcmp(nm, s) == 0)
+              #define EFF(i,o) do { ps.eff = (StackEff){i, o}; } while(0)
+              #define COPY(v) do { ps.copy_var = v; } while(0)
+              #define LINEAR(v) do { ps.linear_var = v; } while(0)
+
+              if (NM("dup"))  { uint32_t s=S,a=T; EFF(C(a,s), C(a,C(a,s))); COPY(a); }
+              else if (NM("drop")) { uint32_t s=S,a=T; EFF(C(a,s), s); COPY(a); }
+              else if (NM("swap")) { uint32_t s=S,a=T,b=T; EFF(C(b,C(a,s)), C(a,C(b,s))); }
+              else if (NM("dip"))  { uint32_t s=S,r=S,a=T; EFF(C(TU(s,r),C(a,s)), C(a,r)); }
+              else if (NM("apply")) { uint32_t s=S,r=S; EFF(C(TU(s,r),s), r); }
+              else if (NM("if"))    { uint32_t s=S,r=S; EFF(C(TU(s,r),C(TU(s,r),C(INT,s))), r); }
+              else if (NM("loop"))  { uint32_t s=S; EFF(C(TU(s,C(INT,s)),s), s); }
+              else if (NM("while")) { uint32_t s=S; EFF(C(TU(s,s),C(TU(s,C(INT,s)),s)), s); }
+              else if (NM("not"))   { uint32_t s=S; EFF(C(INT,s), C(INT,s)); }
+              else if (NM("and") || NM("or")) { uint32_t s=S; EFF(C(INT,C(INT,s)), C(INT,s)); }
+              else if (NM("eq")||NM("lt")) { uint32_t s=S,a=T; EFF(C(a,C(a,s)), C(INT,s)); COPY(a); }
+              else if (NM("plus")||NM("sub")||NM("mul")||NM("div")) { uint32_t s=S,a=T; EFF(C(a,C(a,s)), C(a,s)); COPY(a); }
+              else if (NM("mod")||NM("iplus")||NM("isub")||NM("imul")||NM("idiv")||NM("imod")) { uint32_t s=S; EFF(C(INT,C(INT,s)), C(INT,s)); }
+              else if (NM("fplus")||NM("fsub")||NM("fmul")||NM("fdiv")) { uint32_t s=S; EFF(C(FLT,C(FLT,s)), C(FLT,s)); }
+              else if (NM("fsqrt")||NM("fsin")||NM("fcos")||NM("ftan")||NM("ffloor")||NM("fceil")||NM("fround")||NM("fexp")||NM("flog")) { uint32_t s=S; EFF(C(FLT,s), C(FLT,s)); }
+              else if (NM("fpow")||NM("fatan2")) { uint32_t s=S; EFF(C(FLT,C(FLT,s)), C(FLT,s)); }
+              else if (NM("itof")) { uint32_t s=S; EFF(C(INT,s), C(FLT,s)); }
+              else if (NM("ftoi")) { uint32_t s=S; EFF(C(FLT,s), C(INT,s)); }
+              else if (NM("compose")) { uint32_t a=S,b=S,c=S,s=S; EFF(C(TU(b,c),C(TU(a,b),s)), C(TU(a,c),s)); }
+              else if (NM("cons")) { uint32_t s=S,s2=S,r=S,a=T; EFF(C(a,C(TU(s2,r),s)), C(TU(s2,C(a,r)),s)); }
+              else if (NM("car"))  { uint32_t s=S,s2=S,r=S,a=T; EFF(C(TU(s2,C(a,r)),s), C(a,C(TU(s2,r),s))); }
+              else if (NM("rec"))  { uint32_t s=S; EFF(C(TU(S,S),s), C(RC(tn_rvar()),s)); }
+              else if (NM("len"))  { uint32_t s=S; EFF(C(T,s), C(INT,s)); }
+              else if (NM("fold")) { uint32_t s=S,a=T,b=T; EFF(C(TU(C(a,C(b,s)),C(b,s)),C(b,C(SL(a),s))), C(b,s)); }
+              else if (NM("reduce")) { uint32_t s=S,a=T; EFF(C(TU(C(a,C(a,s)),C(a,s)),C(SL(a),s)), C(a,s)); }
+              else if (NM("at"))   { uint32_t s=S,a=T; EFF(C(a,C(INT,C(SL(a),s))), C(a,s)); }
+              else if (NM("put"))  { uint32_t s=S,a=T; EFF(C(a,C(INT,C(SL(a),s))), C(SL(a),s)); }
+              else if (NM("each")) { uint32_t s=S,a=T; EFF(C(TU(C(a,s),s),C(SL(a),s)), s); }
+              else if (NM("map"))  { uint32_t s=S,a=T,b=T; EFF(C(TU(C(a,s),C(b,s)),C(SL(a),s)), C(SL(b),s)); }
+              else if (NM("filter")) { uint32_t s=S,a=T; EFF(C(TU(C(a,s),C(INT,s)),C(SL(a),s)), C(SL(a),s)); }
+              else if (NM("range")) { uint32_t s=S; EFF(C(INT,C(INT,s)), C(SL(INT),s)); }
+              else if (NM("sort"))    { uint32_t s=S,a=T; EFF(C(SL(a),s), C(SL(a),s)); }
+              else if (NM("cat"))     { uint32_t s=S,a=T; EFF(C(SL(a),C(SL(a),s)), C(SL(a),s)); }
+              else if (NM("take")||NM("drop-n")||NM("rotate")) { uint32_t s=S,a=T; EFF(C(INT,C(SL(a),s)), C(SL(a),s)); }
+              else if (NM("scan")) { uint32_t s=S,a=T,b=T; EFF(C(TU(C(a,C(b,s)),C(b,s)),C(b,C(SL(a),s))), C(SL(b),s)); }
+              else if (NM("select")||NM("keep-mask")) { uint32_t s=S,a=T; EFF(C(SL(INT),C(SL(a),s)), C(SL(a),s)); }
+              else if (NM("windows")||NM("reshape")) { uint32_t s=S,a=T; EFF(C(INT,C(SL(a),s)), C(SL(SL(a)),s)); }
+              else if (NM("rise")||NM("fall")||NM("shape")) { uint32_t s=S,a=T; EFF(C(SL(a),s), C(SL(INT),s)); }
+              else if (NM("index-of")) { uint32_t s=S,a=T; EFF(C(SL(a),C(a,s)), C(INT,s)); COPY(a); }
+              else if (NM("transpose")) { uint32_t s=S,a=T; EFF(C(SL(SL(a)),s), C(SL(SL(a)),s)); }
+              else if (NM("classify")) { uint32_t s=S,a=T; EFF(C(SL(a),s), C(SL(INT),s)); COPY(a); }
+              else if (NM("pick")) { uint32_t s=S,a=T,b=T; EFF(C(SL(INT),C(a,s)), C(b,s)); }
+              else if (NM("group")||NM("partition")) { uint32_t s=S,a=T; EFF(C(SL(INT),C(SL(a),s)), C(SL(SL(a)),s)); }
+              else if (NM("dice"))   { uint32_t s=S,a=T,b=T; EFF(C(SL(T),s), C(DI(a,b),s)); }
+              else if (NM("grab"))   { uint32_t s=S,a=T,b=T; EFF(C(b,C(a,C(DI(a,b),s))), C(b,s)); }
+              else if (NM("ifsert")) { uint32_t s=S,a=T,b=T; EFF(C(b,C(a,C(DI(a,b),s))), C(DI(a,b),s)); }
+              else if (NM("clone")) { uint32_t s=S,l=T; EFF(C(l,s), C(l,C(l,s))); LINEAR(l); }
+              else if (NM("free"))  { uint32_t s=S,a=T; EFF(C(a,s), s); LINEAR(a); }
+              else if (NM("box"))   { uint32_t s=S,a=T; EFF(C(a,s), C(BX(a),s)); }
+              else if (NM("list"))  { uint32_t s=S,a=T; EFF(C(SL(a),s), C(LS(a),s)); }
+              else if (NM("list-zero"))  { uint32_t s=S; EFF(C(INT,s), C(LS(INT),s)); }
+              else if (NM("list-concat"))  { uint32_t s=S,a=T; EFF(C(SL(a),C(LS(a),s)), C(LS(a),s)); }
+              else if (NM("list-assign"))  { uint32_t s=S,a=T; EFF(C(a,C(INT,C(LS(a),s))), C(LS(a),s)); }
+              else if (NM("list-at"))      { uint32_t s=S,a=T; EFF(C(a,C(INT,C(LS(a),s))), C(a,C(LS(a),s))); }
+              else if (NM("dict"))  { uint32_t s=S,a=T,b=T; EFF(C(DI(a,b),s), C(DT(a,b),s)); }
+              else if (NM("dict-insert")) { uint32_t s=S,a=T,b=T; EFF(C(b,C(a,C(DT(a,b),s))), C(DT(a,b),s)); }
+              else if (NM("dict-remove")) { uint32_t s=S,a=T; EFF(C(a,C(DT(a,T),s)), C(DT(a,T),s)); }
+              else if (NM("str"))   { uint32_t s=S; EFF(C(SL(INT),s), C(STR_,s)); }
+              else if (NM("str-concat"))  { uint32_t s=S; EFF(C(SL(INT),C(STR_,s)), C(STR_,s)); }
+              else if (NM("str-assign"))  { uint32_t s=S; EFF(C(INT,C(INT,C(STR_,s))), C(STR_,s)); }
+              else if (NM("print")) { uint32_t s=S,a=T; EFF(C(a,s), s); }
+              else if (NM("assert")) { uint32_t s=S; EFF(C(INT,s), s); }
+              else if (NM("halt") || NM("print-stack")) { uint32_t s=S; EFF(s, s); }
+              else if (NM("random")) { uint32_t s=S; EFF(C(INT,s), C(INT,s)); }
+              else if (NM("clear")) { uint32_t s=S; EFF(C(INT,s), s); }
+              else if (NM("pixel")) { uint32_t s=S; EFF(C(INT,C(INT,C(INT,s))), s); }
+              else if (NM("millis")) { uint32_t s=S; EFF(s, C(INT,s)); }
+              else { tc_err("unknown word: %s", nm); i++; continue; }
+
+              #undef S
+              #undef T
+              #undef INT
+              #undef FLT
+              #undef SYM_
+              #undef SL
+              #undef BX
+              #undef LS
+              #undef DI
+              #undef DT
+              #undef TU
+              #undef C
+              #undef RC
+              #undef STR_
+              #undef NM
+              #undef EFF
+              #undef COPY
+              #undef LINEAR
+
+              InstMap im = {.n = 0};
+              StackEff e = {tc_inst_r(&im, ps.eff.in), tc_inst_r(&im, ps.eff.out)};
+              tc_ust(cur, e.in);
+              cur = e.out;
+              if (ps.copy_var != TN_NONE) EMIT_CC(tc_inst_r(&im, ps.copy_var), sym_names[n->sym]);
+              if (ps.linear_var != TN_NONE) EMIT_LC(tc_inst_r(&im, ps.linear_var), sym_names[n->sym]);
             }
             i++;
         }
@@ -3445,57 +3181,40 @@ static StackEff tc_infer(int start, int len, uint32_t env, int depth) {
     return (StackEff){base, cur};
 }
 
-static bool tc_is_linear(uint32_t t) {
+typedef enum { LIN_YES, LIN_NO, LIN_UNKNOWN } Linearity;
+static Linearity tc_linearity(uint32_t t) {
     t = tn_resolve(t);
     TNode *n = &tnodes[t];
     switch (n->kind) {
-    case TN_BOX: case TN_LIST: case TN_DICT: case TN_STR: return true;
-    case TN_SLICE: case TN_REC: return tc_is_linear(n->arg);
-    case TN_DICE: return tc_is_linear(n->kv.key) || tc_is_linear(n->kv.val);
-    case TN_REXT: return tc_is_linear(n->rext.type) || tc_is_linear(n->rext.tail);
-    default: return false;
+    case TN_BOX: case TN_LIST: case TN_DICT: case TN_STR: return LIN_YES;
+    case TN_INT: case TN_FLOAT: case TN_SYM: case TN_TUPLE: case TN_REMPTY: return LIN_NO;
+    case TN_SLICE: case TN_REC: return tc_linearity(n->arg);
+    case TN_DICE: {
+        Linearity k = tc_linearity(n->kv.key), v = tc_linearity(n->kv.val);
+        return (k == LIN_YES || v == LIN_YES) ? LIN_YES : (k == LIN_NO && v == LIN_NO) ? LIN_NO : LIN_UNKNOWN;
+    }
+    case TN_REXT: {
+        Linearity h = tc_linearity(n->rext.type), tl = tc_linearity(n->rext.tail);
+        return (h == LIN_YES || tl == LIN_YES) ? LIN_YES : (h == LIN_NO && tl == LIN_NO) ? LIN_NO : LIN_UNKNOWN;
+    }
+    default: return LIN_UNKNOWN;
     }
 }
 
-static void tc_check_copy(void) {
-    for (int i = 0; i < tc_cc_count && !tc_had_err; i++) {
-        if (tc_cc[i].handled) continue;
-        uint32_t t = tn_resolve(tc_cc[i].var_node);
-        if (tc_is_linear(t)) {
-            char tb[128]; tn_show(t, tb, sizeof(tb));
-            tc_cur_line = tc_cc[i].line; tc_cur_col = tc_cc[i].col;
-            tc_err("'%s' requires a copyable type, but got %s (linear)\n\n"
-                   "    Linear values (Box, List, Dict, String) cannot be duplicated.\n"
-                   "    Use 'lend' to borrow or 'clone' for an explicit deep copy.",
-                   tc_cc[i].word, tb);
-        }
-    }
-}
-
-// Returns true if type is provably copyable (concrete non-linear)
-// Returns false for unresolved variables (could be either)
-static bool tc_is_copyable(uint32_t t) {
-    t = tn_resolve(t);
-    TNode *n = &tnodes[t];
-    switch (n->kind) {
-    case TN_INT: case TN_FLOAT: case TN_SYM: case TN_TUPLE: return true;
-    case TN_SLICE: case TN_REC: return tc_is_copyable(n->arg);
-    case TN_DICE: return tc_is_copyable(n->kv.key) && tc_is_copyable(n->kv.val);
-    case TN_REXT: return tc_is_copyable(n->rext.type) && tc_is_copyable(n->rext.tail);
-    case TN_REMPTY: return true;
-    default: return false;  // TN_VAR, TN_BOX, TN_LIST, TN_DICT, TN_STR, etc.
-    }
-}
-
-static void tc_check_linear(void) {
-    for (int i = 0; i < tc_lc_count && !tc_had_err; i++) {
-        if (tc_lc[i].handled) continue;
-        uint32_t t = tn_resolve(tc_lc[i].var_node);
-        if (tc_is_copyable(t)) {
-            char tb[128]; tn_show(t, tb, sizeof(tb));
-            tc_cur_line = tc_lc[i].line; tc_cur_col = tc_lc[i].col;
-            tc_err("'%s' requires a linear type (Box, List, Dict, String), but got %s",
-                   tc_lc[i].word, tb);
+static void tc_check_constraints(CopyConst *arr, int count, bool check_linear) {
+    for (int i = 0; i < count && !tc_had_err; i++) {
+        if (arr[i].handled) continue;
+        Linearity lin = tc_linearity(tn_resolve(arr[i].var_node));
+        bool bad = check_linear ? (lin == LIN_NO) : (lin == LIN_YES);
+        if (bad) {
+            char tb[128]; tn_show(tn_resolve(arr[i].var_node), tb, sizeof(tb));
+            tc_cur_line = arr[i].line; tc_cur_col = arr[i].col;
+            if (check_linear)
+                tc_err("'%s' requires a linear type (Box, List, Dict, String), but got %s", arr[i].word, tb);
+            else
+                tc_err("'%s' requires a copyable type, but got %s (linear)\n\n"
+                       "    Linear values (Box, List, Dict, String) cannot be duplicated.\n"
+                       "    Use 'lend' to borrow or 'clone' for an explicit deep copy.", arr[i].word, tb);
         }
     }
 }
@@ -3513,8 +3232,8 @@ static bool tc_run(int start, int len) {
 
     // Type-check user code
     if (!tc_had_err) tc_infer(start, len, env, 0);
-    if (!tc_had_err) tc_check_copy();
-    if (!tc_had_err) tc_check_linear();
+    if (!tc_had_err) tc_check_constraints(tc_cc, tc_cc_count, false);
+    if (!tc_had_err) tc_check_constraints(tc_lc, tc_lc_count, true);
 
     if (tc_err_count > 0) {
         fprintf(stderr, "\n");
@@ -3548,59 +3267,3 @@ static bool tc_run(int start, int len) {
     return true;
 }
 
-// ── Main ────────────────────────────────────────────────────────────────────
-
-static char *read_file(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) { fprintf(stderr, "Cannot open '%s'\n", path); exit(1); }
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)sz + 1);
-    fread(buf, 1, (size_t)sz, f);
-    buf[sz] = '\0';
-    fclose(f);
-    return buf;
-}
-
-int main(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "Usage: slap <file.slap> [--test]\n"); return 1; }
-    use_color = isatty(STDERR_FILENO);
-    panic_stack_printer = print_stack_top;
-    bool test_mode = false;
-    for (int i = 2; i < argc; i++) if (strcmp(argv[i], "--test") == 0) test_mode = true;
-#ifdef SLAP_SDL
-    sdl_test_mode = test_mode;
-#else
-    (void)test_mode;
-#endif
-
-    srand((unsigned)time(NULL));
-    global_scope = scope_new(NONE);
-    g_scope = global_scope;
-    init_primitives();
-
-    // parse and run prelude
-    int prelude_count = parse_source(prelude);
-    eval(0, prelude_count, global_scope);
-
-    // resolve prelude node prims (used by prelude-defined tuples at runtime)
-    resolve_cached_prims(0, prelude_count);
-
-    // parse and run user code
-    char *code = read_file(argv[1]);
-    user_src = code;
-    src = code; src_pos = 0; src_line = 1; src_col = 1;
-    advance();
-    int user_start = node_count;
-    parse_body(TOK_EOF);
-    int user_len = node_count - user_start;
-    // Type check before evaluation
-    if (!tc_run(user_start, user_len)) { free(code); return 1; }
-
-    resolve_cached_prims(user_start, user_len);
-    eval(user_start, user_len, global_scope);
-
-    free(code);
-    return 0;
-}

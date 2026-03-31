@@ -9,7 +9,7 @@ green() { printf "\033[32m%s\033[0m" "$1"; }
 red()   { printf "\033[31m%s\033[0m" "$1"; }
 
 SDL_FLAGS=$(pkg-config --cflags --libs sdl2 2>/dev/null || echo "-lSDL2")
-gcc -std=c99 -O2 -DSLAP_SDL $SDL_FLAGS -lm slap.c -o slap 2>&1
+gcc -std=c99 -O2 $SDL_FLAGS -lm sdl.c -o slap 2>&1
 
 # ── 1. Main test suite (should pass) ──
 echo "=== expect.slap ==="

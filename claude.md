@@ -61,7 +61,7 @@ Hindley-Milner-style inference with row polymorphism for records and stack effec
 
 Stack machine. Word lookup: `def` bindings auto-execute tuples, `let` bindings push values. Prelude is a C string literal parsed before user code.
 
-### Primitives (~62)
+### Primitives (~97 core + 5 SDL)
 
 **Meta**: `def` (`'name val def`), `let` (`val 'name let`), `recur` (`'name recur (body) def` — enables self-recursion in body)
 
@@ -77,7 +77,7 @@ Stack machine. Word lookup: `def` bindings auto-execute tuples, `let` bindings p
 
 **Int Math**: `iplus`, `isub`, `imul`, `idiv`, `imod` (concrete-typed aliases)
 
-**Float Math**: `fplus`, `fsub`, `fmul`, `fdiv`
+**Float Math**: `fplus`, `fsub`, `fmul`, `fdiv`, `fsqrt`, `fsin`, `fcos`, `ftan`, `ffloor`, `fceil`, `fround`, `fexp`, `flog`, `fpow`, `fatan2`
 
 **Conversion**: `itof`, `ftoi`
 
@@ -85,7 +85,11 @@ Stack machine. Word lookup: `def` bindings auto-execute tuples, `let` bindings p
 
 **Records**: `rec`, `get`, `set`
 
-**Slices**: `len`, `fold`, `reduce` (fold without init), `at` (with default), `put`, `reshape`, `transpose`, `shape`, `classify`, `pick`, `group`, `partition`
+**Slices**: `len`, `fold`, `reduce` (fold without init), `at` (with default), `put`
+
+**Iteration**: `each`, `map`, `filter`, `range`
+
+**Array Ops**: `sort`, `cat`, `take`, `drop-n`, `scan`, `rotate`, `select`, `keep-mask`, `windows`, `rise`, `fall`, `index-of`, `reshape`, `transpose`, `shape`, `classify`, `pick`, `group`, `partition`
 
 **Dices**: `dice`, `grab` (with default), `ifsert`
 
@@ -93,7 +97,7 @@ Stack machine. Word lookup: `def` bindings auto-execute tuples, `let` bindings p
 
 **Box**: `box`
 
-**Lists**: `list`, `list-concat`, `list-assign`
+**Lists**: `list`, `list-zero`, `list-concat`, `list-assign`, `list-at`
 
 **Dicts**: `dict`, `dict-insert`, `dict-remove`
 
@@ -103,9 +107,11 @@ Stack machine. Word lookup: `def` bindings auto-execute tuples, `let` bindings p
 
 **Console** (requires `-DSLAP_SDL`): `on` (`model 'event (handler) on` — register event handler), `show` (`model (render) show` — start SDL loop), `clear` (`color clear` — fill canvas), `pixel` (`x y color pixel` — set pixel), `millis` (push SDL ticks)
 
-### Prelude (~35 words)
+### Prelude (~54 entries)
 
-peek, inc, dec, neg, abs, over, nip, rot, keep, bi, iszero, ispos, isneg, iseven, isodd, max, min, neq, gt, ge, le, reverse, flatten, zip, where, dedup, member, table, sum, product, isany, isall, count, first, last, repeat, sort-desc, max-of, min-of, clamp, isbetween, sign, lerp, fclamp, fneg, fabs, frecip, fsign, div, mod, sqr, cube, couple, rows, find
+**Defs**: peek, inc, dec, neg, abs, over, nip, rot, keep, bi, iszero, ispos, isneg, iseven, isodd, max, min, neq, gt, ge, le, sum, product, isany, isall, count, first, last, sqr, cube, fneg, fabs, fclamp, lerp, clamp, isbetween, sign, repeat, reverse, flatten, zip, where, member, dedup, table, sort-desc, max-of, min-of, frecip, fsign, couple, find
+
+**Constants** (via `let`): pi, tau, e
 
 ### Key Semantics
 
