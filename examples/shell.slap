@@ -1,0 +1,263 @@
+-- Shell — Self-hosted REPL for Slap
+-- Build: gcc -std=c99 -O2 $(sdl2-config --cflags --libs) -lm sdl.c -o slap-sdl
+-- Run:   ./slap-sdl examples/shell.slap
+--
+-- Integer-only V1. Supports: int literals, math, stack ops, comparisons,
+-- logic, assert, and most integer prelude words.
+-- Errors crash (let it crash). Restart to continue.
+
+'FW 4 def  'FH 6 def
+'COLS 640 FW div def
+'ROWS 480 FH div def
+
+[1 2 4 8 16 32 64 128 256 512 1024 2048 4096 8192 16384] 'POW2 let
+
+[0 9346 23040 24445 9906 21157 10987 9216
+ 10530 8778 21973 1488 20 448 2 4772
+ 31599 11415 29671 29647 23497 31183 31215 29330
+ 31727 31695 1040 1044 5393 3640 17492 29378
+ 15331 11245 27566 14627 27502 31207 31204 14699
+ 23533 29847 29290 23469 18727 24429 24557 11114
+ 31716 11089 27565 14478 29842 23402 23378 23421
+ 23213 23186 29351 13459 18569 25750 10752 7
+ 17408 11245 27566 14627 27502 31207 31204 14699
+ 23533 29847 29290 23469 18727 24429 24557 11114
+ 31716 11089 27565 14478 29842 23402 23378 23421
+ 23213 23186 29351 9490 9362 9298 1920] 'FONT let
+
+'draw-glyph ('color let 'sy let 'sx let 'ch let
+  ch 32 sub 'idx let
+  idx 0 lt idx 94 gt or (0) (FONT idx 0 at) if 'glyph let
+  glyph 0 eq not
+  (0 5 range ('row let
+    0 3 range ('col let
+      glyph POW2 14 row 3 mul sub col sub 0 at div 2 mod
+      0 eq not (sx col plus sy row plus color pixel) () if
+    ) each
+  ) each) () if
+) def
+
+-- ── Text Editing ──
+
+'insert-at ('ch let 'model let
+  model 'buf get 'b let  model 'cur get 'c let
+  b c take [ch] cat b c drop-n cat 'nb let
+  model nb 'buf set c 1 plus 'cur set
+) def
+
+'do-bs ('model let
+  model 'cur get 'c let
+  c 0 gt
+  (model 'buf get 'b let
+   b c 1 sub take b c drop-n cat 'nb let
+   model nb 'buf set c 1 sub 'cur set)
+  (model) if
+) def
+
+'move-left ('model let
+  model 'cur get 0 gt
+  (model model 'cur get 1 sub 'cur set) (model) if
+) def
+
+'move-right ('model let
+  model 'cur get model 'buf get len lt
+  (model model 'cur get 1 plus 'cur set) (model) if
+) def
+
+'KLEFT 1073741904 def  'KRIGHT 1073741903 def
+
+-- ── String Utilities ──
+
+'is-digit (dup 48 ge swap 57 le and) def
+
+'is-number ('tok let
+  tok len 0 eq
+  (0)
+  (tok 0 0 at 45 eq
+    (tok len 1 gt tok 1 drop-n (is-digit) isall and)
+    (tok (is-digit) isall)
+  if)
+  if
+) def
+
+'parse-uint ('tok let
+  tok 0 ('ch let 'acc let acc 10 imul ch 48 isub iplus) fold
+) def
+
+'parse-int ('tok let
+  tok 0 0 at 45 eq
+  (tok 1 drop-n parse-uint neg)
+  (tok parse-uint)
+  if
+) def
+
+'int-to-str-pos recur ('n let
+  n 10 lt
+  ([n 48 iplus])
+  (n 10 idiv int-to-str-pos [n 10 imod 48 iplus] cat)
+  if
+) def
+
+'int-to-str ('n let
+  n 0 eq ([48])
+  (n 0 lt ([45] n neg int-to-str-pos cat) (n int-to-str-pos) if)
+  if
+) def
+
+'stack-to-str ('stk let
+  stk len 0 eq ("[]") (
+    "["
+    0 stk len range ('i let
+      i 0 gt (" " cat) () if
+      stk i -1 at int-to-str cat
+    ) each
+    "]" cat
+  ) if
+) def
+
+'tokenize ('input let
+  input
+  {'done [] 'cur []}
+  ('ch let 'state let
+    state 'done get 'done let
+    state 'cur get 'cur let
+    ch 32 eq ch 9 eq or ch 10 eq or
+    (cur len 0 gt
+      ({'done done [cur] cat 'cur []})
+      (state)
+    if)
+    ({'done done 'cur cur [ch] cat})
+    if
+  ) fold
+  'final let
+  final 'cur get 'last let
+  final 'done get
+  last len 0 gt ([last] cat) () if
+) def
+
+'strip-comment ('input let
+  input len 2 lt (input) (
+    input [45 45] find 'hits let
+    hits where 'idxs let
+    idxs len 0 gt
+    (input idxs 0 -1 at take)
+    (input) if
+  ) if
+) def
+
+-- ── Interpreter Stack (bare Slice<Int>) ──
+
+'stk-push ('v let [v] cat) def
+
+'stk-pop ('s let
+  s len 0 eq (0 assert) () if
+  s s len 1 isub take
+  s s len 1 isub -1 at
+) def
+
+'stk-binop ('op let
+  stk-pop 'b let stk-pop 'a let
+  a b op apply stk-push
+) def
+
+'stk-unop ('op let
+  stk-pop 'a let
+  a op apply stk-push
+) def
+
+-- ── Word Table ──
+
+[("true" (1 stk-push)) ("false" (0 stk-push))
+ ("iplus" ((iplus) stk-binop)) ("isub" ((isub) stk-binop))
+ ("imul" ((imul) stk-binop)) ("idiv" ((idiv) stk-binop))
+ ("imod" ((imod) stk-binop))
+ ("plus" ((iplus) stk-binop)) ("sub" ((isub) stk-binop))
+ ("mul" ((imul) stk-binop)) ("div" ((idiv) stk-binop))
+ ("mod" ((imod) stk-binop))
+ ("dup" (stk-pop 'a let a stk-push a stk-push))
+ ("drop" (stk-pop drop))
+ ("swap" (stk-pop 'a let stk-pop 'b let a stk-push b stk-push))
+ ("over" (stk-pop 'a let stk-pop 'b let b stk-push a stk-push b stk-push))
+ ("nip" (stk-pop 'a let stk-pop drop a stk-push))
+ ("rot" (stk-pop 'a let stk-pop 'b let stk-pop 'c let b stk-push a stk-push c stk-push))
+ ("eq" ((eq) stk-binop)) ("lt" ((lt) stk-binop))
+ ("gt" ((gt) stk-binop)) ("ge" ((ge) stk-binop))
+ ("le" ((le) stk-binop)) ("neq" ((neq) stk-binop))
+ ("not" ((not) stk-unop)) ("and" ((and) stk-binop)) ("or" ((or) stk-binop))
+ ("neg" ((neg) stk-unop)) ("abs" ((abs) stk-unop))
+ ("inc" ((inc) stk-unop)) ("dec" ((dec) stk-unop))
+ ("iszero" ((iszero) stk-unop)) ("ispos" ((ispos) stk-unop))
+ ("isneg" ((isneg) stk-unop)) ("iseven" ((iseven) stk-unop))
+ ("isodd" ((isodd) stk-unop))
+ ("sqr" ((sqr) stk-unop)) ("cube" ((cube) stk-unop))
+ ("sign" ((sign) stk-unop))
+ ("max" ((max) stk-binop)) ("min" ((min) stk-binop))
+ ("clamp" (stk-pop 'hi let stk-pop 'lo let stk-pop 'val let
+           val lo max hi min stk-push))
+ ("isbetween" (stk-pop 'hi let stk-pop 'lo let stk-pop 'val let
+               val lo ge val hi le and stk-push))
+ ("assert" (stk-pop 'a let a assert))
+] dice 'WORDS let
+
+-- ── Dispatch ──
+
+'dispatch ('token let
+  token is-number
+  (token parse-int stk-push)
+  (WORDS token (token print 0 assert) grab apply)
+  if
+) def
+
+'eval-line ('input let
+  input strip-comment tokenize (dispatch) each
+) def
+
+-- ── Model & Events ──
+
+{'buf [] 'cur 0 'stack [] 'lines ["shell v0.1"]}
+
+'keydown ('model let 'key let
+  model 'buf get drop model 'cur get drop
+  model 'stack get drop model 'lines get drop
+  key
+  [((13 eq) (drop
+     model 'buf get 'raw let
+     model  model 'stack get raw eval-line  'stack set 'm let
+     m 'stack get stack-to-str 'stk-str let
+     m  m 'lines get ["> " raw cat] cat [stk-str] cat  'lines set
+     [] 'buf set 0 'cur set))
+   ((dup 32 ge swap 126 le and) (model swap insert-at))
+   ((8 eq) (drop model do-bs))
+   ((KLEFT eq) (drop model move-left))
+   ((KRIGHT eq) (drop model move-right))]
+  (drop model) cond
+) on
+
+('model let
+  0 clear
+  model 'lines get 'lines let
+  model 'buf get 'input let
+  model 'cur get 'cur let
+  ROWS 1 isub 'max-vis let
+  lines len max-vis gt (lines len max-vis isub) (0) if 'scroll let
+  lines len max-vis min 'visible let
+  0 visible range ('i let
+    lines scroll i iplus [] at 'line let
+    0 line len COLS min range ('j let
+      line j 0 at j FW mul i FH mul 3 draw-glyph
+    ) each
+  ) each
+  ROWS 1 isub FH mul 'iny let
+  62 0 iny 3 draw-glyph
+  32 FW iny 3 draw-glyph
+  0 input len range ('j let
+    input j 0 at j 2 iplus FW mul iny
+    j cur eq (0) (3) if draw-glyph
+  ) each
+  input len cur eq (
+    cur 2 iplus FW mul 'cx let
+    0 FH 1 isub range ('dy let 0 FW 1 isub range ('dx let
+      cx dx plus iny dy plus 1 pixel
+    ) each) each
+  ) () if
+) show
