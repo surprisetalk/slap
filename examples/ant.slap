@@ -1,0 +1,69 @@
+-- Langton's ant
+-- Run with: ./slap-sdl examples/ant.slap
+
+160 'W let
+120 'H let
+19200 'N let
+4 'S let
+
+-- Ant state
+80 'ax let
+60 'ay let
+0 'dir let  -- 0=up 1=right 2=down 3=left
+0 'steps let
+
+-- Draw SxS block at grid (gx, gy) with color c
+'draw-block (
+  'c let 'gy let 'gx let
+  gx S mul 'x0 let
+  gy S mul 'y0 let
+  0 'dy let
+  (dy S lt) (
+    0 'dx let
+    (dx S lt) (
+      x0 dx plus y0 dy plus c pixel
+      dx 1 plus 'dx let
+    ) while
+    dy 1 plus 'dy let
+  ) while
+) def
+
+-- One ant step: grid on stack → updated grid on stack
+-- Draws flipped cell directly to canvas
+'ant-step (
+  'g let
+
+  -- read cell at ant position
+  g ay W mul ax plus get 'cell let
+
+  -- turn: white(0)→right, black(1)→left
+  cell 0 eq
+    (dir 1 plus 4 mod)
+    (dir 3 plus 4 mod)
+  if 'dir let
+
+  -- flip cell and update grid
+  g ay W mul ax plus 1 cell sub set
+
+  -- draw flipped cell to canvas
+  ax ay 1 cell sub 0 eq (0) (3) if draw-block
+
+  -- move forward
+  ax (0 1 0 -1) dir get plus W plus W mod 'ax let
+  ay (-1 0 1 0) dir get plus H plus H mod 'ay let
+
+  steps 1 plus 'steps let
+) def
+
+-- Initial grid: all white (0)
+0 clear
+list N (0 give) repeat
+
+-- Step 200 times per tick
+'tick (drop 40 (ant-step) repeat) on
+
+-- Render: just draw ant marker
+(
+  drop
+  ax ay steps 10 div 2 mod 1 plus draw-block
+) show

@@ -255,6 +255,7 @@ static uint32_t pop_sym(void) { Value v = spop(); if (v.tag != VAL_SYM) die("exp
 typedef struct { int base; int slots; } ElemRef;
 static ElemRef compound_elem(Value *data, int total_slots, int len, int index) {
     if (index < 0 || index >= len) die("index %d out of bounds (len %d)", index, len);
+    if (total_slots == len + 1) { ElemRef ref = { index, 1 }; return ref; }
     int elem_end = total_slots - 1, off = 0, sz = 0;
     for (int i = len - 1; i >= 0; i--) {
         int lp = elem_end - 1; Value last = data[lp];
@@ -1504,6 +1505,16 @@ static void prim_get(Frame *e) {
     sp-=s; memcpy(&stack[sp],eb,ref.slots*sizeof(Value)); sp+=ref.slots;
 }
 
+static void prim_nth(Frame *env) {
+    int64_t idx=pop_int(); uint32_t sym=pop_sym();
+    Lookup lu=frame_lookup(env,sym); if(!lu.found) die("nth: unknown word: %s",sym_name(sym));
+    Value *data=&lu.frame->vals[lu.offset]; int s=lu.slots;
+    Value top=data[s-1]; if(!is_compound(top.tag)) die("nth: expected compound");
+    int len=(int)top.as.compound.len;
+    ElemRef ref=compound_elem(data,s,len,(int)idx);
+    memcpy(&stack[sp],&data[ref.base],ref.slots*sizeof(Value)); sp+=ref.slots;
+}
+
 static void prim_slice_n(int take) {
     int64_t n=pop_int(); Value top=speek(); if(top.tag!=VAL_LIST) die(take?"take-n: expected list":"drop-n: expected list");
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
@@ -2183,7 +2194,7 @@ static void register_prims(void) {
         {"stack",prim_stack},{"size",prim_size},{"push",prim_push_op},{"pop",prim_pop_op},
         {"pull",prim_pull},{"put",prim_replace_at},{"compose",prim_concat},
         {"list",prim_list},{"len",prim_size},{"give",prim_push_op},{"grab",prim_grab},
-        {"get",prim_get},{"set",prim_replace_at},{"cat",prim_concat},
+        {"get",prim_get},{"nth",prim_nth},{"set",prim_replace_at},{"cat",prim_concat},
         {"take-n",prim_take_n},{"drop-n",prim_drop_n},{"range",prim_range},
         {"map",prim_map},{"filter",prim_filter},{"fold",prim_fold},{"reduce",prim_reduce},{"each",prim_each},
         {"sort",prim_sort},{"index-of",prim_index_of},{"scan",prim_scan},{"keep-mask",prim_keep_mask},

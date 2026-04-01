@@ -11,14 +11,16 @@
 (
   drop  -- drop the model copy from show's dup
   0 (dup 480 lt) (
-    dup 0 swap (dup 640 lt) (
-      -- x y on stack
-      over over plus 4 mod
-      pixel
-      1 plus
+    0 (dup 640 lt) (
+      -- stack: model y x
+      over over swap    -- model y x | x y
+      over over         -- model y x | x y x y
+      plus 4 mod        -- model y x | x y color
+      pixel             -- model y x
+      1 plus            -- model y x+1
     ) while
-    drop  -- drop x=640
-    1 plus
+    drop                -- model y  (drop x=640)
+    1 plus              -- model y+1
   ) while
-  drop  -- drop y=480
+  drop                  -- model  (drop y=480)
 ) show

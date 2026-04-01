@@ -1,0 +1,80 @@
+-- Conway's Game of Life
+-- Run with: ./slap-sdl examples/life.slap
+
+160 'W let
+120 'H let
+19200 'N let
+4 'S let
+
+-- Look up cell at wrapped (x, y) via nth (no grid copy)
+'cell (
+  H plus H mod W mul
+  swap W plus W mod
+  plus nth
+) def
+
+-- Count live neighbors of (x, y); gs is a symbol for nth
+'neighbors (
+  'cy let 'cx let 'gs let
+  gs cx 1 sub cy 1 sub cell
+  gs cx       cy 1 sub cell plus
+  gs cx 1 plus cy 1 sub cell plus
+  gs cx 1 sub cy       cell plus
+  gs cx 1 plus cy       cell plus
+  gs cx 1 sub cy 1 plus cell plus
+  gs cx       cy 1 plus cell plus
+  gs cx 1 plus cy 1 plus cell plus
+) def
+
+-- Compute next generation
+'step (
+  'g let
+  list
+  0 'i let
+  (i N lt) (
+    i W mod 'x let
+    i W div 'y let
+    'g x y neighbors 'n let
+    'g i nth 1 eq
+      (n 2 eq n 3 eq or)
+      (n 3 eq)
+    if
+    (1) (0) if
+    give
+    i 1 plus 'i let
+  ) while
+) def
+
+-- Draw SxS block for one alive cell
+'draw-cell (
+  S mul 'py let
+  S mul 'px let
+  0 'dy let
+  (dy S lt) (
+    0 'dx let
+    (dx S lt) (
+      px dx plus  py dy plus  3 pixel
+      dx 1 plus 'dx let
+    ) while
+    dy 1 plus 'dy let
+  ) while
+) def
+
+-- Random initial grid
+list N (2 random give) repeat
+
+-- Step on each tick
+'tick (drop step) on
+
+-- Render
+(
+  'g let
+  0 clear
+  0 'i let
+  (i N lt) (
+    'g i nth 1 eq (
+      i W mod  i W div  draw-cell
+    ) () if
+    i 1 plus 'i let
+  ) while
+) show

@@ -1,0 +1,153 @@
+-- Snake game
+-- Run with: ./slap-sdl examples/snake.slap
+
+-- Draw filled 20x20 cell
+'draw-cell (
+  'c let 'gy let 'gx let
+  gx 20 mul 'x0 let
+  gy 20 mul 'y0 let
+  0 'dy let
+  (dy 20 lt) (
+    0 'dx let
+    (dx 20 lt) (
+      x0 dx plus y0 dy plus c pixel
+      dx 1 plus 'dx let
+    ) while
+    dy 1 plus 'dy let
+  ) while
+) def
+
+-- Draw 16x16 cell inset by 2px (grid lines effect)
+'draw-inset (
+  'c let 'gy let 'gx let
+  gx 20 mul 2 plus 'x0 let
+  gy 20 mul 2 plus 'y0 let
+  0 'dy let
+  (dy 16 lt) (
+    0 'dx let
+    (dx 16 lt) (
+      x0 dx plus y0 dy plus c pixel
+      dx 1 plus 'dx let
+    ) while
+    dy 1 plus 'dy let
+  ) while
+) def
+
+-- Decode grid position
+'pos-x (32 mod) def
+'pos-y (32 div) def
+
+-- State: 0=waiting 1=playing 2=dead
+0 'state let
+0 'death-at let
+
+'reset (
+  [398 399 400] 'snake let
+  1 'dir let
+  768 random 'food let
+) def
+
+reset
+
+-- Map SDL arrow key to direction, -1 if unknown
+'key-dir (
+  dup 1073741906 eq (drop 0) (
+  dup 1073741905 eq (drop 2) (
+  dup 1073741904 eq (drop 3) (
+  dup 1073741903 eq (drop 1) (
+  drop -1
+  ) if) if) if) if
+) def
+
+-- Model = frame counter
+0
+
+'keydown (
+  key-dir
+  dup -1 neq (
+    state 0 eq (
+      'dir let 1 'state let
+    ) (
+      state 1 eq (
+        dup dir sub abs 2 neq ('dir let) (drop) if
+      ) (drop) if
+    ) if
+  ) (drop) if
+) on
+
+'tick (
+  drop 1 plus
+
+  -- playing: update every 6 frames
+  state 1 eq (
+    dup 6 mod 0 eq (
+      snake last 'head let
+      head pos-x 'hx let
+      head pos-y 'hy let
+
+      dir 0 eq (hx hy 1 sub) (
+      dir 1 eq (hx 1 plus hy) (
+      dir 2 eq (hx hy 1 plus) (
+                hx 1 sub hy
+      ) if) if) if
+      'ny let 'nx let
+
+      nx 0 lt nx 32 ge or ny 0 lt or ny 24 ge or (
+        2 'state let dup 'death-at let
+      ) (
+        ny 32 mul nx plus 'nh let
+        snake nh member (
+          2 'state let dup 'death-at let
+        ) (
+          snake nh give 'snake let
+          nh food eq (768 random 'food let) (snake 1 drop-n 'snake let) if
+        ) if
+      ) if
+    ) () if
+  ) () if
+
+  -- dead: auto-reset after 90 frames
+  state 2 eq (
+    dup death-at sub 90 gt (
+      reset 0 'state let
+    ) () if
+  ) () if
+) on
+
+(
+  'f let
+  0 clear
+
+  state 2 eq (
+    -- death: flash snake between white and dark
+    f death-at sub 4 div 2 mod 'flash let
+    snake (dup pos-x swap pos-y flash 1 eq (3) (1) if draw-cell) each
+  ) (
+    -- draw snake body, head brighter
+    snake (dup pos-x swap pos-y 2 draw-inset) each
+    snake last dup pos-x swap pos-y 3 draw-inset
+
+    -- food: pulse in wait state
+    state 0 eq f 20 div 2 mod 0 eq and (
+      food pos-x food pos-y 3 draw-cell
+    ) (
+      food pos-x food pos-y 1 draw-inset
+    ) if
+  ) if
+
+  -- score bar (2px tall along top)
+  snake len 3 sub 'score let
+  score 0 gt (
+    0 'si let
+    (si score lt si 32 lt and) (
+      si 20 mul 'sx let
+      0 'dx let
+      (dx 20 lt) (
+        sx dx plus 0 3 pixel
+        sx dx plus 1 3 pixel
+        dx 1 plus 'dx let
+      ) while
+      si 1 plus 'si let
+    ) while
+  ) () if
+) show
