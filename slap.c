@@ -3844,15 +3844,7 @@ static void eval_body(Value *body, int slots, Frame *env) {
                         recur_sym = pop_sym();
                         recur_pending = 1;
                     } else {
-                        PrimFn pfn = prim_lookup(sym);
-                        if (pfn) { pfn(exec_env); }
-                        else {
-                            Lookup lu = frame_lookup(exec_env, sym);
-                            if (!lu.found) die("unknown word: %s", sym_name(sym));
-                            if (lu.kind == BIND_DEF && lu.frame->vals[lu.offset + lu.slots - 1].tag == VAL_TUPLE)
-                                eval_body(&lu.frame->vals[lu.offset], lu.slots, exec_env);
-                            else { memcpy(&stack[sp], &lu.frame->vals[lu.offset], lu.slots * sizeof(Value)); sp += lu.slots; }
-                        }
+                        dispatch_word(sym, exec_env);
                     }
                 } else if (elem.tag == VAL_BOX) {
                     spush(elem);
@@ -3910,7 +3902,10 @@ static void build_tuple(Token *toks, int start, int end, int total_count, Frame 
             int lb = sp;
             eval(toks + j + 1, bc - j - 1, env);
             int ls = sp - lb;
-            spush(val_compound(VAL_LIST, ls, ls + 1));
+            /* count actual elements (multi-slot values count as 1) */
+            int ec2 = 0, pos = sp;
+            while (pos > lb) { pos -= val_slots(stack[pos - 1]); ec2++; }
+            spush(val_compound(VAL_LIST, ec2, ls + 1));
             elem_count++;
             j = bc;
             break;
@@ -3919,9 +3914,26 @@ static void build_tuple(Token *toks, int start, int end, int total_count, Frame 
             int bc = find_matching(toks, j + 1, total_count, TOK_LBRACE, TOK_RBRACE);
             int lb = sp;
             eval(toks + j + 1, bc - j - 1, env);
-            int pair_slots = sp - lb;
-            int nfields = pair_slots / 2;
-            spush(val_compound(VAL_RECORD, nfields, pair_slots + 1));
+            int total_slots = sp - lb;
+            /* detect record vs tuple (for cond/match clause tables) */
+            int nfields = 0, is_record = 1, pos = sp;
+            while (pos > lb) {
+                Value v = stack[pos - 1];
+                int vs = val_slots(v);
+                pos -= vs;
+                if (is_record && pos > lb && stack[pos - 1].tag == VAL_SYM) {
+                    pos--; nfields++;
+                } else {
+                    is_record = 0;
+                }
+            }
+            if (is_record && nfields > 0) {
+                spush(val_compound(VAL_RECORD, nfields, total_slots + 1));
+            } else {
+                int ec2 = 0; pos = sp;
+                while (pos > lb) { pos -= val_slots(stack[pos - 1]); ec2++; }
+                spush(val_compound(VAL_TUPLE, ec2, total_slots + 1));
+            }
             elem_count++;
             j = bc;
             break;
@@ -3937,153 +3949,15 @@ static void build_tuple(Token *toks, int start, int end, int total_count, Frame 
 }
 
 static void eval(Token *toks, int count, Frame *env) {
-    static uint32_t sym_def = 0, sym_let = 0, sym_recur_kw = 0;
-    if (!sym_def) {
-        sym_def = sym_intern("def");
-        sym_let = sym_intern("let");
-        sym_recur_kw = sym_intern("recur");
-        sym_effect_kw = sym_intern("effect");
-    }
-
-    for (int i = 0; i < count; i++) {
-        Token *t = &toks[i];
-        current_line = t->line;
-
-        switch (t->tag) {
-        case TOK_INT:
-            spush(val_int(t->as.i));
-            break;
-        case TOK_FLOAT:
-            spush(val_float(t->as.f));
-            break;
-        case TOK_SYM:
-            spush(val_sym(t->as.sym));
-            break;
-        case TOK_STRING: {
-            /* push chars then list header */
-            for (int j = 0; j < t->as.str.len; j++)
-                spush(val_int(t->as.str.codes[j]));
-            spush(val_compound(VAL_LIST, t->as.str.len, t->as.str.len + 1));
-            break;
-        }
-        case TOK_LPAREN: {
-            int close = find_matching(toks, i + 1, count, TOK_LPAREN, TOK_RPAREN);
-            build_tuple(toks, i + 1, close, count, env);
-            i = close;
-            break;
-        }
-        case TOK_LBRACKET: {
-            int close = find_matching(toks, i + 1, count, TOK_LBRACKET, TOK_RBRACKET);
-            /* skip [..] effect at runtime — types are compile-time only */
-            if (close + 1 < count && toks[close + 1].tag == TOK_WORD &&
-                toks[close + 1].as.sym == sym_effect_kw) {
-                i = close + 1;
-                break;
-            }
-            /* list literal: evaluate contents, wrap in list */
-            int base = sp;
-            eval(toks + i + 1, close - i - 1, env);
-            int total_slots = sp - base;
-            /* count elements by scanning backward (headers are on top) */
-            int elem_count = 0;
-            int pos = sp;
-            elem_count = 0;
-            while (pos > base) {
-                Value v = stack[pos - 1];
-                int s = val_slots(v);
-                pos -= s;
-                elem_count++;
-            }
-            spush(val_compound(VAL_LIST, elem_count, total_slots + 1));
-            i = close;
-            break;
-        }
-        case TOK_LBRACE: {
-            /* {key1 val1 ...} → record, OR {(pred)(body)...} → tuple (for cond/match) */
-            int close = find_matching(toks, i + 1, count, TOK_LBRACE, TOK_RBRACE);
-            int base = sp;
-            eval(toks + i + 1, close - i - 1, env);
-            int total_slots = sp - base;
-            /* detect: try to parse as record. If keys aren't all symbols, make it a tuple. */
-            int nfields = 0;
-            int is_record = 1;
-            int pos = sp;
-            int elem_count_b = 0;
-            while (pos > base) {
-                Value v = stack[pos - 1];
-                int vs = val_slots(v);
-                pos -= vs;
-                elem_count_b++;
-                if (is_record) {
-                    if (pos > base) {
-                        if (stack[pos - 1].tag == VAL_SYM) {
-                            pos--;
-                            elem_count_b++;
-                            nfields++;
-                        } else {
-                            is_record = 0;
-                        }
-                    } else {
-                        is_record = 0; /* odd number = not a record */
-                    }
-                }
-            }
-            if (is_record && nfields > 0) {
-                spush(val_compound(VAL_RECORD, nfields, total_slots + 1));
-            } else {
-                /* count elements properly */
-                pos = sp;
-                elem_count_b = 0;
-                while (pos > base) {
-                    Value v = stack[pos - 1];
-                    int vs = val_slots(v);
-                    pos -= vs;
-                    elem_count_b++;
-                }
-                spush(val_compound(VAL_TUPLE, elem_count_b, total_slots + 1));
-            }
-            i = close;
-            break;
-        }
-        case TOK_WORD: {
-            uint32_t sym = t->as.sym;
-
-            if (sym == sym_def) {
-                POP_VAL(dv);
-                uint32_t name;
-                int rec = 0;
-                if (recur_pending) { name = recur_sym; rec = 1; recur_pending = 0; }
-                else { name = pop_sym(); }
-                frame_bind(env, name, dv_buf, dv_s, BIND_DEF, rec);
-            } else if (sym == sym_let) {
-                uint32_t name = pop_sym();
-                POP_VAL(lv);
-                frame_bind(env, name, lv_buf, lv_s, BIND_LET, 0);
-            } else if (sym == sym_recur_kw) {
-                recur_sym = pop_sym();
-                recur_pending = 1;
-            } else if (sym == sym_effect_kw) {
-                /* [...] was already skipped at the bracket handler.
-                   For primitive type decls ('name [...] effect), pop the name.
-                   For function defs ('name (body) [...] effect def), leave stack for def. */
-                if (i + 1 < count && toks[i + 1].tag == TOK_WORD &&
-                    toks[i + 1].as.sym == sym_def) {
-                    /* def follows — don't pop, let def handle it */
-                } else {
-                    /* standalone: pop the name symbol */
-                    if (sp > 0 && stack[sp-1].tag == VAL_SYM) sp--;
-                }
-            } else {
-                dispatch_word(sym, env);
-            }
-            break;
-        }
-        case TOK_RPAREN: die("unexpected ')'");
-        case TOK_RBRACKET: die("unexpected ']'");
-        case TOK_RBRACE: die("unexpected '}'");
-        case TOK_EOF: return;
-        }
-    }
+    if (!sym_effect_kw) sym_effect_kw = sym_intern("effect");
+    int base = sp;
+    build_tuple(toks, 0, count, count, env);
+    int s = val_slots(stack[sp - 1]);
+    Value *body = malloc(s * sizeof(Value));
+    memcpy(body, &stack[base], s * sizeof(Value));
+    sp = base;
+    eval_body(body, s, env);
+    free(body);
 }
 
 /* ---- bi / keep as primitives ---- */
