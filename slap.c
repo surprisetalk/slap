@@ -29,15 +29,15 @@ typedef struct Value {
 
 __attribute__((noreturn)) static void die(const char *fmt, ...);
 
+static int is_compound(ValTag tag) { return tag == VAL_TUPLE || tag == VAL_LIST || tag == VAL_RECORD; }
+
 static int val_slots(Value v) {
-    switch (v.tag) {
-    case VAL_TUPLE: case VAL_LIST: case VAL_RECORD: {
+    if (is_compound(v.tag)) {
         int s = (int)v.as.compound.slots;
         if (s < 1) die("corrupt value: compound with %d slots", s);
         return s;
     }
-    default: return 1;
-    }
+    return 1;
 }
 
 static char *sym_names[SYM_MAX];
@@ -258,7 +258,7 @@ static ElemRef compound_elem(Value *data, int total_slots, int len, int index) {
     int elem_end = total_slots - 1, off = 0, sz = 0;
     for (int i = len - 1; i >= 0; i--) {
         int lp = elem_end - 1; Value last = data[lp];
-        int esize = (last.tag == VAL_TUPLE || last.tag == VAL_LIST || last.tag == VAL_RECORD) ? (int)last.as.compound.slots : 1;
+        int esize = val_slots(last);
         if (i == index) { off = elem_end - esize; sz = esize; }
         elem_end -= esize;
     }
@@ -269,7 +269,7 @@ static ElemRef record_field(Value *data, int total_slots, int len, uint32_t key,
     int elem_end = total_slots - 1; *found = 0; ElemRef ref = {0, 0};
     for (int i = len - 1; i >= 0; i--) {
         int lp = elem_end - 1; Value last = data[lp];
-        int vsize = (last.tag == VAL_TUPLE || last.tag == VAL_LIST || last.tag == VAL_RECORD) ? (int)last.as.compound.slots : 1;
+        int vsize = val_slots(last);
         int val_base = elem_end - vsize, key_pos = val_base - 1;
         if (key_pos < 0) die("malformed record");
         if (data[key_pos].tag != VAL_SYM) die("record key must be symbol");
@@ -283,8 +283,16 @@ static void compute_offsets(Value *data, int total_slots, int len, int *offsets,
     int elem_end = total_slots - 1;
     for (int i = len - 1; i >= 0; i--) {
         int lp = elem_end - 1; Value l = data[lp];
-        int sz = (l.tag == VAL_TUPLE || l.tag == VAL_LIST || l.tag == VAL_RECORD) ? (int)l.as.compound.slots : 1;
+        int sz = val_slots(l);
         offsets[i] = elem_end - sz; sizes[i] = sz; elem_end = offsets[i];
+    }
+}
+
+static void record_offsets(Value *data, int total_slots, int len, int *kpos, int *voff, int *vsz) {
+    int elem_end = total_slots - 1;
+    for (int i = len - 1; i >= 0; i--) {
+        int lp = elem_end - 1; int sz = val_slots(data[lp]);
+        voff[i] = elem_end - sz; vsz[i] = sz; kpos[i] = voff[i] - 1; elem_end = kpos[i];
     }
 }
 
@@ -331,12 +339,8 @@ static void val_print(Value *data, int slots, FILE *out) {
         int len = (int)top.as.compound.len;
         fprintf(out, "{");
         if (len > LOCAL_MAX) die("record too large to print (%d fields)", len);
-        int elem_end = slots - 1, kpos[LOCAL_MAX], voff[LOCAL_MAX], vsz[LOCAL_MAX];
-        for (int i = len - 1; i >= 0; i--) {
-            int lp = elem_end - 1; Value l = data[lp];
-            int sz = (l.tag == VAL_TUPLE || l.tag == VAL_LIST || l.tag == VAL_RECORD) ? (int)l.as.compound.slots : 1;
-            voff[i] = elem_end - sz; vsz[i] = sz; kpos[i] = voff[i] - 1; elem_end = kpos[i];
-        }
+        int kpos[LOCAL_MAX], voff[LOCAL_MAX], vsz[LOCAL_MAX];
+        record_offsets(data, slots, len, kpos, voff, vsz);
         for (int i = 0; i < len; i++) {
             if (i > 0) fprintf(out, " ");
             fprintf(out, "'%s ", sym_name(data[kpos[i]].as.sym));
@@ -783,11 +787,10 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
         } else { tc_push(tc, b->atype.type, b->atype.is_linear, line); return; }
       }
     }
-    { ho_ops_ensure_init();
-      uint32_t s_apply=ho_ops[0].sym, s_dip=ho_ops[1].sym, s_if=ho_ops[2].sym,
-          s_map=ho_ops[3].sym, s_filter=ho_ops[4].sym, s_fold=ho_ops[5].sym,
-          s_lend=ho_ops[10].sym, s_mutate=ho_ops[11].sym,
-          s_cond=ho_ops[12].sym, s_match=ho_ops[13].sym;
+    { static uint32_t s_apply=0,s_dip=0,s_if=0,s_map=0,s_filter=0,s_fold=0,s_lend=0,s_mutate=0,s_cond=0,s_match=0;
+      if(!s_apply){s_apply=sym_intern("apply");s_dip=sym_intern("dip");s_if=sym_intern("if");
+          s_map=sym_intern("map");s_filter=sym_intern("filter");s_fold=sym_intern("fold");
+          s_lend=sym_intern("lend");s_mutate=sym_intern("mutate");s_cond=sym_intern("cond");s_match=sym_intern("match");}
       if (sym == s_apply) {
           if (tc->sp > 0 && tc->data[tc->sp-1].type != TC_TUPLE && tc->data[tc->sp-1].type != TC_NONE) { tc_expect(tc, TC_TUPLE, "apply", line); tc->sp--; }
           else { int ec, ep; if (tc_pop_tuple(tc, &ec, &ep)) tc_apply_effect(tc, ec, ep, tc_last_popped_out_type, line); }
@@ -1342,28 +1345,23 @@ static void prim_halt(Frame *e){(void)e;exit(0);}
 static void prim_random(Frame *e){(void)e;int64_t max=pop_int();if(max<=0)die("random: max must be positive");spush(val_int(rand()%max));}
 
 static void eval_default(Value *buf, int s, Value top, Value *scrut, int scrut_s, Frame *env) {
-    if (top.tag == VAL_INT && top.as.i == -1) { spush(val_int(-1)); return; }
-    if (scrut) { memcpy(&stack[sp], scrut, scrut_s*sizeof(Value)); sp += scrut_s; }
-    if (top.tag == VAL_TUPLE) eval_body(buf, s, env);
-    else { memcpy(&stack[sp], buf, s*sizeof(Value)); sp += s; }
+    if (top.tag == VAL_TUPLE) {
+        if (scrut) { memcpy(&stack[sp], scrut, scrut_s*sizeof(Value)); sp += scrut_s; }
+        eval_body(buf, s, env);
+    } else { memcpy(&stack[sp], buf, s*sizeof(Value)); sp += s; }
 }
 
 static void prim_if(Frame *env) {
-    Value el_top=stack[sp-1]; int el_s=val_slots(el_top);
-    int then_end=sp-el_s; Value then_top=stack[then_end-1];
-    if(then_top.tag!=VAL_TUPLE) die("if: then branch must be tuple");
-    int then_s=val_slots(then_top), cond_end=then_end-then_s;
-    Value cond_top=stack[cond_end-1];
-    if (cond_top.tag == VAL_INT) {
-        if (cond_top.as.i) { Value then_buf[then_s]; memcpy(then_buf,&stack[then_end-then_s],then_s*sizeof(Value)); sp=cond_end-1; eval_body(then_buf,then_s,env); }
-        else { Value el_buf[el_s]; memcpy(el_buf,&stack[sp-el_s],el_s*sizeof(Value)); sp=cond_end-1; eval_default(el_buf,el_s,el_top,NULL,0,env); }
-    } else die("if: condition must be int, got tag %d", cond_top.tag);
+    POP_VAL(el); POP_BODY(then,"if");
+    Value cond=spop(); if(cond.tag!=VAL_INT) die("if: condition must be int, got tag %d",cond.tag);
+    if(cond.as.i) eval_body(then_buf,then_s,env);
+    else eval_default(el_buf,el_s,el_top,NULL,0,env);
 }
 
 static void prim_cond(Frame *env) {
     POP_VAL(def);
     Value clauses_top=stack[sp-1];
-    if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die("cond: expected tuple of clauses");
+    if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die("cond: expected tuple or record of clauses");
     int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len;
     Value clauses_buf[LOCAL_MAX]; memcpy(clauses_buf,&stack[sp-clauses_s],clauses_s*sizeof(Value)); sp-=clauses_s;
     POP_VAL(scrut);
@@ -1429,13 +1427,13 @@ static void prim_stack(Frame *e){(void)e;spush(val_compound(VAL_TUPLE,0,1));}
 
 static void prim_size(Frame *e) {
     (void)e; Value top=speek();
-    if(top.tag!=VAL_TUPLE&&top.tag!=VAL_LIST&&top.tag!=VAL_RECORD) die("size: expected compound");
+    if(!is_compound(top.tag)) die("size: expected compound");
     sp-=val_slots(top); spush(val_int((int)top.as.compound.len));
 }
 
 static void prim_push_op(Frame *e) {
     (void)e; POP_VAL(v); Value ct=stack[sp-1];
-    if(ct.tag!=VAL_TUPLE&&ct.tag!=VAL_LIST&&ct.tag!=VAL_RECORD) die("push: expected compound");
+    if(!is_compound(ct.tag)) die("push: expected compound");
     ValTag tag=ct.tag; int cs=val_slots(ct),cl=(int)ct.as.compound.len; sp--;
     memcpy(&stack[sp],v_buf,v_s*sizeof(Value)); sp+=v_s;
     spush(val_compound(tag,cl+1,cs+v_s));
@@ -1443,7 +1441,7 @@ static void prim_push_op(Frame *e) {
 
 static void prim_pop_impl(const char *label) {
     Value top=speek();
-    if(top.tag!=VAL_TUPLE&&top.tag!=VAL_LIST&&top.tag!=VAL_RECORD) die("%s: expected compound", label);
+    if(!is_compound(top.tag)) die("%s: expected compound", label);
     ValTag tag=top.tag; int s=val_slots(top),len=(int)top.as.compound.len;
     if(len==0) die("%s: empty %s", label, tag==VAL_LIST?"list":tag==VAL_TUPLE?"tuple":"record");
     int base=sp-s; ElemRef last=compound_elem(&stack[base],s,len,len-1);
@@ -1455,7 +1453,7 @@ static void prim_pop_op(Frame *e){(void)e;prim_pop_impl("pop");}
 
 static void prim_pull(Frame *e) {
     (void)e; int64_t idx=pop_int(); Value top=speek();
-    if(top.tag!=VAL_TUPLE&&top.tag!=VAL_LIST&&top.tag!=VAL_RECORD) die("pull: expected compound");
+    if(!is_compound(top.tag)) die("pull: expected compound");
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,(int)idx);
     Value eb[LOCAL_MAX]; memcpy(eb,&stack[base+ref.base],ref.slots*sizeof(Value));
@@ -1464,7 +1462,7 @@ static void prim_pull(Frame *e) {
 
 static void prim_replace_at(Frame *e) {
     (void)e; POP_VAL(v); int64_t idx=pop_int(); Value top=speek();
-    if(top.tag!=VAL_TUPLE&&top.tag!=VAL_LIST&&top.tag!=VAL_RECORD) die("put: expected compound");
+    if(!is_compound(top.tag)) die("put: expected compound");
     ValTag tag=top.tag; int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef old_ref=compound_elem(&stack[base],s,len,(int)idx);
     if(old_ref.slots==v_s) memcpy(&stack[base+old_ref.base],v_buf,v_s*sizeof(Value));
@@ -1482,10 +1480,10 @@ static void prim_replace_at(Frame *e) {
 
 static void prim_concat(Frame *e) {
     (void)e; Value top2=stack[sp-1];
-    if(top2.tag!=VAL_TUPLE&&top2.tag!=VAL_LIST&&top2.tag!=VAL_RECORD) die("concat: expected compound");
+    if(!is_compound(top2.tag)) die("concat: expected compound");
     ValTag tag=top2.tag; int s2=val_slots(top2),len2=(int)top2.as.compound.len,base2=sp-s2;
     Value below=stack[base2-1];
-    if(below.tag!=VAL_TUPLE&&below.tag!=VAL_LIST&&below.tag!=VAL_RECORD) die("concat: expected compound");
+    if(!is_compound(below.tag)) die("concat: expected compound");
     int s1=val_slots(below),len1=(int)below.as.compound.len,base1=base2-s1;
     int new_elem_slots=(s1-1)+(s2-1); Value tmp[LOCAL_MAX];
     memcpy(tmp,&stack[base1],(s1-1)*sizeof(Value));
@@ -1499,7 +1497,7 @@ static void prim_grab(Frame *e){(void)e;prim_pop_impl("grab");}
 
 static void prim_get(Frame *e) {
     (void)e; int64_t idx=pop_int(); Value top=speek();
-    if(top.tag!=VAL_TUPLE&&top.tag!=VAL_LIST&&top.tag!=VAL_RECORD) die("get: expected compound");
+    if(!is_compound(top.tag)) die("get: expected compound");
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,(int)idx);
     Value eb[LOCAL_MAX]; memcpy(eb,&stack[base+ref.base],ref.slots*sizeof(Value));
@@ -1628,14 +1626,10 @@ static void prim_into(Frame *e) {
     if(found&&existing.slots==v_s) memcpy(&stack[rec_base+existing.base],v_buf,v_s*sizeof(Value));
     else {
         Value tmp[LOCAL_MAX]; int tmp_sp=0,new_len=0;
-        int elem_end=rec_s-1,replaced=0;
+        int replaced=0;
         if(rec_len>LOCAL_MAX) die("into: record too large");
         int kpos[LOCAL_MAX],voff[LOCAL_MAX],vsz[LOCAL_MAX];
-        for(int i=rec_len-1;i>=0;i--){
-            int lp=elem_end-1; Value l=stack[rec_base+lp];
-            int sz=(l.tag==VAL_TUPLE||l.tag==VAL_LIST||l.tag==VAL_RECORD)?(int)l.as.compound.slots:1;
-            voff[i]=elem_end-sz; vsz[i]=sz; kpos[i]=voff[i]-1; elem_end=kpos[i];
-        }
+        record_offsets(&stack[rec_base],rec_s,rec_len,kpos,voff,vsz);
         for(int i=0;i<rec_len;i++){
             if(stack[rec_base+kpos[i]].tag!=VAL_SYM) die("into: record key is not a symbol");
             uint32_t k=stack[rec_base+kpos[i]].as.sym;
@@ -1840,7 +1834,7 @@ static void eval_body(Value *body, int slots, Frame *env) {
         int eoff,esz; if(all_scalar){eoff=k;esz=1;}else{eoff=offsets_buf[k];esz=sizes_buf[k];}
         Value elem=body[eoff+esz-1];
         if(elem.tag==VAL_INT||elem.tag==VAL_FLOAT||elem.tag==VAL_SYM) stack[sp++]=elem;
-        else if(elem.tag==VAL_TUPLE||elem.tag==VAL_LIST||elem.tag==VAL_RECORD){
+        else if(is_compound(elem.tag)){
             memcpy(&stack[sp],&body[eoff],esz*sizeof(Value)); sp+=esz;
             if(elem.tag==VAL_TUPLE){exec_env->refcount++;stack[sp-1].as.compound.env=exec_env;}
         } else if(elem.tag==VAL_WORD){
