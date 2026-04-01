@@ -4,18 +4,12 @@
 
 -- ===== Typed primitive declarations =====
 
--- Declare types for user-defined functions using the type DSL
+-- Declare types for user-defined functions using effect
 
-'double type
-  int lent in
-  int move out
-  def
+'double [int lent in  int move out] effect
 
 -- The body must be provided before the type annotation
-(2 mul) 'double type
-  int lent in
-  int move out
-  def
+'double (2 mul) [int lent in  int move out] effect def
 
 -- ===== Basic arithmetic types =====
 2 3 plus drop
@@ -72,39 +66,23 @@ true assert
 -- ===== User-defined typed functions =====
 
 -- Define a typed increment function
-(1 plus) 'my-inc type
-  int lent in
-  int move out
-  def
+'my-inc (1 plus) [int lent in  int move out] effect def
 
 5 my-inc 6 eq assert
 
--- Define typed double
-(2 mul) 'my-double type
-  'a num lent in
-  'a num move out
-  def
+-- Define typed double (polymorphic over num)
+'my-double (2 mul) ['a num lent in  'a num move out] effect def
 
 3 my-double 6 eq assert
 
--- Define typed identity (polymorphic)
-'not type
-  int lent in
-  int move out
-  def
+-- Type declaration for existing primitive
+'not [int lent in  int move out] effect
 
 -- Type declarations for existing primitives (should not re-bind)
-'eq type
-  'a lent in
-  'a lent in
-  int move out
-  def
+'eq ['a lent in  'a lent in  int move out] effect
 
 -- ===== End-to-end: typed program =====
-(1 plus) 'bump type
-  int lent in
-  int move out
-  def
+'bump (1 plus) [int lent in  int move out] effect def
 
 0 bump bump bump 3 eq assert
 

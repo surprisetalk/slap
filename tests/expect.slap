@@ -420,10 +420,7 @@ use-x 21 eq assert
 [5 3 8 1 7] dup (4 lt) where select [3 1] eq assert
 
 -- ===== Typed user function with body check =====
-(dup mul) 'square type
-  int lent in
-  int move out
-  def
+'square (dup mul) [int lent in  int move out] effect def
 7 square 49 eq assert
 
 -- ===== Closures =====

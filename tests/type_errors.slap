@@ -84,17 +84,11 @@
 
 -- EXPECT: function body consumes
 -- TYPE ERROR: body consumes wrong number of inputs
-(drop drop) 'bad type
-  int lent in
-  int move out
-  def
+'bad (drop drop) [int lent in  int move out] effect def
 
 -- EXPECT: function body produces
 -- TYPE ERROR: body produces wrong number of outputs
-(dup) 'bad2 type
-  int lent in
-  int move out
-  def
+'bad2 (dup) [int lent in  int move out] effect def
 
 -- EXPECT: type error
 -- TYPE ERROR: plus on int result (eq returns int, plus expects num)
@@ -118,8 +112,4 @@
 
 -- EXPECT: function body consumes
 -- TYPE ERROR: body declares 2 inputs but only consumes 1
-(drop) 'foo type
-  int lent in
-  int lent in
-  int move out
-  def
+'foo (drop) [int lent in  int lent in  int move out] effect def
