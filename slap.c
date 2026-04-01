@@ -684,6 +684,7 @@ static int recur_pending = 0;
 
 /* ---- type annotation tracking ---- */
 static uint32_t sym_type_kw = 0;
+static uint32_t sym_effect_kw = 0;
 
 /* ---- type system ---- */
 
@@ -693,6 +694,61 @@ typedef enum {
     TC_NONE = 0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM,
     TC_LIST, TC_TUPLE, TC_REC, TC_BOX, TC_STACK
 } TypeConstraint;
+
+/* ---- higher-order op effect table ---- */
+/* Simple arity/output-type table for HO ops, used by tc_infer_effect and tc_check_word */
+typedef struct {
+    const char *name;
+    uint32_t sym;  /* lazily initialized */
+    int need;      /* values consumed */
+    int out;       /* values produced */
+    TypeConstraint out_type;
+} HOEffect;
+
+#define HO_OP_COUNT 26
+static HOEffect ho_ops[HO_OP_COUNT] = {
+    {"apply",  0, 1, 0, TC_NONE},
+    {"dip",    0, 2, 1, TC_NONE},
+    {"if",     0, 3, 1, TC_NONE},
+    {"map",    0, 2, 1, TC_LIST},
+    {"filter", 0, 2, 1, TC_LIST},
+    {"fold",   0, 3, 1, TC_NONE},
+    {"reduce", 0, 2, 1, TC_NONE},
+    {"each",   0, 2, 0, TC_NONE},
+    {"while",  0, 2, 0, TC_NONE},
+    {"loop",   0, 1, 0, TC_NONE},
+    {"lend",   0, 2, 2, TC_BOX},
+    {"mutate", 0, 2, 1, TC_BOX},
+    {"clone",  0, 1, 2, TC_BOX},
+    {"cond",   0, 3, 1, TC_NONE},
+    {"match",  0, 3, 1, TC_NONE},
+    {"where",  0, 2, 1, TC_LIST},
+    {"find",   0, 2, 1, TC_NONE},
+    {"table",  0, 2, 1, TC_LIST},
+    {"scan",   0, 3, 1, TC_LIST},
+    {"at",     0, 3, 1, TC_NONE},
+    {"into",   0, 3, 1, TC_REC},
+    {"repeat", 0, 2, 0, TC_NONE},
+    {"bi",     0, 3, 2, TC_NONE},
+    {"keep",   0, 2, 2, TC_NONE},
+    {"on",     0, 1, 0, TC_NONE},
+    {"show",   0, 1, 0, TC_NONE},
+};
+static int ho_ops_init = 0;
+
+static void ho_ops_ensure_init(void) {
+    if (ho_ops_init) return;
+    ho_ops_init = 1;
+    for (int i = 0; i < HO_OP_COUNT; i++)
+        ho_ops[i].sym = sym_intern(ho_ops[i].name);
+}
+
+static HOEffect *ho_ops_find(uint32_t sym) {
+    ho_ops_ensure_init();
+    for (int i = 0; i < HO_OP_COUNT; i++)
+        if (ho_ops[i].sym == sym) return &ho_ops[i];
+    return NULL;
+}
 
 typedef struct {
     uint32_t type_var;       /* 0 = no type var, else interned 'a,'b etc */
@@ -1099,63 +1155,12 @@ static TypeConstraint tc_infer_effect_ctx(Token *toks, int start, int end, int t
                     vsp += outputs;
                     if (outputs > 0) top_type = last_out;
                 } else if (sig && sig->is_todo) {
-                    /* known higher-order ops: approximate their net stack effect */
-                    static uint32_t s_apply=0, s_dip=0, s_if=0, s_map=0, s_filter=0,
-                        s_fold=0, s_reduce=0, s_each=0, s_while=0, s_loop=0,
-                        s_lend=0, s_mutate=0, s_clone=0, s_cond=0, s_match=0,
-                        s_where=0, s_find=0, s_table=0, s_scan=0, s_at=0, s_into=0,
-                        s_repeat=0, s_bi=0, s_keep=0, s_on=0, s_show=0;
-                    if (!s_apply) {
-                        s_apply=sym_intern("apply"); s_dip=sym_intern("dip");
-                        s_if=sym_intern("if"); s_map=sym_intern("map");
-                        s_filter=sym_intern("filter"); s_fold=sym_intern("fold");
-                        s_reduce=sym_intern("reduce"); s_each=sym_intern("each");
-                        s_while=sym_intern("while"); s_loop=sym_intern("loop");
-                        s_lend=sym_intern("lend"); s_mutate=sym_intern("mutate");
-                        s_clone=sym_intern("clone"); s_cond=sym_intern("cond");
-                        s_match=sym_intern("match"); s_repeat=sym_intern("repeat");
-                        s_bi=sym_intern("bi"); s_keep=sym_intern("keep");
-                        s_on=sym_intern("on"); s_show=sym_intern("show");
-                        s_where=sym_intern("where"); s_find=sym_intern("find");
-                        s_table=sym_intern("table"); s_scan=sym_intern("scan");
-                        s_at=sym_intern("at"); s_into=sym_intern("into");
-                    }
-                    int need = 0, out = 0;
-                    if (sym == s_apply) { need = 1; out = 0; } /* fn → effect */
-                    else if (sym == s_dip) { need = 2; out = 1; } /* val fn → val */
-                    else if (sym == s_if) { need = 3; out = 1; } /* cond then else → result */
-                    else if (sym == s_map) { need = 2; out = 1; } /* list fn → list */
-                    else if (sym == s_filter) { need = 2; out = 1; } /* list fn → list */
-                    else if (sym == s_fold) { need = 3; out = 1; } /* list init fn → result */
-                    else if (sym == s_reduce) { need = 2; out = 1; } /* list fn → result */
-                    else if (sym == s_each) { need = 2; out = 0; } /* list fn → */
-                    else if (sym == s_while) { need = 2; out = 0; } /* pred body → */
-                    else if (sym == s_loop) { need = 1; out = 0; } /* fn → */
-                    else if (sym == s_lend) { need = 2; out = 2; } /* box fn → box result */
-                    else if (sym == s_mutate) { need = 2; out = 1; } /* box fn → box */
-                    else if (sym == s_clone) { need = 1; out = 2; } /* box → box box */
-                    else if (sym == s_cond) { need = 3; out = 1; } /* val clauses default → result */
-                    else if (sym == s_match) { need = 3; out = 1; } /* sym clauses default → result */
-                    else if (sym == s_where) { need = 2; out = 1; } /* list fn → list */
-                    else if (sym == s_find) { need = 2; out = 1; } /* list fn → result */
-                    else if (sym == s_table) { need = 2; out = 1; } /* list fn → list */
-                    else if (sym == s_scan) { need = 3; out = 1; } /* list init fn → list */
-                    else if (sym == s_at) { need = 3; out = 1; } /* list idx default → result */
-                    else if (sym == s_into) { need = 3; out = 1; } /* rec key val → rec */
-                    else if (sym == s_repeat) { need = 2; out = 0; } /* int fn → */
-                    else if (sym == s_bi) { need = 3; out = 2; } /* x f g → r1 r2 */
-                    else if (sym == s_keep) { need = 2; out = 2; } /* x f → r x */
-                    else if (sym == s_on) { need = 1; out = 0; } /* fn → */
-                    else if (sym == s_show) { need = 1; out = 0; } /* fn → */
-                    if (vsp < need) { consumed += need - vsp; vsp = 0; } else vsp -= need;
-                    vsp += out;
-                    /* track output types for common HO ops */
-                    if (out > 0) {
-                        if (sym == s_map || sym == s_filter || sym == s_where ||
-                            sym == s_table || sym == s_scan) top_type = TC_LIST;
-                        else if (sym == s_mutate || sym == s_lend || sym == s_clone) top_type = TC_BOX;
-                        else if (sym == s_into) top_type = TC_REC;
-                        else top_type = TC_NONE;
+                    HOEffect *ho = ho_ops_find(sym);
+                    if (ho) {
+                        int need = ho->need, out = ho->out;
+                        if (vsp < need) { consumed += need - vsp; vsp = 0; } else vsp -= need;
+                        vsp += out;
+                        if (out > 0) top_type = ho->out_type;
                     }
                 }
                 /* check user bindings for unknown words */
@@ -1381,27 +1386,17 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
     }
 
     if (sig->is_todo) {
-        /* handle higher-order ops with known stack effects */
-        static uint32_t s_apply=0, s_dip=0, s_if=0, s_map=0, s_filter=0,
-            s_fold=0, s_reduce=0, s_each=0, s_while=0, s_loop=0,
-            s_lend=0, s_mutate=0, s_clone=0, s_cond=0, s_match=0,
-            s_where=0, s_find=0, s_table=0, s_scan=0, s_at=0, s_into=0,
-            s_repeat=0, s_bi=0, s_keep=0, s_on=0, s_show=0;
-        if (!s_apply) {
-            s_apply=sym_intern("apply"); s_dip=sym_intern("dip");
-            s_if=sym_intern("if"); s_map=sym_intern("map");
-            s_filter=sym_intern("filter"); s_fold=sym_intern("fold");
-            s_reduce=sym_intern("reduce"); s_each=sym_intern("each");
-            s_while=sym_intern("while"); s_loop=sym_intern("loop");
-            s_lend=sym_intern("lend"); s_mutate=sym_intern("mutate");
-            s_clone=sym_intern("clone"); s_cond=sym_intern("cond");
-            s_match=sym_intern("match"); s_repeat=sym_intern("repeat");
-            s_bi=sym_intern("bi"); s_keep=sym_intern("keep");
-            s_on=sym_intern("on"); s_show=sym_intern("show");
-            s_where=sym_intern("where"); s_find=sym_intern("find");
-            s_table=sym_intern("table"); s_scan=sym_intern("scan");
-            s_at=sym_intern("at"); s_into=sym_intern("into");
-        }
+        ho_ops_ensure_init();
+        /* aliases into the shared HO table */
+        uint32_t s_apply=ho_ops[0].sym, s_dip=ho_ops[1].sym, s_if=ho_ops[2].sym,
+            s_map=ho_ops[3].sym, s_filter=ho_ops[4].sym, s_fold=ho_ops[5].sym,
+            s_reduce=ho_ops[6].sym, s_each=ho_ops[7].sym, s_while=ho_ops[8].sym,
+            s_loop=ho_ops[9].sym, s_lend=ho_ops[10].sym, s_mutate=ho_ops[11].sym,
+            s_clone=ho_ops[12].sym, s_cond=ho_ops[13].sym, s_match=ho_ops[14].sym,
+            s_where=ho_ops[15].sym, s_find=ho_ops[16].sym, s_table=ho_ops[17].sym,
+            s_scan=ho_ops[18].sym, s_at=ho_ops[19].sym, s_into=ho_ops[20].sym,
+            s_repeat=ho_ops[21].sym, s_bi=ho_ops[22].sym, s_keep=ho_ops[23].sym,
+            s_on=ho_ops[24].sym, s_show=ho_ops[25].sym;
 
         if (sym == s_apply) {
             /* pop tuple, apply its effect */
@@ -2158,6 +2153,8 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
         sym_def_k = sym_intern("def");
         sym_let_k = sym_intern("let");
         sym_recur_k = sym_intern("recur");
+        if (!sym_effect_kw) sym_effect_kw = sym_intern("effect");
+        if (!sym_type_kw) sym_type_kw = sym_intern("type");
     }
 
     for (int i = start; i < end; i++) {
@@ -2377,6 +2374,61 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     tc->sp--;
                     if (name_sym) tc->recur_sym = name_sym;
                 }
+            } else if (sym == sym_effect_kw) {
+                /* [... ] effect — find the bracket, parse as type annotation */
+                /* The [...] pushed TC_LIST; pop it */
+                if (tc->sp > 0) tc->sp--;
+                /* Find the [...] tokens by scanning backward for ] then [ */
+                int bracket_end = i - 1;
+                if (bracket_end >= start && toks[bracket_end].tag == TOK_RBRACKET) {
+                    int depth = 1;
+                    int bracket_start = bracket_end;
+                    for (int bi = bracket_end - 1; bi >= start; bi--) {
+                        if (toks[bi].tag == TOK_RBRACKET) depth++;
+                        else if (toks[bi].tag == TOK_LBRACKET) {
+                            depth--;
+                            if (depth == 0) { bracket_start = bi; break; }
+                        }
+                    }
+                    TypeSig sig = parse_type_annotation(toks, bracket_start + 1, bracket_end);
+                    /* Look ahead: if next is 'def', register with the name on stack */
+                    /* For now, store as pending — the next def/name will use it */
+                    if (tc->sp >= 1 && tc->data[tc->sp-1].type == TC_TUPLE) {
+                        /* Tuple is below — attach effect to it */
+                        if (!sig.is_todo) {
+                            /* find the name: should be below the tuple on abstract stack */
+                            if (tc->sp >= 2 && tc->data[tc->sp-2].type == TC_SYM) {
+                                typesig_register(tc->data[tc->sp-2].sym_id, &sig);
+                            }
+                            /* also check body against sig if we can find it */
+                            for (int bi2 = i - 2; bi2 >= 0; bi2--) {
+                                if (toks[bi2].tag == TOK_RPAREN) {
+                                    int d2 = 1;
+                                    for (int k = bi2 - 1; k >= 0; k--) {
+                                        if (toks[k].tag == TOK_RPAREN) d2++;
+                                        else if (toks[k].tag == TOK_LPAREN) {
+                                            d2--;
+                                            if (d2 == 0) {
+                                                tc->errors += tc_check_body_against_sig(
+                                                    toks, k + 1, bi2, total_count, &sig);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    } else if (tc->sp >= 1 && tc->data[tc->sp-1].type == TC_SYM) {
+                        /* 'name [...] effect — standalone primitive type decl */
+                        uint32_t name_sym = tc->data[tc->sp-1].sym_id;
+                        if (!sig.is_todo) typesig_register(name_sym, &sig);
+                        /* check if def follows; if not, pop the name */
+                        int has_def = (i + 1 < end && toks[i + 1].tag == TOK_WORD &&
+                                       toks[i + 1].as.sym == sym_def_k);
+                        if (!has_def) tc->sp--; /* pop name */
+                    }
+                }
             } else if (sym == sym_type_kw) {
                 int type_start = i + 1;
                 for (i++; i < end; i++)
@@ -2478,126 +2530,8 @@ static void register_builtin_types(void) {
     #define TSIG_TODO() _sig.is_todo = 1;
     #define TSIG_END() typesig_register(_sym, &_sig); }
 
-    /* stack ops — 'a copy in → 'a copy out 'a copy out */
-    TSIG_BEGIN("dup") TSIG_IN_V(TC_NONE, OWN_COPY, "a") TSIG_OUT_V(TC_NONE, OWN_COPY, "a") TSIG_OUT_V(TC_NONE, OWN_COPY, "a") TSIG_END()
-    TSIG_BEGIN("drop") TSIG_IN(TC_NONE, OWN_COPY) TSIG_END()
-    TSIG_BEGIN("swap") TSIG_IN_V(TC_NONE, OWN_OWN, "a") TSIG_IN_V(TC_NONE, OWN_OWN, "b") TSIG_OUT_V(TC_NONE, OWN_OWN, "b") TSIG_OUT_V(TC_NONE, OWN_OWN, "a") TSIG_END()
-
-    /* arithmetic — 'a num in 'a num in → 'a num out (both must match) */
-    TSIG_BEGIN("plus") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_OUT_V(TC_NUM, OWN_MOVE, "a") TSIG_END()
-    TSIG_BEGIN("sub") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_OUT_V(TC_NUM, OWN_MOVE, "a") TSIG_END()
-    TSIG_BEGIN("mul") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_OUT_V(TC_NUM, OWN_MOVE, "a") TSIG_END()
-    TSIG_BEGIN("div") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_OUT_V(TC_NUM, OWN_MOVE, "a") TSIG_END()
-    TSIG_BEGIN("mod") TSIG_IN(TC_INT, OWN_LENT) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-
-    /* comparison */
-    TSIG_BEGIN("eq") TSIG_IN(TC_NONE, OWN_LENT) TSIG_IN(TC_NONE, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("lt") TSIG_IN(TC_NONE, OWN_LENT) TSIG_IN(TC_NONE, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-
-    /* logic */
-    TSIG_BEGIN("not") TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("and") TSIG_IN(TC_INT, OWN_LENT) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("or") TSIG_IN(TC_INT, OWN_LENT) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("neq") TSIG_IN(TC_NONE, OWN_LENT) TSIG_IN(TC_NONE, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("gt") TSIG_IN(TC_NONE, OWN_LENT) TSIG_IN(TC_NONE, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("ge") TSIG_IN(TC_NONE, OWN_LENT) TSIG_IN(TC_NONE, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("le") TSIG_IN(TC_NONE, OWN_LENT) TSIG_IN(TC_NONE, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("inc") TSIG_IN(TC_NUM, OWN_LENT) TSIG_OUT(TC_NUM, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("dec") TSIG_IN(TC_NUM, OWN_LENT) TSIG_OUT(TC_NUM, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("neg") TSIG_IN(TC_NUM, OWN_LENT) TSIG_OUT(TC_NUM, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("abs") TSIG_IN(TC_NUM, OWN_LENT) TSIG_OUT(TC_NUM, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("iseven") TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("isodd") TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("iszero") TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("max") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_OUT_V(TC_NUM, OWN_MOVE, "a") TSIG_END()
-    TSIG_BEGIN("min") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_IN_V(TC_NUM, OWN_LENT, "a") TSIG_OUT_V(TC_NUM, OWN_MOVE, "a") TSIG_END()
-
-    /* IO */
-    TSIG_BEGIN("print") TSIG_IN(TC_NONE, OWN_OWN) TSIG_END()
-    TSIG_BEGIN("assert") TSIG_IN(TC_INT, OWN_OWN) TSIG_END()
-
-    /* float conversion */
-    TSIG_BEGIN("itof") TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("ftoi") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-
-    /* float math */
-    TSIG_BEGIN("fsqrt") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("fsin") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("fcos") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("ffloor") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("fceil") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("fround") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("fexp") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("flog") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("fpow") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("ftan") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("fatan2") TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_IN(TC_FLOAT, OWN_LENT) TSIG_OUT(TC_FLOAT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("divides") TSIG_IN(TC_INT, OWN_LENT) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("millis") TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-
-    /* list ops */
-    TSIG_BEGIN("list") TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("len") TSIG_IN(TC_LIST, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("give") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_NONE, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("grab") TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_OUT(TC_NONE, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("get") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_NONE, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("set") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_INT, OWN_LENT) TSIG_IN(TC_NONE, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("cat") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("take-n") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("drop-n") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("range") TSIG_IN(TC_INT, OWN_LENT) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("sort") TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("reverse") TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("dedup") TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("index-of") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_NONE, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("keep-mask") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("select") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("pick") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("rise") TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("fall") TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("classify") TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("shape") TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("rotate") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("windows") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("scan") TSIG_TODO() TSIG_END()
-    TSIG_BEGIN("zip") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("where") TSIG_TODO() TSIG_END()
-    TSIG_BEGIN("find") TSIG_TODO() TSIG_END()
-    TSIG_BEGIN("table") TSIG_TODO() TSIG_END()
-    TSIG_BEGIN("group") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("partition") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("reshape") TSIG_IN(TC_LIST, OWN_OWN) TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("transpose") TSIG_IN(TC_LIST, OWN_OWN) TSIG_OUT(TC_LIST, OWN_MOVE) TSIG_END()
-
-    /* tuple ops */
-    TSIG_BEGIN("stack") TSIG_OUT(TC_TUPLE, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("size") TSIG_IN(TC_TUPLE, OWN_OWN) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("push") TSIG_IN(TC_TUPLE, OWN_OWN) TSIG_IN(TC_NONE, OWN_OWN) TSIG_OUT(TC_TUPLE, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("pop") TSIG_IN(TC_TUPLE, OWN_OWN) TSIG_OUT(TC_TUPLE, OWN_MOVE) TSIG_OUT(TC_NONE, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("pull") TSIG_IN(TC_TUPLE, OWN_LENT) TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_TUPLE, OWN_MOVE) TSIG_OUT(TC_NONE, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("put") TSIG_IN(TC_TUPLE, OWN_OWN) TSIG_IN(TC_INT, OWN_LENT) TSIG_IN(TC_NONE, OWN_OWN) TSIG_OUT(TC_TUPLE, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("compose") TSIG_IN(TC_TUPLE, OWN_OWN) TSIG_IN(TC_TUPLE, OWN_OWN) TSIG_OUT(TC_TUPLE, OWN_MOVE) TSIG_END()
-
-    /* record ops */
-    TSIG_BEGIN("rec") TSIG_OUT(TC_REC, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("at") TSIG_TODO() TSIG_END()
-    TSIG_BEGIN("into") TSIG_TODO() TSIG_END()
-
-    /* IO */
-    TSIG_BEGIN("random") TSIG_IN(TC_INT, OWN_LENT) TSIG_OUT(TC_INT, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("halt") TSIG_END()
-
-    /* box */
-    TSIG_BEGIN("box") TSIG_IN(TC_NONE, OWN_OWN) TSIG_OUT(TC_BOX, OWN_MOVE) TSIG_END()
-    TSIG_BEGIN("free") TSIG_IN(TC_BOX, OWN_OWN) TSIG_END()
-
-    /* SDL ops (may not be available in all builds) */
-    TSIG_BEGIN("clear") TSIG_IN(TC_INT, OWN_LENT) TSIG_END()
-    TSIG_BEGIN("pixel") TSIG_IN(TC_INT, OWN_LENT) TSIG_IN(TC_INT, OWN_LENT) TSIG_IN(TC_INT, OWN_LENT) TSIG_END()
-    TSIG_BEGIN("on") TSIG_TODO() TSIG_END()
-    TSIG_BEGIN("show") TSIG_TODO() TSIG_END()
-
-    /* complex ops — mark as todo for now */
+    /* All non-HO builtin types moved to BUILTIN_TYPES string (TC-only data).
+       Only HO ops that need special TC logic remain as TSIG_TODO. */
     TSIG_BEGIN("if") TSIG_TODO() TSIG_END()
     TSIG_BEGIN("cond") TSIG_TODO() TSIG_END()
     TSIG_BEGIN("match") TSIG_TODO() TSIG_END()
@@ -2616,6 +2550,14 @@ static void register_builtin_types(void) {
     TSIG_BEGIN("lend") TSIG_TODO() TSIG_END()
     TSIG_BEGIN("mutate") TSIG_TODO() TSIG_END()
     TSIG_BEGIN("clone") TSIG_TODO() TSIG_END()
+    TSIG_BEGIN("scan") TSIG_TODO() TSIG_END()
+    TSIG_BEGIN("where") TSIG_TODO() TSIG_END()
+    TSIG_BEGIN("find") TSIG_TODO() TSIG_END()
+    TSIG_BEGIN("table") TSIG_TODO() TSIG_END()
+    TSIG_BEGIN("at") TSIG_TODO() TSIG_END()
+    TSIG_BEGIN("into") TSIG_TODO() TSIG_END()
+    TSIG_BEGIN("on") TSIG_TODO() TSIG_END()
+    TSIG_BEGIN("show") TSIG_TODO() TSIG_END()
 
     #undef TSIG_BEGIN
     #undef TSIG_IN
@@ -3049,7 +2991,8 @@ static void prim_stack(Frame *e) {
 static void prim_size(Frame *e) {
     (void)e;
     Value top = speek();
-    if (top.tag != VAL_TUPLE) die("size: expected tuple");
+    if (top.tag != VAL_TUPLE && top.tag != VAL_LIST && top.tag != VAL_RECORD)
+        die("size: expected compound (tuple, list, or record)");
     int len = (int)top.as.compound.len;
     int s = val_slots(top);
     sp -= s;
@@ -3059,55 +3002,50 @@ static void prim_size(Frame *e) {
 static void prim_push_op(Frame *e) {
     (void)e;
     POP_VAL(v);
-    Value tup_top = stack[sp - 1];
-    if (tup_top.tag != VAL_TUPLE) die("push: expected tuple");
-    int tup_s = val_slots(tup_top);
-    int tup_len = (int)tup_top.as.compound.len;
+    Value comp_top = stack[sp - 1];
+    if (comp_top.tag != VAL_TUPLE && comp_top.tag != VAL_LIST && comp_top.tag != VAL_RECORD)
+        die("push: expected compound (tuple, list, or record)");
+    ValTag tag = comp_top.tag;
+    int comp_s = val_slots(comp_top);
+    int comp_len = (int)comp_top.as.compound.len;
     sp--;
     memcpy(&stack[sp], v_buf, v_s * sizeof(Value));
     sp += v_s;
-    spush(val_compound(VAL_TUPLE, tup_len + 1, tup_s + v_s));
+    spush(val_compound(tag, comp_len + 1, comp_s + v_s));
 }
 
-static void prim_pop_op(Frame *e) {
-    (void)e;
-    /* tuple pop → tuple' val */
+static void prim_pop_impl(const char *label) {
     Value top = speek();
-    if (top.tag != VAL_TUPLE) die("pop: expected tuple");
+    if (top.tag != VAL_TUPLE && top.tag != VAL_LIST && top.tag != VAL_RECORD)
+        die("%s: expected compound (tuple, list, or record)", label);
+    ValTag tag = top.tag;
     int s = val_slots(top);
     int len = (int)top.as.compound.len;
-    if (len == 0) die("pop: empty tuple");
+    if (len == 0) die("%s: empty %s", label,
+        tag == VAL_LIST ? "list" : tag == VAL_TUPLE ? "tuple" : "record");
     int base = sp - s;
 
-    /* find last element */
     ElemRef last = compound_elem(&stack[base], s, len, len - 1);
-
-    /* save last element */
     Value elem_buf[LOCAL_MAX];
     memcpy(elem_buf, &stack[base + last.base], last.slots * sizeof(Value));
 
-    /* remove old header */
     sp--;
-
-    /* remove last element by adjusting sp */
     sp -= last.slots;
-
-    /* push new tuple header */
     int new_slots = s - last.slots;
-    spush(val_compound(VAL_TUPLE, len - 1, new_slots));
+    spush(val_compound(tag, len - 1, new_slots));
 
-    /* push the popped element */
     memcpy(&stack[sp], elem_buf, last.slots * sizeof(Value));
     sp += last.slots;
 }
+static void prim_pop_op(Frame *e) { (void)e; prim_pop_impl("pop"); }
 
 static void prim_pull(Frame *e) {
     (void)e;
-    /* tuple index pull → tuple value */
     int64_t idx = pop_int();
 
     Value top = speek();
-    if (top.tag != VAL_TUPLE) die("pull: expected tuple");
+    if (top.tag != VAL_TUPLE && top.tag != VAL_LIST && top.tag != VAL_RECORD)
+        die("pull: expected compound (tuple, list, or record)");
     int s = val_slots(top);
     int len = (int)top.as.compound.len;
     int base = sp - s;
@@ -3116,21 +3054,18 @@ static void prim_pull(Frame *e) {
     Value elem_buf[LOCAL_MAX];
     memcpy(elem_buf, &stack[base + ref.base], ref.slots * sizeof(Value));
 
-    /* don't modify the tuple, just push the element value */
-    /* Actually spec says: tuple index pull → tuple value
-       So the tuple stays, and the value is pushed on top */
-    /* But we need to extract without modifying... the tuple is still on stack */
-    /* push element on top */
     memcpy(&stack[sp], elem_buf, ref.slots * sizeof(Value));
     sp += ref.slots;
 }
 
-static void prim_replace_at(Frame *e, ValTag tag, const char *label) {
+static void prim_replace_at(Frame *e, const char *label) {
     (void)e;
     POP_VAL(v);
     int64_t idx = pop_int();
     Value top = speek();
-    if (top.tag != tag) die("%s: expected %s", label, tag == VAL_LIST ? "list" : "tuple");
+    if (top.tag != VAL_TUPLE && top.tag != VAL_LIST && top.tag != VAL_RECORD)
+        die("%s: expected compound (tuple, list, or record)", label);
+    ValTag tag = top.tag;
     int s = val_slots(top), len = (int)top.as.compound.len, base = sp - s;
     ElemRef old_ref = compound_elem(&stack[base], s, len, (int)idx);
     if (old_ref.slots == v_s) {
@@ -3154,15 +3089,18 @@ static void prim_replace_at(Frame *e, ValTag tag, const char *label) {
         spush(val_compound(tag, len, tmp_sp + 1));
     }
 }
-static void prim_put(Frame *e) { prim_replace_at(e, VAL_TUPLE, "put"); }
+static void prim_put(Frame *e) { prim_replace_at(e, "put"); }
 
-static void prim_concat(Frame *e, ValTag tag, const char *label) {
+static void prim_concat(Frame *e, const char *label) {
     (void)e;
     Value top2 = stack[sp - 1];
-    if (top2.tag != tag) die("%s: expected %s", label, tag == VAL_LIST ? "list" : "tuple");
+    if (top2.tag != VAL_TUPLE && top2.tag != VAL_LIST && top2.tag != VAL_RECORD)
+        die("%s: expected compound (tuple, list, or record)", label);
+    ValTag tag = top2.tag;
     int s2 = val_slots(top2), len2 = (int)top2.as.compound.len, base2 = sp - s2;
     Value below = stack[base2 - 1];
-    if (below.tag != tag) die("%s: expected %s", label, tag == VAL_LIST ? "list" : "tuple");
+    if (below.tag != VAL_TUPLE && below.tag != VAL_LIST && below.tag != VAL_RECORD)
+        die("%s: expected compound (tuple, list, or record)", label);
     int s1 = val_slots(below), len1 = (int)below.as.compound.len, base1 = base2 - s1;
     int new_elem_slots = (s1 - 1) + (s2 - 1);
     Value tmp[LOCAL_MAX];
@@ -3173,7 +3111,7 @@ static void prim_concat(Frame *e, ValTag tag, const char *label) {
     sp += new_elem_slots;
     spush(val_compound(tag, len1 + len2, new_elem_slots + 1));
 }
-static void prim_compose(Frame *e) { prim_concat(e, VAL_TUPLE, "compose"); }
+static void prim_compose(Frame *e) { prim_concat(e, "compose"); }
 
 /* ---- list ops ---- */
 static void prim_list(Frame *e) {
@@ -3181,57 +3119,20 @@ static void prim_list(Frame *e) {
     spush(val_compound(VAL_LIST, 0, 1));
 }
 
-static void prim_len(Frame *e) {
-    (void)e;
-    Value top = speek();
-    if (top.tag != VAL_LIST) die("len: expected list");
-    int len = (int)top.as.compound.len;
-    int s = val_slots(top);
-    sp -= s;
-    spush(val_int(len));
-}
+/* len/size share: prim_size handles any compound */
+static void prim_len(Frame *e) { prim_size(e); }
 
-static void prim_give(Frame *e) {
-    (void)e;
-    POP_VAL(v);
-    Value list_top = stack[sp - 1];
-    if (list_top.tag != VAL_LIST) die("give: expected list");
-    int list_s = val_slots(list_top);
-    int list_len = (int)list_top.as.compound.len;
-    sp--;
-    memcpy(&stack[sp], v_buf, v_s * sizeof(Value));
-    sp += v_s;
-    spush(val_compound(VAL_LIST, list_len + 1, list_s + v_s));
-}
+/* give/push share: prim_push_op handles any compound */
+static void prim_give(Frame *e) { prim_push_op(e); }
 
-static void prim_grab(Frame *e) {
-    (void)e;
-    /* list grab → list elem */
-    Value top = speek();
-    if (top.tag != VAL_LIST) die("grab: expected list");
-    int s = val_slots(top);
-    int len = (int)top.as.compound.len;
-    if (len == 0) die("grab: empty list");
-    int base = sp - s;
-
-    ElemRef last = compound_elem(&stack[base], s, len, len - 1);
-    Value elem_buf[LOCAL_MAX];
-    memcpy(elem_buf, &stack[base + last.base], last.slots * sizeof(Value));
-
-    sp--;
-    sp -= last.slots;
-    int new_slots = s - last.slots;
-    spush(val_compound(VAL_LIST, len - 1, new_slots));
-    memcpy(&stack[sp], elem_buf, last.slots * sizeof(Value));
-    sp += last.slots;
-}
+static void prim_grab(Frame *e) { (void)e; prim_pop_impl("grab"); }
 
 static void prim_get(Frame *e) {
     (void)e;
-    /* list index get → value */
     int64_t idx = pop_int();
     Value top = speek();
-    if (top.tag != VAL_LIST) die("get: expected list");
+    if (top.tag != VAL_TUPLE && top.tag != VAL_LIST && top.tag != VAL_RECORD)
+        die("get: expected compound (tuple, list, or record)");
     int s = val_slots(top);
     int len = (int)top.as.compound.len;
     int base = sp - s;
@@ -3240,14 +3141,14 @@ static void prim_get(Frame *e) {
     Value elem_buf[LOCAL_MAX];
     memcpy(elem_buf, &stack[base + ref.base], ref.slots * sizeof(Value));
 
-    sp -= s; /* remove list */
+    sp -= s;
     memcpy(&stack[sp], elem_buf, ref.slots * sizeof(Value));
     sp += ref.slots;
 }
 
-static void prim_set(Frame *e) { prim_replace_at(e, VAL_LIST, "set"); }
+static void prim_set(Frame *e) { prim_replace_at(e, "set"); }
 
-static void prim_cat(Frame *e) { prim_concat(e, VAL_LIST, "cat"); }
+static void prim_cat(Frame *e) { prim_concat(e, "cat"); }
 
 static void prim_take_n(Frame *e) {
     (void)e;
@@ -4185,6 +4086,12 @@ static void build_tuple(Token *toks, int start, int end, int total_count, Frame 
         }
         case TOK_LBRACKET: {
             int bc = find_matching(toks, j + 1, total_count, TOK_LBRACKET, TOK_RBRACKET);
+            /* skip [...] effect inside tuple bodies — compile-time only */
+            if (bc + 1 < total_count && toks[bc + 1].tag == TOK_WORD &&
+                toks[bc + 1].as.sym == sym_effect_kw) {
+                j = bc + 1;
+                break;
+            }
             int lb = sp;
             eval(toks + j + 1, bc - j - 1, env);
             int ls = sp - lb;
@@ -4221,6 +4128,7 @@ static void eval(Token *toks, int count, Frame *env) {
         sym_let = sym_intern("let");
         sym_recur_kw = sym_intern("recur");
         sym_type_kw = sym_intern("type");
+        sym_effect_kw = sym_intern("effect");
     }
 
     for (int i = 0; i < count; i++) {
@@ -4251,8 +4159,14 @@ static void eval(Token *toks, int count, Frame *env) {
             break;
         }
         case TOK_LBRACKET: {
-            /* list literal: evaluate contents, wrap in list */
             int close = find_matching(toks, i + 1, count, TOK_LBRACKET, TOK_RBRACKET);
+            /* skip [..] effect at runtime — types are compile-time only */
+            if (close + 1 < count && toks[close + 1].tag == TOK_WORD &&
+                toks[close + 1].as.sym == sym_effect_kw) {
+                i = close + 1;
+                break;
+            }
+            /* list literal: evaluate contents, wrap in list */
             int base = sp;
             eval(toks + i + 1, close - i - 1, env);
             int total_slots = sp - base;
@@ -4334,6 +4248,17 @@ static void eval(Token *toks, int count, Frame *env) {
             } else if (sym == sym_recur_kw) {
                 recur_sym = pop_sym();
                 recur_pending = 1;
+            } else if (sym == sym_effect_kw) {
+                /* [...] was already skipped at the bracket handler.
+                   For primitive type decls ('name [...] effect), pop the name.
+                   For function defs ('name (body) [...] effect def), leave stack for def. */
+                if (i + 1 < count && toks[i + 1].tag == TOK_WORD &&
+                    toks[i + 1].as.sym == sym_def) {
+                    /* def follows — don't pop, let def handle it */
+                } else {
+                    /* standalone: pop the name symbol */
+                    if (sp > 0 && stack[sp-1].tag == VAL_SYM) sp--;
+                }
             } else if (sym == sym_type_kw) {
                 /* 'name type <slots...> def
                    Parse and store type annotation, then handle def. */
@@ -4507,6 +4432,104 @@ static void prim_millis(Frame *e) {
 #endif
 
 /* ---- prelude ---- */
+/* ---- builtin type data (TC-only, never evaluated at runtime) ---- */
+static const char *BUILTIN_TYPES =
+    "'dup ['a copy in  'a copy out  'a copy out] effect\n"
+    "'drop ['a copy in] effect\n"
+    "'swap ['a own in  'b own in  'b own out  'a own out] effect\n"
+    "'plus ['a num lent in  'a num lent in  'a num move out] effect\n"
+    "'sub ['a num lent in  'a num lent in  'a num move out] effect\n"
+    "'mul ['a num lent in  'a num lent in  'a num move out] effect\n"
+    "'div ['a num lent in  'a num lent in  'a num move out] effect\n"
+    "'mod [int lent in  int lent in  int move out] effect\n"
+    "'eq [lent in  lent in  int move out] effect\n"
+    "'lt [lent in  lent in  int move out] effect\n"
+    "'not [int lent in  int move out] effect\n"
+    "'and [int lent in  int lent in  int move out] effect\n"
+    "'or [int lent in  int lent in  int move out] effect\n"
+    "'neq [lent in  lent in  int move out] effect\n"
+    "'gt [lent in  lent in  int move out] effect\n"
+    "'ge [lent in  lent in  int move out] effect\n"
+    "'le [lent in  lent in  int move out] effect\n"
+    "'inc [num lent in  num move out] effect\n"
+    "'dec [num lent in  num move out] effect\n"
+    "'neg [num lent in  num move out] effect\n"
+    "'abs [num lent in  num move out] effect\n"
+    "'iseven [int lent in  int move out] effect\n"
+    "'isodd [int lent in  int move out] effect\n"
+    "'iszero [int lent in  int move out] effect\n"
+    "'max ['a num lent in  'a num lent in  'a num move out] effect\n"
+    "'min ['a num lent in  'a num lent in  'a num move out] effect\n"
+    "'divides [int lent in  int lent in  int move out] effect\n"
+    "'print [own in] effect\n"
+    "'assert [int own in] effect\n"
+    "'millis [int move out] effect\n"
+    /* float conversion */
+    "'itof [int lent in  float move out] effect\n"
+    "'ftoi [float lent in  int move out] effect\n"
+    /* float math */
+    "'fsqrt [float lent in  float move out] effect\n"
+    "'fsin [float lent in  float move out] effect\n"
+    "'fcos [float lent in  float move out] effect\n"
+    "'ftan [float lent in  float move out] effect\n"
+    "'ffloor [float lent in  float move out] effect\n"
+    "'fceil [float lent in  float move out] effect\n"
+    "'fround [float lent in  float move out] effect\n"
+    "'fexp [float lent in  float move out] effect\n"
+    "'flog [float lent in  float move out] effect\n"
+    "'fpow [float lent in  float lent in  float move out] effect\n"
+    "'fatan2 [float lent in  float lent in  float move out] effect\n"
+    /* list ops */
+    "'list [list move out] effect\n"
+    "'len [list lent in  int move out] effect\n"
+    "'give [list own in  own in  list move out] effect\n"
+    "'grab [list own in  list move out  move out] effect\n"
+    "'get [list own in  int lent in  move out] effect\n"
+    "'set [list own in  int lent in  own in  list move out] effect\n"
+    "'cat [list own in  list own in  list move out] effect\n"
+    "'take-n [list own in  int lent in  list move out] effect\n"
+    "'drop-n [list own in  int lent in  list move out] effect\n"
+    "'range [int lent in  int lent in  list move out] effect\n"
+    "'sort [list own in  list move out] effect\n"
+    "'reverse [list own in  list move out] effect\n"
+    "'dedup [list own in  list move out] effect\n"
+    "'index-of [list own in  lent in  int move out] effect\n"
+    "'keep-mask [list own in  list own in  list move out] effect\n"
+    "'select [list own in  list own in  list move out] effect\n"
+    "'pick [list own in  list own in  list move out] effect\n"
+    "'rise [list own in  list move out] effect\n"
+    "'fall [list own in  list move out] effect\n"
+    "'classify [list own in  list move out] effect\n"
+    "'shape [list own in  list move out] effect\n"
+    "'rotate [list own in  int lent in  list move out] effect\n"
+    "'windows [list own in  int lent in  list move out] effect\n"
+    "'zip [list own in  list own in  list move out] effect\n"
+    "'group [list own in  list own in  list move out] effect\n"
+    "'partition [list own in  list own in  list move out] effect\n"
+    "'reshape [list own in  list own in  list move out] effect\n"
+    "'transpose [list own in  list move out] effect\n"
+    /* tuple ops */
+    "'stack [tuple move out] effect\n"
+    "'size [tuple own in  int move out] effect\n"
+    "'push [tuple own in  own in  tuple move out] effect\n"
+    "'pop [tuple own in  tuple move out  move out] effect\n"
+    "'pull [tuple lent in  int lent in  tuple move out  move out] effect\n"
+    "'put [tuple own in  int lent in  own in  tuple move out] effect\n"
+    "'compose [tuple own in  tuple own in  tuple move out] effect\n"
+    /* record ops */
+    "'rec [rec move out] effect\n"
+    /* IO */
+    "'random [int lent in  int move out] effect\n"
+    "'halt [] effect\n"
+    /* box */
+    "'box [own in  box move out] effect\n"
+    "'free [box own in] effect\n"
+    /* SDL */
+    "'clear [int lent in] effect\n"
+    "'pixel [int lent in  int lent in  int lent in] effect\n"
+    ;
+
+
 static const char *PRELUDE =
     "'over (swap dup (swap) dip) def\n"
     "'peek (over) def\n"
@@ -4933,10 +4956,13 @@ int main(int argc, char **argv) {
     fclose(f);
 
     lex(src);
+    int user_tok_count = tok_count;
+    static Token user_tokens[TOK_MAX];
+    memcpy(user_tokens, tokens, user_tok_count * sizeof(Token));
 
     if (dump_types) {
         /* also eval the file to register user type annotations */
-        eval(tokens, tok_count, global);
+        eval(user_tokens, user_tok_count, global);
         for (int i = 0; i < type_sig_count; i++) {
             TypeSig *s = &type_sigs[i].sig;
             printf("'%s type", sym_name(type_sigs[i].sym));
@@ -4967,12 +4993,19 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* typecheck prelude + user code together so TC knows prelude bindings */
-    int combined_count = prelude_tok_count + tok_count;
-    if (combined_count > TOK_MAX) die("too many tokens (prelude + user)");
-    Token combined[TOK_MAX];
-    memcpy(combined, prelude_tokens, prelude_tok_count * sizeof(Token));
-    memcpy(&combined[prelude_tok_count], tokens, tok_count * sizeof(Token));
+    /* lex builtin type declarations (TC-only data) */
+    lex(BUILTIN_TYPES);
+    int types_tok_count = tok_count;
+    static Token types_tokens[TOK_MAX];
+    memcpy(types_tokens, tokens, types_tok_count * sizeof(Token));
+
+    /* typecheck: builtin types + prelude + user code */
+    int combined_count = types_tok_count + prelude_tok_count + user_tok_count;
+    if (combined_count > TOK_MAX) die("too many tokens (types + prelude + user)");
+    static Token combined[TOK_MAX];
+    memcpy(combined, types_tokens, types_tok_count * sizeof(Token));
+    memcpy(&combined[types_tok_count], prelude_tokens, prelude_tok_count * sizeof(Token));
+    memcpy(&combined[types_tok_count + prelude_tok_count], user_tokens, user_tok_count * sizeof(Token));
     int errors = typecheck_tokens(combined, combined_count);
     if (errors > 0) {
         fprintf(stderr, "%d type error(s)\n", errors);
@@ -4988,7 +5021,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    eval(tokens, tok_count, global);
+    eval(user_tokens, user_tok_count, global);
 
     free(src);
     frame_free(global);
