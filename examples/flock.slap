@@ -37,7 +37,7 @@ list N (480 random give) repeat 'p3ys let
   -- Predator lifecycle
   p-timer 0 gt (
     p-timer 1 sub 'p-timer let
-    ppx px set 'ppx let  ppy py set 'ppy let
+    px 'ppx let  py 'ppy let
 
     xs 0 (plus) fold N div px sub 6 div 'pvx let
     ys 0 (plus) fold N div py sub 6 div 'pvy let
@@ -50,14 +50,13 @@ list N (480 random give) repeat 'p3ys let
   ) (
     frame 500 mod 0 eq frame 0 gt and (
       540 'p-timer let
-      4 random (
-        dup 0 eq (-30 480 random) (
-        dup 1 eq (670 480 random) (
-        dup 2 eq (640 random -30) (
-        drop 640 random 510
-        ) if) if) if
-      ) if
-      'py let 'px let drop
+      4 random
+      dup 0 eq (drop -30 480 random) (
+      dup 1 eq (drop 670 480 random) (
+      dup 2 eq (drop 640 random -30) (
+      drop 640 random 510
+      ) if) if) if
+      'py let 'px let
       px 'ppx let  py 'ppy let
     ) () if
   ) if
