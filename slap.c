@@ -12,8 +12,6 @@
 #define FRAME_MAX 256
 #define FRAME_VALS_MAX 65536
 #define TOK_MAX   65536
-#define MARK_MAX  256
-#define PRIM_MAX  256
 #define LOCAL_MAX 4096
 
 typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_WORD, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX } ValTag;
@@ -189,29 +187,11 @@ struct Frame {
     Binding bindings[FRAME_MAX]; Value vals[FRAME_VALS_MAX];
 };
 
-#define FRAME_POOL_SIZE 32
-static Frame frame_pool[FRAME_POOL_SIZE];
-static int frame_pool_used[FRAME_POOL_SIZE];
-static int frame_pool_init = 0;
-
 static Frame *frame_new(Frame *parent) {
-    if (!frame_pool_init) { frame_pool_init = 1; memset(frame_pool_used, 0, sizeof(frame_pool_used)); }
-    for (int i = 0; i < FRAME_POOL_SIZE; i++) {
-        if (!frame_pool_used[i]) {
-            frame_pool_used[i] = 1; Frame *f = &frame_pool[i];
-            f->parent = parent; f->bind_count = 0; f->vals_used = 0; f->refcount = 0; return f;
-        }
-    }
-    static int heap_frames = 0;
-    if (++heap_frames > 64) die("frame pool exhausted: possible closure leak (%d heap frames)", heap_frames);
     Frame *f = malloc(sizeof(Frame));
     f->parent = parent; f->bind_count = 0; f->vals_used = 0; f->refcount = 0; return f;
 }
-
-static void frame_free(Frame *f) {
-    if (f >= &frame_pool[0] && f < &frame_pool[FRAME_POOL_SIZE]) frame_pool_used[(int)(f - &frame_pool[0])] = 0;
-    else free(f);
-}
+static void frame_free(Frame *f) { free(f); }
 
 static void frame_bind(Frame *f, uint32_t sym, Value *vals, int slots, BindKind kind, int recur) {
     for (int i = 0; i < f->bind_count; i++) {
@@ -646,20 +626,7 @@ static TCBinding *tc_lookup(TypeChecker *tc, uint32_t sym) {
     return NULL;
 }
 
-static void tc_error(TypeChecker *tc, int line, const char *fmt, ...) {
-    if (tc->suppress_errors) { va_list ap; va_start(ap, fmt); va_end(ap); return; }
-    tc->errors++;
-    va_list ap; va_start(ap, fmt);
-    fprintf(stderr, "\n-- TYPE ERROR %s:%d ", current_file, line);
-    int hdr_len = 15 + (int)strlen(current_file) + 10;
-    for (int i = hdr_len; i < 60; i++) fprintf(stderr, "-");
-    fprintf(stderr, "\n\n    ");
-    vfprintf(stderr, fmt, ap); fprintf(stderr, "\n\n"); va_end(ap);
-    print_source_line(stderr, line);
-    fprintf(stderr, "\n");
-}
-
-static void tc_error2(TypeChecker *tc, int line, int origin_line, const char *fmt, ...) {
+static void tc_error(TypeChecker *tc, int line, int origin_line, const char *fmt, ...) {
     if (tc->suppress_errors) { va_list ap; va_start(ap, fmt); va_end(ap); return; }
     tc->errors++;
     va_list ap; va_start(ap, fmt);
@@ -749,10 +716,6 @@ static TypeConstraint tc_infer_effect_ctx(Token *toks, int start, int end, int t
     *out_consumed = consumed; *out_produced = vsp; return top_type;
 }
 
-static TypeConstraint tc_infer_effect(Token *toks, int start, int end, int total_count, int *out_consumed, int *out_produced) {
-    return tc_infer_effect_ctx(toks, start, end, total_count, out_consumed, out_produced, NULL);
-}
-
 static void tc_apply_effect(TypeChecker *tc, int consumed, int produced, TypeConstraint out_type, int line) {
     int avail = tc->sp - tc->sp_floor;
     tc->sp -= (consumed <= avail) ? consumed : avail;
@@ -769,7 +732,7 @@ static int tc_check_body_against_sig(Token *toks, int start, int end, int total_
         if (sig->slots[i].direction == DIR_IN) n_in++; else n_out++;
     }
     int eff_consumed, eff_produced;
-    tc_infer_effect(toks, start, end, total_count, &eff_consumed, &eff_produced);
+    tc_infer_effect_ctx(toks, start, end, total_count, &eff_consumed, &eff_produced, NULL);
     if (eff_consumed != n_in) { fprintf(stderr, "%s:%d: type error: function body consumes %d value(s) but type declares %d input(s)\n", current_file, toks[start].line, eff_consumed, n_in); errors++; }
     if (eff_produced != n_out) { fprintf(stderr, "%s:%d: type error: function body produces %d value(s) but type declares %d output(s)\n", current_file, toks[start].line, eff_produced, n_out); errors++; }
     return errors;
@@ -804,7 +767,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
             tc->sp--;
         }
         if (tc->sp > 0 && tc->data[tc->sp-1].type != TC_BOX && tc->data[tc->sp-1].type != TC_NONE)
-            tc_error(tc, line, "'%s' expected box, got %s", ho->name, constraint_name(tc->data[tc->sp-1].type));
+            tc_error(tc, line, 0, "'%s' expected box, got %s", ho->name, constraint_name(tc->data[tc->sp-1].type));
         if ((ho->flags & HO_BOX_BORROW) && tc->sp > 0 && tc->data[tc->sp-1].type == TC_BOX) {
             TypeConstraint contents = TC_NONE;
             if (tc->data[tc->sp-1].tvar_id > 0) {
@@ -826,7 +789,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
                 if (bc > 0) contents = tvar_resolve(tc, bc);
             }
             if (contents != TC_NONE && body_out != TC_NONE && !tc_constraint_matches(contents, body_out) && !tc_constraint_matches(body_out, contents))
-                tc_error(tc, line, "'mutate' body produces %s but box contains %s", constraint_name(body_out), constraint_name(contents));
+                tc_error(tc, line, 0, "'mutate' body produces %s but box contains %s", constraint_name(body_out), constraint_name(contents));
         }
         return;
     }
@@ -849,17 +812,17 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
     }
 
     if ((ho->flags & HO_BODY_1TO1) && body_known && (eff_c != 1 || eff_p != 1) && (eff_c + eff_p > 0))
-        tc_error(tc, line, "'%s' body must be 1->1, got %d->%d", ho->name, eff_c, eff_p);
+        tc_error(tc, line, 0, "'%s' body must be 1->1, got %d->%d", ho->name, eff_c, eff_p);
     if ((ho->flags & HO_BRANCHES_AGREE) && branch_count >= 2 && !tc->sp_floor) {
         TypeConstraint ref = TC_NONE;
         for (int i = 0; i < branch_count; i++) if (branch_outs[i] != TC_NONE) { ref = branch_outs[i]; break; }
         for (int i = 0; i < branch_count; i++)
             if (branch_outs[i] != TC_NONE && ref != TC_NONE && branch_outs[i] != ref)
                 if (!tc_constraint_matches(ref, branch_outs[i]) && !tc_constraint_matches(branch_outs[i], ref))
-                    tc_error(tc, line, "'%s' branches produce different types: %s vs %s", ho->name, constraint_name(ref), constraint_name(branch_outs[i]));
+                    tc_error(tc, line, 0, "'%s' branches produce different types: %s vs %s", ho->name, constraint_name(ref), constraint_name(branch_outs[i]));
     }
     if ((ho->flags & HO_SCRUTINEE_SYM) && last_popped_type != TC_SYM && last_popped_type != TC_NONE)
-        tc_error(tc, line, "'match' scrutinee must be a symbol, got %s", constraint_name(last_popped_type));
+        tc_error(tc, line, 0, "'match' scrutinee must be a symbol, got %s", constraint_name(last_popped_type));
 
     if (ho->flags & HO_APPLY_EFFECT) {
         if (body_known) {
@@ -882,7 +845,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
                     int ftv = map[stv];
                     AbstractType *input = &tc->data[tc->sp - body_teff->in_count + j];
                     if (tvar_unify_at(tc, ftv, input, line))
-                        tc_error2(tc, line, input->source_line, "'if' branch input type mismatch: expected %s, got %s (value from line %d)", constraint_name(tvar_resolve(tc, ftv)), constraint_name(input->type != TC_NONE ? input->type : tvar_resolve(tc, input->tvar_id)), input->source_line);
+                        tc_error(tc, line, input->source_line, "'if' branch input type mismatch: expected %s, got %s (value from line %d)", constraint_name(tvar_resolve(tc, ftv)), constraint_name(input->type != TC_NONE ? input->type : tvar_resolve(tc, input->tvar_id)), input->source_line);
                 }
             }
             int avail = tc->sp - tc->sp_floor;
@@ -929,7 +892,7 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
                             int ftv = map[stv];
                             AbstractType *input = &tc->data[tc->sp - eff->in_count + j];
                             if (tvar_unify_at(tc, ftv, input, line))
-                                tc_error2(tc, line, input->source_line, "'%s' input type mismatch: expected %s, got %s (value from line %d)", sym_name(sym), constraint_name(tvar_resolve(tc, ftv)), constraint_name(input->type != TC_NONE ? input->type : tvar_resolve(tc, input->tvar_id)), input->source_line);
+                                tc_error(tc, line, input->source_line, "'%s' input type mismatch: expected %s, got %s (value from line %d)", sym_name(sym), constraint_name(tvar_resolve(tc, ftv)), constraint_name(input->type != TC_NONE ? input->type : tvar_resolve(tc, input->tvar_id)), input->source_line);
                             if (input->tvar_id > 0) {
                                 int fe = tc->tvars[tvar_find(tc, ftv)].elem, ie = tc->tvars[tvar_find(tc, input->tvar_id)].elem;
                                 if (fe > 0 && ie > 0) tvar_unify(tc, fe, ie, line);
@@ -966,7 +929,7 @@ apply_sig:;
     int inputs = 0;
     for (int i = 0; i < sig->slot_count; i++) if (sig->slots[i].direction == DIR_IN) inputs++;
     if (tc->sp < inputs) {
-        tc_error(tc, line, "'%s' needs %d input(s), stack has %d", sym_name(sym), inputs, tc->sp);
+        tc_error(tc, line, 0, "'%s' needs %d input(s), stack has %d", sym_name(sym), inputs, tc->sp);
         if (tc->sp > 0) tc_dump_stack(tc);
         return;
     }
@@ -994,11 +957,11 @@ apply_sig:;
         if (stack_pos < 0) break;
         AbstractType *at = &tc->data[stack_pos];
         if (slot->ownership == OWN_COPY && !tc_is_copyable(at))
-            tc_error2(tc, line, at->source_line, "'%s' requires copyable value, got linear type (value from line %d)", sym_name(sym), at->source_line);
+            tc_error(tc, line, at->source_line, "'%s' requires copyable value, got linear type (value from line %d)", sym_name(sym), at->source_line);
         if (slot->ownership == OWN_OWN && at->borrowed > 0)
-            tc_error2(tc, line, at->source_line, "'%s' cannot consume value that is currently borrowed (lent, value from line %d)", sym_name(sym), at->source_line);
+            tc_error(tc, line, at->source_line, "'%s' cannot consume value that is currently borrowed (lent, value from line %d)", sym_name(sym), at->source_line);
         if (slot->constraint != TC_NONE && at->type != TC_NONE && !tc_constraint_matches(slot->constraint, at->type))
-            tc_error2(tc, line, at->source_line, "'%s' expected %s, got %s (value from line %d)", sym_name(sym), constraint_name(slot->constraint), constraint_name(at->type), at->source_line);
+            tc_error(tc, line, at->source_line, "'%s' expected %s, got %s (value from line %d)", sym_name(sym), constraint_name(slot->constraint), constraint_name(at->type), at->source_line);
         if (slot->type_var) {
             int tv = FIND_TVAR(slot->type_var);
             if (tv > 0) {
@@ -1006,10 +969,10 @@ apply_sig:;
                 if (is_container && at->tvar_id > 0) {
                     int ef = (slot->constraint == TC_LIST) ? tc->tvars[tvar_find(tc, at->tvar_id)].elem : tc->tvars[tvar_find(tc, at->tvar_id)].box_c;
                     if (ef > 0 && tvar_unify(tc, tv, ef, line))
-                        tc_error2(tc, line, at->source_line, "'%s' type variable '%s' mismatch: expected %s, got %s", sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(tvar_resolve(tc, ef)));
+                        tc_error(tc, line, at->source_line, "'%s' type variable '%s' mismatch: expected %s, got %s", sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(tvar_resolve(tc, ef)));
                 } else if (!is_container) {
                     int fail = at->tvar_id > 0 ? tvar_unify(tc, tv, at->tvar_id, line) : (at->type != TC_NONE ? tvar_bind(tc, tv, at->type, line) : 0);
-                    if (fail) tc_error2(tc, line, at->source_line, "'%s' type variable '%s' mismatch: expected %s, got %s", sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(at->type != TC_NONE ? at->type : tvar_resolve(tc, at->tvar_id)));
+                    if (fail) tc_error(tc, line, at->source_line, "'%s' type variable '%s' mismatch: expected %s, got %s", sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(at->type != TC_NONE ? at->type : tvar_resolve(tc, at->tvar_id)));
                 }
             }
         }
@@ -1064,7 +1027,7 @@ static TypeConstraint tc_check_list_elements(TypeChecker *tc, Token *toks, int s
         if (this_type == TC_NONE) continue;
         if (++elem_count == 1) elem_type = this_type;
         else if (this_type != elem_type) {
-            tc_error(tc, line, "list elements have inconsistent types: element 1 is %s, element %d is %s", constraint_name(elem_type), elem_count, constraint_name(this_type));
+            tc_error(tc, line, 0, "list elements have inconsistent types: element 1 is %s, element %d is %s", constraint_name(elem_type), elem_count, constraint_name(this_type));
             return TC_NONE;
         }
     }
@@ -1176,7 +1139,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     int vc = 0, vp = 0; TypeConstraint vo = tc_infer_effect_ctx(toks, j+1, vc2, total_count, &vc, &vp, tc);
                     tv = TC_TUPLE; if (!pairs) { veffout = vo; has_eff = 1; }
                     if (has_eff && vo != TC_NONE && veffout != TC_NONE && vo != veffout && !tc_constraint_matches(veffout, vo) && !tc_constraint_matches(vo, veffout))
-                        tc_error(tc, t->line, "clause bodies produce different types: %s vs %s", constraint_name(veffout), constraint_name(vo));
+                        tc_error(tc, t->line, 0, "clause bodies produce different types: %s vs %s", constraint_name(veffout), constraint_name(vo));
                     j = vc2 + 1;
                 } else {
                     if (toks[j].tag == TOK_INT) tv = TC_INT; else if (toks[j].tag == TOK_FLOAT) tv = TC_FLOAT;
@@ -1185,7 +1148,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                 }
                 if (!pairs && tv != TC_NONE) vtype = tv;
                 else if (tv != TC_NONE && vtype != TC_NONE && tv != vtype && !tc_constraint_matches(vtype, tv) && !tc_constraint_matches(tv, vtype))
-                    tc_error(tc, t->line, "clause values have inconsistent types: %s vs %s", constraint_name(vtype), constraint_name(tv));
+                    tc_error(tc, t->line, 0, "clause values have inconsistent types: %s vs %s", constraint_name(vtype), constraint_name(tv));
                 pairs++;
             }
             if (vtype != TC_TUPLE && !has_eff) tc_push(tc, TC_REC, t->line);
@@ -1202,8 +1165,8 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     if (tc->sp >= 1) {
                         AbstractType vt = tc->data[tc->sp-1]; tc->sp--;
                         if (i >= tc->user_start) {
-                            if (tc_is_builtin(tc->recur_sym, tc->prelude_sig_count)) tc_error(tc, t->line, "'%s' is already defined", sym_name(tc->recur_sym));
-                            else { TCBinding *existing = tc_lookup(tc, tc->recur_sym); if (existing) tc_error(tc, t->line, "'%s' is already defined (first defined on line %d)", sym_name(tc->recur_sym), existing->def_line); }
+                            if (tc_is_builtin(tc->recur_sym, tc->prelude_sig_count)) tc_error(tc, t->line, 0, "'%s' is already defined", sym_name(tc->recur_sym));
+                            else { TCBinding *existing = tc_lookup(tc, tc->recur_sym); if (existing) tc_error(tc, t->line, 0, "'%s' is already defined (first defined on line %d)", sym_name(tc->recur_sym), existing->def_line); }
                         }
                         tc_bind(tc, tc->recur_sym, &vt, 1, t->line);
                     }
@@ -1214,8 +1177,8 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                         tc->sp -= 2;
                         if (name_sym) {
                             if (i >= tc->user_start && tc->sp_floor == 0) {
-                                if (tc_is_builtin(name_sym, tc->prelude_sig_count)) tc_error(tc, t->line, "'%s' is already defined", sym_name(name_sym));
-                                else { TCBinding *existing = tc_lookup(tc, name_sym); if (existing) tc_error(tc, t->line, "'%s' is already defined (first defined on line %d)", sym_name(name_sym), existing->def_line); }
+                                if (tc_is_builtin(name_sym, tc->prelude_sig_count)) tc_error(tc, t->line, 0, "'%s' is already defined", sym_name(name_sym));
+                                else { TCBinding *existing = tc_lookup(tc, name_sym); if (existing) tc_error(tc, t->line, 0, "'%s' is already defined (first defined on line %d)", sym_name(name_sym), existing->def_line); }
                             }
                             tc_bind(tc, name_sym, &vt, 1, t->line);
                         }
@@ -1227,12 +1190,12 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     AbstractType val_t = tc->data[tc->sp-1]; tc->sp--;
                     if (name_sym) {
                         if (i >= tc->user_start && tc->body_depth == 0) {
-                            if (tc_is_builtin(name_sym, tc->prelude_sig_count)) tc_error(tc, t->line, "'%s' shadows existing definition", sym_name(name_sym));
+                            if (tc_is_builtin(name_sym, tc->prelude_sig_count)) tc_error(tc, t->line, 0, "'%s' shadows existing definition", sym_name(name_sym));
                             else {
                                 TCBinding *existing = tc_lookup(tc, name_sym);
                                 if (existing) {
-                                    if (existing->is_def) tc_error(tc, t->line, "'%s' shadows existing definition (defined on line %d)", sym_name(name_sym), existing->def_line);
-                                    else tc_error(tc, t->line, "'%s' is already bound (bound on line %d)", sym_name(name_sym), existing->def_line);
+                                    if (existing->is_def) tc_error(tc, t->line, 0, "'%s' shadows existing definition (defined on line %d)", sym_name(name_sym), existing->def_line);
+                                    else tc_error(tc, t->line, 0, "'%s' is already bound (bound on line %d)", sym_name(name_sym), existing->def_line);
                                 }
                             }
                         }
@@ -1264,7 +1227,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                 if (i >= 1 && toks[i-1].tag == TOK_WORD) {
                     TypeConstraint exp = parse_constraint(sym_name(toks[i-1].as.sym));
                     if (exp != TC_NONE && tc->sp > 0 && tc->data[tc->sp-1].type != exp && tc->data[tc->sp-1].type != TC_NONE)
-                        tc_error(tc, t->line, "'check' expected %s, got %s", constraint_name(exp), constraint_name(tc->data[tc->sp-1].type));
+                        tc_error(tc, t->line, 0, "'check' expected %s, got %s", constraint_name(exp), constraint_name(tc->data[tc->sp-1].type));
                     if (tc->unknown_count > 0 && tc->unknowns[tc->unknown_count-1].sym == toks[i-1].as.sym) tc->unknown_count--;
                 }
             } else tc_check_word(tc, sym, t->line);
@@ -1280,11 +1243,11 @@ static int typecheck_tokens(Token *toks, int count, int user_start) {
     tc_process_range(&tc, toks, 0, count, count);
     for (int i = 0; i < tc.sp; i++)
         if ((tc.data[i].flags & AT_LINEAR) && !(tc.data[i].flags & AT_CONSUMED))
-            tc_error(&tc, tc.data[i].source_line, "linear value (box) created here was never consumed (must free, lend, mutate, or clone)");
+            tc_error(&tc, tc.data[i].source_line, 0, "linear value (box) created here was never consumed (must free, lend, mutate, or clone)");
     for (int i = 0; i < tc.unknown_count; i++) {
         uint32_t sym = tc.unknowns[i].sym; int defined = 0;
         for (int j = 0; j < tc.bind_count; j++) if (tc.bindings[j].sym == sym) { defined = 1; break; }
-        if (!defined) tc_error(&tc, tc.unknowns[i].line, "unknown word '%s'", sym_name(sym));
+        if (!defined) tc_error(&tc, tc.unknowns[i].line, 0, "unknown word '%s'", sym_name(sym));
     }
     return tc.errors;
 }
@@ -1340,8 +1303,6 @@ CMP2(lt, val_less(&stack[sp-bs-as],as,&stack[sp-bs],bs))
 
 static void prim_and(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int((a&&b)?1:0));}
 static void prim_or(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int((a||b)?1:0));}
-
-
 
 static void prim_print(Frame *e){(void)e;if(sp<=0)die("print: stack underflow");Value top=stack[sp-1];int s=val_slots(top);val_print(&stack[sp-s],s,stdout);printf("\n");sp-=s;}
 static void prim_assert(Frame *e){(void)e;if(!pop_int())die("assertion failed");}
@@ -1455,14 +1416,16 @@ static void prim_pop_impl(const char *label) {
 }
 static void prim_pop_op(Frame *e){(void)e;prim_pop_impl("pop");}
 
-static void prim_pull(Frame *e) {
-    (void)e; int64_t idx=pop_int(); Value top=speek();
-    if(!is_compound(top.tag)) die("pull: expected compound");
+static void prim_elem(int consume) {
+    int64_t idx=pop_int(); Value top=speek();
+    if(!is_compound(top.tag)) die(consume?"get: expected compound":"pull: expected compound");
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,(int)idx);
     Value eb[LOCAL_MAX]; memcpy(eb,&stack[base+ref.base],ref.slots*sizeof(Value));
+    if(consume) sp-=s;
     memcpy(&stack[sp],eb,ref.slots*sizeof(Value)); sp+=ref.slots;
 }
+static void prim_pull(Frame *e){(void)e;prim_elem(0);}
 
 static void prim_replace_at(Frame *e) {
     (void)e; POP_VAL(v); int64_t idx=pop_int(); Value top=speek();
@@ -1499,14 +1462,7 @@ static void prim_concat(Frame *e) {
 static void prim_list(Frame *e){(void)e;spush(val_compound(VAL_LIST,0,1));}
 static void prim_grab(Frame *e){(void)e;prim_pop_impl("grab");}
 
-static void prim_get(Frame *e) {
-    (void)e; int64_t idx=pop_int(); Value top=speek();
-    if(!is_compound(top.tag)) die("get: expected compound");
-    int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
-    ElemRef ref=compound_elem(&stack[base],s,len,(int)idx);
-    Value eb[LOCAL_MAX]; memcpy(eb,&stack[base+ref.base],ref.slots*sizeof(Value));
-    sp-=s; memcpy(&stack[sp],eb,ref.slots*sizeof(Value)); sp+=ref.slots;
-}
+static void prim_get(Frame *e){(void)e;prim_elem(1);}
 
 static void prim_nth(Frame *env) {
     int64_t idx=pop_int(); uint32_t sym=pop_sym();
@@ -1559,8 +1515,6 @@ static void prim_fold(Frame *env) {
     memcpy(&stack[sp],init_buf,init_s*sizeof(Value));sp+=init_s;
     for(int i=0;i<list_len;i++){memcpy(&stack[sp],&list_buf[offs[i]],szs[i]*sizeof(Value));sp+=szs[i];eval_body(fn_buf,fn_s,env);}
 }
-
-
 static void prim_each(Frame *env) {
     POP_BODY(fn,"each"); POP_LIST_BUF(list,"each");
     int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs);
@@ -1596,21 +1550,6 @@ static void prim_scan(Frame *env) {
     }
     spush(val_compound(VAL_LIST,list_len,sp-rb+1));
 }
-
-static void prim_keep_mask(Frame *e) {
-    (void)e; POP_LIST_BUF(mask,"keep-mask"); POP_LIST_BUF(list,"keep-mask");
-    if(list_len!=mask_len) die("keep-mask: list and mask must have same length");
-    int mo[LOCAL_MAX],ms[LOCAL_MAX],lo[LOCAL_MAX],ls2[LOCAL_MAX];
-    compute_offsets(mask_buf,mask_s,mask_len,mo,ms);
-    compute_offsets(list_buf,list_s,list_len,lo,ls2);
-    int rb=sp,rc=0;
-    for(int i=0;i<list_len;i++){
-        Value mv=mask_buf[mo[i]]; if(mv.tag!=VAL_INT) die("keep-mask: mask elements must be int");
-        if(mv.as.i){memcpy(&stack[sp],&list_buf[lo[i]],ls2[i]*sizeof(Value));sp+=ls2[i];rc++;}
-    }
-    spush(val_compound(VAL_LIST,rc,sp-rb+1));
-}
-
 static void prim_at(Frame *env) {
     (void)env; uint32_t key=pop_sym();
     if(sp<=0) die("at: stack underflow"); Value next=stack[sp-1];
@@ -1684,19 +1623,6 @@ static void deep_copy_values(Value *dst, const Value *src, int slots) {
 
 static void prim_clone(Frame *e){(void)e;Value v=spop();if(v.tag!=VAL_BOX)die("clone: expected box");BoxData *orig=(BoxData*)v.as.box;BoxData *copy=malloc(sizeof(BoxData));copy->data=malloc(orig->slots*sizeof(Value));copy->slots=orig->slots;deep_copy_values(copy->data,orig->data,orig->slots);spush(v);Value v2;v2.tag=VAL_BOX;v2.as.box=copy;spush(v2);}
 
-static void prim_rotate(Frame *e) {
-    (void)e; int64_t n=pop_int(); Value top=speek(); if(top.tag!=VAL_LIST) die("rotate: expected list");
-    int s=val_slots(top),len=(int)top.as.compound.len; if(len==0) return;
-    if(s!=len+1) die("rotate: only single-slot elements supported");
-    int base=sp-s; n=((n%len)+len)%len; if(n==0) return;
-    if(len>LOCAL_MAX) die("rotate: list too large");
-    Value tmp[LOCAL_MAX]; int split=len-(int)n;
-    memcpy(tmp,&stack[base+split],(int)n*sizeof(Value));
-    memcpy(&tmp[n],&stack[base],split*sizeof(Value));
-    memcpy(&stack[base],tmp,len*sizeof(Value));
-}
-
-
 static void prim_grade(Frame *e,int ascending) {
     (void)e; Value top=speek(); if(top.tag!=VAL_LIST) die(ascending?"rise: expected list":"fall: expected list");
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
@@ -1714,95 +1640,12 @@ static void prim_grade(Frame *e,int ascending) {
 }
 static void prim_rise(Frame *e){prim_grade(e,1);}
 static void prim_fall(Frame *e){prim_grade(e,0);}
-
-static void prim_windows(Frame *e) {
-    (void)e; int64_t n=pop_int(); Value top=speek(); if(top.tag!=VAL_LIST) die("windows: expected list");
-    int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
-    Value buf[LOCAL_MAX]; memcpy(buf,&stack[base],s*sizeof(Value)); sp=base;
-    if((int)n>len||n<=0){spush(val_compound(VAL_LIST,0,1));return;}
-    int rb=sp,wc=len-(int)n+1;
-    for(int i=0;i<wc;i++){int ws=0;for(int j=0;j<(int)n;j++){ElemRef r=compound_elem(buf,s,len,i+j);memcpy(&stack[sp],&buf[r.base],r.slots*sizeof(Value));sp+=r.slots;ws+=r.slots;}spush(val_compound(VAL_LIST,(int)n,ws+1));}
-    spush(val_compound(VAL_LIST,wc,sp-rb+1));
-}
-
-static void prim_reshape(Frame *e) {
-    (void)e; Value dt=stack[sp-1]; if(dt.tag!=VAL_LIST) die("reshape: expected dims list");
-    int ds=val_slots(dt),dl=(int)dt.as.compound.len,db=sp-ds;
-    if(dl!=2) die("reshape: only 2D reshape supported");
-    ElemRef d0=compound_elem(&stack[db],ds,dl,0),d1=compound_elem(&stack[db],ds,dl,1);
-    if(stack[db+d0.base].tag!=VAL_INT||stack[db+d1.base].tag!=VAL_INT) die("reshape: dimensions must be int");
-    int rows=(int)stack[db+d0.base].as.i,cols=(int)stack[db+d1.base].as.i;
-    if(rows<0||cols<0) die("reshape: dimensions must be non-negative");
-    if(rows>0&&cols>INT32_MAX/rows) die("reshape: dimension overflow");
-    sp-=ds; Value lt=stack[sp-1]; if(lt.tag!=VAL_LIST) die("reshape: expected list");
-    int ls=val_slots(lt),ll=(int)lt.as.compound.len,lb=sp-ls;
-    Value lbuf[LOCAL_MAX]; memcpy(lbuf,&stack[lb],ls*sizeof(Value)); sp=lb;
-    if(rows*cols!=ll) die("reshape: dimension mismatch");
-    int rb=sp;
-    for(int r=0;r<rows;r++){for(int c=0;c<cols;c++){ElemRef er=compound_elem(lbuf,ls,ll,r*cols+c);memcpy(&stack[sp],&lbuf[er.base],er.slots*sizeof(Value));sp+=er.slots;}spush(val_compound(VAL_LIST,cols,cols+1));}
-    spush(val_compound(VAL_LIST,rows,sp-rb+1));
-}
-
-static void prim_transpose(Frame *e) {
-    (void)e; Value top=speek(); if(top.tag!=VAL_LIST) die("transpose: expected list");
-    int s=val_slots(top),rows=(int)top.as.compound.len,base=sp-s; if(rows==0) return;
-    ElemRef r0=compound_elem(&stack[base],s,rows,0); Value row0_top=stack[base+r0.base+r0.slots-1];
-    if(row0_top.tag!=VAL_LIST) die("transpose: expected list of lists");
-    int cols=(int)row0_top.as.compound.len;
-    if(s>LOCAL_MAX) die("transpose: matrix too large");
-    Value buf[LOCAL_MAX]; memcpy(buf,&stack[base],s*sizeof(Value)); sp=base;
-    if(rows>0&&cols>INT32_MAX/rows) die("transpose: dimension overflow");
-    double *flat=malloc(rows*cols*sizeof(double)); int all_int=1;
-    for(int r=0;r<rows;r++){
-        ElemRef rr=compound_elem(buf,s,rows,r); Value *rd=&buf[rr.base]; Value rh=rd[rr.slots-1];
-        if(rh.tag!=VAL_LIST) die("transpose: row %d is not a list",r);
-        if((int)rh.as.compound.len!=cols) die("transpose: ragged matrix (row %d has %d cols, expected %d)",r,(int)rh.as.compound.len,cols);
-        for(int c=0;c<cols;c++){ElemRef cell=compound_elem(rd,rr.slots,cols,c);Value cv=rd[cell.base];
-            if(cv.tag==VAL_INT) flat[r*cols+c]=(double)cv.as.i;
-            else if(cv.tag==VAL_FLOAT){flat[r*cols+c]=cv.as.f;all_int=0;}
-            else die("transpose: only scalar matrices supported");}
-    }
-    int rb=sp;
-    for(int c=0;c<cols;c++){for(int r=0;r<rows;r++){if(all_int)spush(val_int((int64_t)flat[r*cols+c]));else spush(val_float(flat[r*cols+c]));}spush(val_compound(VAL_LIST,rows,rows+1));}
-    spush(val_compound(VAL_LIST,cols,sp-rb+1)); free(flat);
-}
-
 static void prim_shape(Frame *e) {
     (void)e; Value top=speek(); if(top.tag!=VAL_LIST) die("shape: expected list");
     int len=(int)top.as.compound.len,s=val_slots(top),base=sp-s;
     int dims[16],ndims=0; dims[ndims++]=len;
     if(len>0){ElemRef r0=compound_elem(&stack[base],s,len,0);Value e0=stack[base+r0.base+r0.slots-1];if(e0.tag==VAL_LIST)dims[ndims++]=(int)e0.as.compound.len;}
     sp-=s; for(int i=0;i<ndims;i++) spush(val_int(dims[i])); spush(val_compound(VAL_LIST,ndims,ndims+1));
-}
-
-static void prim_classify(Frame *e) {
-    (void)e; Value top=speek(); if(top.tag!=VAL_LIST) die("classify: expected list");
-    int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
-    Value uniques[LOCAL_MAX]; int uc=0; int *classes=malloc(len*sizeof(int));
-    for(int i=0;i<len;i++){
-        ElemRef r=compound_elem(&stack[base],s,len,i); int found=-1;
-        for(int j=0;j<uc;j++) if(val_equal(&stack[base+r.base],r.slots,&uniques[j],1)){found=j;break;}
-        if(found>=0) classes[i]=found;
-        else{classes[i]=uc;if(uc>=LOCAL_MAX)die("classify: too many unique values");uniques[uc++]=stack[base+r.base];}
-    }
-    sp-=s; for(int i=0;i<len;i++) spush(val_int(classes[i])); spush(val_compound(VAL_LIST,len,len+1)); free(classes);
-}
-
-static void prim_group(Frame *e) {
-    (void)e; Value it=stack[sp-1]; if(it.tag!=VAL_LIST) die("group: expected index list");
-    int is=val_slots(it),il=(int)it.as.compound.len,ib=sp-is;
-    Value lt=stack[ib-1]; if(lt.tag!=VAL_LIST) die("group: expected list");
-    int ls=val_slots(lt),ll=(int)lt.as.compound.len,lb=ib-ls;
-    if(il!=ll) die("group: list and indices must have same length");
-    Value ibuf[LOCAL_MAX],lbuf[LOCAL_MAX]; memcpy(ibuf,&stack[ib],is*sizeof(Value)); memcpy(lbuf,&stack[lb],ls*sizeof(Value)); sp=lb;
-    int mg=-1;
-    for(int i=0;i<il;i++){ElemRef ir=compound_elem(ibuf,is,il,i);int g=(int)ibuf[ir.base].as.i;if(g>mg)mg=g;}
-    int rb=sp,gc=mg+1;
-    for(int g=0;g<gc;g++){int gb=sp,grc=0;
-        for(int i=0;i<il;i++){ElemRef ir=compound_elem(ibuf,is,il,i);if((int)ibuf[ir.base].as.i==g){ElemRef lr=compound_elem(lbuf,ls,ll,i);memcpy(&stack[sp],&lbuf[lr.base],lr.slots*sizeof(Value));sp+=lr.slots;grc++;}}
-        spush(val_compound(VAL_LIST,grc,sp-gb+1));
-    }
-    spush(val_compound(VAL_LIST,gc,sp-rb+1));
 }
 
 /* ---- EVAL ---- */
@@ -1906,19 +1749,6 @@ static void eval(Token *toks, int count, Frame *env) {
     memcpy(body,&stack[base],s*sizeof(Value)); sp=base; eval_body(body,s,env); free(body);
 }
 
-
-static void prim_zip(Frame *e) {
-    (void)e; POP_LIST_BUF(b,"zip"); POP_LIST_BUF(a,"zip");
-    int n=a_len<b_len?a_len:b_len,rb=sp;
-    for(int i=0;i<n;i++){
-        ElemRef r1=compound_elem(a_buf,a_s,a_len,i),r2=compound_elem(b_buf,b_s,b_len,i);
-        memcpy(&stack[sp],&a_buf[r1.base],r1.slots*sizeof(Value));sp+=r1.slots;
-        memcpy(&stack[sp],&b_buf[r2.base],r2.slots*sizeof(Value));sp+=r2.slots;
-        spush(val_compound(VAL_LIST,2,r1.slots+r2.slots+1));
-    }
-    spush(val_compound(VAL_LIST,n,sp-rb+1));
-}
-
 static void prim_where(Frame *env) {
     POP_BODY(fn,"where"); POP_LIST_BUF(list,"where");
     int rb=sp,rc=0;
@@ -1940,8 +1770,6 @@ static void prim_find_elem(Frame *env) {
     }
     spush(val_int(-1));
 }
-
-
 #ifndef SLAP_SDL
 static void prim_millis(Frame *e){(void)e;struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);spush(val_int((int64_t)(ts.tv_sec*1000+ts.tv_nsec/1000000)));}
 #endif
@@ -1950,13 +1778,13 @@ static const char *BUILTIN_TYPES =
     "'dup ['a copy in  'a copy out  'a copy out] effect\n"
     "'drop ['a copy in] effect\n"
     "'swap ['a own in  'b own in  'b own out  'a own out] effect\n"
-    "'plus ['a num lent in  'a num lent in  'a num move out] effect\n"
-    "'sub ['a num lent in  'a num lent in  'a num move out] effect\n"
-    "'mul ['a num lent in  'a num lent in  'a num move out] effect\n"
-    "'div ['a num lent in  'a num lent in  'a num move out] effect\n"
-    "'mod [int lent in  int lent in  int move out] effect\n"
+#define A2E " ['a num lent in  'a num lent in  'a num move out] effect\n"
+    "'plus" A2E "'sub" A2E "'mul" A2E "'div" A2E
+#undef A2E
+#define I2E " [int lent in  int lent in  int move out] effect\n"
+    "'mod" I2E "'wrap" I2E
+#undef I2E
     "'divmod [int lent in  int lent in  int move out  int move out] effect\n"
-    "'wrap [int lent in  int lent in  int move out] effect\n"
     "'eq [lent in  lent in  int move out] effect\n"
     "'lt [lent in  lent in  int move out] effect\n"
     "'and [int lent in  int lent in  int move out] effect\n"
@@ -1966,15 +1794,9 @@ static const char *BUILTIN_TYPES =
     "'millis [int move out] effect\n"
     "'itof [int lent in  float move out] effect\n"
     "'ftoi [float lent in  int move out] effect\n"
-    "'fsqrt [float lent in  float move out] effect\n"
-    "'fsin [float lent in  float move out] effect\n"
-    "'fcos [float lent in  float move out] effect\n"
-    "'ftan [float lent in  float move out] effect\n"
-    "'ffloor [float lent in  float move out] effect\n"
-    "'fceil [float lent in  float move out] effect\n"
-    "'fround [float lent in  float move out] effect\n"
-    "'fexp [float lent in  float move out] effect\n"
-    "'flog [float lent in  float move out] effect\n"
+#define F1E " [float lent in  float move out] effect\n"
+    "'fsqrt" F1E "'fsin" F1E "'fcos" F1E "'ftan" F1E "'ffloor" F1E "'fceil" F1E "'fround" F1E "'fexp" F1E "'flog" F1E
+#undef F1E
     "'fpow [float lent in  float lent in  float move out] effect\n"
     "'fatan2 [float lent in  float lent in  float move out] effect\n"
     "'list [list move out] effect\n"
@@ -1985,27 +1807,20 @@ static const char *BUILTIN_TYPES =
     "'nth [sym lent in  int lent in  'a move out] effect\n"
     "'set ['a list own in  int lent in  'a own in  'a list move out] effect\n"
     "'cat ['a list own in  'a list own in  'a list move out] effect\n"
-    "'take-n ['a list own in  int lent in  'a list move out] effect\n"
-    "'drop-n ['a list own in  int lent in  'a list move out] effect\n"
+#define LSE " ['a list own in  int lent in  'a list move out] effect\n"
+    "'take-n" LSE "'drop-n" LSE
+#undef LSE
     "'range [int lent in  int lent in  int list move out] effect\n"
-    "'sort ['a list own in  'a list move out] effect\n"
-    "'reverse ['a list own in  'a list move out] effect\n"
-    "'dedup ['a list own in  'a list move out] effect\n"
+#define L1E " ['a list own in  'a list move out] effect\n"
+    "'sort" L1E "'reverse" L1E "'dedup" L1E
+#undef L1E
     "'index-of ['a list own in  'a lent in  int move out] effect\n"
-    "'keep-mask ['a list own in  int list own in  'a list move out] effect\n"
-    "'select ['a list own in  int list own in  'a list move out] effect\n"
-    "'pick ['a list own in  int list own in  'a list move out] effect\n"
-    "'rise ['a list own in  int list move out] effect\n"
-    "'fall ['a list own in  int list move out] effect\n"
-    "'classify ['a list own in  int list move out] effect\n"
-    "'shape ['a list own in  int list move out] effect\n"
-    "'rotate ['a list own in  int lent in  'a list move out] effect\n"
-    "'windows ['a list own in  int lent in  list move out] effect\n"
-    "'zip ['a list own in  'a list own in  list move out] effect\n"
-    "'group ['a list own in  int list own in  list move out] effect\n"
-    "'partition ['a list own in  int list own in  list move out] effect\n"
-    "'reshape ['a list own in  int list own in  list move out] effect\n"
-    "'transpose [list own in  list move out] effect\n"
+#define LIE " ['a list own in  int list own in  'a list move out] effect\n"
+    "'select" LIE "'pick" LIE "'keep-mask" LIE
+#undef LIE
+#define LGE " ['a list own in  int list move out] effect\n"
+    "'rise" LGE "'fall" LGE "'shape" LGE "'classify" LGE
+#undef LGE
     "'stack [tuple move out] effect\n"
     "'size [tuple own in  int move out] effect\n"
     "'push [tuple own in  own in  tuple move out] effect\n"
@@ -2023,7 +1838,15 @@ static const char *BUILTIN_TYPES =
     "'clone ['a box own in  'a box move out  'a box move out] effect\n"
     "'clear [int lent in] effect\n"
     "'pixel [int lent in  int lent in  int lent in] effect\n"
-    "'fill-rect [int lent in  int lent in  int lent in  int lent in  int lent in] effect\n";
+    "'fill-rect [int lent in  int lent in  int lent in  int lent in  int lent in] effect\n"
+#define LLE " ['a list own in  int lent in  'a list move out] effect\n"
+    "'rotate" LLE "'windows" LLE
+#undef LLE
+    "'zip ['a list own in  'a list own in  list move out] effect\n"
+#define LDE " ['a list own in  int list own in  list move out] effect\n"
+    "'group" LDE "'partition" LDE "'reshape" LDE
+#undef LDE
+    "'transpose [list own in  list move out] effect\n";
 
 static const char *PRELUDE =
     "'over (swap dup (swap) dip) def\n'peek (over) def\n'nip (swap drop) def\n"
@@ -2065,7 +1888,16 @@ static const char *PRELUDE =
     "'isodd (2 mod 0 neq) [int lent in  int move out] effect def\n"
     "'divides (mod 0 eq) [int lent in  int lent in  int move out] effect def\n"
     "'times-i ('f swap def 'n let 0 (dup n lt) (dup (f) dip 1 plus) while drop) def\n"
-            "3.14159265358979323846 'pi let\n6.28318530717958647692 'tau let\n2.71828182845904523536 'e let\n";
+            "3.14159265358979323846 'pi let\n6.28318530717958647692 'tau let\n2.71828182845904523536 'e let\n"
+    "'rotate ('n let dup len 'ln let ln 0 eq not (n ln wrap 'nn let nn 0 eq not (dup ln nn sub take-n swap ln nn sub drop-n swap cat) () if) () if) def\n"
+    "'zip ('b swap def 'a swap def a len b len min 'n let 0 n range (dup a swap get swap b swap get couple) map) def\n"
+    "'windows ('n let 'l swap def l len 'll let n 0 le ll n lt or (list) (0 ll n sub 1 plus range ('i let l i drop-n n take-n) map) if) def\n"
+    "'reshape ('dims swap def 'data swap def dims 0 get 'rows let dims 1 get 'cols let 0 rows range ('r let 0 cols range ('c let data r cols mul c plus get) map) map) def\n"
+    "'transpose ('m swap def m 0 get len 'cols let m len 'rows let 0 cols range ('c let 0 rows range ('r let m r get c get) map) map) def\n"
+    "'keep-mask ('mask swap def 0 mask len range (mask swap get 0 neq) where select) def\n"
+    "'group ('idx swap def 'data swap def 0 idx (max) fold 1 plus 'ng let 0 ng range ('g let 0 idx len range (idx swap get g eq) where data swap select) map) def\n"
+    "'partition (group) def\n"
+    "'classify (dup 'l swap def (l swap index-of) map dup dedup 'u swap def (u swap index-of) map) def\n";
 
 static void prim_reverse(Frame *e) {
     (void)e; Value top=speek(); if(top.tag!=VAL_LIST) die("reverse: expected list");
@@ -2203,12 +2035,10 @@ static void register_prims(void) {
         {"get",prim_get},{"nth",prim_nth},{"set",prim_replace_at},{"cat",prim_concat},
         {"take-n",prim_take_n},{"drop-n",prim_drop_n},{"range",prim_range},
         {"map",prim_map},{"filter",prim_filter},{"fold",prim_fold},{"each",prim_each},
-        {"sort",prim_sort},{"index-of",prim_index_of},{"scan",prim_scan},{"keep-mask",prim_keep_mask},
-        {"at",prim_at},{"rotate",prim_rotate},{"rise",prim_rise},{"fall",prim_fall},
-        {"windows",prim_windows},{"reshape",prim_reshape},{"transpose",prim_transpose},
-        {"shape",prim_shape},{"classify",prim_classify},{"group",prim_group},{"partition",prim_group},
+        {"sort",prim_sort},{"index-of",prim_index_of},{"scan",prim_scan},
+        {"at",prim_at},{"rise",prim_rise},{"fall",prim_fall},
+        {"shape",prim_shape},
         {"rec",prim_rec},{"into",prim_into},{"reverse",prim_reverse},{"dedup",prim_dedup},
-        {"zip",prim_zip},
         {"where",prim_where},{"find",prim_find_elem},
         {"millis",prim_millis},{"box",prim_box},{"free",prim_free},
         {"lend",prim_lend},{"mutate",prim_mutate},{"clone",prim_clone},
@@ -2237,10 +2067,7 @@ int main(int argc, char **argv) {
     if(!filename){fprintf(stderr,"usage: slap [--check] <file.slap>\n");return 1;}
     current_file=filename; register_prims();
     Frame *global=frame_new(NULL);
-    current_file="<prelude>"; lex(PRELUDE);
-    int prelude_tok_count=tok_count;
-    Token prelude_tokens[TOK_MAX]; memcpy(prelude_tokens,tokens,prelude_tok_count*sizeof(Token));
-    eval(tokens,tok_count,global);
+    current_file="<prelude>"; lex(PRELUDE); eval(tokens,tok_count,global);
     current_file=filename;
     FILE *f=fopen(filename,"r"); if(!f){fprintf(stderr,"error: cannot open '%s'\n",filename);return 1;}
     fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
@@ -2254,7 +2081,6 @@ int main(int argc, char **argv) {
             TypeSig *s=&type_sigs[i].sig; printf("'%s type",sym_name(type_sigs[i].sym));
             for(int j=0;j<s->slot_count;j++){
                 TypeSlot *sl=&s->slots[j];
-
                 printf("  "); if(sl->type_var) printf("'%s ",sym_name(sl->type_var));
                 if(sl->constraint!=TC_NONE) printf("%s ",constraint_name(sl->constraint));
                 switch(sl->ownership){case OWN_OWN:printf("own ");break;case OWN_COPY:printf("copy ");break;case OWN_MOVE:printf("move ");break;case OWN_LENT:printf("lent ");break;}
@@ -2264,15 +2090,12 @@ int main(int argc, char **argv) {
         }
         free(src); frame_free(global); return 0;
     }
-    lex(BUILTIN_TYPES); int types_tok_count=tok_count;
-    static Token types_tokens[TOK_MAX]; memcpy(types_tokens,tokens,types_tok_count*sizeof(Token));
-    int combined_count=types_tok_count+prelude_tok_count+user_tok_count;
-    if(combined_count>TOK_MAX) die("too many tokens (types + prelude + user)");
-    static Token combined[TOK_MAX];
-    memcpy(combined,types_tokens,types_tok_count*sizeof(Token));
-    memcpy(&combined[types_tok_count],prelude_tokens,prelude_tok_count*sizeof(Token));
-    memcpy(&combined[types_tok_count+prelude_tok_count],user_tokens,user_tok_count*sizeof(Token));
-    int errors=typecheck_tokens(combined,combined_count,types_tok_count+prelude_tok_count);
+    static Token combined[TOK_MAX]; int cpos=0;
+    lex(BUILTIN_TYPES); memcpy(combined,tokens,tok_count*sizeof(Token)); cpos=tok_count;
+    lex(PRELUDE); memcpy(&combined[cpos],tokens,tok_count*sizeof(Token)); cpos+=tok_count;
+    int user_start=cpos;
+    memcpy(&combined[cpos],user_tokens,user_tok_count*sizeof(Token)); cpos+=user_tok_count;
+    int errors=typecheck_tokens(combined,cpos,user_start);
     if(errors>0){fprintf(stderr,"%d type error(s)\n",errors);free(src);frame_free(global);return 1;}
     if(check_only){fprintf(stderr,"type check passed\n");free(src);frame_free(global);return 0;}
     eval(user_tokens,user_tok_count,global);

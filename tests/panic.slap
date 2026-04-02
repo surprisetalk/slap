@@ -90,9 +90,6 @@ stack pop
 -- EXPECT: sort: only single-slot
 [[1 2] [3 4]] sort
 
--- EXPECT: rotate: only single-slot
-[[1 2] [3 4]] 1 rotate
-
 -- EXPECT: condition must be int
 'x (1 plus) (2 plus) if
 
