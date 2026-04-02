@@ -3,9 +3,10 @@
 A stack-based programming language with static type inference and linear types. Single-file C99 interpreter (~2100 lines).
 
 <p align="center">
-  <img src="assets/life.gif" width="270" alt="Game of Life">
-  <img src="assets/flock.gif" width="270" alt="Boids flocking">
-  <img src="assets/ant.gif" width="270" alt="Langton's ant">
+  <img src="assets/life.gif" width="240" alt="Game of Life">
+  <img src="assets/flock.gif" width="240" alt="Boids flocking">
+  <img src="assets/ant.gif" width="240" alt="Langton's ant">
+  <img src="assets/zoom.gif" width="240" alt="Mandelbrot zoom">
 </p>
 
 ## quick start
@@ -290,12 +291,12 @@ All code is type-checked before execution. Types are inferred — no annotations
 
 ### stackable vs linear
 
-| Category   | Types                                  | Rules                        |
-|------------|----------------------------------------|------------------------------|
-| Stackable  | Int, Float, Symbol, Tuple, Record      | Freely `dup` and `drop`      |
-| Linear     | Box, List, Dict, String                | Must consume exactly once    |
+| Category   | Types                                           | Rules                        |
+|------------|-------------------------------------------------|------------------------------|
+| Stackable  | Int, Float, Symbol, Tuple, Record, List, String | Freely `dup` and `drop`      |
+| Linear     | Box                                             | Must consume exactly once    |
 
-Linear values must be consumed via `free`, `lend`, `mutate`, or `clone`. `lend` borrows a stackable snapshot from a linear value.
+Boxes must be consumed via `free`, `lend`, `mutate`, or `clone`. `lend` borrows a stackable snapshot from a box.
 
 ### effect annotations
 
@@ -310,7 +311,7 @@ Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ow
 
 ## prelude
 
-~40 functions defined in slap itself, loaded at startup.
+~55 functions defined in slap itself, loaded at startup.
 
 ### stack
 
