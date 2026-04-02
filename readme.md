@@ -310,18 +310,21 @@ Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ow
 
 ## prelude
 
-~55 functions defined in slap itself, loaded at startup.
+~65 definitions in slap itself, loaded at startup.
 
 ### stack
 
 | Word | Effect | Example |
 |------|--------|---------|
 | `over` | a b → a b a | `1 2 over` → `1 2 1` |
+| `peek` | alias of `over` | `1 2 peek` → `1 2 1` |
 | `nip` | a b → b | `1 2 nip` → `2` |
 | `rot` | a b c → b c a | `1 2 3 rot` → `2 3 1` |
+| `not` | n → n==0 | `1 not` → `0` |
 | `bi` | x f g → f(x) g(x) | `3 (2 plus) (3 mul) bi` → `9 5` |
 | `keep` | x f → f(x) x | `5 (sqr) keep` → `25 5` |
 | `repeat` | x n f → f^n(x) | `1 10 (2 mul) repeat` → `1024` |
+| `times-i` | n f → f(0) f(1) ... f(n-1) | `3 (print) times-i` → prints 0 1 2 |
 
 ### arithmetic
 
@@ -375,6 +378,24 @@ Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ow
 | `sort-desc` | list → sorted | `[1 3 2] sort-desc` → `[3 2 1]` |
 | `table` | list f → [[x f(x)]...] | `[1 2 3] (sqr) table` → `[[1 1] [2 4] [3 9]]` |
 | `select` | list indices → sublist | `[10 20 30] [0 2] select` → `[10 30]` |
+| `reduce` | list f → result | `[1 2 3] (plus) reduce` → `6` |
+| `count` | alias of `len` | `[1 2 3] count` → `3` |
+| `isany` | list → any nonzero? | `[0 0 1] isany` → `1` |
+| `isall` | list → all nonzero? | `[1 1 0] isall` → `0` |
+| `keep-mask` | list mask → filtered | `[10 20 30] [1 0 1] keep-mask` → `[10 30]` |
+
+### structural utilities
+
+| Word | Effect | Example |
+|------|--------|---------|
+| `rotate` | list n → rotated | `[1 2 3 4 5] 2 rotate` → `[4 5 1 2 3]` |
+| `zip` | a b → pairs | `[1 2 3] [4 5 6] zip` → `[[1 4] [2 5] [3 6]]` |
+| `windows` | list n → sublists | `[1 2 3 4] 2 windows` → `[[1 2] [2 3] [3 4]]` |
+| `reshape` | list [r c] → matrix | `[1 2 3 4] [2 2] reshape` → `[[1 2] [3 4]]` |
+| `transpose` | matrix → transposed | `[[1 2] [3 4]] transpose` → `[[1 3] [2 4]]` |
+| `group` | data indices → groups | groups data by index labels |
+| `partition` | alias of `group` | `[10 20 30] [0 1 0] partition` |
+| `classify` | list → indices | `[1 2 1 3 2] classify` → `[0 1 0 2 1]` |
 
 ### float math
 
@@ -405,6 +426,7 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
 |------|--------|
 | `clear` | Fill canvas with color (0-3) |
 | `pixel` | `x y color pixel` — set one pixel |
+| `fill-rect` | `x y w h color fill-rect` — fill a rectangle |
 | `on` | `'event (handler) on` — register event callback |
 | `show` | `(render) show` — start event loop with render function |
 
@@ -461,7 +483,7 @@ list N (2 random give) repeat
 
 ## examples
 
-20 [Project Euler](https://projecteuler.net/) solutions in `examples/euler/`:
+50 [Project Euler](https://projecteuler.net/) solutions in `examples/euler/`:
 
 ```slap
 -- Euler #1: sum of multiples of 3 or 5 below 1000
@@ -496,7 +518,7 @@ make test
 ```
 
 Runs five checks:
-1. `./slap tests/expect.slap` — 100+ integration tests (assert-based)
+1. `./slap tests/expect.slap` — 250+ integration tests (assert-based)
 2. `./slap --check tests/type.slap` — type system validation
 3. `./slap tests/type.slap > /dev/null` — execute type tests
 4. `./slap --check tests/expect.slap` — type-check integration tests
@@ -504,10 +526,11 @@ Runs five checks:
 
 ## building
 
-Requires only a C99 compiler and `-lm`. No dependencies.
+Requires only a C99 compiler and `-lm`. No dependencies beyond SDL2 for the graphics build.
 
 ```bash
 make slap          # terminal interpreter
 make slap-sdl      # SDL2 graphics build (requires SDL2)
+make slap-wasm FILE=examples/life.slap  # Emscripten/WASM build
 make clean         # remove binaries
 ```

@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 make slap          # Terminal interpreter (C99, -O3 -flto, links -lm)
 make slap-sdl      # SDL graphics build (adds -DSLAP_SDL, links SDL2)
+make slap-wasm FILE=prog.slap  # Emscripten/WASM build (embeds .slap file, outputs .html/.js/.wasm)
 make test           # Run all test suites
 make clean          # Remove binaries
 ```
@@ -38,16 +39,17 @@ Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.
 - **Type checker** (`typecheck_tokens` → `tc_process_range`): Union-find type inference, effect system (consumed/produced stack slots), linear value tracking. Type variables use path-compressed union-find for unification.
 - **Evaluator** (`eval` → `build_tuple` → `eval_body`): Tokens → compound values (tuples), then stack-machine execution. `dispatch_word` resolves names via frame lookup then primitive table.
 - **Frames**: Lexical scope chain with refcounting. Closures capture their defining frame. `def` bindings auto-execute tuples on lookup; `let` bindings push values.
-- **Primitives**: ~80 C functions registered via `prim_register`. Macros `ARITH2`, `FLOAT1`, `CMP2` generate families of math/comparison ops.
-- **Prelude**: ~40 derived functions defined in Slap itself (embedded string in slap.c). Loaded at startup before user code.
+- **Primitives**: ~85 C functions registered via `prim_register`. Macros `ARITH2`, `FLOAT1`, `CMP2` generate families of math/comparison ops.
+- **Prelude**: ~65 derived definitions in Slap itself (embedded string in slap.c). Loaded at startup before user code.
+- **Recur**: `'name recur (body) def` enables self-referencing definitions for recursion.
 
 ### Type system
 
 Two categories of types:
-- **Stackable** (copyable): Int, Float, Symbol, Tuple, Record, etc. Support `dup`/`drop`.
-- **Linear**: Box, List, Dict, String. Must be consumed exactly once via `free`, `lend`, `mutate`, or `clone`.
+- **Stackable** (copyable): Int, Float, Symbol, Tuple, Record, List, String. Support `dup`/`drop`.
+- **Linear**: Box only. Must be consumed exactly once via `free`, `lend`, `mutate`, or `clone`.
 
-`lend` borrows a stackable snapshot from a linear value. No escape constraints needed because borrowed values are always stackable.
+`lend` borrows a stackable snapshot from a Box. No escape constraints needed because borrowed values are always stackable.
 
 ### def vs let
 
@@ -56,4 +58,4 @@ Two categories of types:
 
 ### SDL graphics (optional)
 
-Compiled with `-DSLAP_SDL`. 640×480 canvas, 2-bit grayscale. Primitives: `clear`, `pixel`, `on`, `show`. Event callbacks for mouse/keyboard.
+Compiled with `-DSLAP_SDL`. 640×480 canvas, 2-bit grayscale. Primitives: `clear`, `pixel`, `fill-rect`, `on`, `show`. Event callbacks for mouse/keyboard.
