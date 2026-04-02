@@ -1,12 +1,12 @@
-# slap
-
-A stack-based programming language with static type inference and linear types. Single-file C99 interpreter (~2100 lines).
-
 <p align="center">
   <img src="assets/life.gif" width="240" alt="Game of Life">
   <img src="assets/flock.gif" width="240" alt="Boids flocking">
   <img src="assets/ant.gif" width="240" alt="Langton's ant">
 </p>
+
+# slap
+
+A stack-based programming language with static type inference and linear types. Single-file C99 interpreter (~2100 lines).
 
 ## quick start
 
