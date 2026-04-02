@@ -6,7 +6,6 @@ A stack-based programming language with static type inference and linear types. 
   <img src="assets/life.gif" width="240" alt="Game of Life">
   <img src="assets/flock.gif" width="240" alt="Boids flocking">
   <img src="assets/ant.gif" width="240" alt="Langton's ant">
-  <img src="assets/zoom.gif" width="240" alt="Mandelbrot zoom">
 </p>
 
 ## quick start
