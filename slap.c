@@ -668,7 +668,7 @@ static TypeConstraint tc_infer_effect_ctx(Token *toks, int start, int end, int t
                         vsp += ho->out; if (ho->out > 0) top_type = ho->out_type;
                     }
                 }
-                if (ctx) { TCBinding *ub = tc_lookup(ctx, sym);
+                if (ctx && !sig && !ho_ops_find(sym)) { TCBinding *ub = tc_lookup(ctx, sym);
                     if (ub && ub->is_def && ub->atype.effect_idx >= 0) {
                         TupleEffect *e = &ctx->effects[ub->atype.effect_idx];
                         if (vsp < e->consumed) { consumed += e->consumed - vsp; vsp = 0; } else vsp -= e->consumed;
@@ -806,6 +806,9 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
 static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
     TypeSig *sig = typesig_find(sym);
     if (sig) goto apply_sig;
+    { HOEffect *ho = ho_ops_find(sym);
+      if (ho) { tc_apply_ho(tc, ho, line); return; }
+    }
     { TCBinding *b = tc_lookup(tc, sym);
       if (b) {
         if (b->is_def && b->atype.type == TC_TUPLE) {
@@ -847,12 +850,8 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
                 } else tc_apply_effect(tc, eff->consumed, eff->produced, eff->out_type, line);
                 return;
             }
-            return;
         } else { tc_push(tc, b->atype.type, line); if (b->atype.flags & AT_LINEAR) tc->data[tc->sp-1].flags |= AT_LINEAR; return; }
       }
-    }
-    { HOEffect *ho = ho_ops_find(sym);
-      if (ho) { tc_apply_ho(tc, ho, line); return; }
     }
     if (tc->unknown_count < TC_UNKNOWN_MAX) { tc->unknowns[tc->unknown_count].sym = sym; tc->unknowns[tc->unknown_count].line = line; tc->unknown_count++; }
     return;
@@ -1191,27 +1190,11 @@ static void prim_mod(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();if(b==0)d
 
 #define CMP2(nm,expr) static void prim_##nm(Frame *e){(void)e;Value bt=stack[sp-1];int bs=val_slots(bt);int as=val_slots(stack[sp-1-bs]);int r=(expr);sp-=as+bs;spush(val_int(r?1:0));}
 CMP2(eq, val_equal(&stack[sp-bs-as],as,&stack[sp-bs],bs))
-CMP2(neq, !val_equal(&stack[sp-bs-as],as,&stack[sp-bs],bs))
 CMP2(lt, val_less(&stack[sp-bs-as],as,&stack[sp-bs],bs))
-CMP2(gt, val_less(&stack[sp-bs],bs,&stack[sp-bs-as],as))
-CMP2(ge, !val_less(&stack[sp-bs-as],as,&stack[sp-bs],bs))
-CMP2(le, !val_less(&stack[sp-bs],bs,&stack[sp-bs-as],as))
 
 static void prim_and(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int((a&&b)?1:0));}
 static void prim_or(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int((a||b)?1:0));}
 
-#define NUM1(nm,iexpr,fexpr) static void prim_##nm(Frame *e){(void)e;Value v=spop(); \
-    if(v.tag==VAL_INT)spush(val_int(iexpr));else if(v.tag==VAL_FLOAT)spush(val_float(fexpr));else die(#nm ": expected number");}
-NUM1(inc,v.as.i+1,v.as.f+1) NUM1(dec,v.as.i-1,v.as.f-1) NUM1(neg,-v.as.i,-v.as.f)
-NUM1(abs_op,v.as.i<0?-v.as.i:v.as.i,v.as.f<0?-v.as.f:v.as.f)
-
-
-#define NUMBIN(nm,iexpr,fexpr) static void prim_##nm(Frame *e){(void)e;Value b=spop(),a=spop(); \
-    if(a.tag==VAL_INT&&b.tag==VAL_INT) spush(val_int(iexpr)); \
-    else if(a.tag==VAL_FLOAT&&b.tag==VAL_FLOAT) spush(val_float(fexpr)); \
-    else die(#nm ": type mismatch");}
-NUMBIN(max,a.as.i>b.as.i?a.as.i:b.as.i,a.as.f>b.as.f?a.as.f:b.as.f)
-NUMBIN(min,a.as.i<b.as.i?a.as.i:b.as.i,a.as.f<b.as.f?a.as.f:b.as.f)
 
 
 static void prim_print(Frame *e){(void)e;if(sp<=0)die("print: stack underflow");Value top=stack[sp-1];int s=val_slots(top);val_print(&stack[sp-s],s,stdout);printf("\n");sp-=s;}
@@ -1431,14 +1414,6 @@ static void prim_fold(Frame *env) {
     for(int i=0;i<list_len;i++){memcpy(&stack[sp],&list_buf[offs[i]],szs[i]*sizeof(Value));sp+=szs[i];eval_body(fn_buf,fn_s,env);}
 }
 
-static void prim_reduce(Frame *env) {
-    POP_BODY(fn,"reduce"); if(stack[sp-1].tag!=VAL_LIST) die("reduce: expected list");
-    if((int)stack[sp-1].as.compound.len==0) die("reduce: empty list");
-    POP_LIST_BUF(list,"reduce");
-    int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs);
-    memcpy(&stack[sp],&list_buf[offs[0]],szs[0]*sizeof(Value));sp+=szs[0];
-    for(int i=1;i<list_len;i++){memcpy(&stack[sp],&list_buf[offs[i]],szs[i]*sizeof(Value));sp+=szs[i];eval_body(fn_buf,fn_s,env);}
-}
 
 static void prim_each(Frame *env) {
     POP_BODY(fn,"each"); POP_LIST_BUF(list,"each");
@@ -1575,17 +1550,6 @@ static void prim_rotate(Frame *e) {
     memcpy(&stack[base],tmp,len*sizeof(Value));
 }
 
-static void prim_select(Frame *e) {
-    (void)e; POP_LIST_BUF(idx,"select"); POP_LIST_BUF(list,"select");
-    int rb=sp,rc=0;
-    for(int i=0;i<idx_len;i++){
-        ElemRef ir=compound_elem(idx_buf,idx_s,idx_len,i); Value iv=idx_buf[ir.base];
-        if(iv.tag!=VAL_INT) die("select: index must be int");
-        ElemRef lr=compound_elem(list_buf,list_s,list_len,(int)iv.as.i);
-        memcpy(&stack[sp],&list_buf[lr.base],lr.slots*sizeof(Value)); sp+=lr.slots; rc++;
-    }
-    spush(val_compound(VAL_LIST,rc,sp-rb+1));
-}
 
 static void prim_grade(Frame *e,int ascending) {
     (void)e; Value top=speek(); if(top.tag!=VAL_LIST) die(ascending?"rise: expected list":"fall: expected list");
@@ -1794,15 +1758,6 @@ static void eval(Token *toks, int count, Frame *env) {
     memcpy(body,&stack[base],s*sizeof(Value)); sp=base; eval_body(body,s,env); free(body);
 }
 
-static void prim_bi(Frame *env){POP_BODY(g,"bi");POP_BODY(f,"bi");POP_VAL(x);memcpy(&stack[sp],x_buf,x_s*sizeof(Value));sp+=x_s;eval_body(f_buf,f_s,env);memcpy(&stack[sp],x_buf,x_s*sizeof(Value));sp+=x_s;eval_body(g_buf,g_s,env);}
-static void prim_keep(Frame *env){POP_BODY(f,"keep");POP_VAL(x);memcpy(&stack[sp],x_buf,x_s*sizeof(Value));sp+=x_s;eval_body(f_buf,f_s,env);memcpy(&stack[sp],x_buf,x_s*sizeof(Value));sp+=x_s;}
-
-static void prim_repeat_op(Frame *env) {
-    if(stack[sp-1].tag!=VAL_TUPLE) die("repeat: expected tuple");
-    int f_s=val_slots(stack[sp-1]); if(f_s>LOCAL_MAX||f_s>sp) die("repeat: stack underflow");
-    Value f_buf[f_s]; memcpy(f_buf,&stack[sp-f_s],f_s*sizeof(Value)); sp-=f_s;
-    int64_t n=pop_int(); for(int64_t i=0;i<n;i++) eval_body(f_buf,f_s,env);
-}
 
 static void prim_zip(Frame *e) {
     (void)e; POP_LIST_BUF(b,"zip"); POP_LIST_BUF(a,"zip");
@@ -1838,19 +1793,6 @@ static void prim_find_elem(Frame *env) {
     spush(val_int(-1));
 }
 
-static void prim_table(Frame *env) {
-    POP_BODY(fn,"table"); POP_LIST_BUF(list,"table");
-    int rb=sp;
-    for(int i=0;i<list_len;i++){
-        ElemRef r=compound_elem(list_buf,list_s,list_len,i);
-        memcpy(&stack[sp],&list_buf[r.base],r.slots*sizeof(Value));sp+=r.slots;
-        memcpy(&stack[sp],&list_buf[r.base],r.slots*sizeof(Value));sp+=r.slots;
-        eval_body(fn_buf,fn_s,env);
-        Value res_top=stack[sp-1]; int res_s=val_slots(res_top);
-        spush(val_compound(VAL_LIST,2,r.slots+res_s+1));
-    }
-    spush(val_compound(VAL_LIST,list_len,sp-rb+1));
-}
 
 #ifndef SLAP_SDL
 static void prim_millis(Frame *e){(void)e;struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);spush(val_int((int64_t)(ts.tv_sec*1000+ts.tv_nsec/1000000)));}
@@ -1869,16 +1811,6 @@ static const char *BUILTIN_TYPES =
     "'lt [lent in  lent in  int move out] effect\n"
     "'and [int lent in  int lent in  int move out] effect\n"
     "'or [int lent in  int lent in  int move out] effect\n"
-    "'neq [lent in  lent in  int move out] effect\n"
-    "'gt [lent in  lent in  int move out] effect\n"
-    "'ge [lent in  lent in  int move out] effect\n"
-    "'le [lent in  lent in  int move out] effect\n"
-    "'inc [num lent in  num move out] effect\n"
-    "'dec [num lent in  num move out] effect\n"
-    "'neg [num lent in  num move out] effect\n"
-    "'abs [num lent in  num move out] effect\n"
-    "'max ['a num lent in  'a num lent in  'a num move out] effect\n"
-    "'min ['a num lent in  'a num lent in  'a num move out] effect\n"
     "'print [own in] effect\n"
     "'assert [int own in] effect\n"
     "'millis [int move out] effect\n"
@@ -1943,7 +1875,26 @@ static const char *BUILTIN_TYPES =
 
 static const char *PRELUDE =
     "'over (swap dup (swap) dip) def\n'peek (over) def\n'nip (swap drop) def\n"
-    "'rot ((swap) dip swap) def\n'sqr (dup mul) def\n'cube (dup dup mul mul) def\n"
+    "'rot ((swap) dip swap) def\n"
+    "'not (0 eq) [int lent in  int move out] effect def\n"
+    "'neq (eq not) [lent in  lent in  int move out] effect def\n"
+    "'gt (swap lt) [lent in  lent in  int move out] effect def\n"
+    "'ge (lt not) [lent in  lent in  int move out] effect def\n"
+    "'le (swap lt not) [lent in  lent in  int move out] effect def\n"
+    "'inc (1 plus) [num lent in  num move out] effect def\n"
+    "'dec (1 sub) [num lent in  num move out] effect def\n"
+    "'neg (0 swap sub) [num lent in  num move out] effect def\n"
+    "'max (over over lt (nip) (drop) if) [num lent in  num lent in  num move out] effect def\n"
+    "'min (over over lt (drop) (nip) if) [num lent in  num lent in  num move out] effect def\n"
+    "'abs (dup neg max) [num lent in  num move out] effect def\n"
+    "'bi ('g swap def 'f swap def dup f swap g) def\n"
+    "'keep ('f swap def dup f swap) def\n"
+    "'repeat ('f swap def (dup 0 gt) (1 sub (f) dip) while drop) def\n"
+    "'select (swap 'data swap def (data swap get) map) def\n"
+    "'pick (swap 'data swap def (data swap get) map) def\n"
+    "'reduce (swap dup 0 get swap 1 drop-n swap rot fold) def\n"
+    "'table ((dup) swap compose (couple) compose map) def\n"
+    "'sqr (dup mul) def\n'cube (dup dup mul mul) def\n"
     "'ispos (0 swap lt) def\n'isneg (0 lt) def\n'first (0 get) def\n"
     "'last (dup len 1 sub get) def\n'sum (0 (plus) fold) def\n'product (1 (mul) fold) def\n"
     "'max-of (dup first (max) fold) def\n'min-of (dup first (min) fold) def\n"
@@ -1957,7 +1908,6 @@ static const char *PRELUDE =
     "'clamp (rot swap min max) def\n'fclamp (swap min max) def\n"
     "'lerp ((over sub) dip swap mul plus) def\n"
     "'isbetween (rot dup (rot swap le) dip rot rot ge and) def\n"
-    "'not (0 eq) [int lent in  int move out] effect def\n"
     "'iszero (0 eq) [int lent in  int move out] effect def\n"
     "'iseven (2 mod 0 eq) [int lent in  int move out] effect def\n"
     "'isodd (2 mod 0 neq) [int lent in  int move out] effect def\n"
@@ -2064,9 +2014,6 @@ static void register_prims(void) {
         {"dup",prim_dup},{"drop",prim_drop},{"swap",prim_swap},{"dip",prim_dip},{"apply",prim_apply},
         {"plus",prim_plus},{"sub",prim_sub},{"mul",prim_mul},{"div",prim_div},{"mod",prim_mod},
         {"eq",prim_eq},{"lt",prim_lt},{"and",prim_and},{"or",prim_or},
-        {"neq",prim_neq},{"gt",prim_gt},{"ge",prim_ge},{"le",prim_le},
-        {"inc",prim_inc},{"dec",prim_dec},{"neg",prim_neg},{"abs",prim_abs_op},
-        {"max",prim_max},{"min",prim_min},
         {"print",prim_print},{"assert",prim_assert},{"halt",prim_halt},{"random",prim_random},
         {"if",prim_if},{"cond",prim_cond},{"match",prim_match},{"loop",prim_loop},{"while",prim_while},
         {"itof",prim_itof},{"ftoi",prim_ftoi},{"fsqrt",prim_fsqrt},{"fsin",prim_fsin},{"fcos",prim_fcos},
@@ -2077,14 +2024,14 @@ static void register_prims(void) {
         {"list",prim_list},{"len",prim_size},{"give",prim_push_op},{"grab",prim_grab},
         {"get",prim_get},{"nth",prim_nth},{"set",prim_replace_at},{"cat",prim_concat},
         {"take-n",prim_take_n},{"drop-n",prim_drop_n},{"range",prim_range},
-        {"map",prim_map},{"filter",prim_filter},{"fold",prim_fold},{"reduce",prim_reduce},{"each",prim_each},
+        {"map",prim_map},{"filter",prim_filter},{"fold",prim_fold},{"each",prim_each},
         {"sort",prim_sort},{"index-of",prim_index_of},{"scan",prim_scan},{"keep-mask",prim_keep_mask},
-        {"at",prim_at},{"rotate",prim_rotate},{"select",prim_select},{"rise",prim_rise},{"fall",prim_fall},
-        {"windows",prim_windows},{"pick",prim_select},{"reshape",prim_reshape},{"transpose",prim_transpose},
+        {"at",prim_at},{"rotate",prim_rotate},{"rise",prim_rise},{"fall",prim_fall},
+        {"windows",prim_windows},{"reshape",prim_reshape},{"transpose",prim_transpose},
         {"shape",prim_shape},{"classify",prim_classify},{"group",prim_group},{"partition",prim_group},
         {"rec",prim_rec},{"into",prim_into},{"reverse",prim_reverse},{"dedup",prim_dedup},
-        {"bi",prim_bi},{"keep",prim_keep},{"repeat",prim_repeat_op},{"zip",prim_zip},
-        {"where",prim_where},{"find",prim_find_elem},{"table",prim_table},
+        {"zip",prim_zip},
+        {"where",prim_where},{"find",prim_find_elem},
         {"millis",prim_millis},{"box",prim_box},{"free",prim_free},
         {"lend",prim_lend},{"mutate",prim_mutate},{"clone",prim_clone},
 #ifdef SLAP_SDL

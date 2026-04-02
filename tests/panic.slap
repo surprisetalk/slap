@@ -54,7 +54,7 @@ false assert
 -- EXPECT: grab: empty list
 [] grab
 
--- EXPECT: reduce: empty list
+-- EXPECT: index 0 out of bounds
 [] (plus) reduce
 
 -- EXPECT: unknown word
