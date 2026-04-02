@@ -1,0 +1,38 @@
+-- Project Euler #25: 1000-Digit Fibonacci Number
+-- Index of first Fibonacci number with 1000+ digits
+-- Answer: 4782
+
+-- Pad a digit list to 1100 elements (avoids frame-storage growth on rebind)
+'pad-1100 (
+  (dup len 1100 lt) (0 give) while
+) def
+
+[1] pad-1100 'fa let
+[1] pad-1100 'fb let
+1 'alen let
+1 'blen let
+2 'idx let
+(blen 1000 lt)
+(
+  alen blen max 'n let
+  0 'carry let
+  0 'j let
+  list
+  (j n lt)
+  (
+    'fa j nth 'fb j nth plus carry plus 'v let
+    v 10 mod give
+    v 10 div 'carry let
+    j 1 plus 'j let
+  ) while
+  (carry 0 gt)
+  (carry 10 mod give carry 10 div 'carry let j 1 plus 'j let)
+  while
+  j 'new-len let
+  pad-1100 'fc let
+  fb 'fa let  blen 'alen let
+  fc 'fb let  new-len 'blen let
+  idx 1 plus 'idx let
+)
+while
+idx print

@@ -1,0 +1,27 @@
+-- Project Euler #31: Coin Sums
+-- How many ways to make 200p using 1p,2p,5p,10p,20p,50p,100p,200p?
+-- Answer: 73682
+
+list 201 (0 give) repeat 0 1 set box 'ways let
+
+[1 2 5 10 20 50 100 200] 'coins let
+
+0 'ci let
+(ci 8 lt)
+(
+  coins ci get 'coin let
+  ways (
+    'w let
+    coin 'j let
+    (j 200 le)
+    (
+      w j get w j coin sub get plus 'v let
+      w j v set 'w let
+      j 1 plus 'j let
+    ) while
+    w
+  ) mutate 'ways let
+  ci 1 plus 'ci let
+) while
+
+ways (200 get) lend swap free print

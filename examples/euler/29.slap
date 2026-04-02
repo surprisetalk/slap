@@ -1,0 +1,40 @@
+-- Project Euler #29: Distinct Powers
+-- How many distinct terms in a^b for 2 <= a <= 100, 2 <= b <= 100?
+-- Answer: 9183
+
+-- Reduce each base to smallest root. Group bases sharing a root.
+-- For each group, generate all exponents e*b, sort, dedup, count.
+-- Solo bases (not perfect powers) each contribute 99 distinct values.
+
+'count-group (
+  'exps let
+  list
+  0 'ei let
+  (ei exps len lt)
+  (
+    exps ei get 'e let
+    2 'b let
+    (b 100 le)
+    (e b mul give b 1 plus 'b let) while
+    ei 1 plus 'ei let
+  ) while
+  sort dedup len
+) def
+
+-- Group 2: bases 2,4,8,16,32,64 (exponents 1,2,3,4,5,6)
+-- Group 3: bases 3,9,27,81 (exponents 1,2,3,4)
+-- Group 5: bases 5,25 (exponents 1,2)
+-- Group 6: bases 6,36 (exponents 1,2)
+-- Group 7: bases 7,49 (exponents 1,2)
+-- Group 10: bases 10,100 (exponents 1,2)
+-- Solo bases: 99 - 6 - 4 - 2 - 2 - 2 - 2 = 81
+
+0
+[1 2 3 4 5 6] count-group plus
+[1 2 3 4] count-group plus
+[1 2] count-group plus
+[1 2] count-group plus
+[1 2] count-group plus
+[1 2] count-group plus
+81 99 mul plus
+print

@@ -1,0 +1,21 @@
+-- Project Euler #34: Digit Factorials
+-- Sum of numbers equal to the sum of factorial of their digits
+-- Answer: 40730
+
+[1 1 2 6 24 120 720 5040 40320 362880] 'facts let
+
+0 'total let
+3 'n let
+(n 2540161 lt)
+(
+  n 'dn let
+  0 'dsum let
+  (dn 0 gt)
+  (
+    facts dn 10 mod get dsum plus 'dsum let
+    dn 10 div 'dn let
+  ) while
+  dsum n eq (total n plus 'total let) () if
+  n 1 plus 'n let
+) while
+total print

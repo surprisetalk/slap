@@ -1,0 +1,24 @@
+-- Project Euler #52: Permuted Multiples
+-- Smallest x where x, 2x, 3x, 4x, 5x, 6x all have same digits
+-- Answer: 142857
+
+'sorted-digits (
+  'sd-n let
+  list
+  (sd-n 0 gt) (sd-n 10 mod give sd-n 10 div 'sd-n let) while
+  sort
+) def
+
+0 'found let
+1 'x let
+(found not)
+(
+  x sorted-digits 'xd let
+  x 2 mul sorted-digits xd eq
+  x 3 mul sorted-digits xd eq and
+  x 4 mul sorted-digits xd eq and
+  x 5 mul sorted-digits xd eq and
+  x 6 mul sorted-digits xd eq and
+  (1 'found let) (x 1 plus 'x let) if
+) while
+x print

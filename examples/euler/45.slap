@@ -1,0 +1,23 @@
+-- Project Euler #45: Triangular, Pentagonal, and Hexagonal
+-- Find next number after 40755 that is triangular, pentagonal, and hexagonal
+-- Answer: 1533776805
+
+'is-pentagonal (
+  'ipn-x let
+  1 24 ipn-x mul plus itof fsqrt 'ipn-s let
+  ipn-s ftoi 'ipn-si let
+  ipn-si ipn-si mul itof ipn-s ipn-s mul sub fabs 0.5 lt (
+    ipn-si 1 plus 6 mod 0 eq
+  ) (0) if
+) def
+
+0 'h let
+0 'found let
+144 'n let
+(found not)
+(
+  n 2 n mul 1 sub mul 'h let
+  h is-pentagonal (1 'found let) () if
+  found not (n 1 plus 'n let) () if
+) while
+h print

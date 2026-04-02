@@ -1,0 +1,27 @@
+-- Project Euler #39: Integer Right Triangles
+-- For p <= 1000, which p has most right triangle solutions a+b+c=p?
+-- Answer: 840
+
+0 'best-count let
+0 'best-p let
+
+12 'p let
+(p 1000 le)
+(
+  0 'count let
+  1 'a let
+  (a p 3 div lt)
+  (
+    a 'b let
+    (b p a sub 2 div le)
+    (
+      p a sub b sub 'c let
+      a a mul b b mul plus c c mul eq (count 1 plus 'count let) () if
+      b 1 plus 'b let
+    ) while
+    a 1 plus 'a let
+  ) while
+  count best-count gt (count 'best-count let p 'best-p let) () if
+  p 2 plus 'p let
+) while
+best-p print

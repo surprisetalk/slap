@@ -1,0 +1,41 @@
+-- Project Euler #38: Pandigital Multiples
+-- Largest 1-9 pandigital from concatenating n*1, n*2, ..., n*k
+-- Answer: 932718654
+
+'num-digits (
+  'nd-n let
+  0 'nd-c let
+  (nd-n 0 gt) (nd-c 1 plus 'nd-c let nd-n 10 div 'nd-n let) while
+  nd-c
+) def
+
+'get-digits (
+  'gd-n let
+  list
+  (gd-n 0 gt) (gd-n 10 mod give gd-n 10 div 'gd-n let) while
+) def
+
+0 'best let
+
+2 'n let
+(n 9999 le)
+(
+  0 'val let
+  0 'dcount let
+  1 'k let
+  (dcount 9 lt)
+  (
+    n k mul 'prod let
+    prod num-digits 'nd let
+    val 1 nd (10 mul) repeat mul prod plus 'val let
+    dcount nd plus 'dcount let
+    k 1 plus 'k let
+  ) while
+  dcount 9 eq (
+    val get-digits sort [1 2 3 4 5 6 7 8 9] eq (
+      val best gt (val 'best let) () if
+    ) () if
+  ) () if
+  n 1 plus 'n let
+) while
+best print

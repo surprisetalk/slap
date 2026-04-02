@@ -1,0 +1,20 @@
+-- Project Euler #30: Digit Fifth Powers
+-- Sum of all numbers equal to the sum of fifth powers of their digits
+-- Answer: 443839
+
+0 'total let
+2 'n let
+(n 354295 lt)
+(
+  n 's let
+  0 'dsum let
+  (s 0 gt)
+  (
+    s 10 mod 'd let
+    d d mul d mul d mul d mul dsum plus 'dsum let
+    s 10 div 's let
+  ) while
+  dsum n eq (total n plus 'total let) () if
+  n 1 plus 'n let
+) while
+total print

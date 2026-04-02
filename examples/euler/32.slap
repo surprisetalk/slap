@@ -1,0 +1,47 @@
+-- Project Euler #32: Pandigital Products
+-- Sum of products c=a*b where digits of a,b,c form 1-9 pandigital
+-- Answer: 45228
+
+'get-digits (
+  'gd-n let
+  list
+  (gd-n 0 gt) (gd-n 10 mod give gd-n 10 div 'gd-n let) while
+) def
+
+'is-pan9 (
+  'ipt-c let 'ipt-b let 'ipt-a let
+  ipt-a get-digits ipt-b get-digits cat ipt-c get-digits cat
+  dup len 9 eq (sort [1 2 3 4 5 6 7 8 9] eq) (drop 0) if
+) def
+
+list 'products let
+
+-- Case 1: a is 1-digit, b is 4-digit
+2 'a let
+(a 9 le)
+(
+  1234 'b let
+  (b 9876 le a b mul 9999 le and)
+  (
+    a b mul 'c let
+    a b c is-pan9 (products c give 'products let) () if
+    b 1 plus 'b let
+  ) while
+  a 1 plus 'a let
+) while
+
+-- Case 2: a is 2-digit, b is 3-digit
+12 'a let
+(a 98 le)
+(
+  123 'b let
+  (b 987 le a b mul 9999 le and)
+  (
+    a b mul 'c let
+    a b c is-pan9 (products c give 'products let) () if
+    b 1 plus 'b let
+  ) while
+  a 1 plus 'a let
+) while
+
+products sort dedup sum print

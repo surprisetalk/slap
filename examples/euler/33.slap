@@ -1,0 +1,29 @@
+-- Project Euler #33: Digit Cancelling Fractions
+-- Product of four non-trivial digit-cancelling fractions, find denominator
+-- Answer: 100
+
+'gcd recur (dup 0 eq (drop) (swap over mod gcd) if) def
+
+1 'np let
+1 'dp let
+
+10 'a let
+(a 99 le)
+(
+  a 1 plus 'b let
+  (b 99 le)
+  (
+    a 10 mod 'a2 let
+    b 10 div 'b1 let
+    a2 b1 eq a2 0 neq and b 10 mod 0 neq and (
+      a b 10 mod mul b a 10 div mul eq (
+        np a 10 div mul 'np let
+        dp b 10 mod mul 'dp let
+      ) () if
+    ) () if
+    b 1 plus 'b let
+  ) while
+  a 1 plus 'a let
+) while
+
+dp np dp gcd div print

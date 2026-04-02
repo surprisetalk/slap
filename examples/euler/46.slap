@@ -1,0 +1,42 @@
+-- Project Euler #46: Goldbach's Other Conjecture
+-- Smallest odd composite not writable as prime + 2*square
+-- Answer: 5777
+
+'is-prime (
+  'ip-n let
+  ip-n 2 lt (0) (
+    ip-n 2 eq (1) (
+      ip-n 2 mod 0 eq (0) (
+        1 'ip-ok let
+        3 'ip-i let
+        (ip-i ip-i mul ip-n le ip-ok and)
+        (ip-n ip-i mod 0 eq (0 'ip-ok let) () if ip-i 2 plus 'ip-i let)
+        while
+        ip-ok
+      ) if
+    ) if
+  ) if
+) def
+
+'goldbach-check (
+  'gc-n let
+  0 'gc-found let
+  1 'gc-k let
+  (gc-k gc-k mul 2 mul gc-n lt gc-found not and)
+  (
+    gc-n gc-k gc-k mul 2 mul sub is-prime (1 'gc-found let) () if
+    gc-k 1 plus 'gc-k let
+  ) while
+  gc-found
+) def
+
+0 'found let
+9 'n let
+(found not)
+(
+  n is-prime not (
+    n goldbach-check not (1 'found let) () if
+  ) () if
+  found not (n 2 plus 'n let) () if
+) while
+n print

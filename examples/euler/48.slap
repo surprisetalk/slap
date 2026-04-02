@@ -1,0 +1,41 @@
+-- Project Euler #48: Self Powers
+-- Last 10 digits of 1^1 + 2^2 + ... + 1000^1000
+-- Answer: 9110846700
+
+10000000000 'modulus let
+
+-- Modular multiplication to avoid int64 overflow
+'mod-mul (
+  'mm-m let 'mm-b let 'mm-a let
+  0 'mm-r let
+  mm-a mm-m mod 'mm-a let
+  (mm-b 0 gt)
+  (
+    mm-b 2 mod 1 eq (mm-r mm-a plus mm-m mod 'mm-r let) () if
+    mm-a 2 mul mm-m mod 'mm-a let
+    mm-b 2 div 'mm-b let
+  ) while
+  mm-r
+) def
+
+'mod-pow (
+  'mp-m let 'mp-e let 'mp-b let
+  1 'mp-r let
+  mp-b mp-m mod 'mp-b let
+  (mp-e 0 gt)
+  (
+    mp-e 2 mod 1 eq (mp-r mp-b mp-m mod-mul 'mp-r let) () if
+    mp-b mp-b mp-m mod-mul 'mp-b let
+    mp-e 2 div 'mp-e let
+  ) while
+  mp-r
+) def
+
+0 'total let
+1 'k let
+(k 1000 le)
+(
+  total k k modulus mod-pow plus modulus mod 'total let
+  k 1 plus 'k let
+) while
+total print

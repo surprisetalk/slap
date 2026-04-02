@@ -1,0 +1,27 @@
+-- Project Euler #40: Champernowne's Constant
+-- d1 * d10 * d100 * d1000 * d10000 * d100000 * d1000000
+-- Answer: 210
+
+'champer-digit (
+  'cd-pos let
+  1 'cd-digits let
+  9 'cd-count let
+  1 'cd-start let
+  (cd-pos cd-count cd-digits mul gt)
+  (
+    cd-pos cd-count cd-digits mul sub 'cd-pos let
+    cd-start 10 mul 'cd-start let
+    cd-digits 1 plus 'cd-digits let
+    cd-start 10 mul cd-start sub 'cd-count let
+  ) while
+  cd-pos 1 sub cd-digits div cd-start plus 'cd-n let
+  cd-digits cd-pos 1 sub cd-digits mod sub 1 sub 'cd-off let
+  cd-off (cd-n 10 div 'cd-n let) repeat
+  cd-n 10 mod
+) def
+
+1 'result let
+[1 10 100 1000 10000 100000 1000000] (
+  champer-digit result mul 'result let
+) each
+result print

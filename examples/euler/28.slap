@@ -1,0 +1,14 @@
+-- Project Euler #28: Number Spiral Diagonals
+-- Sum of diagonals in a 1001x1001 number spiral
+-- Answer: 669171001
+
+1 'total let
+1 'k let
+(k 500 le)
+(
+  2 k mul 1 sub 's let
+  s s mul 4 mul 20 k mul plus
+  total plus 'total let
+  k 1 plus 'k let
+) while
+total print

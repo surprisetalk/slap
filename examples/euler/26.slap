@@ -1,0 +1,28 @@
+-- Project Euler #26: Reciprocal Cycles
+-- Find d < 1000 with longest recurring cycle in 1/d
+-- Answer: 983
+
+'cycle-len (
+  'cl-d let
+  (cl-d 2 mod 0 eq) (cl-d 2 div 'cl-d let) while
+  (cl-d 5 mod 0 eq) (cl-d 5 div 'cl-d let) while
+  cl-d 1 le (0) (
+    10 cl-d mod 'cl-r let
+    1 'cl-k let
+    (cl-r 1 neq)
+    (cl-r 10 mul cl-d mod 'cl-r let cl-k 1 plus 'cl-k let)
+    while
+    cl-k
+  ) if
+) def
+
+0 'best let
+0 'best-d let
+2 'd let
+(d 1000 lt)
+(
+  d cycle-len 'c let
+  c best gt (c 'best let d 'best-d let) () if
+  d 1 plus 'd let
+) while
+best-d print

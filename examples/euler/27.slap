@@ -1,0 +1,44 @@
+-- Project Euler #27: Quadratic Primes
+-- n^2 + an + b producing most consecutive primes, find a*b
+-- Answer: -59231
+
+'is-prime (
+  'ip-n let
+  ip-n 2 lt (0) (
+    ip-n 2 eq (1) (
+      ip-n 2 mod 0 eq (0) (
+        1 'ip-ok let
+        3 'ip-i let
+        (ip-i ip-i mul ip-n le ip-ok and)
+        (ip-n ip-i mod 0 eq (0 'ip-ok let) () if ip-i 2 plus 'ip-i let)
+        while
+        ip-ok
+      ) if
+    ) if
+  ) if
+) def
+
+0 'best-count let
+0 'best-ab let
+
+2 'b let
+(b 1000 le)
+(
+  b is-prime (
+    999 neg 'a let
+    (a 1000 lt)
+    (
+      0 'n let
+      1 'ok let
+      (ok)
+      (
+        n n mul a n mul plus b plus is-prime 'ok let
+        ok (n 1 plus 'n let) () if
+      ) while
+      n best-count gt (n 'best-count let a b mul 'best-ab let) () if
+      a 1 plus 'a let
+    ) while
+  ) () if
+  b 1 plus 'b let
+) while
+best-ab print

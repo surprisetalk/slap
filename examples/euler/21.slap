@@ -1,0 +1,32 @@
+-- Project Euler #21: Amicable Numbers
+-- Sum of all amicable numbers under 10000
+-- Answer: 31626
+
+'sum-divs (
+  'sd-n let
+  sd-n 1 le (0) (
+    1 'sd-total let
+    2 'sd-i let
+    (sd-i sd-i mul sd-n le)
+    (
+      sd-n sd-i mod 0 eq (
+        sd-total sd-i plus 'sd-total let
+        sd-i sd-i mul sd-n neq (sd-total sd-n sd-i div plus 'sd-total let) () if
+      ) () if
+      sd-i 1 plus 'sd-i let
+    ) while
+    sd-total
+  ) if
+) def
+
+0 'ans let
+2 'n let
+(n 10000 lt)
+(
+  n sum-divs 'm let
+  m n neq m 0 gt and (
+    m sum-divs n eq (ans n plus 'ans let) () if
+  ) () if
+  n 1 plus 'n let
+) while
+ans print

@@ -1,0 +1,35 @@
+-- Project Euler #36: Double-base Palindromes
+-- Sum of numbers < 1M palindromic in both base 10 and base 2
+-- Answer: 872187
+
+'to-digits (
+  'td-base let 'td-n let
+  list
+  (td-n 0 gt)
+  (td-n td-base mod give td-n td-base div 'td-n let)
+  while
+) def
+
+'is-palindrome (
+  'ip-ds let
+  ip-ds len 'ip-len let
+  1 'ip-ok let
+  0 'ip-i let
+  (ip-i ip-len 2 div lt ip-ok and)
+  (
+    ip-ds ip-i get ip-ds ip-len 1 sub ip-i sub get neq (0 'ip-ok let) () if
+    ip-i 1 plus 'ip-i let
+  ) while
+  ip-ok
+) def
+
+0 'total let
+1 'n let
+(n 1000000 lt)
+(
+  n 10 to-digits is-palindrome (
+    n 2 to-digits is-palindrome (total n plus 'total let) () if
+  ) () if
+  n 2 plus 'n let
+) while
+total print
