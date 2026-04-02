@@ -1,0 +1,275 @@
+-- System 7 Note Pad
+-- Run with: ./slap-sdl examples/scratch.slap
+
+-- 5x7 bitmap font, packed: val = sum(row[i] * 32^i)
+-- Row bits: bit4=leftmost pixel, bit0=rightmost
+[
+  0 134353028 330 368389098 5307322852
+  3867282232 455520844 132 2290360450 8726317192
+  156718208 139432064 8728346624 1015808 134217728
+  545394753 15629733422 15170933124 33831454254 15604057646
+  2247698626 15603923487 15621636358 4433512511 15621113390
+  12953568814 4194432 8728346752 2290622594 32537600
+  8726284424 134351406 15593037358 18842895918 32801506878
+  15620129326 32801080894 33840644639 17734517279 15621407278
+  18842895921 15170932878 13491046471 18879369809 33840185872
+  18842572657 18842507057 15621211694 17734518334 14585218606
+  18879563326 15604335150 4433514655 15621211697 4641572401
+  19182306865 18834663985 4433521201 33831389247 15309480206
+  35787024 15101659214 17732 33285996544 136
+  16692328448 32801094160 15620126720 16694950945 15602333696
+  8867684614 15082241024 18842704400 15170940932 13491050498
+  20024281616 15170932876 18980988928 18842703872 15621208064
+  17748785152 1123597312 17734359040 32261027840 6753120520
+  14614578176 4648911872 11464655872 18593694720 15082243072
+  33558723584 2286162050 4433514628 8728416392 2793472
+] 'font let
+
+[1 32 1024 32768 1048576 33554432 1073741824] 'pow32 let
+[16 8 4 2 1] 'masks let
+
+-- Layout constants
+6 'CW let       -- char cell width (5px glyph + 1px gap)
+9 'CH let       -- char cell height (7px glyph + 2px gap)
+20 'BAR-H let   -- title bar height
+24 'PAD-Y let   -- paper start y
+16 'PAD-X let   -- left margin
+100 'COLS let   -- chars per line
+
+-- Gap buffer: before-cursor and after-cursor (reversed)
+list 'before let
+list 'after let
+0 'blink let
+
+-- Draw a filled rectangle: x y w h color draw-rect
+'draw-rect (
+  'c let 'h let 'w let 'ry let 'rx let
+  0 'dy let
+  (dy h lt) (
+    0 'dx let
+    (dx w lt) (
+      rx dx plus ry dy plus c pixel
+      dx 1 plus 'dx let
+    ) while
+    dy 1 plus 'dy let
+  ) while
+) def
+
+-- Draw horizontal line: x1 y x2 color draw-hline
+'draw-hline (
+  'c let 'hx2 let 'hy let 'hx1 let
+  hx1 'hx let
+  (hx hx2 lt) (
+    hx hy c pixel
+    hx 1 plus 'hx let
+  ) while
+) def
+
+-- Draw vertical line: x y1 y2 color draw-vline
+'draw-vline (
+  'c let 'vy2 let 'vy1 let 'vx let
+  vy1 'vy let
+  (vy vy2 lt) (
+    vx vy c pixel
+    vy 1 plus 'vy let
+  ) while
+) def
+
+-- Draw one character glyph at (px, py)
+'draw-char (
+  'py let 'px let 'ch let
+  ch 32 sub 'ci let
+  ci 0 ge ci 95 lt and (
+    font ci get 'glyph let
+    0 'row let
+    (row 7 lt) (
+      glyph pow32 row get div 32 mod 'rv let
+      0 'col let
+      (col 5 lt) (
+        rv masks col get div 2 mod 1 eq (
+          px col plus py row plus 0 pixel
+        ) () if
+        col 1 plus 'col let
+      ) while
+      row 1 plus 'row let
+    ) while
+  ) () if
+) def
+
+-- Draw a string (list of char codes) at (px, py)
+'draw-string (
+  'sy let 'sx let
+  0 'si let
+  (dup len si gt) (
+    dup si get sx si CW mul plus sy draw-char
+    si 1 plus 'si let
+  ) while
+  drop
+) def
+
+-- Title bar
+'draw-titlebar (
+  -- Fill bar with dark gray
+  0 0 640 BAR-H 1 draw-rect
+  -- Stripes (every other row lighter)
+  2 'ty let
+  (ty BAR-H 2 sub lt) (
+    ty 2 mod 0 eq (
+      0 ty 640 2 draw-hline
+    ) () if
+    ty 1 plus 'ty let
+  ) while
+  -- Close box
+  4 4 12 12 3 draw-rect
+  4 4 16 0 draw-hline
+  4 15 16 0 draw-hline
+  4 4 16 0 draw-vline
+  15 4 16 0 draw-vline
+  -- Clear area behind title text and draw it
+  260 3 120 14 3 draw-rect
+  [78 111 116 101 32 80 97 100] 268 5 draw-string
+  -- Bottom border
+  0 BAR-H 1 sub 640 0 draw-hline
+) def
+
+-- Torn/perforated edge
+'draw-torn (
+  0 'tx let
+  (tx 640 lt) (
+    tx 4 div 2 mod 0 eq (
+      tx BAR-H 2 pixel
+      tx BAR-H 1 plus 2 pixel
+    ) (
+      tx BAR-H 3 pixel
+      tx BAR-H 1 plus 3 pixel
+    ) if
+    tx 1 plus 'tx let
+  ) while
+  0 BAR-H 2 plus 640 1 draw-hline
+) def
+
+-- Ruled lines on paper
+'draw-rules (
+  PAD-Y CH plus 'ry let
+  (ry 480 lt) (
+    0 ry 640 2 draw-hline
+    ry CH plus 'ry let
+  ) while
+) def
+
+-- Render text from gap buffer
+'render-text (
+  PAD-X 'cx let
+  PAD-Y 2 plus 'cy let
+  before len 'bpos let
+
+  -- Render before-cursor chars
+  0 'ti let
+  (ti bpos lt) (
+    before ti get 'tch let
+    tch 10 eq (
+      PAD-X 'cx let
+      cy CH plus 'cy let
+    ) (
+      cy 480 lt (
+        tch cx cy draw-char
+        cx CW plus 'cx let
+        cx PAD-X COLS CW mul plus ge (
+          PAD-X 'cx let
+          cy CH plus 'cy let
+        ) () if
+      ) () if
+    ) if
+    ti 1 plus 'ti let
+  ) while
+
+  -- Draw cursor (2px wide vertical bar)
+  blink 30 lt (
+    cx cy cy 7 plus 0 draw-vline
+    cx 1 plus cy cy 7 plus 0 draw-vline
+  ) () if
+
+  -- Render after-cursor chars (reversed order)
+  after len 'alen let
+  alen 1 sub 'ai let
+  (ai 0 ge) (
+    after ai get 'tch let
+    tch 10 eq (
+      PAD-X 'cx let
+      cy CH plus 'cy let
+    ) (
+      cy 480 lt (
+        tch cx cy draw-char
+        cx CW plus 'cx let
+        cx PAD-X COLS CW mul plus ge (
+          PAD-X 'cx let
+          cy CH plus 'cy let
+        ) () if
+      ) () if
+    ) if
+    ai 1 sub 'ai let
+  ) while
+) def
+
+-- Keyboard handler
+'keydown (
+  dup 8 eq (
+    -- Backspace
+    drop
+    before len 0 gt (
+      before grab drop 'before let
+    ) () if
+  ) (
+  dup 13 eq (
+    -- Enter
+    drop
+    before 10 give 'before let
+  ) (
+  dup 127 eq (
+    -- Delete
+    drop
+    after len 0 gt (
+      after grab drop 'after let
+    ) () if
+  ) (
+  dup 1073741904 eq (
+    -- Left arrow
+    drop
+    before len 0 gt (
+      before grab 'mc let
+      after mc give 'after let
+    ) () if
+  ) (
+  dup 1073741903 eq (
+    -- Right arrow
+    drop
+    after len 0 gt (
+      after grab 'mc let
+      before mc give 'before let
+    ) () if
+  ) (
+    'k let
+    k 32 ge k 127 lt and (
+      before k give 'before let
+    ) () if
+  ) if) if) if) if) if
+) on
+
+-- Blink counter
+'tick (
+  drop
+  blink 1 plus 60 mod 'blink let
+) on
+
+-- State on stack for show loop
+0
+
+-- Render
+(
+  drop
+  3 clear
+  draw-titlebar
+  draw-torn
+  draw-rules
+  render-text
+) show
