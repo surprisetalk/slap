@@ -1190,6 +1190,7 @@ static void prim_div(Frame *e) { (void)e; Value b=spop(),a=spop();
     if(a.tag==VAL_INT&&b.tag==VAL_INT){if(b.as.i==0)die("div: division by zero");spush(val_int(a.as.i/b.as.i));}
     else if(a.tag==VAL_FLOAT&&b.tag==VAL_FLOAT)spush(val_float(a.as.f/b.as.f)); else die("div: type mismatch"); }
 static void prim_mod(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();if(b==0)die("mod: division by zero");spush(val_int(a%b));}
+static void prim_divmod(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();if(b==0)die("divmod: division by zero");spush(val_int(a%b));spush(val_int(a/b));}
 
 #define CMP2(nm,expr) static void prim_##nm(Frame *e){(void)e;Value bt=stack[sp-1];int bs=val_slots(bt);int as=val_slots(stack[sp-1-bs]);int r=(expr);sp-=as+bs;spush(val_int(r?1:0));}
 CMP2(eq, val_equal(&stack[sp-bs-as],as,&stack[sp-bs],bs))
@@ -1812,6 +1813,7 @@ static const char *BUILTIN_TYPES =
     "'mul ['a num lent in  'a num lent in  'a num move out] effect\n"
     "'div ['a num lent in  'a num lent in  'a num move out] effect\n"
     "'mod [int lent in  int lent in  int move out] effect\n"
+    "'divmod [int lent in  int lent in  int move out  int move out] effect\n"
     "'eq [lent in  lent in  int move out] effect\n"
     "'lt [lent in  lent in  int move out] effect\n"
     "'and [int lent in  int lent in  int move out] effect\n"
@@ -1917,6 +1919,9 @@ static const char *PRELUDE =
     "'iseven (2 mod 0 eq) [int lent in  int move out] effect def\n"
     "'isodd (2 mod 0 neq) [int lent in  int move out] effect def\n"
     "'divides (mod 0 eq) [int lent in  int lent in  int move out] effect def\n"
+    "'times-i ('f swap def 0 (over over lt) (dup f 1 plus) while drop drop) def\n"
+    "'wrap (dup rot swap plus swap mod) [int lent in  int lent in  int move out] effect def\n"
+    "'fill-rect ('c let 'h let 'w let 'y0 let 'x0 let h (dup y0 plus 'py let w (dup x0 plus py c pixel) times-i drop) times-i drop) def\n"
     "3.14159265358979323846 'pi let\n6.28318530717958647692 'tau let\n2.71828182845904523536 'e let\n";
 
 static void prim_reverse(Frame *e) {
@@ -1970,7 +1975,7 @@ static void sdl_init(void) {
     memset(canvas,0,sizeof(canvas));
 }
 static void sdl_present(void) {
-    uint8_t pixels[CANVAS_W*CANVAS_H*3];
+    static uint8_t pixels[CANVAS_W*CANVAS_H*3];
     for(int i=0;i<CANVAS_W*CANVAS_H;i++){uint8_t g=gray_lut[canvas[i]&3];pixels[i*3]=pixels[i*3+1]=pixels[i*3+2]=g;}
     SDL_UpdateTexture(sdl_texture,NULL,pixels,CANVAS_W*3);
     SDL_RenderClear(sdl_renderer);SDL_RenderCopy(sdl_renderer,sdl_texture,NULL,NULL);SDL_RenderPresent(sdl_renderer);
@@ -1985,25 +1990,48 @@ static void prim_on(Frame *e) {
     event_handlers[handler_count].handler_slots=fn_s; sp-=fn_s;
     event_handlers[handler_count].event_sym=pop_sym(); handler_count++;
 }
+static uint32_t sym_tick=0,sym_keydown=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0;
+static void show_intern_syms(void) {
+    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");}
+}
+static void show_dispatch_event(SDL_Event *ev, Frame *env) {
+    if(ev->type==SDL_KEYDOWN) for(int h=0;h<handler_count;h++)
+        if(event_handlers[h].event_sym==sym_keydown){spush(val_int((int64_t)ev->key.keysym.sym));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+    if(ev->type==SDL_MOUSEBUTTONDOWN) for(int h=0;h<handler_count;h++)
+        if(event_handlers[h].event_sym==sym_mousedown){spush(val_int((int64_t)ev->button.x));spush(val_int((int64_t)ev->button.y));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+    if(ev->type==SDL_MOUSEBUTTONUP) for(int h=0;h<handler_count;h++)
+        if(event_handlers[h].event_sym==sym_mouseup){spush(val_int((int64_t)ev->button.x));spush(val_int((int64_t)ev->button.y));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+    if(ev->type==SDL_MOUSEMOTION) for(int h=0;h<handler_count;h++)
+        if(event_handlers[h].event_sym==sym_mousemove){spush(val_int((int64_t)ev->motion.x));spush(val_int((int64_t)ev->motion.y));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+}
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+static Frame *show_env=NULL; static int64_t show_frame=0;
+static void show_one_frame(void) {
+    SDL_Event ev;
+    while(SDL_PollEvent(&ev)){
+        if(ev.type==SDL_QUIT){emscripten_cancel_main_loop();return;}
+        show_dispatch_event(&ev,show_env);
+    }
+    for(int h=0;h<handler_count;h++) if(event_handlers[h].event_sym==sym_tick){spush(val_int(show_frame));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,show_env);}
+    if(render_slots>0){Value mt=stack[sp-1];int ms=val_slots(mt);memcpy(&stack[sp],&stack[sp-ms],ms*sizeof(Value));sp+=ms;eval_body(render_body,render_slots,show_env);}
+    sdl_present(); show_frame++;
+}
+#endif
 static void prim_show(Frame *env) {
     Value fn_top=stack[sp-1]; if(fn_top.tag!=VAL_TUPLE) die("show: expected tuple render function");
     render_slots=val_slots(fn_top); memcpy(render_body,&stack[sp-render_slots],render_slots*sizeof(Value)); sp-=render_slots;
-    sdl_init();
-    static uint32_t sym_tick=0,sym_keydown=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0;
-    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");}
+    sdl_init(); show_intern_syms();
+#ifdef __EMSCRIPTEN__
+    show_env=env; show_frame=0;
+    emscripten_set_main_loop(show_one_frame,0,1);
+#else
     int64_t frame=0; int running=1;
     while(running){
         SDL_Event ev;
         while(SDL_PollEvent(&ev)){
             if(ev.type==SDL_QUIT){running=0;break;}
-            if(ev.type==SDL_KEYDOWN) for(int h=0;h<handler_count;h++)
-                if(event_handlers[h].event_sym==sym_keydown){spush(val_int((int64_t)ev.key.keysym.sym));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
-            if(ev.type==SDL_MOUSEBUTTONDOWN) for(int h=0;h<handler_count;h++)
-                if(event_handlers[h].event_sym==sym_mousedown){spush(val_int((int64_t)ev.button.x));spush(val_int((int64_t)ev.button.y));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
-            if(ev.type==SDL_MOUSEBUTTONUP) for(int h=0;h<handler_count;h++)
-                if(event_handlers[h].event_sym==sym_mouseup){spush(val_int((int64_t)ev.button.x));spush(val_int((int64_t)ev.button.y));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
-            if(ev.type==SDL_MOUSEMOTION) for(int h=0;h<handler_count;h++)
-                if(event_handlers[h].event_sym==sym_mousemove){spush(val_int((int64_t)ev.motion.x));spush(val_int((int64_t)ev.motion.y));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+            show_dispatch_event(&ev,env);
         }
         for(int h=0;h<handler_count;h++) if(event_handlers[h].event_sym==sym_tick){spush(val_int(frame));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
         if(render_slots>0){Value mt=stack[sp-1];int ms=val_slots(mt);memcpy(&stack[sp],&stack[sp-ms],ms*sizeof(Value));sp+=ms;eval_body(render_body,render_slots,env);}
@@ -2011,13 +2039,14 @@ static void prim_show(Frame *env) {
         if(sdl_test_mode) break; SDL_Delay(16);
     }
     SDL_DestroyTexture(sdl_texture);SDL_DestroyRenderer(sdl_renderer);SDL_DestroyWindow(sdl_window);SDL_Quit();exit(0);
+#endif
 }
 #endif
 
 static void register_prims(void) {
     static struct{const char*n;PrimFn f;} t[]={
         {"dup",prim_dup},{"drop",prim_drop},{"swap",prim_swap},{"dip",prim_dip},{"apply",prim_apply},
-        {"plus",prim_plus},{"sub",prim_sub},{"mul",prim_mul},{"div",prim_div},{"mod",prim_mod},
+        {"plus",prim_plus},{"sub",prim_sub},{"mul",prim_mul},{"div",prim_div},{"mod",prim_mod},{"divmod",prim_divmod},
         {"eq",prim_eq},{"lt",prim_lt},{"and",prim_and},{"or",prim_or},
         {"print",prim_print},{"assert",prim_assert},{"halt",prim_halt},{"random",prim_random},
         {"if",prim_if},{"cond",prim_cond},{"match",prim_match},{"loop",prim_loop},{"while",prim_while},
@@ -2058,6 +2087,9 @@ int main(int argc, char **argv) {
 #endif
         else filename=argv[i];
     }
+#ifdef SLAP_WASM
+    if(!filename) filename="program.slap";
+#endif
     if(!filename){fprintf(stderr,"usage: slap [--check] <file.slap>\n");return 1;}
     current_file=filename; register_prims();
     Frame *global=frame_new(NULL);
