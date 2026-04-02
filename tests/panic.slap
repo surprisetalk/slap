@@ -30,7 +30,7 @@ false assert
 -- EXPECT: expected tuple
 1 apply
 
--- EXPECT: then branch must be tuple
+-- EXPECT: expected tuple
 1 2 3 if
 
 -- EXPECT: type variable
@@ -81,7 +81,7 @@ stack pop
 -- EXPECT: expected list
 42 (1 eq) filter
 
--- EXPECT: expected tuple or record of clauses
+-- EXPECT: scrutinee must be a symbol
 1 2 3 match
 
 -- EXPECT: check: expected preceding type word
