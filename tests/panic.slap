@@ -96,5 +96,5 @@ stack pop
 -- EXPECT: condition must be int
 'x (1 plus) (2 plus) if
 
--- EXPECT: expected record
+-- EXPECT: expected rec
 [1 2 3] 'x at

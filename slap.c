@@ -399,7 +399,7 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
 
 static uint32_t recur_sym = 0;
 static int recur_pending = 0;
-static uint32_t sym_effect_kw = 0, sym_check_kw = 0;
+static uint32_t s_effect = 0, s_check = 0;
 
 /* ---- TYPE SYSTEM ---- */
 
@@ -410,7 +410,7 @@ typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, T
 enum { HO_BODY_1TO1=1, HO_BRANCHES_AGREE=2, HO_SAVES_UNDER=4, HO_SCRUTINEE_SYM=8,
        HO_APPLY_EFFECT=16, HO_BOX_BORROW=32, HO_BOX_MUTATE=64 };
 typedef struct { const char *name; uint32_t sym; int need; int out; TypeConstraint out_type; uint8_t flags; } HOEffect;
-#define HO_OP_COUNT 24
+#define HO_OP_COUNT 23
 static HOEffect ho_ops[HO_OP_COUNT] = {
     {"apply",0,1,0,TC_NONE,HO_APPLY_EFFECT},{"dip",0,2,1,TC_NONE,HO_APPLY_EFFECT|HO_SAVES_UNDER},
     {"if",0,3,1,TC_NONE,HO_BRANCHES_AGREE},
@@ -420,7 +420,7 @@ static HOEffect ho_ops[HO_OP_COUNT] = {
     {"lend",0,2,2,TC_BOX,HO_BOX_BORROW},{"mutate",0,2,1,TC_BOX,HO_BOX_MUTATE},
     {"cond",0,3,1,TC_NONE,HO_BRANCHES_AGREE},{"match",0,3,1,TC_NONE,HO_BRANCHES_AGREE|HO_SCRUTINEE_SYM},
     {"where",0,2,1,TC_LIST,0},{"find",0,2,1,TC_NONE,0},{"table",0,2,1,TC_LIST,0},
-    {"scan",0,3,1,TC_LIST,0},{"at",0,2,1,TC_NONE,0},
+    {"scan",0,3,1,TC_LIST,0},
     {"repeat",0,2,0,TC_NONE,0},{"bi",0,3,2,TC_NONE,0},{"keep",0,1,1,TC_NONE,0},
     {"on",0,1,0,TC_NONE,0},{"show",0,1,0,TC_NONE,0},
 };
@@ -430,7 +430,6 @@ static HOEffect *ho_ops_find(uint32_t sym) { ho_ops_ensure_init(); for (int i = 
 
 typedef struct {
     uint32_t type_var; TypeConstraint constraint, elem_constraint; OwnMode ownership; SlotDir direction;
-    int is_env; uint32_t env_key_var, env_val_var;
 } TypeSlot;
 #define TYPE_SLOTS_MAX 16
 typedef struct { TypeSlot slots[TYPE_SLOTS_MAX]; int slot_count; } TypeSig;
@@ -466,17 +465,11 @@ static TypeSig parse_type_annotation(Token *toks, int start, int end) {
         while (i < end) {
             if (toks[i].tag != TOK_WORD && toks[i].tag != TOK_SYM) break;
             const char *w = sym_name(toks[i].as.sym);
-            if (strcmp(w,"in")==0 || strcmp(w,"out")==0 || strcmp(w,"env")==0) break;
+            if (strcmp(w,"in")==0 || strcmp(w,"out")==0) break;
             i++;
         }
         if (i >= end) break;
-        const char *dir_word = sym_name(toks[i].as.sym);
-        if (strcmp(dir_word, "env") == 0) {
-            slot->is_env = 1;
-            if (i - slot_start >= 2) { slot->env_key_var = toks[slot_start].as.sym; slot->env_val_var = toks[slot_start+1].as.sym; }
-            sig.slot_count++; i++; continue;
-        }
-        slot->direction = (strcmp(dir_word, "in") == 0) ? DIR_IN : DIR_OUT; i++;
+        slot->direction = (strcmp(sym_name(toks[i].as.sym), "in") == 0) ? DIR_IN : DIR_OUT; i++;
         for (int j = slot_start; j < i - 1; j++) {
             const char *tw = sym_name(toks[j].as.sym);
             if (strcmp(tw,"own")==0) { slot->ownership=OWN_OWN; continue; }
@@ -549,11 +542,6 @@ static int tvar_find(TypeChecker *tc, int id) {
     return id;
 }
 static TypeConstraint tvar_resolve(TypeChecker *tc, int id) { return tc->tvars[tvar_find(tc, id)].bound; }
-static TypeConstraint at_type(TypeChecker *tc, AbstractType *at) {
-    if (at->type != TC_NONE) return at->type;
-    if (at->tvar_id > 0) return tvar_resolve(tc, at->tvar_id);
-    return TC_NONE;
-}
 static int tc_constraint_matches(TypeConstraint constraint, TypeConstraint actual) {
     if (constraint == TC_NONE || constraint == actual) return 1;
     if (constraint == TC_NUM && (actual == TC_INT || actual == TC_FLOAT)) return 1;
@@ -584,7 +572,7 @@ static int tvar_unify_at(TypeChecker *tc, int tvar, AbstractType *at, int line) 
     if (at->type != TC_NONE) return tvar_bind(tc, tvar, at->type, line);
     return 0;
 }
-static int tvar_constrained(TypeChecker *tc, TypeConstraint c) { int id = tvar_fresh(tc); tc->tvars[id].bound = c; return id; }
+
 static void tvar_instantiate(TypeChecker *tc, int base, int count, int *map) {
     for (int i = 0; i < count; i++) map[i] = tvar_fresh(tc);
     for (int i = 0; i < count; i++) {
@@ -667,7 +655,7 @@ static TypeConstraint tc_infer_effect_ctx(Token *toks, int start, int end, int t
                 if (sig) {
                     int inputs = 0, outputs = 0; TypeConstraint last_out = TC_NONE;
                     for (int j = 0; j < sig->slot_count; j++) {
-                        if (sig->slots[j].is_env) continue;
+
                         if (sig->slots[j].direction == DIR_IN) inputs++;
                         else { outputs++; last_out = sig->slots[j].constraint; }
                     }
@@ -680,15 +668,11 @@ static TypeConstraint tc_infer_effect_ctx(Token *toks, int start, int end, int t
                         vsp += ho->out; if (ho->out > 0) top_type = ho->out_type;
                     }
                 }
-                if (ctx) {
-                    TCBinding *ub = tc_lookup(ctx, sym);
-                    if (ub && ub->is_def && ub->atype.type == TC_TUPLE && ub->atype.effect_idx >= 0) {
-                        TupleEffect *eff = &ctx->effects[ub->atype.effect_idx];
-                        int need = eff->consumed, out = eff->produced;
-                        if (vsp < need) { consumed += need - vsp; vsp = 0; } else vsp -= need;
-                        vsp += out;
-                        if (out > 0 && eff->out_type != TC_NONE) top_type = eff->out_type;
-                        else if (out > 0) top_type = TC_NONE;
+                if (ctx) { TCBinding *ub = tc_lookup(ctx, sym);
+                    if (ub && ub->is_def && ub->atype.effect_idx >= 0) {
+                        TupleEffect *e = &ctx->effects[ub->atype.effect_idx];
+                        if (vsp < e->consumed) { consumed += e->consumed - vsp; vsp = 0; } else vsp -= e->consumed;
+                        vsp += e->produced; if (e->produced > 0) top_type = e->out_type;
                     } else if (ub && !ub->is_def) { vsp++; top_type = ub->atype.type; }
                 }
             }
@@ -715,7 +699,7 @@ static void tc_apply_effect(TypeChecker *tc, int consumed, int produced, TypeCon
 static int tc_check_body_against_sig(Token *toks, int start, int end, int total_count, TypeSig *sig) {
     int errors = 0, n_in = 0, n_out = 0;
     for (int i = 0; i < sig->slot_count; i++) {
-        if (sig->slots[i].is_env) continue;
+
         if (sig->slots[i].direction == DIR_IN) n_in++; else n_out++;
     }
     int eff_consumed, eff_produced;
@@ -874,7 +858,7 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
     return;
 apply_sig:;
     int inputs = 0;
-    for (int i = 0; i < sig->slot_count; i++) { if (sig->slots[i].is_env) continue; if (sig->slots[i].direction == DIR_IN) inputs++; }
+    for (int i = 0; i < sig->slot_count; i++) if (sig->slots[i].direction == DIR_IN) inputs++;
     if (tc->sp < inputs) {
         tc_error(tc, line, "'%s' needs %d input(s), stack has %d", sym_name(sym), inputs, tc->sp);
         if (tc->sp > 0) tc_dump_stack(tc);
@@ -884,7 +868,7 @@ apply_sig:;
     struct { uint32_t var; int tvar; } tvar_map[MAX_TVARS]; int tvar_map_count = 0;
     for (int i = 0; i < sig->slot_count; i++) {
         uint32_t tv = sig->slots[i].type_var;
-        if (!tv || sig->slots[i].is_env) continue;
+        if (!tv) continue;
         int found = 0;
         for (int j = 0; j < tvar_map_count; j++) if (tvar_map[j].var == tv) { found = 1; break; }
         if (!found && tvar_map_count < MAX_TVARS) {
@@ -900,47 +884,26 @@ apply_sig:;
     int stack_pos = tc->sp - 1;
     for (int i = sig->slot_count - 1; i >= 0; i--) {
         TypeSlot *slot = &sig->slots[i];
-        if (slot->is_env || slot->direction != DIR_IN) continue;
+        if (slot->direction != DIR_IN) continue;
         if (stack_pos < 0) break;
         AbstractType *at = &tc->data[stack_pos];
         if (slot->ownership == OWN_COPY && !tc_is_copyable(at))
             tc_error(tc, line, "'%s' requires copyable value, got linear type (box or box-containing)", sym_name(sym));
         if (slot->ownership == OWN_OWN && at->borrowed > 0)
             tc_error(tc, line, "'%s' cannot consume value that is currently borrowed (lent)", sym_name(sym));
-        if (slot->constraint != TC_NONE && at->type != TC_NONE) {
-            if (!tc_constraint_matches(slot->constraint, at->type)) {
-                fprintf(stderr, "%s:%d: type error: '%s' expected %s, got %s", current_file, line, sym_name(sym), constraint_name(slot->constraint), constraint_name(at->type));
-                if (at->source_line) fprintf(stderr, " (value from line %d)", at->source_line);
-                fprintf(stderr, "\n"); tc_dump_stack(tc); tc->errors++;
-            }
-        }
+        if (slot->constraint != TC_NONE && at->type != TC_NONE && !tc_constraint_matches(slot->constraint, at->type))
+            tc_error(tc, line, "'%s' expected %s, got %s (value from line %d)", sym_name(sym), constraint_name(slot->constraint), constraint_name(at->type), at->source_line);
         if (slot->type_var) {
             int tv = FIND_TVAR(slot->type_var);
             if (tv > 0) {
                 int is_container = (slot->constraint == TC_LIST || slot->constraint == TC_BOX);
                 if (is_container && at->tvar_id > 0) {
-                    int elem_field = (slot->constraint == TC_LIST) ? tc->tvars[tvar_find(tc, at->tvar_id)].elem
-                                                                    : tc->tvars[tvar_find(tc, at->tvar_id)].box_c;
-                    if (elem_field > 0) {
-                        if (tvar_unify(tc, tv, elem_field, line)) {
-                            fprintf(stderr, "%s:%d: type error: '%s' type variable '%s' mismatch: expected %s, got %s\n", current_file, line, sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(tvar_resolve(tc, elem_field)));
-                            tc->errors++;
-                        }
-                    }
+                    int ef = (slot->constraint == TC_LIST) ? tc->tvars[tvar_find(tc, at->tvar_id)].elem : tc->tvars[tvar_find(tc, at->tvar_id)].box_c;
+                    if (ef > 0 && tvar_unify(tc, tv, ef, line))
+                        tc_error(tc, line, "'%s' type variable '%s' mismatch: expected %s, got %s", sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(tvar_resolve(tc, ef)));
                 } else if (!is_container) {
-                    if (at->tvar_id > 0) {
-                        if (tvar_unify(tc, tv, at->tvar_id, line)) {
-                            fprintf(stderr, "%s:%d: type error: '%s' type variable '%s' mismatch: expected %s, got %s", current_file, line, sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(tvar_resolve(tc, at->tvar_id)));
-                            if (at->source_line) fprintf(stderr, " (value from line %d)", at->source_line);
-                            fprintf(stderr, "\n"); tc->errors++;
-                        }
-                    } else if (at->type != TC_NONE) {
-                        if (tvar_bind(tc, tv, at->type, line)) {
-                            fprintf(stderr, "%s:%d: type error: '%s' type variable '%s' mismatch: expected %s (from earlier arg), got %s", current_file, line, sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(at->type));
-                            if (at->source_line) fprintf(stderr, " (value from line %d)", at->source_line);
-                            fprintf(stderr, "\n"); tc_dump_stack(tc); tc->errors++;
-                        }
-                    }
+                    int fail = at->tvar_id > 0 ? tvar_unify(tc, tv, at->tvar_id, line) : (at->type != TC_NONE ? tvar_bind(tc, tv, at->type, line) : 0);
+                    if (fail) tc_error(tc, line, "'%s' type variable '%s' mismatch: expected %s, got %s", sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(at->type != TC_NONE ? at->type : tvar_resolve(tc, at->tvar_id)));
                 }
             }
         }
@@ -950,7 +913,7 @@ apply_sig:;
     tc->sp -= inputs;
     for (int i = 0; i < sig->slot_count; i++) {
         TypeSlot *slot = &sig->slots[i];
-        if (slot->is_env || slot->direction != DIR_OUT) continue;
+        if (slot->direction != DIR_OUT) continue;
         if (tc->sp >= ASTACK_MAX) { tc->errors++; return; }
         tc_push(tc, slot->constraint, line);
         AbstractType *at = &tc->data[tc->sp - 1];
@@ -979,57 +942,32 @@ apply_sig:;
     #undef MAX_TVARS
 }
 
-static TypeConstraint tc_check_list_elements(Token *toks, int start, int end, int total_count, int *errors, int line) {
+static TypeConstraint tc_check_list_elements(TypeChecker *tc, Token *toks, int start, int end, int total_count, int line) {
     TypeConstraint elem_type = TC_NONE; int elem_count = 0;
-    int first_effect_c = 0, first_effect_p = 0; TypeConstraint first_effect_out = TC_NONE; int has_first_effect = 0;
     for (int i = start; i < end; i++) {
-        Token *t = &toks[i]; TypeConstraint this_type = TC_NONE;
-        int this_eff_c = 0, this_eff_p = 0; TypeConstraint this_eff_out = TC_NONE; int this_has_effect = 0;
-        switch (t->tag) {
+        TypeConstraint this_type = TC_NONE;
+        switch (toks[i].tag) {
         case TOK_INT: this_type = TC_INT; break; case TOK_FLOAT: this_type = TC_FLOAT; break;
         case TOK_SYM: this_type = TC_SYM; break; case TOK_STRING: this_type = TC_LIST; break;
-        case TOK_LPAREN: { int close = find_matching(toks, i+1, total_count, TOK_LPAREN, TOK_RPAREN);
-            this_type = TC_TUPLE; this_eff_out = tc_infer_effect(toks, i+1, close, total_count, &this_eff_c, &this_eff_p);
-            this_has_effect = 1; i = close; break; }
-        case TOK_LBRACKET: { int close = find_matching(toks, i+1, total_count, TOK_LBRACKET, TOK_RBRACKET); this_type = TC_LIST; i = close; break; }
-        case TOK_LBRACE: { int close = find_matching(toks, i+1, total_count, TOK_LBRACE, TOK_RBRACE); this_type = TC_REC; i = close; break; }
+        case TOK_LPAREN: this_type = TC_TUPLE; i = find_matching(toks, i+1, total_count, TOK_LPAREN, TOK_RPAREN); break;
+        case TOK_LBRACKET: this_type = TC_LIST; i = find_matching(toks, i+1, total_count, TOK_LBRACKET, TOK_RBRACKET); break;
+        case TOK_LBRACE: this_type = TC_REC; i = find_matching(toks, i+1, total_count, TOK_LBRACE, TOK_RBRACE); break;
         case TOK_WORD: return TC_NONE;
         default: continue;
         }
         if (this_type == TC_NONE) continue;
-        elem_count++;
-        if (elem_count == 1) { elem_type = this_type; first_effect_c = this_eff_c; first_effect_p = this_eff_p; first_effect_out = this_eff_out; has_first_effect = this_has_effect; }
-        else {
-            if (this_type != elem_type) {
-                fprintf(stderr, "%s:%d: type error: list elements have inconsistent types: element 1 is %s, element %d is %s\n", current_file, line, constraint_name(elem_type), elem_count, constraint_name(this_type));
-                (*errors)++; return TC_NONE;
-            }
-            if (this_type == TC_TUPLE && has_first_effect && this_has_effect) {
-                int first_net = first_effect_p - first_effect_c, this_net = this_eff_p - this_eff_c;
-                if (first_net != this_net) {
-                    fprintf(stderr, "%s:%d: type error: list of tuples have different stack effects: element 1 is -%d+%d (net %+d), element %d is -%d+%d (net %+d)\n",
-                            current_file, line, first_effect_c, first_effect_p, first_net, elem_count, this_eff_c, this_eff_p, this_net);
-                    (*errors)++; return TC_NONE;
-                }
-                if (first_effect_out != this_eff_out && first_effect_out != TC_NONE && this_eff_out != TC_NONE) {
-                    fprintf(stderr, "%s:%d: type error: list of tuples produce different types: element 1 produces %s, element %d produces %s\n",
-                            current_file, line, constraint_name(first_effect_out), elem_count, constraint_name(this_eff_out));
-                    (*errors)++; return TC_NONE;
-                }
-            }
+        if (++elem_count == 1) elem_type = this_type;
+        else if (this_type != elem_type) {
+            tc_error(tc, line, "list elements have inconsistent types: element 1 is %s, element %d is %s", constraint_name(elem_type), elem_count, constraint_name(this_type));
+            return TC_NONE;
         }
     }
     return elem_type;
 }
 
-static uint32_t sym_def_k = 0, sym_let_k = 0, sym_recur_k = 0;
-
 static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, int total_count) {
-    if (!sym_def_k) {
-        sym_def_k = sym_intern("def"); sym_let_k = sym_intern("let"); sym_recur_k = sym_intern("recur");
-        if (!sym_effect_kw) sym_effect_kw = sym_intern("effect");
-        if (!sym_check_kw) sym_check_kw = sym_intern("check");
-    }
+    static uint32_t s_def = 0, s_let = 0, s_recur = 0, s_effect = 0, s_check = 0;
+    if (!s_def) { s_def = sym_intern("def"); s_let = sym_intern("let"); s_recur = sym_intern("recur"); s_effect = sym_intern("effect"); s_check = sym_intern("check"); }
     for (int i = start; i < end; i++) {
         Token *t = &toks[i]; current_line = t->line;
         switch (t->tag) {
@@ -1069,7 +1007,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     int idx = tc->sp - out_count + j;
                     if (idx >= 0) {
                         out_tvars[j] = tc->data[idx].tvar_id;
-                        if (out_tvars[j] == 0 && tc->data[idx].type != TC_NONE) out_tvars[j] = tvar_constrained(tc, tc->data[idx].type);
+                        if (out_tvars[j] == 0 && tc->data[idx].type != TC_NONE) { out_tvars[j] = tvar_fresh(tc); tc->tvars[out_tvars[j]].bound = tc->data[idx].type; }
                         else if (out_tvars[j] == 0) out_tvars[j] = tvar_fresh(tc);
                     }
                 }
@@ -1090,7 +1028,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
         }
         case TOK_LBRACKET: {
             int close = find_matching(toks, i+1, total_count, TOK_LBRACKET, TOK_RBRACKET);
-            TypeConstraint elem = tc_check_list_elements(toks, i+1, close, total_count, &tc->errors, t->line);
+            TypeConstraint elem = tc_check_list_elements(tc, toks, i+1, close, total_count, t->line);
             tc_push(tc, TC_LIST, t->line);
             if (elem != TC_NONE && tc->data[tc->sp-1].tvar_id > 0) {
                 int ev = tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].elem;
@@ -1100,52 +1038,40 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
         }
         case TOK_LBRACE: {
             int close = find_matching(toks, i+1, total_count, TOK_LBRACE, TOK_RBRACE);
-            TypeConstraint val_type = TC_NONE, val_effect_out = TC_NONE;
-            int pair_count = 0, has_val_effect = 0;
+            TypeConstraint vtype = TC_NONE, veffout = TC_NONE;
+            int pairs = 0, has_eff = 0;
             for (int j = i+1; j < close; ) {
-                if (j >= close) break;
                 if (toks[j].tag == TOK_LPAREN) j = find_matching(toks, j+1, total_count, TOK_LPAREN, TOK_RPAREN) + 1;
-                else if (toks[j].tag == TOK_SYM) j++; else j++;
+                else j++;
                 if (j >= close) break;
-                TypeConstraint this_val = TC_NONE;
+                TypeConstraint tv = TC_NONE;
                 if (toks[j].tag == TOK_LPAREN) {
-                    int vclose = find_matching(toks, j+1, total_count, TOK_LPAREN, TOK_RPAREN);
-                    int vc = 0, vp = 0;
-                    TypeConstraint vout = tc_infer_effect_ctx(toks, j+1, vclose, total_count, &vc, &vp, tc);
-                    this_val = TC_TUPLE;
-                    if (pair_count == 0) { val_effect_out = vout; has_val_effect = 1; }
-                    if (has_val_effect && vout != TC_NONE && val_effect_out != TC_NONE && vout != val_effect_out)
-                        if (!tc_constraint_matches(val_effect_out, vout) && !tc_constraint_matches(vout, val_effect_out))
-                            tc_error(tc, t->line, "clause bodies produce different types: clause 1 produces %s, clause %d produces %s", constraint_name(val_effect_out), pair_count+1, constraint_name(vout));
-                    j = vclose + 1;
+                    int vc2 = find_matching(toks, j+1, total_count, TOK_LPAREN, TOK_RPAREN);
+                    int vc = 0, vp = 0; TypeConstraint vo = tc_infer_effect_ctx(toks, j+1, vc2, total_count, &vc, &vp, tc);
+                    tv = TC_TUPLE; if (!pairs) { veffout = vo; has_eff = 1; }
+                    if (has_eff && vo != TC_NONE && veffout != TC_NONE && vo != veffout && !tc_constraint_matches(veffout, vo) && !tc_constraint_matches(vo, veffout))
+                        tc_error(tc, t->line, "clause bodies produce different types: %s vs %s", constraint_name(veffout), constraint_name(vo));
+                    j = vc2 + 1;
                 } else {
-                    if (toks[j].tag == TOK_INT) this_val = TC_INT;
-                    else if (toks[j].tag == TOK_FLOAT) this_val = TC_FLOAT;
-                    else if (toks[j].tag == TOK_SYM) this_val = TC_SYM;
-                    else if (toks[j].tag == TOK_STRING) this_val = TC_LIST;
+                    if (toks[j].tag == TOK_INT) tv = TC_INT; else if (toks[j].tag == TOK_FLOAT) tv = TC_FLOAT;
+                    else if (toks[j].tag == TOK_SYM) tv = TC_SYM; else if (toks[j].tag == TOK_STRING) tv = TC_LIST;
                     j++;
                 }
-                if (pair_count == 0 && this_val != TC_NONE) val_type = this_val;
-                else if (this_val != TC_NONE && val_type != TC_NONE && this_val != val_type)
-                    if (!tc_constraint_matches(val_type, this_val) && !tc_constraint_matches(this_val, val_type))
-                        tc_error(tc, t->line, "clause values have inconsistent types: %s vs %s", constraint_name(val_type), constraint_name(this_val));
-                pair_count++;
+                if (!pairs && tv != TC_NONE) vtype = tv;
+                else if (tv != TC_NONE && vtype != TC_NONE && tv != vtype && !tc_constraint_matches(vtype, tv) && !tc_constraint_matches(tv, vtype))
+                    tc_error(tc, t->line, "clause values have inconsistent types: %s vs %s", constraint_name(vtype), constraint_name(tv));
+                pairs++;
             }
-            int is_record = (val_type != TC_TUPLE && !has_val_effect);
-            if (is_record) tc_push(tc, TC_REC, t->line);
+            if (vtype != TC_TUPLE && !has_eff) tc_push(tc, TC_REC, t->line);
             else {
                 tc_push(tc, TC_TUPLE, t->line);
-                if (has_val_effect) {
-                    int eidx = tc_alloc_effect(tc);
-                    tc->effects[eidx].out_type = val_effect_out;
-                    tc->data[tc->sp-1].effect_idx = eidx;
-                }
+                if (has_eff) { int eidx = tc_alloc_effect(tc); tc->effects[eidx].out_type = veffout; tc->data[tc->sp-1].effect_idx = eidx; }
             }
             i = close; break;
         }
         case TOK_WORD: {
             uint32_t sym = t->as.sym;
-            if (sym == sym_def_k) {
+            if (sym == s_def) {
                 if (tc->recur_pending) {
                     if (tc->sp >= 1) { AbstractType vt = tc->data[tc->sp-1]; tc->sp--; tc_bind(tc, tc->recur_sym, &vt, 1); }
                     tc->recur_pending = 0;
@@ -1155,14 +1081,14 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                         tc->sp -= 2; if (name_sym) tc_bind(tc, name_sym, &vt, 1);
                     } else tc->sp = 0;
                 }
-            } else if (sym == sym_let_k) {
+            } else if (sym == s_let) {
                 if (tc->sp >= 2) {
                     uint32_t name_sym = tc->data[tc->sp-1].sym_id; tc->sp--;
                     AbstractType val_t = tc->data[tc->sp-1]; tc->sp--;
                     if (name_sym) {
                         TCBinding *existing = tc_lookup(tc, name_sym);
                         if (existing && !existing->is_def) {
-                            TypeConstraint old_t = at_type(tc, &existing->atype), new_t = at_type(tc, &val_t);
+                            TypeConstraint old_t = existing->atype.type, new_t = val_t.type;
                             if (old_t != TC_NONE && new_t != TC_NONE && old_t != new_t)
                                 if (!tc_constraint_matches(old_t, new_t) && !tc_constraint_matches(new_t, old_t))
                                     tc_error(tc, t->line, "rebinding '%s' changes type from %s to %s", sym_name(name_sym), constraint_name(old_t), constraint_name(new_t));
@@ -1170,44 +1096,32 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                         tc_bind(tc, name_sym, &val_t, 0);
                     }
                 } else tc->sp = 0;
-            } else if (sym == sym_recur_k) {
+            } else if (sym == s_recur) {
                 if (tc->sp >= 1) { uint32_t name_sym = tc->data[tc->sp-1].sym_id; tc->recur_pending = 1; tc->sp--; if (name_sym) tc->recur_sym = name_sym; }
-            } else if (sym == sym_effect_kw) {
+            } else if (sym == s_effect) {
                 if (tc->sp > 0) tc->sp--;
-                int bracket_end = i - 1;
-                if (bracket_end >= start && toks[bracket_end].tag == TOK_RBRACKET) {
-                    int depth = 1, bracket_start = bracket_end;
-                    for (int bi = bracket_end - 1; bi >= start; bi--) {
-                        if (toks[bi].tag == TOK_RBRACKET) depth++;
-                        else if (toks[bi].tag == TOK_LBRACKET) { depth--; if (depth == 0) { bracket_start = bi; break; } }
-                    }
-                    TypeSig sig = parse_type_annotation(toks, bracket_start+1, bracket_end);
+                int be = i - 1;
+                if (be >= start && toks[be].tag == TOK_RBRACKET) {
+                    int d = 1, bs = be;
+                    for (int bi = be-1; bi >= start; bi--) { if (toks[bi].tag == TOK_RBRACKET) d++; else if (toks[bi].tag == TOK_LBRACKET && --d == 0) { bs = bi; break; } }
+                    TypeSig sig = parse_type_annotation(toks, bs+1, be);
                     if (tc->sp >= 1 && tc->data[tc->sp-1].type == TC_TUPLE) {
                         if (tc->sp >= 2 && tc->data[tc->sp-2].type == TC_SYM) typesig_register(tc->data[tc->sp-2].sym_id, &sig);
-                        for (int bi2 = i-2; bi2 >= 0; bi2--) {
-                            if (toks[bi2].tag == TOK_RPAREN) {
-                                int d2 = 1;
-                                for (int k = bi2-1; k >= 0; k--) {
-                                    if (toks[k].tag == TOK_RPAREN) d2++;
-                                    else if (toks[k].tag == TOK_LPAREN) { d2--; if (d2 == 0) { tc->errors += tc_check_body_against_sig(toks, k+1, bi2, total_count, &sig); break; } }
-                                }
-                                break;
-                            }
+                        for (int b2 = i-2; b2 >= 0; b2--) if (toks[b2].tag == TOK_RPAREN) {
+                            int d2 = 1;
+                            for (int k = b2-1; k >= 0; k--) { if (toks[k].tag == TOK_RPAREN) d2++; else if (toks[k].tag == TOK_LPAREN && --d2 == 0) { tc->errors += tc_check_body_against_sig(toks, k+1, b2, total_count, &sig); break; } }
+                            break;
                         }
                     } else if (tc->sp >= 1 && tc->data[tc->sp-1].type == TC_SYM) {
-                        uint32_t name_sym = tc->data[tc->sp-1].sym_id;
-                        typesig_register(name_sym, &sig);
-                        int has_def = (i+1 < end && toks[i+1].tag == TOK_WORD && toks[i+1].as.sym == sym_def_k);
-                        if (!has_def) tc->sp--;
+                        typesig_register(tc->data[tc->sp-1].sym_id, &sig);
+                        if (!(i+1 < end && toks[i+1].tag == TOK_WORD && toks[i+1].as.sym == s_def)) tc->sp--;
                     }
                 }
-            } else if (sym == sym_check_kw) {
+            } else if (sym == s_check) {
                 if (i >= 1 && toks[i-1].tag == TOK_WORD) {
-                    TypeConstraint expected = parse_constraint(sym_name(toks[i-1].as.sym));
-                    if (expected != TC_NONE && tc->sp > 0) {
-                        if (tc->sp > 0 && tc->data[tc->sp-1].type != expected && tc->data[tc->sp-1].type != TC_NONE)
-                            tc_error(tc, t->line, "'check' expected %s, got %s", constraint_name(expected), constraint_name(tc->data[tc->sp-1].type));
-                    }
+                    TypeConstraint exp = parse_constraint(sym_name(toks[i-1].as.sym));
+                    if (exp != TC_NONE && tc->sp > 0 && tc->data[tc->sp-1].type != exp && tc->data[tc->sp-1].type != TC_NONE)
+                        tc_error(tc, t->line, "'check' expected %s, got %s", constraint_name(exp), constraint_name(tc->data[tc->sp-1].type));
                     if (tc->unknown_count > 0 && tc->unknowns[tc->unknown_count-1].sym == toks[i-1].as.sym) tc->unknown_count--;
                 }
             } else tc_check_word(tc, sym, t->line);
@@ -1795,8 +1709,8 @@ static void eval_body(Value *body, int slots, Frame *env) {
     int len=(int)hdr.as.compound.len;
     Frame *exec_env=hdr.as.compound.env?hdr.as.compound.env:env;
     int saved_bc=exec_env->bind_count,saved_vu=exec_env->vals_used;
-    static uint32_t sym_def=0,sym_let=0,sym_recur_kw=0;
-    if(!sym_def){sym_def=sym_intern("def");sym_let=sym_intern("let");sym_recur_kw=sym_intern("recur");}
+    static uint32_t sym_def=0,sym_let=0,s_recurw=0;
+    if(!sym_def){sym_def=sym_intern("def");sym_let=sym_intern("let");s_recurw=sym_intern("recur");}
     int all_scalar=(slots==len+1);
     if(len>LOCAL_MAX) die("tuple body too large");
     int offsets_buf[LOCAL_MAX],sizes_buf[LOCAL_MAX];
@@ -1817,7 +1731,7 @@ static void eval_body(Value *body, int slots, Frame *env) {
             } else if(sym==sym_let){
                 uint32_t name=pop_sym(); Value lv_top=stack[sp-1]; int lv_s=val_slots(lv_top);
                 frame_bind(exec_env,name,&stack[sp-lv_s],lv_s,BIND_LET,0); sp-=lv_s;
-            } else if(sym==sym_recur_kw){recur_sym=pop_sym();recur_pending=1;}
+            } else if(sym==s_recurw){recur_sym=pop_sym();recur_pending=1;}
             else dispatch_word(sym,exec_env);
         } else if(elem.tag==VAL_BOX) spush(elem);
     }
@@ -1831,8 +1745,8 @@ static int find_matching(Token *toks, int start, int count, TokTag open, TokTag 
 }
 
 static void build_tuple(Token *toks, int start, int end, int total_count, Frame *env) {
-    if(!sym_check_kw) sym_check_kw=sym_intern("check");
-    if(!sym_effect_kw) sym_effect_kw=sym_intern("effect");
+    if(!s_check) s_check=sym_intern("check");
+    if(!s_effect) s_effect=sym_intern("effect");
     int elem_base=sp,elem_count=0;
     for(int j=start;j<end;j++){
         Token *tt=&toks[j];
@@ -1841,7 +1755,7 @@ static void build_tuple(Token *toks, int start, int end, int total_count, Frame 
         case TOK_FLOAT: spush(val_float(tt->as.f)); elem_count++; break;
         case TOK_SYM: spush(val_sym(tt->as.sym)); elem_count++; break;
         case TOK_WORD:
-            if(tt->as.sym==sym_check_kw){if(elem_count>0&&stack[sp-1].tag==VAL_WORD){sp--;elem_count--;}else die("check: expected preceding type word");}
+            if(tt->as.sym==s_check){if(elem_count>0&&stack[sp-1].tag==VAL_WORD){sp--;elem_count--;}else die("check: expected preceding type word");}
             else{spush(val_word(tt->as.sym));elem_count++;}
             break;
         case TOK_STRING:
@@ -1850,7 +1764,7 @@ static void build_tuple(Token *toks, int start, int end, int total_count, Frame 
         case TOK_LPAREN:{int nc=find_matching(toks,j+1,total_count,TOK_LPAREN,TOK_RPAREN);build_tuple(toks,j+1,nc,total_count,env);elem_count++;j=nc;break;}
         case TOK_LBRACKET:{
             int bc=find_matching(toks,j+1,total_count,TOK_LBRACKET,TOK_RBRACKET);
-            if(bc+1<total_count&&toks[bc+1].tag==TOK_WORD&&toks[bc+1].as.sym==sym_effect_kw){j=bc+1;break;}
+            if(bc+1<total_count&&toks[bc+1].tag==TOK_WORD&&toks[bc+1].as.sym==s_effect){j=bc+1;break;}
             int lb=sp; eval(toks+j+1,bc-j-1,env); int ls=sp-lb;
             int ec2=0,pos=sp; while(pos>lb){pos-=val_slots(stack[pos-1]);ec2++;}
             spush(val_compound(VAL_LIST,ec2,ls+1)); elem_count++; j=bc; break;
@@ -1874,7 +1788,7 @@ static void build_tuple(Token *toks, int start, int end, int total_count, Frame 
 }
 
 static void eval(Token *toks, int count, Frame *env) {
-    if(!sym_effect_kw) sym_effect_kw=sym_intern("effect");
+    if(!s_effect) s_effect=sym_intern("effect");
     int base=sp; build_tuple(toks,0,count,count,env);
     int s=val_slots(stack[sp-1]); Value *body=malloc(s*sizeof(Value));
     memcpy(body,&stack[base],s*sizeof(Value)); sp=base; eval_body(body,s,env); free(body);
@@ -2021,6 +1935,7 @@ static const char *BUILTIN_TYPES =
     "'halt [] effect\n"
     "'box ['a own in  'a box move out] effect\n"
     "'free ['a box own in] effect\n"
+    "'at [rec own in  sym lent in  move out] effect\n"
     "'into [rec own in  own in  sym lent in  rec move out] effect\n"
     "'clone ['a box own in  'a box move out  'a box move out] effect\n"
     "'clear [int lent in] effect\n"
@@ -2119,8 +2034,8 @@ static void prim_show(Frame *env) {
     Value fn_top=stack[sp-1]; if(fn_top.tag!=VAL_TUPLE) die("show: expected tuple render function");
     render_slots=val_slots(fn_top); memcpy(render_body,&stack[sp-render_slots],render_slots*sizeof(Value)); sp-=render_slots;
     sdl_init();
-    static uint32_t sym_tick=0,sym_keydown=0;
-    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");}
+    static uint32_t sym_tick=0,sym_keydown=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0;
+    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");}
     int64_t frame=0; int running=1;
     while(running){
         SDL_Event ev;
@@ -2128,6 +2043,12 @@ static void prim_show(Frame *env) {
             if(ev.type==SDL_QUIT){running=0;break;}
             if(ev.type==SDL_KEYDOWN) for(int h=0;h<handler_count;h++)
                 if(event_handlers[h].event_sym==sym_keydown){spush(val_int((int64_t)ev.key.keysym.sym));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+            if(ev.type==SDL_MOUSEBUTTONDOWN) for(int h=0;h<handler_count;h++)
+                if(event_handlers[h].event_sym==sym_mousedown){spush(val_int((int64_t)ev.button.x));spush(val_int((int64_t)ev.button.y));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+            if(ev.type==SDL_MOUSEBUTTONUP) for(int h=0;h<handler_count;h++)
+                if(event_handlers[h].event_sym==sym_mouseup){spush(val_int((int64_t)ev.button.x));spush(val_int((int64_t)ev.button.y));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+            if(ev.type==SDL_MOUSEMOTION) for(int h=0;h<handler_count;h++)
+                if(event_handlers[h].event_sym==sym_mousemove){spush(val_int((int64_t)ev.motion.x));spush(val_int((int64_t)ev.motion.y));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
         }
         for(int h=0;h<handler_count;h++) if(event_handlers[h].event_sym==sym_tick){spush(val_int(frame));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
         if(render_slots>0){Value mt=stack[sp-1];int ms=val_slots(mt);memcpy(&stack[sp],&stack[sp-ms],ms*sizeof(Value));sp+=ms;eval_body(render_body,render_slots,env);}
@@ -2204,7 +2125,7 @@ int main(int argc, char **argv) {
             TypeSig *s=&type_sigs[i].sig; printf("'%s type",sym_name(type_sigs[i].sym));
             for(int j=0;j<s->slot_count;j++){
                 TypeSlot *sl=&s->slots[j];
-                if(sl->is_env){printf("  '%s '%s env",sym_name(sl->env_key_var),sym_name(sl->env_val_var));continue;}
+
                 printf("  "); if(sl->type_var) printf("'%s ",sym_name(sl->type_var));
                 if(sl->constraint!=TC_NONE) printf("%s ",constraint_name(sl->constraint));
                 switch(sl->ownership){case OWN_OWN:printf("own ");break;case OWN_COPY:printf("copy ");break;case OWN_MOVE:printf("move ");break;case OWN_LENT:printf("lent ");break;}

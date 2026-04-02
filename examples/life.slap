@@ -6,6 +6,10 @@
 19200 'N let
 4 'S let
 
+0 'drawing let
+-1 'mx let
+-1 'my let
+
 -- Look up cell at wrapped (x, y) via nth (no grid copy)
 'cell (
   H plus H mod W mul
@@ -60,11 +64,56 @@
   ) while
 ) def
 
+-- Draw SxS block in a given color
+'draw-cell-color (
+  'cc let
+  S mul 'py let
+  S mul 'px let
+  0 'dy let
+  (dy S lt) (
+    0 'dx let
+    (dx S lt) (
+      px dx plus  py dy plus  cc pixel
+      dx 1 plus 'dx let
+    ) while
+    dy 1 plus 'dy let
+  ) while
+) def
+
+-- Set cell alive at pixel coords; grid is on stack
+'paint-cell (
+  S div 'cy let
+  S div 'cx let
+  cy W mul cx plus 1 set
+) def
+
 -- Random initial grid
 list N (2 random give) repeat
 
--- Step on each tick
-'tick (drop step) on
+-- Mouse handlers
+'mousedown (
+  S div 'my let S div 'mx let
+  1 'drawing let
+  my W mul mx plus 1 set
+) on
+
+'mouseup (
+  drop drop
+  0 'drawing let
+) on
+
+'mousemove (
+  S div 'my let S div 'mx let
+  drawing 1 eq (
+    my W mul mx plus 1 set
+  ) () if
+) on
+
+-- Step on each tick (skip when drawing)
+'tick (
+  drop
+  drawing 0 eq (step) () if
+) on
 
 -- Render
 (
@@ -77,4 +126,7 @@ list N (2 random give) repeat
     ) () if
     i 1 plus 'i let
   ) while
+  drawing 1 eq mx 0 ge and (
+    mx my 2 draw-cell-color
+  ) () if
 ) show
