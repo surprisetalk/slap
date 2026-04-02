@@ -1,0 +1,63 @@
+-- Mandelbrot fractal zoom into Seahorse Valley
+-- Run with: ./slap-sdl examples/zoom.slap
+
+640 'W let
+480 'H let
+24 'MAX let
+
+-0.745 'TX let
+0.186 'TY let
+
+0
+
+'tick (drop 1 plus) on
+
+(
+  'frame let
+  0 clear
+
+  1.02 frame itof fpow 'zoom let
+  3.0 zoom div 'span let
+  W itof H itof div span mul 'xspan let
+
+  -- precompute scale/offset to avoid per-pixel division
+  xspan W itof div 'xscale let
+  TX xspan 0.5 mul sub 'xoff let
+  span H itof div 'yscale let
+  TY span 0.5 mul sub 'yoff let
+
+  0 'py let
+  (py H lt) (
+    py itof yscale mul yoff plus 'cy let
+    cy cy mul 'cy2 let
+
+    0 'px let
+    (px W lt) (
+      px itof xscale mul xoff plus 'cx let
+
+      -- cardioid/bulb check
+      cx 0.25 sub 'cxm let
+      cxm cxm mul cy2 plus 'q let
+      q q cxm plus mul cy2 0.25 mul lt
+      cx 1.0 plus dup mul cy2 plus 0.0625 lt
+      or (
+      ) (
+        -- iterate z = z^2 + c (use dup to avoid extra hash lookups)
+        0.0 'zx let 0.0 'zy let 0 'i let
+        (i MAX lt  zx dup mul zy dup mul plus 4.0 lt  and) (
+          zx dup mul zy dup mul sub cx plus
+          2.0 zx mul zy mul cy plus
+          'zy let 'zx let
+          i 1 plus 'i let
+        ) while
+
+        i MAX neq (
+          px py i 4 mod 1 plus 3 min pixel
+        ) () if
+      ) if
+
+      px 1 plus 'px let
+    ) while
+    py 1 plus 'py let
+  ) while
+) show
