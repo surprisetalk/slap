@@ -3,7 +3,7 @@
 
 160 'W let
 120 'H let
-19200 'N let
+W H mul 'N let
 4 'S let
 
 0 'drawing let
