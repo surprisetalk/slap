@@ -14,7 +14,7 @@
 #define FRAME_MAX 256
 #define FRAME_VALS_MAX 65536
 #define TOK_MAX   65536
-#define LOCAL_MAX 4096
+#define LOCAL_MAX 16384
 
 typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_WORD, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX } ValTag;
 typedef struct Frame Frame;
@@ -82,6 +82,7 @@ static void print_source_line(FILE *out, int line) {
 
 __attribute__((noreturn))
 static void die(const char *fmt, ...) {
+    static int dying = 0;
     va_list ap; va_start(ap, fmt);
     fprintf(stderr, "\n-- ERROR %s:%d ", current_file, current_line);
     int hdr_len = 10 + (int)strlen(current_file) + 10;
@@ -91,8 +92,7 @@ static void die(const char *fmt, ...) {
     fprintf(stderr, "\n\n");
     print_source_line(stderr, current_line);
     va_end(ap);
-    print_stack_summary(stderr);
-    fprintf(stderr, "\n");
+    if (!dying) { dying = 1; print_stack_summary(stderr); fprintf(stderr, "\n"); }
     exit(1);
 }
 
@@ -333,7 +333,10 @@ static void val_print(Value *data, int slots, FILE *out) {
         int len = (int)top.as.compound.len;
         char open = top.tag == VAL_LIST ? '[' : '(', close = top.tag == VAL_LIST ? ']' : ')';
         fprintf(out, "%c", open);
-        if (len > LOCAL_MAX) die("compound too large to print (%d elements)", len);
+        if (len > LOCAL_MAX) {
+            fprintf(out, "...%d elements", len);
+            fprintf(out, "%c", close); break;
+        }
         int offsets[LOCAL_MAX], sizes[LOCAL_MAX];
         compute_offsets(data, slots, len, offsets, sizes);
         for (int i = 0; i < len; i++) { if (i > 0) fprintf(out, " "); val_print(&data[offsets[i]], sizes[i], out); }
@@ -342,7 +345,7 @@ static void val_print(Value *data, int slots, FILE *out) {
     case VAL_RECORD: {
         int len = (int)top.as.compound.len;
         fprintf(out, "{");
-        if (len > LOCAL_MAX) die("record too large to print (%d fields)", len);
+        if (len > LOCAL_MAX) { fprintf(out, "...%d fields}", len); break; }
         int kpos[LOCAL_MAX], voff[LOCAL_MAX], vsz[LOCAL_MAX];
         record_offsets(data, slots, len, kpos, voff, vsz);
         for (int i = 0; i < len; i++) {
@@ -2078,10 +2081,13 @@ static void show_intern_syms(void) {
 }
 static void show_dispatch_event(SDL_Event *ev, Frame *env) {
     if(ev->type==SDL_KEYDOWN){for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==sym_keydown){spush(val_int((int64_t)ev->key.keysym.sym));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}}
-    int64_t mx=0,my=0; int is_mouse=0; float lx,ly;
-    if(ev->type==SDL_MOUSEBUTTONDOWN||ev->type==SDL_MOUSEBUTTONUP){SDL_RenderWindowToLogical(sdl_renderer,ev->button.x,ev->button.y,&lx,&ly);mx=(int64_t)lx;my=(int64_t)ly;is_mouse=1;}
-    else if(ev->type==SDL_MOUSEMOTION){SDL_RenderWindowToLogical(sdl_renderer,ev->motion.x,ev->motion.y,&lx,&ly);mx=(int64_t)lx;my=(int64_t)ly;is_mouse=1;}
-    if(is_mouse){uint32_t sym=ev->type==SDL_MOUSEBUTTONDOWN?sym_mousedown:ev->type==SDL_MOUSEBUTTONUP?sym_mouseup:sym_mousemove;
+    int is_mouse=0; float lx,ly;
+    if(ev->type==SDL_MOUSEBUTTONDOWN||ev->type==SDL_MOUSEBUTTONUP||ev->type==SDL_MOUSEMOTION) is_mouse=1;
+    if(is_mouse){
+        int sx,sy; SDL_GetMouseState(&sx,&sy);
+        SDL_RenderWindowToLogical(sdl_renderer,sx,sy,&lx,&ly);
+        int64_t mx=(int64_t)lx, my=(int64_t)ly;
+        uint32_t sym=ev->type==SDL_MOUSEBUTTONDOWN?sym_mousedown:ev->type==SDL_MOUSEBUTTONUP?sym_mouseup:sym_mousemove;
         for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==sym){spush(val_int(mx));spush(val_int(my));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}}
 }
 static void show_tick_render(int64_t frame, Frame *env) {
