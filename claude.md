@@ -12,9 +12,10 @@ make test           # Run all test suites
 make clean          # Remove binaries
 ```
 
-CLI: `./slap [--check] [--plain] < file.slap`
+CLI: `./slap [--check] [--headless] [args...] < file.slap`
 - `--check` — type-check only, no execution
-- `--plain` — (SDL build) run one frame then exit, for headless testing
+- `--headless` — (SDL build) run without a window, tick loop continues indefinitely
+- Positional args available via `args` primitive; `isheadless` and `cwd` also available
 
 ## Tests
 

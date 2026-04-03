@@ -847,5 +847,10 @@ ufx-data ufx-decode ufx-encode ufx-data eq assert
 -- cleanup test file
 "_test_fs.bin" [] write
 
+-- ===== System Primitives =====
+args len 0 eq assert
+isheadless 0 eq assert
+cwd len 0 lt not assert
+
 -- ===== Done =====
 "All tests passed!" print

@@ -7,6 +7,7 @@
 #include <time.h>
 #include <stdarg.h>
 #include <dirent.h>
+#include <unistd.h>
 
 #define STACK_MAX  65536
 #define SYM_MAX   4096
@@ -97,6 +98,8 @@ static void die(const char *fmt, ...) {
 
 static Value stack[STACK_MAX];
 static int sp = 0;
+static char **cli_args=NULL; static int cli_argc=0;
+static int headless_mode=0;
 static void spush(Value v) { if (sp >= STACK_MAX) die("stack overflow"); stack[sp++] = v; }
 static Value spop(void) { if (sp <= 0) die("stack underflow"); return stack[--sp]; }
 static Value speek(void) { if (sp <= 0) die("stack underflow on peek"); return stack[sp - 1]; }
@@ -1811,7 +1814,10 @@ static const char *BUILTIN_TYPES =
     "'write [list own in  int list own in] effect\n"
     "'ls [list own in  list move out] effect\n"
     "'utf8-encode [int list own in  int list move out] effect\n"
-    "'utf8-decode [int list own in  int list move out] effect\n";
+    "'utf8-decode [int list own in  int list move out] effect\n"
+    "'args [list move out] effect\n"
+    "'isheadless [int move out] effect\n"
+    "'cwd [list move out] effect\n";
 
 static const char *PRELUDE =
     "'over (swap dup (swap) dip) def\n'peek (over) def\n'nip (swap drop) def\n"
@@ -2026,7 +2032,6 @@ static void prim_dedup(Frame *e) {
 #define CANVAS_H 480
 static uint8_t canvas[CANVAS_W*CANVAS_H];
 static SDL_Window *sdl_window=NULL; static SDL_Renderer *sdl_renderer=NULL; static SDL_Texture *sdl_texture=NULL;
-static int sdl_plain_mode=0;
 #define MAX_HANDLERS 16
 static struct{uint32_t event_sym;Value handler_body[LOCAL_MAX];int handler_slots;} event_handlers[MAX_HANDLERS];
 static int handler_count=0;
@@ -2099,7 +2104,17 @@ static void show_one_frame(void) {
 static void prim_show(Frame *env) {
     Value fn_top=stack[sp-1]; if(fn_top.tag!=VAL_TUPLE) die("show: expected tuple render function");
     render_slots=val_slots(fn_top); memcpy(render_body,&stack[sp-render_slots],render_slots*sizeof(Value)); sp-=render_slots;
-    sdl_init(); show_intern_syms();
+    show_intern_syms();
+    if(headless_mode){
+        int64_t frame=0;
+        for(;;){
+            for(int h=0;h<handler_count;h++)
+                if(event_handlers[h].event_sym==sym_tick){spush(val_int(frame));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+            frame++;
+            usleep(16000);
+        }
+    }
+    sdl_init();
 #ifdef __EMSCRIPTEN__
     show_env=env; show_frame=0;
     emscripten_set_main_loop(show_one_frame,0,1);
@@ -2112,7 +2127,7 @@ static void prim_show(Frame *env) {
             show_dispatch_event(&ev,env);
         }
         show_tick_render(frame++, env);
-        if(sdl_plain_mode) break; SDL_Delay(16);
+        SDL_Delay(16);
     }
     SDL_DestroyTexture(sdl_texture);SDL_DestroyRenderer(sdl_renderer);SDL_DestroyWindow(sdl_window);SDL_Quit();exit(0);
 #endif
@@ -2281,6 +2296,20 @@ static void prim_utf8_decode(Frame *e) {
     spush(val_compound(VAL_LIST, cp_count, sp - base + 1));
 }
 
+static void push_c_string(const char *s) {
+    int len=(int)strlen(s);
+    for(int i=0;i<len;i++) spush(val_int((unsigned char)s[i]));
+    spush(val_compound(VAL_LIST,len,len+1));
+}
+static void prim_args(Frame *e) {
+    (void)e;
+    int total_slots=0;
+    for(int i=0;i<cli_argc;i++){push_c_string(cli_args[i]);total_slots+=(int)strlen(cli_args[i])+1;}
+    spush(val_compound(VAL_LIST,cli_argc,total_slots+1));
+}
+static void prim_isheadless(Frame *e){(void)e;spush(val_int(headless_mode));}
+static void prim_cwd(Frame *e){(void)e;char buf[4096];if(!getcwd(buf,sizeof(buf)))die("cwd: getcwd failed");push_c_string(buf);}
+
 #define PRIM(nm,body) static void prim_##nm(Frame *e){(void)e;body;}
 PRIM(list, spush(val_compound(VAL_LIST,0,1)))
 PRIM(rec, spush(val_compound(VAL_RECORD,0,1)))
@@ -2314,6 +2343,7 @@ static void register_prims(void) {
         {"lend",prim_lend},{"mutate",prim_mutate},{"clone",prim_clone},
         {"read",prim_read},{"write",prim_write},{"ls",prim_ls},
         {"utf8-encode",prim_utf8_encode},{"utf8-decode",prim_utf8_decode},
+        {"args",prim_args},{"isheadless",prim_isheadless},{"cwd",prim_cwd},
 #ifdef SLAP_SDL
         {"clear",prim_clear},{"pixel",prim_pixel},{"fill-rect",prim_fill_rect},{"millis",prim_millis},{"on",prim_on},{"show",prim_show},
 #endif
@@ -2325,12 +2355,12 @@ static void register_prims(void) {
 int main(int argc, char **argv) {
     srand((unsigned)time(NULL));
     int check_only=0;
+    cli_args=malloc(argc*sizeof(char*)); cli_argc=0;
     for(int i=1;i<argc;i++){
         if(strcmp(argv[i],"--check")==0) check_only=1;
-#ifdef SLAP_SDL
-        else if(strcmp(argv[i],"--plain")==0) sdl_plain_mode=1;
-#endif
-        else{fprintf(stderr,"unknown flag: %s\nusage: slap [--check] < file.slap\n",argv[i]);return 1;}
+        else if(strcmp(argv[i],"--headless")==0) headless_mode=1;
+        else if(argv[i][0]=='-'&&argv[i][1]=='-'){fprintf(stderr,"unknown flag: %s\nusage: slap [--check] [--headless] [args...] < file.slap\n",argv[i]);free(cli_args);return 1;}
+        else cli_args[cli_argc++]=argv[i];
     }
     current_file="<stdin>"; syms_init(); register_prims();
     Frame *global=frame_new(NULL);
@@ -2347,7 +2377,7 @@ int main(int argc, char **argv) {
 #ifdef SLAP_WASM
     fclose(f);
 #endif
-    if(sz==0){fprintf(stderr,"usage: slap [--check] < file.slap\n");return 1;}
+    if(sz==0){fprintf(stderr,"usage: slap [--check] [--headless] [args...] < file.slap\n");return 1;}
     store_source_lines(src);
     lex(src); int user_tok_count=tok_count;
     static Token user_tokens[TOK_MAX]; memcpy(user_tokens,tokens,user_tok_count*sizeof(Token));

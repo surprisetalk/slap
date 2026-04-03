@@ -35,12 +35,17 @@ make slap-sdl                        # requires SDL2
 slap-sdl < examples/life.slap
 ```
 
-CLI flags:
+CLI:
 ```
-slap [--check] [--plain] < file.slap
-  --check   type-check only, no execution
-  --plain   (SDL) run one frame then exit
+slap [--check] [--headless] [args...] < file.slap
+  --check      type-check only, no execution
+  --headless   (SDL) run without a window, tick loop continues indefinitely
 ```
+
+System primitives:
+- `args` — pushes list of CLI positional args (strings)
+- `isheadless` — pushes 1 if `--headless`, else 0
+- `cwd` — pushes current working directory as string
 
 ## language tour
 
