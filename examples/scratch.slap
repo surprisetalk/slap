@@ -1,270 +1,270 @@
--- System 7 Note Pad
--- Run with: ./slap-sdl examples/scratch.slap
+-- Note Pad — System 7 style scratch editor
+-- ./slap-sdl [file.txt] < examples/scratch.slap
 
--- 5x7 bitmap font, packed: val = sum(row[i] * 32^i)
--- Row bits: bit4=leftmost pixel, bit0=rightmost
-[
-  0 134353028 330 368389098 5307322852
-  3867282232 455520844 132 2290360450 8726317192
-  156718208 139432064 8728346624 1015808 134217728
-  545394753 15629733422 15170933124 33831454254 15604057646
-  2247698626 15603923487 15621636358 4433512511 15621113390
-  12953568814 4194432 8728346752 2290622594 32537600
-  8726284424 134351406 15593037358 18842895918 32801506878
-  15620129326 32801080894 33840644639 17734517279 15621407278
-  18842895921 15170932878 13491046471 18879369809 33840185872
-  18842572657 18842507057 15621211694 17734518334 14585218606
-  18879563326 15604335150 4433514655 15621211697 4641572401
-  19182306865 18834663985 4433521201 33831389247 15309480206
-  35787024 15101659214 17732 33285996544 136
-  16692328448 32801094160 15620126720 16694950945 15602333696
-  8867684614 15082241024 18842704400 15170940932 13491050498
-  20024281616 15170932876 18980988928 18842703872 15621208064
-  17748785152 1123597312 17734359040 32261027840 6753120520
-  14614578176 4648911872 11464655872 18593694720 15082243072
-  33558723584 2286162050 4433514628 8728416392 2793472
-] 'font let
-
-[1 32 1024 32768 1048576 33554432 1073741824] 'pow32 let
-[16 8 4 2 1] 'masks let
-
--- Layout constants
-6 'CW let       -- char cell width (5px glyph + 1px gap)
-9 'CH let       -- char cell height (7px glyph + 2px gap)
-20 'BAR-H let   -- title bar height
-24 'PAD-Y let   -- paper start y
-16 'PAD-X let   -- left margin
-100 'COLS let   -- chars per line
-
--- Gap buffer: before-cursor and after-cursor (reversed)
-list 'before let
-list 'after let
-0 'blink let
-
--- Draw a filled rectangle: x y w h color draw-rect
-'draw-rect (
-  'c let 'h let 'w let 'ry let 'rx let
-  0 'dy let
-  (dy h lt) (
-    0 'dx let
-    (dx w lt) (
-      rx dx plus ry dy plus c pixel
-      dx 1 plus 'dx let
-    ) while
-    dy 1 plus 'dy let
-  ) while
+-- Draw one byte as 8 horizontal pixels (MSB = leftmost)
+'draw-byte (
+  'dc let 'py let 'px let 'b let
+  b 128 band 0 neq (px     py dc pixel) () if
+  b  64 band 0 neq (px 1 plus py dc pixel) () if
+  b  32 band 0 neq (px 2 plus py dc pixel) () if
+  b  16 band 0 neq (px 3 plus py dc pixel) () if
+  b   8 band 0 neq (px 4 plus py dc pixel) () if
+  b   4 band 0 neq (px 5 plus py dc pixel) () if
+  b   2 band 0 neq (px 6 plus py dc pixel) () if
+  b   1 band 0 neq (px 7 plus py dc pixel) () if
 ) def
 
--- Draw horizontal line: x1 y x2 color draw-hline
-'draw-hline (
-  'c let 'hx2 let 'hy let 'hx1 let
-  hx1 'hx let
-  (hx hx2 lt) (
-    hx hy c pixel
-    hx 1 plus 'hx let
-  ) while
-) def
-
--- Draw vertical line: x y1 y2 color draw-vline
-'draw-vline (
-  'c let 'vy2 let 'vy1 let 'vx let
-  vy1 'vy let
-  (vy vy2 lt) (
-    vx vy c pixel
-    vy 1 plus 'vy let
-  ) while
-) def
-
--- Draw one character glyph at (px, py)
+-- Draw one character from raw ufx font bytes
 'draw-char (
-  'py let 'px let 'ch let
-  ch 32 sub 'ci let
-  ci 0 ge ci 95 lt and (
-    font ci get 'glyph let
+  'dc let 'gy let 'gx let 'ch let 'n let 'raw let
+  ch n n mul 8 mul mul 256 plus 'base let
+  0 'ti let
+  (ti n n mul lt) (
+    ti n div 8 mul gx plus 'tx let
+    ti n mod 8 mul gy plus 'ty let
     0 'row let
-    (row 7 lt) (
-      glyph pow32 row get div 32 mod 'rv let
-      0 'col let
-      (col 5 lt) (
-        rv masks col get div 2 mod 1 eq (
-          px col plus py row plus 0 pixel
-        ) () if
-        col 1 plus 'col let
-      ) while
+    (row 8 lt) (
+      raw base ti 8 mul plus row plus get
+      tx ty row plus dc draw-byte
       row 1 plus 'row let
     ) while
+    ti 1 plus 'ti let
+  ) while
+) def
+
+-- Draw a string (no wrapping)
+'draw-text (
+  'dc let 'sy let 'sx let 'str let 'n let 'raw let
+  sx 'cx let
+  0 'si let
+  (si str len lt) (
+    str si get 'ch let
+    raw ch get 'w let
+    w 0 gt (
+      raw n ch cx sy dc draw-char
+      cx w plus 1 plus 'cx let
+    ) () if
+    si 1 plus 'si let
+  ) while
+) def
+
+-- Fonts
+"fonts/geneva12.uf2" read 'body-font let
+"fonts/chicago12.uf2" read 'chic let
+2 'FN let
+FN 8 mul 'FH let
+FH 2 plus 'LH let
+
+-- Layout
+20 'BAR-H let
+BAR-H 4 plus 'PAD-Y let
+16 'PAD-X let
+640 PAD-X 2 mul sub 'TW let
+
+-- State: gap buffer
+list 'before let
+list 'after let
+
+-- File I/O
+args 'argv let
+argv len 0 gt (
+  argv 0 get 'fpath let
+  fpath read 'fbytes let
+  0 'fi let
+  (fi fbytes len lt) (
+    before fbytes fi get give 'before let
+    fi 1 plus 'fi let
+  ) while
+) () if
+
+'do-save (
+  argv len 0 gt (
+    list 'bytes let
+    0 'wi let
+    (wi before len lt) (
+      bytes before wi get give 'bytes let
+      wi 1 plus 'wi let
+    ) while
+    after len 1 sub 'wi let
+    (wi 0 ge) (
+      bytes after wi get give 'bytes let
+      wi 1 sub 'wi let
+    ) while
+    fpath bytes write
   ) () if
 ) def
 
--- Draw a string (list of char codes) at (px, py)
-'draw-string (
-  'sy let 'sx let
-  0 'si let
-  (dup len si gt) (
-    dup si get sx si CW mul plus sy draw-char
-    si 1 plus 'si let
-  ) while
-  drop
-) def
-
--- Title bar
+-- Chrome
 'draw-titlebar (
-  -- Fill bar with dark gray
-  0 0 640 BAR-H 1 draw-rect
-  -- Stripes (every other row lighter)
-  2 'ty let
-  (ty BAR-H 2 sub lt) (
-    ty 2 mod 0 eq (
-      0 ty 640 2 draw-hline
-    ) () if
-    ty 1 plus 'ty let
+  0 0 640 BAR-H 1 fill-rect
+  2 'by let
+  (by BAR-H 2 sub lt) (
+    by 2 mod 0 eq (0 by 640 1 2 fill-rect) () if
+    by 1 plus 'by let
   ) while
   -- Close box
-  4 4 12 12 3 draw-rect
-  4 4 16 0 draw-hline
-  4 15 16 0 draw-hline
-  4 4 16 0 draw-vline
-  15 4 16 0 draw-vline
-  -- Clear area behind title text and draw it
-  260 3 120 14 3 draw-rect
-  [78 111 116 101 32 80 97 100] 268 5 draw-string
+  4 4 12 12 3 fill-rect
+  4 4 12 1 0 fill-rect
+  4 15 12 1 0 fill-rect
+  4 4 1 12 0 fill-rect
+  15 4 1 12 0 fill-rect
+  -- Title
+  260 2 120 16 3 fill-rect
+  chic FN "Note Pad" 268 3 0 draw-text
   -- Bottom border
-  0 BAR-H 1 sub 640 0 draw-hline
+  0 BAR-H 1 sub 640 1 0 fill-rect
 ) def
 
--- Torn/perforated edge
 'draw-torn (
   0 'tx let
   (tx 640 lt) (
-    tx 4 div 2 mod 0 eq (
-      tx BAR-H 2 pixel
-      tx BAR-H 1 plus 2 pixel
-    ) (
-      tx BAR-H 3 pixel
-      tx BAR-H 1 plus 3 pixel
-    ) if
+    tx 4 div 2 mod 0 eq
+    (tx BAR-H 2 pixel  tx BAR-H 1 plus 2 pixel)
+    (tx BAR-H 3 pixel  tx BAR-H 1 plus 3 pixel) if
     tx 1 plus 'tx let
   ) while
-  0 BAR-H 2 plus 640 1 draw-hline
+  0 BAR-H 2 plus 640 1 1 fill-rect
 ) def
 
--- Ruled lines on paper
 'draw-rules (
-  PAD-Y CH plus 'ry let
+  PAD-Y LH plus 'ry let
   (ry 480 lt) (
-    0 ry 640 2 draw-hline
-    ry CH plus 'ry let
+    0 ry 640 1 2 fill-rect
+    ry LH plus 'ry let
   ) while
 ) def
 
--- Render text from gap buffer
+-- Render gap buffer text
 'render-text (
-  PAD-X 'cx let
-  PAD-Y 2 plus 'cy let
-  before len 'bpos let
+  PAD-X 'rcx let
+  PAD-Y 2 plus 'rcy let
 
-  -- Render before-cursor chars
-  0 'ti let
-  (ti bpos lt) (
-    before ti get 'tch let
-    tch 10 eq (
-      PAD-X 'cx let
-      cy CH plus 'cy let
+  -- Before cursor
+  0 'ri let
+  (ri before len lt) (
+    before ri get 'rch let
+    rch 10 eq (
+      PAD-X 'rcx let  rcy LH plus 'rcy let
     ) (
-      cy 480 lt (
-        tch cx cy draw-char
-        cx CW plus 'cx let
-        cx PAD-X COLS CW mul plus ge (
-          PAD-X 'cx let
-          cy CH plus 'cy let
+      rcy 480 lt (
+        body-font FN rch rcx rcy 0 draw-char
+        rcx body-font rch get plus 1 plus 'rcx let
+        rcx PAD-X TW plus gt (
+          PAD-X 'rcx let  rcy LH plus 'rcy let
         ) () if
       ) () if
     ) if
-    ti 1 plus 'ti let
+    ri 1 plus 'ri let
   ) while
 
-  -- Draw cursor (2px wide vertical bar)
-  blink 30 lt (
-    cx cy cy 7 plus 0 draw-vline
-    cx 1 plus cy cy 7 plus 0 draw-vline
+  -- Cursor
+  millis 500 div 2 mod 1 eq (
+    rcx rcy 1 FH 0 fill-rect
   ) () if
 
-  -- Render after-cursor chars (reversed order)
-  after len 'alen let
-  alen 1 sub 'ai let
-  (ai 0 ge) (
-    after ai get 'tch let
-    tch 10 eq (
-      PAD-X 'cx let
-      cy CH plus 'cy let
+  -- After cursor (reversed)
+  after len 1 sub 'ra let
+  (ra 0 ge) (
+    after ra get 'rch let
+    rch 10 eq (
+      PAD-X 'rcx let  rcy LH plus 'rcy let
     ) (
-      cy 480 lt (
-        tch cx cy draw-char
-        cx CW plus 'cx let
-        cx PAD-X COLS CW mul plus ge (
-          PAD-X 'cx let
-          cy CH plus 'cy let
+      rcy 480 lt (
+        body-font FN rch rcx rcy 0 draw-char
+        rcx body-font rch get plus 1 plus 'rcx let
+        rcx PAD-X TW plus gt (
+          PAD-X 'rcx let  rcy LH plus 'rcy let
         ) () if
       ) () if
     ) if
-    ai 1 sub 'ai let
+    ra 1 sub 'ra let
   ) while
 ) def
 
--- Keyboard handler
+-- Click to move cursor
+'mousedown (
+  'my let 'mx let
+  my PAD-Y ge (
+    -- Build full text: before + reversed after
+    list 'full let
+    0 'fi let
+    (fi before len lt) (
+      full before fi get give 'full let
+      fi 1 plus 'fi let
+    ) while
+    after len 1 sub 'fi let
+    (fi 0 ge) (
+      full after fi get give 'full let
+      fi 1 sub 'fi let
+    ) while
+    -- Walk text computing positions, find closest index
+    PAD-X 'hx let  PAD-Y 2 plus 'hy let
+    0 'hi let  0 'best let  1000000 'best-d let
+    (hi full len lt) (
+      full hi get 'hch let
+      -- Distance from click to this char position
+      mx hx sub dup mul my hy sub dup mul plus 'hd let
+      hd best-d lt (hi 'best let  hd 'best-d let) () if
+      hch 10 eq (
+        PAD-X 'hx let  hy LH plus 'hy let
+      ) (
+        body-font hch get 'hw let
+        hw 0 gt (
+          hx hw plus 1 plus 'hx let
+          hx PAD-X TW plus gt (
+            PAD-X 'hx let  hy LH plus 'hy let
+          ) () if
+        ) () if
+      ) if
+      hi 1 plus 'hi let
+    ) while
+    -- Also check end-of-text position
+    mx hx sub dup mul my hy sub dup mul plus 'hd let
+    hd best-d lt (full len 'best let) () if
+    -- Rebuild gap buffer at best
+    list 'before let  list 'after let
+    0 'fi let
+    (fi best lt) (
+      before full fi get give 'before let
+      fi 1 plus 'fi let
+    ) while
+    full len 1 sub 'fi let
+    (fi best ge) (
+      after full fi get give 'after let
+      fi 1 sub 'fi let
+    ) while
+  ) () if
+) on
+
+-- Input
 'keydown (
   dup 8 eq (
-    -- Backspace
     drop
-    before len 0 gt (
-      before grab drop 'before let
-    ) () if
+    before len 0 gt (before grab drop 'before let do-save) () if
   ) (
   dup 13 eq (
-    -- Enter
-    drop
-    before 10 give 'before let
+    drop before 10 give 'before let do-save
   ) (
   dup 127 eq (
-    -- Delete
     drop
-    after len 0 gt (
-      after grab drop 'after let
-    ) () if
+    after len 0 gt (after grab drop 'after let do-save) () if
   ) (
   dup 1073741904 eq (
-    -- Left arrow
     drop
-    before len 0 gt (
-      before grab 'mc let
-      after mc give 'after let
-    ) () if
+    before len 0 gt (before grab 'mc let after mc give 'after let) () if
   ) (
   dup 1073741903 eq (
-    -- Right arrow
     drop
-    after len 0 gt (
-      after grab 'mc let
-      before mc give 'before let
-    ) () if
+    after len 0 gt (after grab 'mc let before mc give 'before let) () if
   ) (
     'k let
     k 32 ge k 127 lt and (
-      before k give 'before let
+      before k give 'before let do-save
     ) () if
   ) if) if) if) if) if
 ) on
 
--- Blink counter
-'tick (
-  drop
-  blink 1 plus 60 mod 'blink let
-) on
-
--- State on stack for show loop
 0
-
--- Render
 (
   drop
   3 clear
