@@ -1,5 +1,5 @@
 -- Boids flocking — swirl around mouse, flee predator
--- Run with: ./slap-sdl examples/flock.slap
+-- Run with: ./slap-sdl < examples/flock.slap
 
 60 'N let
 320 'mx let  240 'my let

@@ -1,5 +1,5 @@
 -- Fantasy console: draw a gradient
--- Run with: ./slap-sdl examples/gradient.slap
+-- Run with: ./slap-sdl < examples/gradient.slap
 
 -- model is just a frame counter
 0

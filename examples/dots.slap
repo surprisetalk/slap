@@ -1,5 +1,5 @@
 -- Scared dots — flee from mouse, slowly sneak back home
--- Run with: ./slap-sdl examples/dots.slap
+-- Run with: ./slap-sdl < examples/dots.slap
 
 7 'COLS let  5 'ROWS let
 35 'N let

@@ -1,5 +1,5 @@
 -- Koi pond — fish swim in smooth curves, scatter from mouse
--- Run with: ./slap-sdl examples/fish.slap
+-- Run with: ./slap-sdl < examples/fish.slap
 
 12 'N let
 -1 'mx let  -1 'my let

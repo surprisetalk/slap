@@ -1,5 +1,5 @@
 -- Snake game
--- Run with: ./slap-sdl examples/snake.slap
+-- Run with: ./slap-sdl < examples/snake.slap
 
 -- Draw filled 20x20 cell
 'draw-cell (

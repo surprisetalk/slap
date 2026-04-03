@@ -1,5 +1,5 @@
 -- Langton's ant
--- Run with: ./slap-sdl examples/ant.slap
+-- Run with: ./slap-sdl < examples/ant.slap
 
 160 'W let
 120 'H let

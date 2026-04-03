@@ -1,5 +1,5 @@
 -- Conway's Game of Life
--- Run with: ./slap-sdl examples/life.slap
+-- Run with: ./slap-sdl < examples/life.slap
 
 160 'W let
 120 'H let

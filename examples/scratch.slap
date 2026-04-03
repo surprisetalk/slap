@@ -1,4 +1,4 @@
--- Note Pad — System 7 style scratch editor
+-- System 7 Note Pad
 -- ./slap-sdl [file.txt] < examples/scratch.slap
 
 -- Draw one byte as 8 horizontal pixels (MSB = leftmost)

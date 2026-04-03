@@ -1,5 +1,5 @@
 -- Mandelbrot fractal zoom into Seahorse Valley
--- Run with: ./slap-sdl examples/zoom.slap
+-- Run with: ./slap-sdl < examples/zoom.slap
 
 640 'W let
 480 'H let
