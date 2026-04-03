@@ -19,8 +19,8 @@ def main():
             tmp_path = tmp.name
         try:
             r = subprocess.run(
-                ["./slap", "--check", tmp_path],
-                capture_output=True, text=True, timeout=5
+                ["./slap", "--check"],
+                stdin=open(tmp_path), capture_output=True, text=True, timeout=5
             )
             if expect_str not in r.stderr.lower():
                 if r.returncode == 0:

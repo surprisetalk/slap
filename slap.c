@@ -2012,7 +2012,7 @@ static void prim_dedup(Frame *e) {
 #define CANVAS_H 480
 static uint8_t canvas[CANVAS_W*CANVAS_H];
 static SDL_Window *sdl_window=NULL; static SDL_Renderer *sdl_renderer=NULL; static SDL_Texture *sdl_texture=NULL;
-static int sdl_test_mode=0;
+static int sdl_plain_mode=0;
 #define MAX_HANDLERS 16
 static struct{uint32_t event_sym;Value handler_body[LOCAL_MAX];int handler_slots;} event_handlers[MAX_HANDLERS];
 static int handler_count=0;
@@ -2090,7 +2090,7 @@ static void prim_show(Frame *env) {
             show_dispatch_event(&ev,env);
         }
         show_tick_render(frame++, env);
-        if(sdl_test_mode) break; SDL_Delay(16);
+        if(sdl_plain_mode) break; SDL_Delay(16);
     }
     SDL_DestroyTexture(sdl_texture);SDL_DestroyRenderer(sdl_renderer);SDL_DestroyWindow(sdl_window);SDL_Quit();exit(0);
 #endif
@@ -2138,44 +2138,33 @@ static void register_prims(void) {
 
 int main(int argc, char **argv) {
     srand((unsigned)time(NULL));
-    int check_only=0,dump_types=0; const char *filename=NULL;
+    int check_only=0;
     for(int i=1;i<argc;i++){
         if(strcmp(argv[i],"--check")==0) check_only=1;
-        else if(strcmp(argv[i],"--dump-types")==0) dump_types=1;
 #ifdef SLAP_SDL
-        else if(strcmp(argv[i],"--test")==0) sdl_test_mode=1;
+        else if(strcmp(argv[i],"--plain")==0) sdl_plain_mode=1;
 #endif
-        else filename=argv[i];
+        else{fprintf(stderr,"unknown flag: %s\nusage: slap [--check] < file.slap\n",argv[i]);return 1;}
     }
-#ifdef SLAP_WASM
-    if(!filename) filename="program.slap";
-#endif
-    if(!filename){fprintf(stderr,"usage: slap [--check] <file.slap>\n");return 1;}
-    current_file=filename; syms_init(); register_prims();
+    current_file="<stdin>"; syms_init(); register_prims();
     Frame *global=frame_new(NULL);
     current_file="<prelude>"; lex(PRELUDE); eval(tokens,tok_count,global);
-    current_file=filename;
-    FILE *f=fopen(filename,"r"); if(!f){fprintf(stderr,"error: cannot open '%s'\n",filename);return 1;}
-    fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
-    char *src=malloc(sz+1); if((long)fread(src,1,sz,f)!=sz){fprintf(stderr,"error: read failed\n");return 1;} src[sz]=0; fclose(f);
+    current_file="<stdin>";
+#ifdef SLAP_WASM
+    FILE *f=fopen("program.slap","r"); if(!f){fprintf(stderr,"error: cannot open 'program.slap'\n");return 1;}
+#else
+    FILE *f=stdin;
+#endif
+    long sz=0,cap=4096; char *src=malloc(cap); long n;
+    while((n=fread(src+sz,1,cap-sz,f))>0){sz+=n;if(sz==cap){cap*=2;src=realloc(src,cap);}}
+    src[sz]=0;
+#ifdef SLAP_WASM
+    fclose(f);
+#endif
+    if(sz==0){fprintf(stderr,"usage: slap [--check] < file.slap\n");return 1;}
     store_source_lines(src);
     lex(src); int user_tok_count=tok_count;
     static Token user_tokens[TOK_MAX]; memcpy(user_tokens,tokens,user_tok_count*sizeof(Token));
-    if(dump_types){
-        eval(user_tokens,user_tok_count,global);
-        for(int i=0;i<type_sig_count;i++){
-            TypeSig *s=&type_sigs[i].sig; printf("'%s type",sym_name(type_sigs[i].sym));
-            for(int j=0;j<s->slot_count;j++){
-                TypeSlot *sl=&s->slots[j];
-                printf("  "); if(sl->type_var) printf("'%s ",sym_name(sl->type_var));
-                if(sl->constraint!=TC_NONE) printf("%s ",constraint_name(sl->constraint));
-                switch(sl->ownership){case OWN_OWN:printf("own ");break;case OWN_COPY:printf("copy ");break;case OWN_MOVE:printf("move ");break;case OWN_LENT:printf("lent ");break;}
-                printf("%s",sl->direction==DIR_IN?"in":"out");
-            }
-            printf(" def\n");
-        }
-        free(src); frame_free(global); return 0;
-    }
     static Token combined[TOK_MAX]; int cpos=0;
     lex(BUILTIN_TYPES); memcpy(combined,tokens,tok_count*sizeof(Token)); cpos=tok_count;
     lex(PRELUDE); memcpy(&combined[cpos],tokens,tok_count*sizeof(Token)); cpos+=tok_count;

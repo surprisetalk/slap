@@ -8,25 +8,36 @@
 
 A stack-based programming language with static type inference and linear types. Single-file C99 interpreter (~2100 lines).
 
+## install
+
+```bash
+brew install surprisetalk/tap/slap
+```
+
+Or build from source:
+
+```bash
+make slap
+```
+
 ## quick start
 
 ```bash
-make slap                    # build interpreter
-echo '2 3 plus print' | ./slap /dev/stdin   # → 5
-./slap examples/euler/1.slap # → 233168
+echo '2 3 plus print' | slap        # → 5
+slap < examples/euler/1.slap        # → 233168
 ```
 
 For the SDL graphics build:
 ```bash
-make slap-sdl                # requires SDL2
-./slap-sdl examples/life.slap
+make slap-sdl                        # requires SDL2
+slap-sdl < examples/life.slap
 ```
 
 CLI flags:
 ```
-./slap [--check] [--dump-types] <file.slap>
-  --check       type-check only, no execution
-  --dump-types  print inferred type signatures
+slap [--check] [--plain] < file.slap
+  --check   type-check only, no execution
+  --plain   (SDL) run one frame then exit
 ```
 
 ## language tour
@@ -518,10 +529,10 @@ make test
 ```
 
 Runs five checks:
-1. `./slap tests/expect.slap` — 250+ integration tests (assert-based)
-2. `./slap --check tests/type.slap` — type system validation
-3. `./slap tests/type.slap > /dev/null` — execute type tests
-4. `./slap --check tests/expect.slap` — type-check integration tests
+1. `./slap < tests/expect.slap` — 250+ integration tests (assert-based)
+2. `./slap --check < tests/type.slap` — type system validation
+3. `./slap < tests/type.slap > /dev/null` — execute type tests
+4. `./slap --check < tests/expect.slap` — type-check integration tests
 5. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — expected error messages
 
 ## building

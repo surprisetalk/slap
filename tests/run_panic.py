@@ -26,8 +26,8 @@ def main():
 
         try:
             r = subprocess.run(
-                ["./slap", tmp_path],
-                capture_output=True, text=True, timeout=5
+                ["./slap"],
+                stdin=open(tmp_path), capture_output=True, text=True, timeout=5
             )
             if r.returncode == 0:
                 print(f"FAIL line {i+1}: expected panic '{expect}', but succeeded")

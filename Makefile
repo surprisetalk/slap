@@ -18,10 +18,10 @@ slap-wasm: slap.c shell.html
 clean:
 	rm -f slap slap-sdl *.wasm
 test: slap
-	@./slap tests/expect.slap
-	@./slap --check tests/type.slap
-	@./slap tests/type.slap > /dev/null
-	@./slap --check tests/expect.slap
+	@./slap < tests/expect.slap
+	@./slap --check < tests/type.slap
+	@./slap < tests/type.slap > /dev/null
+	@./slap --check < tests/expect.slap
 	@python3 tests/run_panic.py
 	@python3 tests/run_type_errors.py
 	@echo "All test suites passed."

@@ -12,17 +12,17 @@ make test           # Run all test suites
 make clean          # Remove binaries
 ```
 
-CLI: `./slap [--check] [--dump-types] <file.slap>`
+CLI: `./slap [--check] [--plain] < file.slap`
 - `--check` — type-check only, no execution
-- `--dump-types` — print inferred type signatures for all definitions
+- `--plain` — (SDL build) run one frame then exit, for headless testing
 
 ## Tests
 
 `make test` runs five checks in order:
-1. `./slap tests/expect.slap` — integration tests (assert-based, halts on failure)
-2. `./slap --check tests/type.slap` — type system tests
-3. `./slap tests/type.slap > /dev/null` — execute type tests
-4. `./slap --check tests/expect.slap` — type-check the integration tests
+1. `./slap < tests/expect.slap` — integration tests (assert-based, halts on failure)
+2. `./slap --check < tests/type.slap` — type system tests
+3. `./slap < tests/type.slap > /dev/null` — execute type tests
+4. `./slap --check < tests/expect.slap` — type-check the integration tests
 5. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — verify expected errors
 
 Tests use `assert` (halts on first failure). Python scripts validate that specific inputs produce expected error messages.
