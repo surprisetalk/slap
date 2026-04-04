@@ -8,6 +8,12 @@
 #include <stdarg.h>
 #include <dirent.h>
 #include <unistd.h>
+#ifndef SLAP_WASM
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#endif
 
 #define STACK_MAX  65536
 #define SYM_MAX   4096
@@ -1828,9 +1834,21 @@ static const char *BUILTIN_TYPES =
     "'ls [list own in  list move out] effect\n"
     "'utf8-encode [int list own in  int list move out] effect\n"
     "'utf8-decode [int list own in  int list move out] effect\n"
+    "'str-find [int list own in  int list own in  int move out] effect\n"
+    "'str-split [int list own in  int list own in  list move out] effect\n"
+    "'parse-http [int list own in  int move out  list move out  int list move out] effect\n"
     "'args [list move out] effect\n"
     "'isheadless [int move out] effect\n"
-    "'cwd [list move out] effect\n";
+    "'cwd [list move out] effect\n"
+#ifndef SLAP_WASM
+    "'tcp-connect [int list own in  int lent in  int box move out] effect\n"
+    "'tcp-send [int box own in  int list own in  int box move out] effect\n"
+    "'tcp-recv [int box own in  int lent in  int box move out  int list move out] effect\n"
+    "'tcp-close [int box own in] effect\n"
+    "'tcp-listen [int lent in  int box move out] effect\n"
+    "'tcp-accept [int box own in  int box move out  int box move out] effect\n"
+#endif
+;
 
 static const char *PRELUDE =
     "'over (swap dup (swap) dip) def\n'peek (over) def\n'nip (swap drop) def\n"
@@ -2006,6 +2024,52 @@ static const char *PRELUDE =
     "  ) while\n"
     "  out\n"
     ") def\n"
+#ifndef SLAP_WASM
+    /* -- string helpers -- */
+    "'crlf (list 13 give 10 give) def\n"
+    "'space (32) def\n"
+    "'int-str recur ('n let n 0 lt\n"
+    "  (n neg int-str list 45 give swap cat)\n"
+    "  (n 10 lt (list n 48 plus give)\n"
+    "   (list (n 0 gt) (n 10 mod 48 plus give  n 10 div 'n let) while reverse) if\n"
+    "  ) if\n"
+    ") def\n"
+    "'str-join ('sep let 'parts let\n"
+    "  parts len 0 eq (list)\n"
+    "  (parts first parts 1 drop-n (sep swap cat cat) each) if\n"
+    ") def\n"
+    /* -- HTTP -- */
+    "'http-request ('body let 'headers let 'path let 'host let 'method let\n"
+    "  method \" \" cat path cat \" HTTP/1.1\" cat crlf cat\n"
+    "  \"Host: \" cat host cat crlf cat\n"
+    "  headers cat\n"
+    "  body len 0 gt (\n"
+    "    \"Content-Length: \" cat body len int-str cat crlf cat\n"
+    "  ) () if\n"
+    "  crlf cat body cat\n"
+    ") def\n"
+    "'http-get ('path let 'port let 'host let\n"
+    "  host port tcp-connect 'sock let\n"
+    "  \"GET\" host path list list http-request\n"
+    "  sock swap tcp-send 'sock let\n"
+    "  list 'response let\n"
+    "  (sock 4096 tcp-recv 'chunk let 'sock let\n"
+    "   response chunk cat 'response let  chunk len 0 gt) () while\n"
+    "  sock tcp-close\n"
+    "  response parse-http\n"
+    ") def\n"
+    "'http-post ('body let 'content-type let 'path let 'port let 'host let\n"
+    "  host port tcp-connect 'sock let\n"
+    "  \"Content-Type: \" content-type cat crlf cat 'ct-hdr let\n"
+    "  \"POST\" host path ct-hdr body http-request\n"
+    "  sock swap tcp-send 'sock let\n"
+    "  list 'response let\n"
+    "  (sock 4096 tcp-recv 'chunk let 'sock let\n"
+    "   response chunk cat 'response let  chunk len 0 gt) () while\n"
+    "  sock tcp-close\n"
+    "  response parse-http\n"
+    ") def\n"
+#endif
 ;
 
 static void prim_reverse(Frame *e) {
@@ -2312,6 +2376,273 @@ static void prim_utf8_decode(Frame *e) {
     spush(val_compound(VAL_LIST, cp_count, sp - base + 1));
 }
 
+#ifndef SLAP_WASM
+static int pop_socket_fd(const char *who) {
+    Value v = spop();
+    if (v.tag != VAL_BOX) die("%s: expected socket (box)", who);
+    BoxData *bd = (BoxData*)v.as.box;
+    if (bd->slots != 1 || bd->data[0].tag != VAL_INT) die("%s: socket box must contain a single int", who);
+    return (int)bd->data[0].as.i;
+}
+
+static void push_socket_box(int fd) {
+    spush(val_int(fd));
+    Value top = stack[sp-1]; int s = val_slots(top);
+    BoxData *bd = malloc(sizeof(BoxData));
+    bd->data = malloc(s * sizeof(Value));
+    bd->slots = s;
+    memcpy(bd->data, &stack[sp-s], s * sizeof(Value));
+    sp -= s;
+    Value v; v.tag = VAL_BOX; v.as.box = bd;
+    spush(v);
+}
+
+static void prim_tcp_connect(Frame *e) {
+    (void)e;
+    int64_t port = pop_int();
+    char *host = pop_string_path("tcp-connect");
+    struct addrinfo hints = {0}, *res;
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    char port_str[16]; snprintf(port_str, sizeof(port_str), "%lld", (long long)port);
+    int err = getaddrinfo(host, port_str, &hints, &res);
+    if (err) { free(host); die("tcp-connect: getaddrinfo failed for '%s': %s", host, gai_strerror(err)); }
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) { freeaddrinfo(res); free(host); die("tcp-connect: socket() failed"); }
+    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) { close(fd); freeaddrinfo(res); free(host); die("tcp-connect: connect to '%s:%lld' failed", host, (long long)port); }
+    freeaddrinfo(res); free(host);
+    push_socket_box(fd);
+}
+
+static void prim_tcp_send(Frame *e) {
+    (void)e;
+    Value top = spop();
+    if (top.tag != VAL_LIST) die("tcp-send: expected list (bytes)");
+    int len = (int)top.as.compound.len;
+    int slots = (int)top.as.compound.slots - 1;
+    if (slots != len) die("tcp-send: byte list elements must all be single-slot (ints)");
+    unsigned char *buf = malloc(len);
+    for (int i = 0; i < len; i++) {
+        Value v = stack[sp - len + i];
+        if (v.tag != VAL_INT) die("tcp-send: byte element %d is not an int", i);
+        if (v.as.i < 0 || v.as.i > 255) die("tcp-send: byte %d out of range (got %lld)", i, (long long)v.as.i);
+        buf[i] = (unsigned char)v.as.i;
+    }
+    sp -= len;
+    int fd = pop_socket_fd("tcp-send");
+    /* re-push socket box before send so it's available even on error */
+    push_socket_box(fd);
+    size_t sent = 0;
+    while (sent < (size_t)len) {
+        ssize_t n = send(fd, buf + sent, len - sent, 0);
+        if (n <= 0) { free(buf); die("tcp-send: send() failed"); }
+        sent += n;
+    }
+    free(buf);
+}
+
+static void prim_tcp_recv(Frame *e) {
+    (void)e;
+    int64_t maxlen = pop_int();
+    if (maxlen <= 0) die("tcp-recv: max length must be positive (got %lld)", (long long)maxlen);
+    int fd = pop_socket_fd("tcp-recv");
+    push_socket_box(fd);
+    unsigned char *buf = malloc(maxlen);
+    ssize_t n = recv(fd, buf, maxlen, 0);
+    if (n < 0) { free(buf); die("tcp-recv: recv() failed"); }
+    push_byte_list(buf, n);
+    free(buf);
+}
+
+static void prim_tcp_close(Frame *e) {
+    (void)e;
+    Value v = spop();
+    if (v.tag != VAL_BOX) die("tcp-close: expected socket (box)");
+    BoxData *bd = (BoxData*)v.as.box;
+    if (bd->slots != 1 || bd->data[0].tag != VAL_INT) die("tcp-close: socket box must contain a single int");
+    close((int)bd->data[0].as.i);
+    free(bd->data); free(bd);
+}
+
+static void prim_tcp_listen(Frame *e) {
+    (void)e;
+    int64_t port = pop_int();
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) die("tcp-listen: socket() failed");
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); die("tcp-listen: bind to port %lld failed", (long long)port); }
+    if (listen(fd, 128) < 0) { close(fd); die("tcp-listen: listen() failed"); }
+    push_socket_box(fd);
+}
+
+static void prim_tcp_accept(Frame *e) {
+    (void)e;
+    int server_fd = pop_socket_fd("tcp-accept");
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
+    if (client_fd < 0) die("tcp-accept: accept() failed");
+    push_socket_box(server_fd);
+    push_socket_box(client_fd);
+}
+#endif
+
+static unsigned char *pop_byte_list_buf(const char *who, int *out_len) {
+    Value top = spop();
+    if (top.tag != VAL_LIST) die("%s: expected list", who);
+    int len = (int)top.as.compound.len;
+    int slots = (int)top.as.compound.slots - 1;
+    if (slots != len) die("%s: list elements must all be single-slot (ints)", who);
+    unsigned char *buf = malloc(len);
+    for (int i = 0; i < len; i++) {
+        Value v = stack[sp - len + i];
+        if (v.tag != VAL_INT) die("%s: element %d is not an int", who, i);
+        buf[i] = (unsigned char)v.as.i;
+    }
+    sp -= len;
+    *out_len = len;
+    return buf;
+}
+
+static void prim_str_find(Frame *e) {
+    (void)e;
+    int nlen, hlen;
+    unsigned char *needle = pop_byte_list_buf("str-find", &nlen);
+    unsigned char *haystack = pop_byte_list_buf("str-find", &hlen);
+    int result = -1;
+    for (int i = 0; i <= hlen - nlen; i++) {
+        if (memcmp(haystack + i, needle, nlen) == 0) { result = i; break; }
+    }
+    free(needle); free(haystack);
+    spush(val_int(result));
+}
+
+static void prim_str_split(Frame *e) {
+    (void)e;
+    int dlen, slen;
+    unsigned char *delim = pop_byte_list_buf("str-split", &dlen);
+    unsigned char *str = pop_byte_list_buf("str-split", &slen);
+    int base = sp, count = 0, pos = 0;
+    while (pos <= slen) {
+        int found = -1;
+        if (dlen > 0) {
+            for (int i = pos; i <= slen - dlen; i++) {
+                if (memcmp(str + i, delim, dlen) == 0) { found = i; break; }
+            }
+        }
+        if (found < 0) {
+            push_byte_list(str + pos, slen - pos);
+            count++;
+            break;
+        }
+        push_byte_list(str + pos, found - pos);
+        count++;
+        pos = found + dlen;
+    }
+    spush(val_compound(VAL_LIST, count, sp - base + 1));
+    free(delim); free(str);
+}
+
+static void prim_parse_http(Frame *e) {
+    (void)e;
+    int rlen;
+    unsigned char *raw = pop_byte_list_buf("parse-http", &rlen);
+    /* find \r\n\r\n */
+    int split = -1;
+    for (int i = 0; i <= rlen - 4; i++) {
+        if (raw[i]=='\r' && raw[i+1]=='\n' && raw[i+2]=='\r' && raw[i+3]=='\n') { split = i; break; }
+    }
+    if (split < 0) { free(raw); die("parse-http: no header/body separator found"); }
+    /* parse status line: find first \r\n */
+    int status_end = -1;
+    for (int i = 0; i < split; i++) {
+        if (raw[i]=='\r' && raw[i+1]=='\n') { status_end = i; break; }
+    }
+    if (status_end < 0) status_end = split;
+    /* parse status code from "HTTP/x.x CODE REASON" */
+    int sp1 = -1;
+    for (int i = 0; i < status_end; i++) { if (raw[i]==' ') { sp1 = i; break; } }
+    int status_code = 0;
+    if (sp1 >= 0) {
+        for (int i = sp1+1; i < status_end && raw[i] >= '0' && raw[i] <= '9'; i++)
+            status_code = status_code * 10 + (raw[i] - '0');
+    }
+    spush(val_int(status_code));
+    /* parse headers into list of records */
+    int hdr_base = sp, hdr_count = 0;
+    int pos = status_end + 2; /* skip first \r\n */
+    while (pos < split) {
+        int line_end = split;
+        for (int i = pos; i < split - 1; i++) {
+            if (raw[i]=='\r' && raw[i+1]=='\n') { line_end = i; break; }
+        }
+        if (line_end == pos) { pos += 2; continue; }
+        /* find ": " */
+        int colon = -1;
+        for (int i = pos; i < line_end - 1; i++) {
+            if (raw[i]==':' && raw[i+1]==' ') { colon = i; break; }
+        }
+        /* build record {key: ..., value: ...} */
+        spush(val_sym(sym_intern("key")));
+        if (colon >= 0) push_byte_list(raw + pos, colon - pos);
+        else push_byte_list(raw + pos, line_end - pos);
+        spush(val_sym(sym_intern("value")));
+        if (colon >= 0) push_byte_list(raw + colon + 2, line_end - colon - 2);
+        else push_byte_list((unsigned char*)"", 0);
+        spush(val_compound(VAL_RECORD, 2, sp - (sp - 2 - (int)stack[sp-1].as.compound.slots - 1 - (colon>=0?(colon-pos):(line_end-pos)) - 1) + 1));
+        /* simpler: just track slots manually */
+        hdr_count++;
+        pos = line_end + 2;
+    }
+    /* Rebuild: we pushed records onto stack, now wrap in list */
+    /* Actually let me redo this more carefully */
+    /* Reset and redo header parsing properly */
+    sp = hdr_base; /* restore to after status int */
+    hdr_count = 0;
+    int rec_base = sp;
+    pos = status_end + 2;
+    while (pos < split) {
+        int line_end = split;
+        for (int i = pos; i < split - 1; i++) {
+            if (raw[i]=='\r' && raw[i+1]=='\n') { line_end = i; break; }
+        }
+        if (line_end == pos) { pos += 2; continue; }
+        int colon = -1;
+        for (int i = pos; i < line_end - 1; i++) {
+            if (raw[i]==':' && raw[i+1]==' ') { colon = i; break; }
+        }
+        /* record: sym key, key-bytes..., list-hdr, sym value, val-bytes..., list-hdr, record-hdr */
+        uint32_t key_sym = sym_intern("key");
+        uint32_t val_sym2 = sym_intern("value");
+        spush(val_sym(key_sym));
+        if (colon >= 0) {
+            push_byte_list(raw + pos, colon - pos);
+        } else {
+            push_byte_list(raw + pos, line_end - pos);
+        }
+        int key_slots = 1 + (colon >= 0 ? (colon - pos + 1) : (line_end - pos + 1)); /* sym + list */
+        spush(val_sym(val_sym2));
+        if (colon >= 0) {
+            push_byte_list(raw + colon + 2, line_end - colon - 2);
+        } else {
+            push_byte_list((unsigned char*)"", 0);
+        }
+        int val_slots2 = 1 + (colon >= 0 ? (line_end - colon - 2 + 1) : 1); /* sym + list */
+        spush(val_compound(VAL_RECORD, 2, key_slots + val_slots2 + 1));
+        hdr_count++;
+        pos = line_end + 2;
+    }
+    spush(val_compound(VAL_LIST, hdr_count, sp - rec_base + 1));
+    /* push body */
+    push_byte_list(raw + split + 4, rlen - split - 4);
+    free(raw);
+}
+
 static void push_c_string(const char *s) {
     int len=(int)strlen(s);
     for(int i=0;i<len;i++) spush(val_int((unsigned char)s[i]));
@@ -2359,7 +2690,13 @@ static void register_prims(void) {
         {"lend",prim_lend},{"mutate",prim_mutate},{"clone",prim_clone},
         {"read",prim_read},{"write",prim_write},{"ls",prim_ls},
         {"utf8-encode",prim_utf8_encode},{"utf8-decode",prim_utf8_decode},
+        {"str-find",prim_str_find},{"str-split",prim_str_split},{"parse-http",prim_parse_http},
         {"args",prim_args},{"isheadless",prim_isheadless},{"cwd",prim_cwd},
+#ifndef SLAP_WASM
+        {"tcp-connect",prim_tcp_connect},{"tcp-send",prim_tcp_send},
+        {"tcp-recv",prim_tcp_recv},{"tcp-close",prim_tcp_close},
+        {"tcp-listen",prim_tcp_listen},{"tcp-accept",prim_tcp_accept},
+#endif
 #ifdef SLAP_SDL
         {"clear",prim_clear},{"pixel",prim_pixel},{"fill-rect",prim_fill_rect},{"millis",prim_millis},{"on",prim_on},{"show",prim_show},
 #endif
