@@ -352,8 +352,8 @@ Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ow
 | `dec` | n → n-1 | `5 dec` → `4` |
 | `neg` | n → -n | `5 neg` → `-5` |
 | `abs` | n → \|n\| | `-3 abs` → `3` |
-| `sqr` | n → n*n | `5 sqr` → `25` |
-| `cube` | n → n*n*n | `3 cube` → `27` |
+| `sqr` | n → n\*n | `5 sqr` → `25` |
+| `cube` | n → n\*n\*n | `3 cube` → `27` |
 | `max` | a b → max | `3 5 max` → `5` |
 | `min` | a b → min | `3 5 min` → `3` |
 | `sign` | n → -1/0/1 | `-3 sign` → `-1` |
