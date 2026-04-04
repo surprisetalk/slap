@@ -203,6 +203,12 @@ static void frame_bind(Frame *f, uint32_t sym, Value *vals, int slots, BindKind 
             if (slots <= f->bindings[i].allocated) {
                 memcpy(&f->vals[f->bindings[i].offset], vals, slots * sizeof(Value));
                 f->bindings[i].slots = slots;
+            } else if (f->bindings[i].offset + f->bindings[i].allocated == f->vals_used) {
+                int extra = slots - f->bindings[i].allocated;
+                if (f->vals_used + extra > FRAME_VALS_MAX) die("frame value storage full");
+                memcpy(&f->vals[f->bindings[i].offset], vals, slots * sizeof(Value));
+                f->vals_used += extra;
+                f->bindings[i].slots = slots; f->bindings[i].allocated = slots;
             } else {
                 int off = f->vals_used;
                 if (off + slots > FRAME_VALS_MAX) die("frame value storage full");
@@ -1632,8 +1638,11 @@ static void eval_body(Value *body, int slots, Frame *env) {
     int saved_bc=exec_env->bind_count,saved_vu=exec_env->vals_used;
     int all_scalar=(slots==len+1);
     if(len>LOCAL_MAX) die("tuple body too large");
-    int offsets_buf[LOCAL_MAX],sizes_buf[LOCAL_MAX];
-    if(!all_scalar) compute_offsets(body,slots,len,offsets_buf,sizes_buf);
+    int *offsets_buf=NULL, *sizes_buf=NULL;
+    if(!all_scalar) {
+        offsets_buf=malloc(len*2*sizeof(int)); sizes_buf=offsets_buf+len;
+        compute_offsets(body,slots,len,offsets_buf,sizes_buf);
+    }
     for(int k=0;k<len;k++){
         int eoff,esz; if(all_scalar){eoff=k;esz=1;}else{eoff=offsets_buf[k];esz=sizes_buf[k];}
         Value elem=body[eoff+esz-1];
@@ -1648,7 +1657,7 @@ static void eval_body(Value *body, int slots, Frame *env) {
             if(sym==S_DEF){
                 Value dv_top=stack[sp-1]; int dv_s=val_slots(dv_top); uint32_t name; int rec=0;
                 if(recur_pending){name=recur_sym;rec=1;recur_pending=0;frame_bind(exec_env,name,&stack[sp-dv_s],dv_s,BIND_DEF,rec);sp-=dv_s;}
-                else{Value dv_buf[LOCAL_MAX];memcpy(dv_buf,&stack[sp-dv_s],dv_s*sizeof(Value));sp-=dv_s;name=pop_sym();frame_bind(exec_env,name,dv_buf,dv_s,BIND_DEF,rec);}
+                else{Value dv_buf[dv_s];memcpy(dv_buf,&stack[sp-dv_s],dv_s*sizeof(Value));sp-=dv_s;name=pop_sym();frame_bind(exec_env,name,dv_buf,dv_s,BIND_DEF,rec);}
             } else if(sym==S_LET){
                 uint32_t name=pop_sym(); Value lv_top=stack[sp-1]; int lv_s=val_slots(lv_top);
                 frame_bind(exec_env,name,&stack[sp-lv_s],lv_s,BIND_LET,0); sp-=lv_s;
@@ -1656,6 +1665,7 @@ static void eval_body(Value *body, int slots, Frame *env) {
             else dispatch_word(sym,exec_env);
         } else if(elem.tag==VAL_BOX) spush(elem);
     }
+    free(offsets_buf);
     if(exec_env->refcount==0){exec_env->bind_count=saved_bc;exec_env->vals_used=saved_vu;}
 }
 
