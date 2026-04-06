@@ -137,3 +137,9 @@ stack pop
 
 -- EXPECT: expected tuple, got tagged
 1 'ok tag size
+
+-- EXPECT: concat: result too large
+0 10000 range 0 10000 range cat
+
+-- EXPECT: swap: value too large
+0 10000 range 0 10000 range swap

@@ -1456,6 +1456,7 @@ static void prim_swap(Frame *e) {
     Value top=stack[sp-1]; int top_s=val_slots(top); if(sp<top_s) die("swap: stack underflow");
     int bp=sp-top_s-1; if(bp<0) die("swap: stack underflow");
     int below_s=val_slots(stack[bp]); int total=top_s+below_s; if(sp<total) die("swap: stack underflow");
+    if(total>LOCAL_MAX) die("swap: value too large (%d slots, max %d)",total,LOCAL_MAX);
     Value tmp[total]; int base=sp-total;
     memcpy(tmp,&stack[base],below_s*sizeof(Value));
     memmove(&stack[base],&stack[base+below_s],top_s*sizeof(Value));
@@ -1514,6 +1515,7 @@ static void prim_cond(Frame *env) {
     Value clauses_top=stack[sp-1];
     if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die("cond: expected tuple or record of clauses");
     int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len;
+    if(clauses_s>LOCAL_MAX) die("cond: clauses too large (%d slots, max %d)",clauses_s,LOCAL_MAX);
     Value clauses_buf[clauses_s]; memcpy(clauses_buf,&stack[sp-clauses_s],clauses_s*sizeof(Value)); sp-=clauses_s;
     POP_VAL(scrut);
     if(clauses_len%2!=0) die("cond: need even number of clauses (pred/body pairs)");
@@ -1532,6 +1534,7 @@ static void prim_match(Frame *env) {
     Value clauses_top=stack[sp-1];
     if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die("match: expected tuple of clauses");
     int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len;
+    if(clauses_s>LOCAL_MAX) die("match: clauses too large (%d slots, max %d)",clauses_s,LOCAL_MAX);
     Value clauses_buf[clauses_s]; memcpy(clauses_buf,&stack[sp-clauses_s],clauses_s*sizeof(Value)); sp-=clauses_s;
     Value scrut=spop(); if(scrut.tag!=VAL_SYM) die("match: scrutinee must be a symbol");
     if(clauses_top.tag==VAL_RECORD){
@@ -1563,11 +1566,13 @@ static void prim_untag(Frame *env) {
     Value clauses_top=stack[sp-1];
     if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die("untag: expected tuple or record of clauses");
     int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len;
+    if(clauses_s>LOCAL_MAX) die("untag: clauses too large (%d slots, max %d)",clauses_s,LOCAL_MAX);
     Value clauses_buf[clauses_s]; memcpy(clauses_buf,&stack[sp-clauses_s],clauses_s*sizeof(Value)); sp-=clauses_s;
     Value tagged_top=stack[sp-1];
     if(tagged_top.tag!=VAL_TAGGED) die("untag: expected tagged value, got %s", valtag_name(tagged_top.tag));
     int tagged_s=val_slots(tagged_top);
     int payload_s=tagged_s-1;
+    if(payload_s>LOCAL_MAX) die("untag: payload too large (%d slots, max %d)",payload_s,LOCAL_MAX);
     Value payload_buf[payload_s]; memcpy(payload_buf,&stack[sp-tagged_s],payload_s*sizeof(Value));
     uint32_t tag_sym=tagged_top.as.compound.len;
     sp-=tagged_s;
@@ -1714,7 +1719,9 @@ static void prim_concat(Frame *e) {
     Value below=stack[base2-1];
     if(!is_compound(below.tag)) die("concat: expected compound");
     int s1=val_slots(below),len1=(int)below.as.compound.len,base1=base2-s1;
-    int new_elem_slots=(s1-1)+(s2-1); Value tmp[new_elem_slots];
+    int new_elem_slots=(s1-1)+(s2-1);
+    if(new_elem_slots>LOCAL_MAX) die("concat: result too large (%d slots, max %d)",new_elem_slots,LOCAL_MAX);
+    Value tmp[new_elem_slots];
     memcpy(tmp,&stack[base1],(s1-1)*sizeof(Value));
     memcpy(&tmp[s1-1],&stack[base2],(s2-1)*sizeof(Value));
     sp=base1; memcpy(&stack[sp],tmp,new_elem_slots*sizeof(Value)); sp+=new_elem_slots;
