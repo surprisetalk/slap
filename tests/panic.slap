@@ -125,3 +125,15 @@ stack pop
 
 -- EXPECT: utf8-decode: invalid continuation byte
 [195 65] utf8-decode
+
+-- EXPECT: expected tagged value
+123 {'foo ()} -1 untag
+
+-- EXPECT: expected tagged value
+123 (1 plus) then
+
+-- EXPECT: expected tagged
+123 -1 default
+
+-- EXPECT: expected tuple, got tagged
+1 'ok tag size

@@ -162,3 +162,75 @@
 -- TYPE ERROR: ls expects list, not int
 42 ls
 
+
+-- EXPECT: type error
+-- TYPE ERROR: tag needs value and symbol, not just symbol
+'foo tag
+
+-- EXPECT: type error
+-- TYPE ERROR: untag scrutinee must be tagged
+123 {'foo ()} -1 untag
+
+-- EXPECT: expected tagged value
+-- TYPE ERROR: then on plain int
+123 (1 plus) then
+
+-- EXPECT: expected tagged value
+-- TYPE ERROR: then on symbol (not tagged)
+'ok (1 plus) then
+
+-- EXPECT: expected tagged
+-- TYPE ERROR: default on plain int
+42 -1 default
+
+-- EXPECT: expected tagged
+-- TYPE ERROR: default on list
+[1 2 3] -1 default
+
+-- EXPECT: body must be 1->1
+-- TYPE ERROR: then body consumes 2, produces 1
+42 ok (swap plus) then
+
+-- EXPECT: body must be 1->1
+-- TYPE ERROR: then body produces 2 (dup)
+42 ok (dup) then
+
+-- EXPECT: produce different types
+-- TYPE ERROR: untag clause bodies disagree (int vs list)
+42 ok {'ok (1 plus) 'no (list)} -1 untag
+
+-- EXPECT: expected tagged value
+-- TYPE ERROR: untag on float
+3.14 {'ok ()} -1 untag
+
+-- EXPECT: expected tagged value
+-- TYPE ERROR: untag on record
+{'x 1} {'ok ()} -1 untag
+
+-- EXPECT: missing variant 'no'
+-- TYPE ERROR: untag missing variant declared by union
+42 ok {'ok 'int 'no 'str} union {'ok (1 plus)} -1 untag
+
+-- EXPECT: missing variant 'no'
+-- TYPE ERROR: untag with union, handles only ok after then
+42 ok {'ok 'int 'no 'str} union (1 plus) then {'ok ()} -1 untag
+
+-- EXPECT: missing variant 'err'
+-- TYPE ERROR: three variants, only two handled
+42 'a tag {'a 'int 'b 'int 'err 'str} union {'a () 'b ()} -1 untag
+
+-- EXPECT: body expects list but 'ok variant has int
+-- TYPE ERROR: then body expects list but ok variant is int
+42 ok {'ok 'int 'no 'str} union (len) then print
+
+-- EXPECT: body expects float but 'ok variant has int
+-- TYPE ERROR: then body expects float, ok variant is int
+42 ok {'ok 'int 'no 'str} union (fsqrt) then print
+
+-- EXPECT: expected num, got list
+-- TYPE ERROR: default preserves payload type (string/list + int)
+"hello" ok -1 default 1 plus print
+
+-- EXPECT: expected list, got int
+-- TYPE ERROR: default preserves payload type (int given to len)
+42 ok -1 default len print

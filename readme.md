@@ -271,6 +271,35 @@ Strings are lists of character codes.
 "ab" "cd" cat                -- "abcd"
 ```
 
+### tagged unions (sum types)
+
+Tag a value with a symbol to create a sum type. Use `ok`/`no` for result types, or `'sym tag` for custom tags.
+
+```slap
+-- creating tagged values
+123 ok                          -- 123 'ok tagged
+"oops" no                       -- "oops" 'no tagged
+42 'custom tag                  -- 42 'custom tagged
+
+-- pattern matching with untag
+123 'foo tag {'foo (1 plus) 'bar (2 mul)} -1 untag  -- 124
+
+-- monadic chaining with then/default
+'safe-div ('d let 'n let
+  d 0 eq ("division by zero" no) (n d div ok) if
+) def
+
+10 2 safe-div (3 mul) then -1 default   -- 15
+10 0 safe-div (3 mul) then -1 default   -- -1
+```
+
+`then` chains operations on `'ok` values — non-ok values pass through unchanged:
+
+```slap
+123 ok (1 plus) then (2 mul) then -1 default  -- 248
+"fail" no (1 plus) then (2 mul) then -1 default  -- -1
+```
+
 ### boxes (linear types)
 
 Boxes wrap a value in a linear container that must be consumed exactly once.
@@ -310,7 +339,7 @@ All code is type-checked before execution. Types are inferred — no annotations
 
 | Category   | Types                                           | Rules                        |
 |------------|-------------------------------------------------|------------------------------|
-| Stackable  | Int, Float, Symbol, Tuple, Record, List, String | Freely `dup` and `drop`      |
+| Stackable  | Int, Float, Symbol, Tuple, Record, List, String, Tagged | Freely `dup` and `drop`      |
 | Linear     | Box                                             | Must consume exactly once    |
 
 Boxes must be consumed via `free`, `lend`, `mutate`, or `clone`. `lend` borrows a stackable snapshot from a box.
@@ -414,6 +443,17 @@ Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ow
 | `group` | data indices → groups | groups data by index labels |
 | `partition` | alias of `group` | `[10 20 30] [0 1 0] partition` |
 | `classify` | list → indices | `[1 2 1 3 2] classify` → `[0 1 0 2 1]` |
+
+### tagged unions
+
+| Word | Effect | Example |
+|------|--------|---------|
+| `ok` | x → x 'ok tagged | `42 ok` → `42 'ok tagged` |
+| `no` | x → x 'no tagged | `"err" no` → `"err" 'no tagged` |
+| `tag` | x 'sym → tagged | `1 'foo tag` → `1 'foo tagged` |
+| `untag` | tagged clauses default → result | `1 'ok tag {'ok (inc)} -1 untag` → `2` |
+| `then` | tagged body → tagged | `42 ok (inc) then` → `43 'ok tagged` |
+| `default` | tagged fallback → value | `42 ok -1 default` → `42` |
 
 ### float math
 

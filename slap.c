@@ -22,7 +22,7 @@
 #define TOK_MAX   65536
 #define LOCAL_MAX 16384
 
-typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_WORD, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX } ValTag;
+typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_WORD, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX, VAL_TAGGED } ValTag;
 typedef struct Frame Frame;
 typedef void (*PrimFn)(Frame *env);
 typedef struct Value {
@@ -37,7 +37,11 @@ typedef struct Value {
 
 __attribute__((noreturn)) static void die(const char *fmt, ...);
 
-static int is_compound(ValTag tag) { return tag == VAL_TUPLE || tag == VAL_LIST || tag == VAL_RECORD; }
+static int is_compound(ValTag tag) { return tag == VAL_TUPLE || tag == VAL_LIST || tag == VAL_RECORD || tag == VAL_TAGGED; }
+static const char *valtag_name(ValTag t) {
+    const char *names[] = {"int","float","symbol","word","xt","tuple","list","record","box","tagged"};
+    return (t <= VAL_TAGGED) ? names[t] : "?";
+}
 
 static int val_slots(Value v) {
     if (is_compound(v.tag)) {
@@ -369,6 +373,12 @@ static void val_print(Value *data, int slots, FILE *out) {
         break;
     }
     case VAL_BOX: fprintf(out, "<box>"); break;
+    case VAL_TAGGED: {
+        int payload_s = (int)top.as.compound.slots - 1;
+        val_print(data, payload_s, out);
+        fprintf(out, " '%s tagged", sym_name(top.as.compound.len));
+        break;
+    }
     }
 }
 
@@ -395,7 +405,7 @@ static int val_equal(Value *a, int aslots, Value *b, int bslots) {
     case VAL_INT: return atop.as.i == btop.as.i;
     case VAL_FLOAT: return atop.as.f == btop.as.f;
     case VAL_SYM: case VAL_WORD: case VAL_XT: return atop.as.sym == btop.as.sym;
-    case VAL_TUPLE: case VAL_LIST: case VAL_RECORD:
+    case VAL_TUPLE: case VAL_LIST: case VAL_RECORD: case VAL_TAGGED:
         if (atop.as.compound.len != btop.as.compound.len) return 0;
         for (int i = 0; i < aslots - 1; i++) if (!val_equal(&a[i], 1, &b[i], 1)) return 0;
         return 1;
@@ -419,19 +429,19 @@ static uint32_t recur_sym = 0;
 static int recur_pending = 0;
 static int eval_depth = 0;
 #define EVAL_DEPTH_MAX 10000
-static uint32_t S_DEF, S_LET, S_RECUR, S_IF, S_EFFECT, S_CHECK;
+static uint32_t S_DEF, S_LET, S_RECUR, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_UNTAG, S_DEFAULT;
 static void syms_init(void);
 
 /* ---- TYPE SYSTEM ---- */
 
 typedef enum { DIR_IN, DIR_OUT } SlotDir;
 typedef enum { OWN_OWN, OWN_COPY, OWN_MOVE, OWN_LENT } OwnMode;
-typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, TC_REC, TC_BOX, TC_STACK } TypeConstraint;
+typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, TC_REC, TC_BOX, TC_STACK, TC_TAGGED } TypeConstraint;
 
 enum { HO_BODY_1TO1=1, HO_BRANCHES_AGREE=2, HO_SAVES_UNDER=4, HO_SCRUTINEE_SYM=8,
-       HO_APPLY_EFFECT=16, HO_BOX_BORROW=32, HO_BOX_MUTATE=64 };
+       HO_APPLY_EFFECT=16, HO_BOX_BORROW=32, HO_BOX_MUTATE=64, HO_SCRUTINEE_TAGGED=128 };
 typedef struct { const char *name; uint32_t sym; int need; int out; TypeConstraint out_type; uint8_t flags; } HOEffect;
-#define HO_OP_COUNT 23
+#define HO_OP_COUNT 25
 static HOEffect ho_ops[HO_OP_COUNT] = {
     {"apply",0,1,0,TC_NONE,HO_APPLY_EFFECT},{"dip",0,2,1,TC_NONE,HO_APPLY_EFFECT|HO_SAVES_UNDER},
     {"if",0,3,1,TC_NONE,HO_BRANCHES_AGREE},
@@ -444,11 +454,15 @@ static HOEffect ho_ops[HO_OP_COUNT] = {
     {"scan",0,3,1,TC_LIST,0},
     {"repeat",0,2,0,TC_NONE,0},{"bi",0,3,2,TC_NONE,0},{"keep",0,1,1,TC_NONE,0},
     {"on",0,1,0,TC_NONE,0},{"show",0,1,0,TC_NONE,0},
+    {"untag",0,3,1,TC_NONE,HO_BRANCHES_AGREE|HO_SCRUTINEE_TAGGED},
+    {"then",0,2,1,TC_TAGGED,HO_BODY_1TO1|HO_SCRUTINEE_TAGGED},
 };
 static HOEffect *ho_ops_find(uint32_t sym) { for (int i = 0; i < HO_OP_COUNT; i++) if (ho_ops[i].sym == sym) return &ho_ops[i]; return NULL; }
 static void syms_init(void) {
     S_DEF=sym_intern("def"); S_LET=sym_intern("let"); S_RECUR=sym_intern("recur");
     S_IF=sym_intern("if"); S_EFFECT=sym_intern("effect"); S_CHECK=sym_intern("check");
+    S_UNION=sym_intern("union"); S_OK=sym_intern("ok");
+    S_UNTAG=sym_intern("untag"); S_DEFAULT=sym_intern("default");
     for (int i = 0; i < HO_OP_COUNT; i++) ho_ops[i].sym = sym_intern(ho_ops[i].name);
 }
 
@@ -473,12 +487,14 @@ static TypeSig *typesig_find(uint32_t sym) {
 
 static const struct { const char *name; TypeConstraint tc; } tc_names[] = {
     {"int",TC_INT},{"float",TC_FLOAT},{"sym",TC_SYM},{"num",TC_NUM},
-    {"list",TC_LIST},{"tuple",TC_TUPLE},{"rec",TC_REC},{"box",TC_BOX},{"stack",TC_STACK},{NULL,TC_NONE}
+    {"list",TC_LIST},{"tuple",TC_TUPLE},{"rec",TC_REC},{"box",TC_BOX},{"stack",TC_STACK},{"tagged",TC_TAGGED},{NULL,TC_NONE}
 };
 static TypeConstraint parse_constraint(const char *tw) {
     for (int i=0; tc_names[i].name; i++) if (strcmp(tw,tc_names[i].name)==0) return tc_names[i].tc;
     return TC_NONE;
 }
+
+static int tc_is_container(TypeConstraint c) { return c == TC_LIST || c == TC_BOX || c == TC_TAGGED; }
 
 static TypeSig parse_type_annotation(Token *toks, int start, int end) {
     TypeSig sig; memset(&sig, 0, sizeof(sig));
@@ -503,7 +519,7 @@ static TypeSig parse_type_annotation(Token *toks, int start, int end) {
             if (strcmp(tw,"lent")==0) { slot->ownership=OWN_LENT; continue; }
             TypeConstraint c = parse_constraint(tw);
             if (c != TC_NONE) {
-                if ((c == TC_LIST || c == TC_BOX) && slot->constraint != TC_NONE) slot->elem_constraint = slot->constraint;
+                if (tc_is_container(c) && slot->constraint != TC_NONE) slot->elem_constraint = slot->constraint;
                 slot->constraint = c; continue;
             }
             if (!slot->type_var) slot->type_var = toks[j].as.sym;
@@ -520,7 +536,11 @@ static const char *constraint_name(TypeConstraint c) {
 }
 
 #define TVAR_MAX 32768
-typedef struct { int parent; TypeConstraint bound; int elem; int box_c; } TVarEntry;
+typedef struct { int parent; TypeConstraint bound; int elem; int box_c; int tag_p; int union_id; } TVarEntry;
+
+#define UNION_MAX 64
+#define UNION_VARIANTS_MAX 16
+typedef struct { uint32_t syms[UNION_VARIANTS_MAX]; TypeConstraint types[UNION_VARIANTS_MAX]; int count; } UnionDef;
 
 #define EFFECT_MAX 256
 typedef struct {
@@ -552,12 +572,13 @@ typedef struct {
     TVarEntry tvars[TVAR_MAX]; int tvar_count;
     TupleEffect effects[EFFECT_MAX]; int effect_count;
     int user_start, prelude_sig_count, suppress_errors, sp_floor, body_depth;
+    UnionDef unions[UNION_MAX]; int union_count;
 } TypeChecker;
 
 static int tvar_fresh(TypeChecker *tc) {
     if (tc->tvar_count >= TVAR_MAX) die("type variable overflow");
     int id = tc->tvar_count++;
-    tc->tvars[id].parent = id; tc->tvars[id].bound = TC_NONE; tc->tvars[id].elem = 0; tc->tvars[id].box_c = 0;
+    tc->tvars[id].parent = id; tc->tvars[id].bound = TC_NONE; tc->tvars[id].elem = 0; tc->tvars[id].box_c = 0; tc->tvars[id].tag_p = 0; tc->tvars[id].union_id = 0;
     return id;
 }
 static int tvar_find(TypeChecker *tc, int id) {
@@ -587,8 +608,17 @@ static int tvar_unify(TypeChecker *tc, int a, int b, int line) {
     tc->tvars[rb].parent = ra;
     if (tc->tvars[ra].elem == 0 && tc->tvars[rb].elem != 0) tc->tvars[ra].elem = tc->tvars[rb].elem;
     if (tc->tvars[ra].box_c == 0 && tc->tvars[rb].box_c != 0) tc->tvars[ra].box_c = tc->tvars[rb].box_c;
+    if (tc->tvars[ra].tag_p == 0 && tc->tvars[rb].tag_p != 0) tc->tvars[ra].tag_p = tc->tvars[rb].tag_p;
+    if (tc->tvars[ra].union_id == 0 && tc->tvars[rb].union_id != 0) tc->tvars[ra].union_id = tc->tvars[rb].union_id;
     if (ca == TC_NONE) tc->tvars[ra].bound = cb;
     else if (tc_constraint_matches(ca, cb) && ca == TC_NUM && cb != TC_NUM) tc->tvars[ra].bound = cb;
+    return 0;
+}
+static int tvar_content(TypeChecker *tc, int tvar_id, TypeConstraint c) {
+    int root = tvar_find(tc, tvar_id);
+    if (c == TC_LIST) return tc->tvars[root].elem;
+    if (c == TC_BOX) return tc->tvars[root].box_c;
+    if (c == TC_TAGGED) return tc->tvars[root].tag_p;
     return 0;
 }
 static int tvar_unify_at(TypeChecker *tc, int tvar, AbstractType *at, int line) {
@@ -610,6 +640,11 @@ static void tvar_instantiate(TypeChecker *tc, int base, int count, int *map) {
             int off = tc->tvars[root].box_c - base;
             tc->tvars[map[i]].box_c = (off >= 0 && off < count) ? map[off] : tc->tvars[root].box_c;
         }
+        if (tc->tvars[root].tag_p > 0) {
+            int off = tc->tvars[root].tag_p - base;
+            tc->tvars[map[i]].tag_p = (off >= 0 && off < count) ? map[off] : tc->tvars[root].tag_p;
+        }
+        tc->tvars[map[i]].union_id = tc->tvars[root].union_id;
     }
     for (int i = 0; i < count; i++) {
         int src_root = tvar_find(tc, base + i), off = src_root - base;
@@ -617,15 +652,72 @@ static void tvar_instantiate(TypeChecker *tc, int base, int count, int *map) {
     }
 }
 
+static int tc_find_brace_before(Token *toks, int pos) {
+    for (int j = pos - 1; j >= 0; j--) {
+        if (toks[j].tag == TOK_RBRACE) {
+            int d = 1;
+            for (int k = j - 1; k >= 0; k--) {
+                if (toks[k].tag == TOK_RBRACE) d++;
+                else if (toks[k].tag == TOK_LBRACE && --d == 0) return k;
+            }
+            return -1;
+        }
+        if (toks[j].tag == TOK_RPAREN || toks[j].tag == TOK_RBRACKET) {
+            TokTag open = (toks[j].tag == TOK_RPAREN) ? TOK_LPAREN : TOK_LBRACKET;
+            int d2 = 1;
+            for (int k = j - 1; k >= 0; k--) {
+                if (toks[k].tag == toks[j].tag) d2++;
+                else if (toks[k].tag == open && --d2 == 0) { j = k; break; }
+            }
+            continue;
+        }
+        if (toks[j].tag == TOK_SYM || toks[j].tag == TOK_INT || toks[j].tag == TOK_FLOAT || toks[j].tag == TOK_STRING) continue;
+        break;
+    }
+    return -1;
+}
+
+static int tc_extract_brace_keys(Token *toks, int brace_start, int total_count, uint32_t *out_syms, TypeConstraint *out_types, int max) {
+    int close = find_matching(toks, brace_start + 1, total_count, TOK_LBRACE, TOK_RBRACE);
+    int count = 0;
+    for (int j = brace_start + 1; j < close; ) {
+        if (toks[j].tag == TOK_SYM && count < max) {
+            out_syms[count] = toks[j].as.sym;
+            TypeConstraint vt = TC_NONE;
+            j++;
+            if (j < close) {
+                if (toks[j].tag == TOK_LPAREN) { vt = TC_TUPLE; j = find_matching(toks, j + 1, total_count, TOK_LPAREN, TOK_RPAREN) + 1; }
+                else if (toks[j].tag == TOK_WORD) { vt = parse_constraint(sym_name(toks[j].as.sym)); j++; }
+                else if (toks[j].tag == TOK_SYM) {
+                    vt = parse_constraint(sym_name(toks[j].as.sym));
+                    if (vt == TC_NONE) vt = TC_SYM;
+                    j++;
+                }
+                else if (toks[j].tag == TOK_INT) { vt = TC_INT; j++; }
+                else if (toks[j].tag == TOK_FLOAT) { vt = TC_FLOAT; j++; }
+                else j++;
+            }
+            if (out_types) out_types[count] = vt;
+            count++;
+        } else {
+            if (toks[j].tag == TOK_LPAREN) j = find_matching(toks, j + 1, total_count, TOK_LPAREN, TOK_RPAREN) + 1;
+            else j++;
+        }
+    }
+    return count;
+}
+
 static void tc_push(TypeChecker *tc, TypeConstraint type, int line) {
     if (tc->sp >= ASTACK_MAX) return;
     AbstractType *at = &tc->data[tc->sp++]; memset(at, 0, sizeof(*at));
     at->type = type; at->flags = (type == TC_BOX) ? AT_LINEAR : 0;
     at->source_line = line; at->effect_idx = -1;
-    if (type == TC_LIST || type == TC_BOX) {
+    if (type == TC_LIST || type == TC_BOX || type == TC_TAGGED) {
         at->tvar_id = tvar_fresh(tc); tc->tvars[at->tvar_id].bound = type;
         int sub = tvar_fresh(tc);
-        if (type == TC_LIST) tc->tvars[at->tvar_id].elem = sub; else tc->tvars[at->tvar_id].box_c = sub;
+        if (type == TC_LIST) tc->tvars[at->tvar_id].elem = sub;
+        else if (type == TC_BOX) tc->tvars[at->tvar_id].box_c = sub;
+        else tc->tvars[at->tvar_id].tag_p = sub;
     }
 }
 
@@ -779,6 +871,8 @@ static void tc_apply_scheme(TypeChecker *tc, TupleEffect *eff, int consumed, int
                 if (fe > 0 && ie > 0) tvar_unify(tc, fe, ie, line);
                 int fb = tc->tvars[tvar_find(tc, ftv)].box_c, ib = tc->tvars[tvar_find(tc, input->tvar_id)].box_c;
                 if (fb > 0 && ib > 0) tvar_unify(tc, fb, ib, line);
+                int ft = tc->tvars[tvar_find(tc, ftv)].tag_p, it = tc->tvars[tvar_find(tc, input->tvar_id)].tag_p;
+                if (ft > 0 && it > 0) tvar_unify(tc, ft, it, line);
             }
         }
     }
@@ -787,12 +881,23 @@ static void tc_apply_scheme(TypeChecker *tc, TupleEffect *eff, int consumed, int
     for (int j = 0; j < eff->out_count; j++) {
         int stv = eff->out_tvars[j] - eff->scheme_base;
         int ftv = (stv >= 0 && stv < sc) ? map[stv] : 0;
-        tc_push(tc, TC_NONE, line);
         if (ftv > 0) {
             TypeConstraint resolved = tvar_resolve(tc, ftv);
-            if (resolved != TC_NONE) tc->data[tc->sp-1].type = resolved;
-            tc->data[tc->sp-1].tvar_id = ftv;
-            if (full_unify && resolved == TC_BOX) tc->data[tc->sp-1].flags |= AT_LINEAR;
+            if (tc_is_container(resolved)) {
+                tc_push(tc, resolved, line);
+                int fc = tvar_content(tc, ftv, resolved);
+                int oc = tvar_content(tc, tc->data[tc->sp-1].tvar_id, resolved);
+                if (fc > 0 && oc > 0) tvar_unify(tc, oc, fc, line);
+                int fu = tc->tvars[tvar_find(tc, ftv)].union_id;
+                if (fu > 0) tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].union_id = fu;
+            } else {
+                tc_push(tc, TC_NONE, line);
+                if (resolved != TC_NONE) tc->data[tc->sp-1].type = resolved;
+                tc->data[tc->sp-1].tvar_id = ftv;
+                if (full_unify && resolved == TC_BOX) tc->data[tc->sp-1].flags |= AT_LINEAR;
+            }
+        } else {
+            tc_push(tc, TC_NONE, line);
         }
     }
     for (int j = eff->out_count; j < produced; j++)
@@ -840,18 +945,21 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         return;
     }
 
-    TypeConstraint last_popped_type = TC_NONE;
+    TypeConstraint last_popped_type = TC_NONE; int tagged_payload_tvar = 0, last_popped_tvar = 0;
     for (int n = ho->need; n > 0 && tc->sp > tc->sp_floor; n--) {
         AbstractType *top = &tc->data[tc->sp - 1];
         if ((ho->flags & HO_SAVES_UNDER) && n == 1) { saved = *top; had_saved = 1; tc->sp--; continue; }
-        last_popped_type = top->type;
+        last_popped_type = top->type; last_popped_tvar = top->tvar_id;
+        if (top->type == TC_TAGGED && top->tvar_id > 0 && !tagged_payload_tvar)
+            tagged_payload_tvar = tvar_content(tc, top->tvar_id, TC_TAGGED);
+        int is_branch = (n > 1) && !((ho->flags & HO_SCRUTINEE_TAGGED) && n == ho->need);
         if (top->type == TC_TUPLE) {
             if (top->effect_idx >= 0) {
                 TupleEffect *teff = &tc->effects[top->effect_idx];
                 if (!body_known) { eff_c = teff->consumed; eff_p = teff->produced; body_out = teff->out_type; body_known = 1; body_out_eff = teff->out_effect; body_teff = teff; }
-                if (n > 1 && branch_count < 8) branch_outs[branch_count++] = teff->out_type;
+                if (is_branch && branch_count < 8) branch_outs[branch_count++] = teff->out_type;
             }
-        } else if (n > 1 && top->type != TC_NONE) {
+        } else if (is_branch && top->type != TC_NONE) {
             if (branch_count < 8) branch_outs[branch_count++] = top->type;
         }
         tc->sp--;
@@ -869,6 +977,24 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
     }
     if ((ho->flags & HO_SCRUTINEE_SYM) && last_popped_type != TC_SYM && last_popped_type != TC_NONE)
         tc_error(tc, line, 0, "'match' scrutinee must be a symbol, got %s", constraint_name(last_popped_type));
+    if ((ho->flags & HO_SCRUTINEE_TAGGED) && last_popped_type != TC_TAGGED && last_popped_type != TC_NONE)
+        tc_error(tc, line, 0, "'%s' expected tagged value, got %s", ho->name, constraint_name(last_popped_type));
+
+    if ((ho->flags & HO_BODY_1TO1) && (ho->flags & HO_SCRUTINEE_TAGGED) && body_teff && body_teff->in_count > 0) {
+        int saved_uid = 0;
+        if (last_popped_tvar > 0) saved_uid = tc->tvars[tvar_find(tc, last_popped_tvar)].union_id;
+        if (saved_uid > 0) {
+            UnionDef *ud = &tc->unions[saved_uid - 1];
+            TypeConstraint ok_type = TC_NONE;
+            for (int v = 0; v < ud->count; v++) if (ud->syms[v] == S_OK) { ok_type = ud->types[v]; break; }
+            if (ok_type != TC_NONE) {
+                int in_tv = body_teff->in_tvars[0];
+                TypeConstraint body_in = (in_tv > 0) ? tvar_resolve(tc, in_tv) : TC_NONE;
+                if (body_in != TC_NONE && !tc_constraint_matches(body_in, ok_type) && !tc_constraint_matches(ok_type, body_in))
+                    tc_error(tc, line, 0, "'then' body expects %s but 'ok variant has %s", constraint_name(body_in), constraint_name(ok_type));
+            }
+        }
+    }
 
     if (ho->flags & HO_APPLY_EFFECT) {
         if (body_known) {
@@ -891,6 +1017,32 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
     if (out == TC_NONE && (ho->flags & HO_BRANCHES_AGREE))
         for (int i = 0; i < branch_count; i++) if (branch_outs[i] != TC_NONE) { out = branch_outs[i]; break; }
     for (int j = 0; j < ho->out; j++) tc_push(tc, (j == ho->out - 1) ? out : TC_NONE, line);
+    /* then: output is TC_TAGGED, propagate body output type as payload + union_id */
+    if ((ho->flags & HO_BODY_1TO1) && out == TC_TAGGED && tc->sp > 0 && tc->data[tc->sp-1].tvar_id > 0) {
+        int out_tp = tvar_content(tc, tc->data[tc->sp-1].tvar_id, TC_TAGGED);
+        if (out_tp > 0) {
+            if (body_out != TC_NONE) tvar_bind(tc, out_tp, body_out, line);
+            else if (tagged_payload_tvar > 0) tvar_unify(tc, out_tp, tagged_payload_tvar, line);
+        }
+        if (last_popped_tvar > 0) {
+            int uid = tc->tvars[tvar_find(tc, last_popped_tvar)].union_id;
+            if (uid > 0) tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].union_id = uid;
+        }
+    }
+    /* untag: output is branch result; if branches don't specify, use payload type */
+    if ((ho->flags & HO_BRANCHES_AGREE) && (ho->flags & HO_SCRUTINEE_TAGGED) && tagged_payload_tvar > 0 && tc->sp > 0) {
+        TypeConstraint payload_type = tvar_resolve(tc, tagged_payload_tvar);
+        if (out == TC_NONE && payload_type != TC_NONE) {
+            AbstractType *oat = &tc->data[tc->sp-1];
+            oat->type = payload_type;
+            if (payload_type == TC_TAGGED) {
+                oat->tvar_id = tvar_fresh(tc); tc->tvars[oat->tvar_id].bound = TC_TAGGED;
+                int sub = tvar_fresh(tc); tc->tvars[oat->tvar_id].tag_p = sub;
+                int inner = tc->tvars[tvar_find(tc, tagged_payload_tvar)].tag_p;
+                if (inner > 0) tvar_unify(tc, sub, inner, line);
+            }
+        }
+    }
 }
 
 static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
@@ -932,9 +1084,8 @@ apply_sig:;
         if (!found && tvar_map_count < MAX_TVARS) {
             int id = tvar_fresh(tc);
             TypeConstraint c = sig->slots[i].constraint;
-            int is_container = (c == TC_LIST || c == TC_BOX);
-            if (!is_container && c != TC_NONE) tc->tvars[id].bound = c;
-            if (is_container && sig->slots[i].elem_constraint != TC_NONE) tc->tvars[id].bound = sig->slots[i].elem_constraint;
+            if (!tc_is_container(c) && c != TC_NONE) tc->tvars[id].bound = c;
+            if (tc_is_container(c) && sig->slots[i].elem_constraint != TC_NONE) tc->tvars[id].bound = sig->slots[i].elem_constraint;
             tvar_map[tvar_map_count].var = tv; tvar_map[tvar_map_count].tvar = id; tvar_map_count++;
         }
     }
@@ -951,15 +1102,16 @@ apply_sig:;
             tc_error(tc, line, at->source_line, "'%s' cannot consume value that is currently borrowed (lent, value from line %d)", sym_name(sym), at->source_line);
         if (slot->constraint != TC_NONE && at->type != TC_NONE && !tc_constraint_matches(slot->constraint, at->type))
             tc_error(tc, line, at->source_line, "'%s' expected %s, got %s (value from line %d)", sym_name(sym), constraint_name(slot->constraint), constraint_name(at->type), at->source_line);
+        if (slot->constraint != TC_NONE && at->type == TC_NONE && at->tvar_id > 0)
+            tvar_bind(tc, at->tvar_id, slot->constraint, line);
         if (slot->type_var) {
             int tv = FIND_TVAR(slot->type_var);
             if (tv > 0) {
-                int is_container = (slot->constraint == TC_LIST || slot->constraint == TC_BOX);
-                if (is_container && at->tvar_id > 0) {
-                    int ef = (slot->constraint == TC_LIST) ? tc->tvars[tvar_find(tc, at->tvar_id)].elem : tc->tvars[tvar_find(tc, at->tvar_id)].box_c;
+                if (tc_is_container(slot->constraint) && at->tvar_id > 0) {
+                    int ef = tvar_content(tc, at->tvar_id, slot->constraint);
                     if (ef > 0 && tvar_unify(tc, tv, ef, line))
                         tc_error(tc, line, at->source_line, "'%s' type variable '%s' mismatch: expected %s, got %s", sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(tvar_resolve(tc, ef)));
-                } else if (!is_container) {
+                } else if (!tc_is_container(slot->constraint)) {
                     int fail = at->tvar_id > 0 ? tvar_unify(tc, tv, at->tvar_id, line) : (at->type != TC_NONE ? tvar_bind(tc, tv, at->type, line) : 0);
                     if (fail) tc_error(tc, line, at->source_line, "'%s' type variable '%s' mismatch: expected %s, got %s", sym_name(sym), sym_name(slot->type_var), constraint_name(tvar_resolve(tc, tv)), constraint_name(at->type != TC_NONE ? at->type : tvar_resolve(tc, at->tvar_id)));
                 }
@@ -975,15 +1127,13 @@ apply_sig:;
         if (tc->sp >= ASTACK_MAX) { tc->errors++; return; }
         tc_push(tc, slot->constraint, line);
         AbstractType *at = &tc->data[tc->sp - 1];
-        int is_container = (slot->constraint == TC_LIST || slot->constraint == TC_BOX);
         if (slot->type_var) {
             int tv = FIND_TVAR(slot->type_var);
             if (tv > 0) {
-                if (is_container && at->tvar_id > 0) {
-                    int elem_field = (slot->constraint == TC_LIST) ? tc->tvars[tvar_find(tc, at->tvar_id)].elem
-                                                                    : tc->tvars[tvar_find(tc, at->tvar_id)].box_c;
+                if (tc_is_container(slot->constraint) && at->tvar_id > 0) {
+                    int elem_field = tvar_content(tc, at->tvar_id, slot->constraint);
                     if (elem_field > 0) tvar_unify(tc, elem_field, tv, line);
-                } else if (!is_container) {
+                } else if (!tc_is_container(slot->constraint)) {
                     TypeConstraint resolved = tvar_resolve(tc, tv);
                     if (resolved != TC_NONE) at->type = resolved;
                     at->tvar_id = tv;
@@ -991,9 +1141,8 @@ apply_sig:;
                 }
             }
         }
-        if (is_container && slot->elem_constraint != TC_NONE && at->tvar_id > 0) {
-            int ef = (slot->constraint == TC_LIST) ? tc->tvars[tvar_find(tc, at->tvar_id)].elem
-                                                    : tc->tvars[tvar_find(tc, at->tvar_id)].box_c;
+        if (tc_is_container(slot->constraint) && slot->elem_constraint != TC_NONE && at->tvar_id > 0) {
+            int ef = tvar_content(tc, at->tvar_id, slot->constraint);
             if (ef > 0) tvar_bind(tc, ef, slot->elem_constraint, line);
         }
     }
@@ -1062,7 +1211,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                 in_count = eff_c;
                 for (int j = 0; j < in_count; j++) {
                     in_tvars[j] = tvar_fresh(tc);
-                    tc->tvars[in_tvars[j]].elem = tvar_fresh(tc); tc->tvars[in_tvars[j]].box_c = tvar_fresh(tc);
+                    tc->tvars[in_tvars[j]].elem = tvar_fresh(tc); tc->tvars[in_tvars[j]].box_c = tvar_fresh(tc); tc->tvars[in_tvars[j]].tag_p = tvar_fresh(tc);
                     tc_push(tc, TC_NONE, t->line);
                     tc->data[tc->sp-1].tvar_id = in_tvars[j];
                 }
@@ -1215,10 +1364,56 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                         tc_error(tc, t->line, 0, "'check' expected %s, got %s", constraint_name(exp), constraint_name(tc->data[tc->sp-1].type));
                     if (tc->unknown_count > 0 && tc->unknowns[tc->unknown_count-1].sym == toks[i-1].as.sym) tc->unknown_count--;
                 }
+            } else if (sym == S_UNION) {
+                if (tc->sp > 0 && (tc->data[tc->sp-1].type == TC_REC || tc->data[tc->sp-1].type == TC_TUPLE))
+                    tc->sp--;
+                if (tc->sp > 0 && tc->data[tc->sp-1].type == TC_TAGGED && tc->data[tc->sp-1].tvar_id > 0) {
+                    int brace = tc_find_brace_before(toks, i);
+                    if (brace >= 0 && tc->union_count < UNION_MAX) {
+                        int uid = ++tc->union_count;
+                        tc->unions[uid - 1].count = tc_extract_brace_keys(toks, brace, total_count,
+                            tc->unions[uid - 1].syms, tc->unions[uid - 1].types, UNION_VARIANTS_MAX);
+                        tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].union_id = uid;
+                    }
+                }
+            } else if (sym == S_UNTAG) {
+                int saved_union_id = 0;
+                if (tc->sp >= 3 && tc->data[tc->sp-3].type == TC_TAGGED && tc->data[tc->sp-3].tvar_id > 0)
+                    saved_union_id = tc->tvars[tvar_find(tc, tc->data[tc->sp-3].tvar_id)].union_id;
+                tc_check_word(tc, sym, t->line);
+                if (saved_union_id > 0 && i >= tc->user_start) {
+                    UnionDef *ud = &tc->unions[saved_union_id - 1];
+                    int brace = tc_find_brace_before(toks, i);
+                    if (brace >= 0) {
+                        uint32_t handled[UNION_VARIANTS_MAX]; int hcount = tc_extract_brace_keys(toks, brace, total_count, handled, NULL, UNION_VARIANTS_MAX);
+                        for (int v = 0; v < ud->count; v++) {
+                            int found = 0;
+                            for (int h = 0; h < hcount; h++) if (handled[h] == ud->syms[v]) { found = 1; break; }
+                            if (!found) tc_error(tc, t->line, 0, "'untag' missing variant '%s' declared by union", sym_name(ud->syms[v]));
+                        }
+                    }
+                }
+            } else if (sym == S_DEFAULT) {
+                TypeConstraint payload_type = TC_NONE;
+                if (tc->sp >= 2 && tc->data[tc->sp-2].type == TC_TAGGED && tc->data[tc->sp-2].tvar_id > 0) {
+                    int tp = tvar_content(tc, tc->data[tc->sp-2].tvar_id, TC_TAGGED);
+                    if (tp > 0) payload_type = tvar_resolve(tc, tp);
+                }
+                tc_check_word(tc, sym, t->line);
+                if (payload_type != TC_NONE && tc->sp > 0 && tc->data[tc->sp-1].type == TC_NONE)
+                    tc->data[tc->sp-1].type = payload_type;
             } else tc_check_word(tc, sym, t->line);
             break;
         }
         default: break;
+        }
+        if (tc->body_depth == 0 && tc->effect_count > EFFECT_MAX/2) {
+            int max_live = 0;
+            for (int s = 0; s < tc->sp; s++)
+                if (tc->data[s].effect_idx >= max_live) max_live = tc->data[s].effect_idx + 1;
+            for (int b = 0; b < tc->bind_count; b++)
+                if (tc->bindings[b].atype.effect_idx >= max_live) max_live = tc->bindings[b].atype.effect_idx + 1;
+            if (max_live < tc->effect_count) tc->effect_count = max_live;
         }
     }
 }
@@ -1354,6 +1549,77 @@ static void prim_match(Frame *env) {
     eval_default(def_buf,def_s,def_top,NULL,0,env);
 }
 
+static void prim_tag(Frame *e) {
+    (void)e;
+    uint32_t tag_sym=pop_sym();
+    if(sp<=0) die("tag: need a payload value");
+    Value payload_top=stack[sp-1];
+    int payload_s=val_slots(payload_top);
+    spush(val_compound(VAL_TAGGED,tag_sym,payload_s+1));
+}
+
+static void prim_untag(Frame *env) {
+    POP_VAL(def);
+    Value clauses_top=stack[sp-1];
+    if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die("untag: expected tuple or record of clauses");
+    int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len;
+    Value clauses_buf[clauses_s]; memcpy(clauses_buf,&stack[sp-clauses_s],clauses_s*sizeof(Value)); sp-=clauses_s;
+    Value tagged_top=stack[sp-1];
+    if(tagged_top.tag!=VAL_TAGGED) die("untag: expected tagged value, got %s", valtag_name(tagged_top.tag));
+    int tagged_s=val_slots(tagged_top);
+    int payload_s=tagged_s-1;
+    Value payload_buf[payload_s]; memcpy(payload_buf,&stack[sp-tagged_s],payload_s*sizeof(Value));
+    uint32_t tag_sym=tagged_top.as.compound.len;
+    sp-=tagged_s;
+    if(clauses_top.tag==VAL_RECORD){
+        int found; ElemRef body_ref=record_field(clauses_buf,clauses_s,clauses_len,tag_sym,&found);
+        if(found){memcpy(&stack[sp],payload_buf,payload_s*sizeof(Value));sp+=payload_s;eval_body(&clauses_buf[body_ref.base],body_ref.slots,env);return;}
+    } else {
+        if(clauses_len%2!=0) die("untag: need even number of clauses (tag/body pairs)");
+        for(int i=0;i<clauses_len;i+=2){
+            ElemRef pat_ref=compound_elem(clauses_buf,clauses_s,clauses_len,i);
+            ElemRef body_ref=compound_elem(clauses_buf,clauses_s,clauses_len,i+1);
+            Value pat=clauses_buf[pat_ref.base];
+            if(pat.tag==VAL_SYM&&pat.as.sym==tag_sym){memcpy(&stack[sp],payload_buf,payload_s*sizeof(Value));sp+=payload_s;eval_body(&clauses_buf[body_ref.base],body_ref.slots,env);return;}
+        }
+    }
+    eval_default(def_buf,def_s,def_top,NULL,0,env);
+}
+
+static void prim_then(Frame *env) {
+    POP_BODY(body,"then");
+    Value top=stack[sp-1];
+    if(top.tag!=VAL_TAGGED) die("then: expected tagged value");
+    if(top.as.compound.len==S_OK){
+        sp--; /* remove header, payload stays */
+        eval_body(body_buf,body_s,env);
+        Value new_top=stack[sp-1];
+        int new_payload_s=val_slots(new_top);
+        spush(val_compound(VAL_TAGGED,S_OK,new_payload_s+1));
+    }
+    /* non-ok: leave tagged value untouched */
+}
+
+static void prim_default(Frame *env) {
+    POP_VAL(def);
+    Value top=stack[sp-1];
+    if(top.tag!=VAL_TAGGED) die("default: expected tagged value");
+    int tagged_s=val_slots(top);
+    if(top.as.compound.len==S_OK){
+        sp--; /* remove header, payload stays */
+    } else {
+        sp-=tagged_s;
+        eval_default(def_buf,def_s,def_top,NULL,0,env);
+    }
+}
+
+static void prim_union(Frame *e) {
+    (void)e;
+    Value top=stack[sp-1];
+    if(!is_compound(top.tag)) die("union: expected record describing tag schema");
+    sp-=val_slots(top);
+}
+
 static void prim_loop(Frame *env) {
     if(stack[sp-1].tag!=VAL_TUPLE) die("loop: expected tuple");
     int body_s=val_slots(stack[sp-1]); if(body_s>LOCAL_MAX) die("loop: body too large"); if(body_s>sp) die("loop: stack underflow");
@@ -1383,12 +1649,14 @@ static void prim_stack(Frame *e){(void)e;spush(val_compound(VAL_TUPLE,0,1));}
 
 static void prim_size(Frame *e) {
     (void)e; Value top=speek();
+    if(top.tag==VAL_TAGGED) die("size: tagged values have no size");
     if(!is_compound(top.tag)) die("size: expected compound");
     sp-=val_slots(top); spush(val_int((int)top.as.compound.len));
 }
 
 static void prim_push_op(Frame *e) {
     (void)e; POP_VAL(v); Value ct=stack[sp-1];
+    if(ct.tag==VAL_TAGGED) die("push: cannot push onto tagged value");
     if(!is_compound(ct.tag)) die("push: expected compound");
     ValTag tag=ct.tag; int cs=val_slots(ct),cl=(int)ct.as.compound.len; sp--;
     memcpy(&stack[sp],v_buf,v_s*sizeof(Value)); sp+=v_s;
@@ -1397,6 +1665,7 @@ static void prim_push_op(Frame *e) {
 
 static void prim_pop_impl(const char *label) {
     Value top=speek();
+    if(top.tag==VAL_TAGGED) die("%s: cannot pop from tagged value", label);
     if(!is_compound(top.tag)) die("%s: expected compound", label);
     ValTag tag=top.tag; int s=val_slots(top),len=(int)top.as.compound.len;
     if(len==0) die("%s: empty %s", label, tag==VAL_LIST?"list":tag==VAL_TUPLE?"tuple":"record");
@@ -1409,6 +1678,7 @@ static void prim_pop_op(Frame *e){(void)e;prim_pop_impl("pop");}
 
 static void prim_elem(int consume) {
     int64_t idx=pop_int(); Value top=speek();
+    if(top.tag==VAL_TAGGED) die(consume?"get: cannot index tagged value":"pull: cannot index tagged value");
     if(!is_compound(top.tag)) die(consume?"get: expected compound":"pull: expected compound");
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,(int)idx);
@@ -1419,6 +1689,7 @@ static void prim_elem(int consume) {
 
 static void prim_replace_at(Frame *e) {
     (void)e; POP_VAL(v); int64_t idx=pop_int(); Value top=speek();
+    if(top.tag==VAL_TAGGED) die("put: cannot index tagged value");
     if(!is_compound(top.tag)) die("put: expected compound");
     ValTag tag=top.tag; int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef old_ref=compound_elem(&stack[base],s,len,(int)idx);
@@ -1437,6 +1708,7 @@ static void prim_replace_at(Frame *e) {
 
 static void prim_concat(Frame *e) {
     (void)e; Value top2=stack[sp-1];
+    if(top2.tag==VAL_TAGGED) die("concat: cannot concat tagged values");
     if(!is_compound(top2.tag)) die("concat: expected compound");
     ValTag tag=top2.tag; int s2=val_slots(top2),len2=(int)top2.as.compound.len,base2=sp-s2;
     Value below=stack[base2-1];
@@ -1852,6 +2124,8 @@ static const char *BUILTIN_TYPES =
     "'tcp-listen [int lent in  int box move out] effect\n"
     "'tcp-accept [int box own in  int box move out  int box move out] effect\n"
 #endif
+    "'tag ['a own in  sym lent in  'a tagged move out] effect\n"
+    "'default [tagged own in  own in  move out] effect\n"
 ;
 
 static const char *PRELUDE =
@@ -1893,6 +2167,8 @@ static const char *PRELUDE =
     "'iseven (2 mod 0 eq) [int lent in  int move out] effect def\n"
     "'isodd (2 mod 0 neq) [int lent in  int move out] effect def\n"
     "'divides (mod 0 eq) [int lent in  int lent in  int move out] effect def\n"
+    "'ok ('ok tag) ['a own in  'a tagged move out] effect def\n"
+    "'no ('no tag) ['a own in  'a tagged move out] effect def\n"
     "'times-i ('f swap def 'n let 0 (dup n lt) (dup (f) dip 1 plus) while drop) def\n"
             "3.14159265358979323846 'pi let\n6.28318530717958647692 'tau let\n2.71828182845904523536 'e let\n"
     "'rotate ('n let dup len 'ln let ln 0 eq not (n ln wrap 'nn let nn 0 eq not (dup ln nn sub take-n swap ln nn sub drop-n swap cat) () if) () if) def\n"
@@ -2692,6 +2968,8 @@ static void register_prims(void) {
         {"where",prim_where},{"find",prim_find_elem},
         {"millis",prim_millis},{"box",prim_box},{"free",prim_free},
         {"lend",prim_lend},{"mutate",prim_mutate},{"clone",prim_clone},
+        {"tag",prim_tag},{"untag",prim_untag},{"union",prim_union},
+        {"then",prim_then},{"default",prim_default},
         {"read",prim_read},{"write",prim_write},{"ls",prim_ls},
         {"utf8-encode",prim_utf8_encode},{"utf8-decode",prim_utf8_decode},
         {"str-find",prim_str_find},{"str-split",prim_str_split},{"parse-http",prim_parse_http},

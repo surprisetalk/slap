@@ -1000,5 +1000,172 @@ list "hi" give "--" str-join "hi" eq assert
   rhdrs len 2 eq assert
 ) def test-http-loopback
 
+-- ===== Tagged Unions (Sum Types) =====
+
+-- basic tag and untag
+123 'foo tag {'foo ()} -1 untag 123 eq assert
+123 'foo tag {'bar ()} -1 untag -1 eq assert
+123 'foo tag {'bar ()} (-1) untag -1 eq assert
+
+-- record clauses
+123 'foo tag {'foo (1 plus) 'bar (2 plus)} -1 untag 124 eq assert
+456 'bar tag {'foo (1 plus) 'bar (2 plus)} -1 untag 458 eq assert
+789 'baz tag {'foo (1 plus) 'bar (2 plus)} -1 untag -1 eq assert
+
+-- multi-slot payload (tuple)
+(1 2 3) 'triple tag {'triple ()} -1 untag (1 2 3) eq assert
+
+-- nested tags
+42 'inner tag 'outer tag {'outer ()} -1 untag 42 'inner tag eq assert
+
+-- dup/drop/swap on tagged values
+123 ok dup eq assert
+123 ok 456 ok swap drop 456 ok eq assert
+
+-- equality
+1 ok 1 ok eq assert
+1 ok 2 ok eq not assert
+1 ok 1 no eq not assert
+
+-- ok/no are sugar for 'ok tag / 'no tag
+42 ok 42 'ok tag eq assert
+"x" no "x" 'no tag eq assert
+
+-- then (monadic chaining)
+123 ok (1 plus) then (2 mul) then -1 default 248 eq assert
+"oops" no (1 plus) then -1 default -1 eq assert
+"x" no (1 plus) then (2 mul) then 0 default 0 eq assert
+
+-- then preserves non-ok tag and payload
+"fail" no (999 plus) then {'no ()} -1 untag "fail" eq assert
+
+-- default
+42 ok -1 default 42 eq assert
+"fail" no -1 default -1 eq assert
+
+-- tag with symbol payload
+'hello ok (drop "yes") then "no" default "yes" eq assert
+
+-- tag with float payload
+2.0 ok (1.0 plus) then 0.0 default 3.0 eq assert
+
+-- result type pattern: safe division
+'safe-div ('d let 'n let
+  d 0 eq ("division by zero" no) (n d div ok) if
+) def
+10 2 safe-div -1 default 5 eq assert
+10 0 safe-div -1 default -1 eq assert
+10 2 safe-div (3 mul) then -1 default 15 eq assert
+10 0 safe-div (3 mul) then -1 default -1 eq assert
+
+-- chained safe operations
+'safe-sqrt ('n let
+  n 0 lt ("negative" no) (n itof fsqrt ftoi ok) if
+) def
+16 safe-sqrt -1 default 4 eq assert
+-1 safe-sqrt -1 default -1 eq assert
+16 safe-sqrt (2 mul) then -1 default 8 eq assert
+
+-- union (type annotation, runtime no-op with symbol values)
+123 ok {'ok 'int 'no 'str} union print
+
+-- exhaustive untag with union passes type checker
+42 ok {'ok 'int 'no 'str} union {'ok (1 plus) 'no (drop 0)} -1 untag 43 eq assert
+
+-- union propagates through then
+10 ok {'ok 'int 'no 'str} union (5 plus) then {'ok () 'no (drop 0)} -1 untag 15 eq assert
+
+-- three-variant union, all handled
+42 'a tag {'a 'int 'b 'int 'c 'int} union {'a (1 plus) 'b (2 plus) 'c (3 plus)} -1 untag 43 eq assert
+
+-- untag without union: no exhaustiveness check (open tagged)
+42 'foo tag {'foo (1 plus)} -1 untag 43 eq assert
+
+-- default preserves payload type through then chain
+42 ok (1 plus) then (2 mul) then -1 default 86 eq assert
+
+-- then body type is checked with union
+42 ok {'ok 'int 'no 'str} union (1 plus) then -1 default 43 eq assert
+
+-- no value through then with union: body doesn't run, no type error
+"oops" no {'ok 'int 'no 'str} union (1 plus) then -1 default -1 eq assert
+
+-- tagged through higher-order ops
+[1 2 3] (ok -1 default) map [1 2 3] eq assert
+[1 2 3] (ok) map (-1 default) map [1 2 3] eq assert
+[1 2 3] 0 ok ('n let -1 default n plus ok) fold -1 default 6 eq assert
+0 [10 20 30] (ok -1 default plus) each 60 eq assert
+
+-- tagged via custom tag function
+'tag-as ('s let s tag) def
+42 'custom tag-as {'custom (1 plus)} -1 untag 43 eq assert
+
+-- tagged stored in let bindings
+42 ok 'x let
+x -1 default 42 eq assert
+x (2 mul) then -1 default 84 eq assert
+
+-- tagged returned from def
+'wrap-ok (ok) def
+'unwrap (-1 default) def
+42 wrap-ok unwrap 42 eq assert
+
+-- nested tags: unwrap outermost
+1 'a tag 'b tag 'c tag
+  {'c ()} -1 untag
+  1 'a tag 'b tag eq assert
+
+-- nested tags: full 3-level unwrap
+1 'a tag 'b tag 'c tag
+  {'c ()} -1 untag
+  {'b ()} -1 untag
+  {'a ()} -1 untag
+  1 eq assert
+
+-- nested tags: two levels of wrapping/unwrapping
+42 'inner tag 'outer tag
+  {'outer ({'inner (10 plus)} -1 untag)} -1 untag
+  52 eq assert
+
+-- untag with body that returns tagged (re-wrapping)
+42 ok {'ok (2 mul ok)} 0 no untag -1 default 84 eq assert
+42 no {'ok (2 mul)} 0 untag 0 eq assert
+
+-- then chain: 10 deep
+1 ok
+  (1 plus) then (1 plus) then (1 plus) then (1 plus) then (1 plus) then
+  (1 plus) then (1 plus) then (1 plus) then (1 plus) then (1 plus) then
+  -1 default 11 eq assert
+
+-- no passes through arbitrary then chains
+"err" no
+  (1 plus) then (2 mul) then (3 sub) then (4 div) then
+  {'no ()} -1 untag "err" eq assert
+
+-- default with body (tuple) as fallback
+42 no (99) default 99 eq assert
+42 ok (99) default 42 eq assert
+
+-- tag with record payload
+{'x 10 'y 20} ok -1 default 'x at 10 eq assert
+
+-- tag with list payload
+[1 2 3] ok -1 default [1 2 3] eq assert
+
+-- tag with empty tuple payload
+() 'unit tag {'unit (drop 1)} 0 untag 1 eq assert
+
+-- mixed custom tags in untag
+42 'a tag {'a (1 plus) 'b (2 plus) 'c (3 plus)} -1 untag 43 eq assert
+42 'b tag {'a (1 plus) 'b (2 plus) 'c (3 plus)} -1 untag 44 eq assert
+42 'c tag {'a (1 plus) 'b (2 plus) 'c (3 plus)} -1 untag 45 eq assert
+42 'd tag {'a (1 plus) 'b (2 plus) 'c (3 plus)} -1 untag -1 eq assert
+
+-- recursive tagged: build a linked list with tags
+'cons ('cdr let 'car let car cdr couple 'cons tag) def
+'nil (0 'nil tag) def
+nil {'nil (drop 0) 'cons (first)} 0 untag 0 eq assert
+1 2 nil cons cons {'nil (drop 0) 'cons (first)} 0 untag 1 eq assert
+
 -- ===== Done =====
 "All tests passed!" print

@@ -86,4 +86,16 @@ true assert
 
 0 bump bump bump 3 eq assert
 
+-- ===== Tagged unions =====
+123 ok print
+123 ok (1 plus) then -1 default print
+42 ok -1 default print
+"fail" no -1 default print
+
+-- exhaustive untag with union
+42 ok {'ok 'int 'no 'str} union {'ok (1 plus) 'no (drop 0)} -1 untag print
+
+-- union through then
+42 ok {'ok 'int 'no 'str} union (1 plus) then {'ok () 'no (drop 0)} -1 untag print
+
 "Type check tests passed!" print
