@@ -21,6 +21,12 @@ plus
 -- EXPECT: division by zero
 1 0 mod
 
+-- EXPECT: divmod: division by zero
+1 0 divmod
+
+-- EXPECT: wrap: modulus must be non-zero
+1 0 wrap
+
 -- EXPECT: assertion failed
 0 assert
 

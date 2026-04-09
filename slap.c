@@ -2016,10 +2016,10 @@ static void prim_sort(Frame *e){
 }
 
 static void prim_index_of(Frame *e) {
-    (void)e; Value val=spop(); Value top=speek();
+    (void)e; POP_VAL(val); Value top=speek();
     if(top.tag!=VAL_LIST) die("index-of: expected list, got %s", valtag_name(top.tag));
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s,found=-1;
-    for(int i=0;i<len;i++){ElemRef r=compound_elem(&stack[base],s,len,i);if(val_equal(&stack[base+r.base],r.slots,&val,1)){found=i;break;}}
+    for(int i=0;i<len;i++){ElemRef r=compound_elem(&stack[base],s,len,i);if(val_equal(&stack[base+r.base],r.slots,val_buf,val_s)){found=i;break;}}
     sp-=s; spush(val_int(found));
 }
 

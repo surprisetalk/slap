@@ -1346,5 +1346,78 @@ rec 1 'a into  rec 2 'b into  tuck 'b at 2 eq assert 'a at 1 eq assert 'b at 2 e
 0 int-str "0" eq assert
 -7 int-str "-7" eq assert
 
+-- ===== Adversarial: divmod / wrap / shape / float math =====
+
+-- divmod: quotient on top, remainder below
+17 5 divmod 3 eq assert 2 eq assert
+-- divmod with negative dividend: C truncation (toward zero)
+-17 5 divmod -3 eq assert -2 eq assert
+-- divmod identity: a = q*b + r
+37 7 divmod 'q let 'r let q 7 mul r plus 37 eq assert
+
+-- wrap: negative-safe modulus
+7 5 wrap 2 eq assert
+-3 5 wrap 2 eq assert
+0 5 wrap 0 eq assert
+-- wrap matches mod for non-negative inputs
+100 7 wrap 100 7 mod eq assert
+
+-- shape on nested list
+[[1 2] [3 4]] shape [2 2] eq assert
+[[1 2 3]] shape [1 3] eq assert
+-- shape on empty list: one dimension of zero
+[] shape [0] eq assert
+-- shape on flat list still returns one dim
+[10 20 30 40] shape [4] eq assert
+
+-- ftan 0 = 0
+0.0 ftan 0.0 eq assert
+
+-- fatan2: atan2(0, 1) = 0
+0.0 1.0 fatan2 0.0 eq assert
+-- fatan2: atan2(1, 0) = pi/2 (within float tolerance)
+1.0 0.0 fatan2 pi 2.0 div sub fabs 0.000001 lt assert
+
+-- millis: non-negative and monotonic across two reads
+millis 0 lt not assert
+millis millis swap sub 0 lt not assert
+
+-- ===== Adversarial: str-split / str-find / int-str edge cases =====
+
+-- str-split: consecutive delimiters produce empty middle segment
+"a,,b" "," str-split 'parts let
+parts len 3 eq assert
+parts 1 get len 0 eq assert
+-- str-split: leading and trailing delimiters produce empty ends
+",a,b," "," str-split 'parts2 let
+parts2 len 4 eq assert
+parts2 0 get len 0 eq assert
+parts2 3 get len 0 eq assert
+-- str-find: needle longer than haystack → -1
+"hi" "hello" str-find -1 eq assert
+-- int-str round-trip on large magnitude
+9999999999 int-str "9999999999" eq assert
+
+-- ===== Adversarial: larger file I/O round-trip =====
+
+-- 1 KiB buffer via range + byte mask, write + read back
+"_test_fs.bin" 0 1024 range (255 band) map write
+"_test_fs.bin" read 'buf let
+buf len 1024 eq assert
+buf 0 get 0 eq assert
+buf 255 get 255 eq assert
+buf 256 get 0 eq assert
+buf 500 get 244 eq assert
+buf 1023 get 255 eq assert
+
+-- index-of: direct multi-slot needle with colliding prefix (regresses the POP_VAL fix)
+[[1 2] [1 3] [1 4]] [1 3] index-of 1 eq assert
+[[1 2] [1 3] [1 4]] [9 9] index-of -1 eq assert
+
+-- ls: positive + negative assertions on the tests directory
+"tests" ls 'entries let
+entries "expect.slap" index-of -1 eq not assert
+entries "definitely_not_a_real_file.slap" index-of -1 eq assert
+
 -- ===== Done =====
 "All tests passed!" print
