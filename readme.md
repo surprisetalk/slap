@@ -104,6 +104,7 @@ Atomic identifiers. Prefixed with `'`.
 3 5 lt               -- 1
 5 3 gt               -- 1
 3 3 eq               -- 1
+0 1 implies          -- 1
 ```
 
 ### definitions

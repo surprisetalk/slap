@@ -2298,7 +2298,7 @@ static const char *BUILTIN_TYPES =
 #undef A2E
 #define I2E " [int lent in  int lent in  int move out] effect\n"
     "'mod" I2E "'wrap" I2E
-    "'band" I2E "'bor" I2E "'bxor" I2E "'shl" I2E "'shr" I2E
+    "'band" I2E "'bor" I2E "'bxor" I2E "'shl" I2E "'shr" I2E "'implies" I2E
 #undef I2E
     "'bnot [int lent in  int move out] effect\n"
     "'divmod [int lent in  int lent in  int move out  int move out] effect\n"
@@ -2394,6 +2394,7 @@ static const char *PRELUDE =
     "'tuck (swap over) def\n"
     "'not (0 eq) [int lent in  int move out] effect def\n"
     "'neq (eq not) [lent in  lent in  int move out] effect def\n"
+    "'implies (swap not or) [int lent in  int lent in  int move out] effect def\n"
     "'gt (swap lt) [lent in  lent in  int move out] effect def\n"
     "'ge (lt not) [lent in  lent in  int move out] effect def\n"
     "'le (swap lt not) [lent in  lent in  int move out] effect def\n"

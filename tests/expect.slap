@@ -31,6 +31,10 @@ false 0 eq assert
 1 1 and assert
 0 1 or assert
 0 0 or 0 eq assert
+0 1 implies assert
+0 0 implies assert
+1 0 implies not assert
+1 1 implies assert
 
 -- ===== Comparison =====
 3 3 eq assert
