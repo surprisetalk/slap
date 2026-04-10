@@ -2,7 +2,7 @@
 """Run every examples/euler/*.slap with a per-file timeout; fail on nonzero exit or timeout."""
 import glob, subprocess, sys, time
 
-TIMEOUT = 60
+TIMEOUT = 20
 
 def main():
     files = sorted(glob.glob("examples/euler/*.slap"))
