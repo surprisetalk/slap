@@ -72,7 +72,6 @@ static uint32_t sym_intern(const char *name) {
 static const char *sym_name(uint32_t id) { return sym_names[id]; }
 
 #define SRC_MAX 4
-#define FID_UNKNOWN 0
 #define FID_PRELUDE 1
 #define FID_BUILTIN 2
 #define FID_STDIN   3
@@ -540,7 +539,7 @@ static void syms_init(void);
 
 typedef enum { DIR_IN, DIR_OUT } SlotDir;
 typedef enum { OWN_OWN, OWN_COPY, OWN_MOVE, OWN_LENT } OwnMode;
-typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, TC_REC, TC_BOX, TC_STACK, TC_TAGGED } TypeConstraint;
+typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, TC_REC, TC_BOX, TC_STACK, TC_TAGGED, TC_SEQ, TC_SIZED, TC_EQ, TC_ORD } TypeConstraint;
 
 enum { HO_BODY_1TO1=1, HO_BRANCHES_AGREE=2, HO_SAVES_UNDER=4, HO_SCRUTINEE_SYM=8,
        HO_APPLY_EFFECT=16, HO_BOX_BORROW=32, HO_BOX_MUTATE=64, HO_SCRUTINEE_TAGGED=128 };
@@ -592,14 +591,18 @@ static TypeSig *typesig_find(uint32_t sym) {
 
 static const struct { const char *name; TypeConstraint tc; } tc_names[] = {
     {"int",TC_INT},{"float",TC_FLOAT},{"sym",TC_SYM},{"num",TC_NUM},
-    {"list",TC_LIST},{"tuple",TC_TUPLE},{"rec",TC_REC},{"box",TC_BOX},{"stack",TC_STACK},{"tagged",TC_TAGGED},{NULL,TC_NONE}
+    {"list",TC_LIST},{"tuple",TC_TUPLE},{"rec",TC_REC},{"box",TC_BOX},{"stack",TC_STACK},{"tagged",TC_TAGGED},
+    {"seq",TC_SEQ},{"sized",TC_SIZED},{"eql",TC_EQ},{"ord",TC_ORD},{NULL,TC_NONE}
 };
 static TypeConstraint parse_constraint(const char *tw) {
     for (int i=0; tc_names[i].name; i++) if (strcmp(tw,tc_names[i].name)==0) return tc_names[i].tc;
     return TC_NONE;
 }
 
-static int tc_is_container(TypeConstraint c) { return c == TC_LIST || c == TC_BOX || c == TC_TAGGED; }
+static int tc_is_container(TypeConstraint c) { return c == TC_LIST || c == TC_BOX || c == TC_TAGGED || c == TC_SEQ; }
+static int tc_is_concrete(TypeConstraint c) {
+    return c == TC_INT || c == TC_FLOAT || c == TC_SYM || c == TC_LIST || c == TC_TUPLE || c == TC_REC || c == TC_BOX || c == TC_TAGGED;
+}
 
 static TypeSig parse_type_annotation(Token *toks, int start, int end) {
     TypeSig sig; memset(&sig, 0, sizeof(sig));
@@ -695,12 +698,37 @@ static int tc_constraint_matches(TypeConstraint constraint, TypeConstraint actua
     if (constraint == TC_NONE || constraint == actual) return 1;
     if (constraint == TC_NUM && (actual == TC_INT || actual == TC_FLOAT)) return 1;
     if (actual == TC_NUM && (constraint == TC_INT || constraint == TC_FLOAT)) return 1;
+    /* Seq: list only */
+    if (constraint == TC_SEQ && actual == TC_LIST) return 1;
+    if (actual == TC_SEQ && constraint == TC_LIST) return 1;
+    /* Sized: list, tuple, rec, seq */
+    if (constraint == TC_SIZED && (actual == TC_LIST || actual == TC_TUPLE || actual == TC_REC || actual == TC_SEQ)) return 1;
+    if (actual == TC_SIZED && (constraint == TC_LIST || constraint == TC_TUPLE || constraint == TC_REC || constraint == TC_SEQ)) return 1;
+    /* Ord: int, float, sym, num */
+    if (constraint == TC_ORD && (actual == TC_INT || actual == TC_FLOAT || actual == TC_SYM || actual == TC_NUM)) return 1;
+    if (actual == TC_ORD && (constraint == TC_INT || constraint == TC_FLOAT || constraint == TC_SYM || constraint == TC_NUM)) return 1;
+    /* Eq: all stackable types + protocol supertypes */
+    if (constraint == TC_EQ && (actual == TC_INT || actual == TC_FLOAT || actual == TC_SYM || actual == TC_LIST
+        || actual == TC_TUPLE || actual == TC_REC || actual == TC_TAGGED || actual == TC_NUM
+        || actual == TC_ORD || actual == TC_SEQ || actual == TC_SIZED)) return 1;
+    if (actual == TC_EQ && (constraint == TC_INT || constraint == TC_FLOAT || constraint == TC_SYM || constraint == TC_LIST
+        || constraint == TC_TUPLE || constraint == TC_REC || constraint == TC_TAGGED || constraint == TC_NUM
+        || constraint == TC_ORD || constraint == TC_SEQ || constraint == TC_SIZED)) return 1;
+    /* Lattice: Num ⊂ Ord ⊂ Eq, Seq ⊂ Sized (already covered above) */
+    return 0;
+}
+static int tc_should_narrow(TypeConstraint cur, TypeConstraint c) {
+    if (tc_is_concrete(c) && !tc_is_concrete(cur)) return 1;
+    if (cur == TC_NUM && (c == TC_INT || c == TC_FLOAT)) return 1;
+    if (cur == TC_EQ && (c == TC_ORD || c == TC_NUM || c == TC_SEQ || c == TC_SIZED)) return 1;
+    if (cur == TC_ORD && c == TC_NUM) return 1;
+    if (cur == TC_SIZED && c == TC_SEQ) return 1;
     return 0;
 }
 static int tvar_bind(TypeChecker *tc, int id, TypeConstraint c, int line) {
     int root = tvar_find(tc, id); TypeConstraint cur = tc->tvars[root].bound;
     if (cur == TC_NONE) { tc->tvars[root].bound = c; return 0; }
-    if (tc_constraint_matches(cur, c)) { if (cur == TC_NUM && c != TC_NUM) tc->tvars[root].bound = c; return 0; }
+    if (tc_constraint_matches(cur, c)) { if (tc_should_narrow(cur, c)) tc->tvars[root].bound = c; return 0; }
     if (tc_constraint_matches(c, cur)) return 0;
     (void)line; return 1;
 }
@@ -716,12 +744,12 @@ static int tvar_unify(TypeChecker *tc, int a, int b, int line) {
     if (tc->tvars[ra].tag_p == 0 && tc->tvars[rb].tag_p != 0) tc->tvars[ra].tag_p = tc->tvars[rb].tag_p;
     if (tc->tvars[ra].union_id == 0 && tc->tvars[rb].union_id != 0) tc->tvars[ra].union_id = tc->tvars[rb].union_id;
     if (ca == TC_NONE) tc->tvars[ra].bound = cb;
-    else if (tc_constraint_matches(ca, cb) && ca == TC_NUM && cb != TC_NUM) tc->tvars[ra].bound = cb;
+    else if (tc_constraint_matches(ca, cb) && tc_should_narrow(ca, cb)) tc->tvars[ra].bound = cb;
     return 0;
 }
 static int tvar_content(TypeChecker *tc, int tvar_id, TypeConstraint c) {
     int root = tvar_find(tc, tvar_id);
-    if (c == TC_LIST) return tc->tvars[root].elem;
+    if (c == TC_LIST || c == TC_SEQ) return tc->tvars[root].elem;
     if (c == TC_BOX) return tc->tvars[root].box_c;
     if (c == TC_TAGGED) return tc->tvars[root].tag_p;
     return 0;
@@ -817,10 +845,10 @@ static void tc_push(TypeChecker *tc, TypeConstraint type, int line) {
     AbstractType *at = &tc->data[tc->sp++]; memset(at, 0, sizeof(*at));
     at->type = type; at->flags = (type == TC_BOX) ? AT_LINEAR : 0;
     at->source_line = line; at->effect_idx = -1;
-    if (type == TC_LIST || type == TC_BOX || type == TC_TAGGED) {
+    if (type == TC_LIST || type == TC_BOX || type == TC_TAGGED || type == TC_SEQ) {
         at->tvar_id = tvar_fresh(tc); tc->tvars[at->tvar_id].bound = type;
         int sub = tvar_fresh(tc);
-        if (type == TC_LIST) tc->tvars[at->tvar_id].elem = sub;
+        if (type == TC_LIST || type == TC_SEQ) tc->tvars[at->tvar_id].elem = sub;
         else if (type == TC_BOX) tc->tvars[at->tvar_id].box_c = sub;
         else tc->tvars[at->tvar_id].tag_p = sub;
     }
@@ -1912,8 +1940,8 @@ static void prim_stack(Frame *e){(void)e;spush(val_compound(VAL_TUPLE,0,1));}
 
 static void prim_size(Frame *e) {
     (void)e; Value top=speek();
-    if(top.tag==VAL_TAGGED) die("size: tagged values have no size (untag first)");
-    if(!is_compound(top.tag)) die("size: expected compound (tuple/list/record), got %s", valtag_name(top.tag));
+    if(top.tag==VAL_TAGGED) die("len: tagged values have no length (untag first)");
+    if(!is_compound(top.tag)) die("len: expected compound (tuple/list/record), got %s", valtag_name(top.tag));
     sp-=val_slots(top); spush(val_int((int)top.as.compound.len));
 }
 
@@ -1939,22 +1967,21 @@ static void prim_pop_impl(const char *label) {
 }
 static void prim_pop_op(Frame *e){(void)e;prim_pop_impl("pop");}
 
-static void prim_elem(int consume) {
+static void prim_elem(void) {
     int64_t idx=pop_int(); Value top=speek();
-    const char *label=consume?"get":"pull";
-    if(top.tag==VAL_TAGGED) die("%s: cannot index tagged value", label);
-    if(!is_compound(top.tag)) die("%s: expected compound (tuple/list/record), got %s", label, valtag_name(top.tag));
+    if(top.tag==VAL_TAGGED) die("get: cannot index tagged value");
+    if(!is_compound(top.tag)) die("get: expected compound (tuple/list/record), got %s", valtag_name(top.tag));
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,(int)idx);
     Value eb[LOCAL_MAX]; memcpy(eb,&stack[base+ref.base],ref.slots*sizeof(Value));
-    if(consume) sp-=s;
+    sp-=s;
     memcpy(&stack[sp],eb,ref.slots*sizeof(Value)); sp+=ref.slots;
 }
 
 static void prim_replace_at(Frame *e) {
     (void)e; POP_VAL(v); int64_t idx=pop_int(); Value top=speek();
-    if(top.tag==VAL_TAGGED) die("put: cannot index tagged value");
-    if(!is_compound(top.tag)) die("put: expected compound (tuple/list/record), got %s", valtag_name(top.tag));
+    if(top.tag==VAL_TAGGED) die("set: cannot index tagged value");
+    if(!is_compound(top.tag)) die("set: expected compound (tuple/list/record), got %s", valtag_name(top.tag));
     ValTag tag=top.tag; int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef old_ref=compound_elem(&stack[base],s,len,(int)idx);
     if(old_ref.slots==v_s) memcpy(&stack[base+old_ref.base],v_buf,v_s*sizeof(Value));
@@ -1987,7 +2014,6 @@ static void prim_concat(Frame *e) {
     spush(val_compound(tag,len1+len2,new_elem_slots+1));
 }
 
-static void prim_grab(Frame *e){(void)e;prim_pop_impl("grab");}
 
 
 
@@ -2052,7 +2078,8 @@ static int sort_cmp(const void *a,const void *b) {
     const Value *va=(const Value*)a,*vb=(const Value*)b;
     if(va->tag==VAL_INT&&vb->tag==VAL_INT) return(va->as.i>vb->as.i)-(va->as.i<vb->as.i);
     if(va->tag==VAL_FLOAT&&vb->tag==VAL_FLOAT) return(va->as.f>vb->as.f)-(va->as.f<vb->as.f);
-    die("sort: mismatched or unsupported element types (got %s and %s; only all-int or all-float lists are sortable)", valtag_name(va->tag), valtag_name(vb->tag)); return 0;
+    if(va->tag==VAL_SYM&&vb->tag==VAL_SYM) return strcmp(sym_name(va->as.sym),sym_name(vb->as.sym));
+    die("sort: mismatched or unsupported element types (got %s and %s)", valtag_name(va->tag), valtag_name(vb->tag)); return 0;
 }
 static void prim_sort(Frame *e){
     (void)e; Value top=speek();
@@ -2062,7 +2089,7 @@ static void prim_sort(Frame *e){
         /* find first multi-slot element to report */
         ValTag bad=VAL_INT; int base=sp-s;
         for(int i=0;i<len;i++){ElemRef r=compound_elem(&stack[base],s,len,i);if(r.slots>1){bad=stack[base+r.base+r.slots-1].tag;break;}}
-        die("sort: only lists of single-slot scalars (int/float) are sortable, found %s element", valtag_name(bad));
+        die("sort: elements must be orderable (int, float, or symbol), got %s", valtag_name(bad));
     }
     qsort(&stack[sp-s],len,sizeof(Value),sort_cmp);
 }
@@ -2359,9 +2386,8 @@ static const char *BUILTIN_TYPES =
 #undef I2E
     "'bnot [int lent in  int move out] effect\n"
     "'divmod [int lent in  int lent in  int move out  int move out] effect\n"
-#define C2E " [lent in  lent in  int move out] effect\n"
-    "'eq" C2E "'lt" C2E
-#undef C2E
+    "'eq [lent in  lent in  int move out] effect\n"
+    "'lt [lent in  lent in  int move out] effect\n"
 #define B2E " [int lent in  int lent in  int move out] effect\n"
     "'and" B2E "'or" B2E
 #undef B2E
@@ -2377,18 +2403,19 @@ static const char *BUILTIN_TYPES =
     "'fpow" F2E "'fatan2" F2E
 #undef F2E
     "'list [list move out] effect\n"
-    "'len [list lent in  int move out] effect\n"
-    "'give ['a list own in  'a own in  'a list move out] effect\n"
-    "'grab ['a list own in  'a list move out  'a move out] effect\n"
-    "'get ['a list own in  int lent in  'a move out] effect\n"
+    "'len ['a sized lent in  int move out] effect\n"
+    "'push ['a seq own in  'a own in  'a seq move out] effect\n"
+    "'pop ['a seq own in  'a seq move out  'a move out] effect\n"
+    "'get ['a seq own in  int lent in  'a move out] effect\n"
     "'nth [sym lent in  int lent in  'a move out] effect\n"
-    "'set ['a list own in  int lent in  'a own in  'a list move out] effect\n"
-    "'cat ['a list own in  'a list own in  'a list move out] effect\n"
+    "'set ['a seq own in  int lent in  'a own in  'a seq move out] effect\n"
+    "'cat ['a seq own in  'a seq own in  'a seq move out] effect\n"
 #define LNE " ['a list own in  int lent in  'a list move out] effect\n"
     "'take-n" LNE "'drop-n" LNE
     "'range [int lent in  int lent in  int list move out] effect\n"
+    "'sort ['a ord seq own in  'a ord seq move out] effect\n"
 #define L1E " ['a list own in  'a list move out] effect\n"
-    "'sort" L1E "'reverse" L1E "'dedup" L1E
+    "'reverse" L1E "'dedup" L1E
 #undef L1E
     "'index-of ['a list own in  'a lent in  int move out] effect\n"
 #define LIE " ['a list own in  int list own in  'a list move out] effect\n"
@@ -2398,11 +2425,6 @@ static const char *BUILTIN_TYPES =
     "'rise" LGE "'fall" LGE "'shape" LGE "'classify" LGE
 #undef LGE
     "'stack [tuple move out] effect\n"
-    "'size [tuple own in  int move out] effect\n"
-    "'push [tuple own in  own in  tuple move out] effect\n"
-    "'pop [tuple own in  tuple move out  move out] effect\n"
-    "'pull [tuple lent in  int lent in  tuple move out  move out] effect\n"
-    "'put [tuple own in  int lent in  own in  tuple move out] effect\n"
     "'compose [tuple own in  tuple own in  tuple move out] effect\n"
     "'rec [rec move out] effect\n"
     "'random [int lent in  int move out] effect\n"
@@ -2419,7 +2441,7 @@ static const char *BUILTIN_TYPES =
 #undef LNE
     "'zip ['a list own in  'a list own in  list move out] effect\n"
 #define LDE " ['a list own in  int list own in  list move out] effect\n"
-    "'group" LDE "'partition" LDE "'reshape" LDE
+    "'group" LDE "'reshape" LDE
 #undef LDE
     "'transpose [list own in  list move out] effect\n"
     "'read [list own in  int list move out] effect\n"
@@ -2449,6 +2471,7 @@ static const char *PRELUDE =
     "'over (swap dup (swap) dip) def\n'peek (over) def\n'nip (swap drop) def\n"
     "'rot ((swap) dip swap) def\n"
     "'tuck (swap over) def\n"
+    "'give (push) def\n'grab (pop) def\n'size (len) def\n'put (set) def\n"
     "'not (0 eq) [int lent in  int move out] effect def\n"
     "'neq (eq not) [lent in  lent in  int move out] effect def\n"
     "'gt (swap lt) [lent in  lent in  int move out] effect def\n"
@@ -2457,8 +2480,8 @@ static const char *PRELUDE =
     "'inc (1 plus) [num lent in  num move out] effect def\n"
     "'dec (1 sub) [num lent in  num move out] effect def\n"
     "'neg (0 swap sub) [num lent in  num move out] effect def\n"
-    "'max (over over lt (nip) (drop) if) [num lent in  num lent in  num move out] effect def\n"
-    "'min (over over lt (drop) (nip) if) [num lent in  num lent in  num move out] effect def\n"
+    "'max (over over lt (nip) (drop) if) ['a ord lent in  'a ord lent in  'a ord move out] effect def\n"
+    "'min (over over lt (drop) (nip) if) ['a ord lent in  'a ord lent in  'a ord move out] effect def\n"
     "'abs (dup neg max) [num lent in  num move out] effect def\n"
     "'bi ('g swap def 'f swap def dup f swap g) def\n"
     "'keep ('f swap def dup f swap) def\n"
@@ -2471,8 +2494,8 @@ static const char *PRELUDE =
     "'ispos (0 swap lt) def\n'isneg (0 lt) def\n'first (0 get) def\n"
     "'last (dup len 1 sub get) def\n'sum (0 (plus) fold) def\n'product (1 (mul) fold) def\n"
     "'max-of (dup first (max) fold) def\n'min-of (dup first (min) fold) def\n"
-    "'member (index-of -1 neq) def\n'couple (list rot give swap give) def\n"
-    "'isany (0 (or) fold) def\n'isall (1 (and) fold) def\n'count (len) def\n"
+    "'member (index-of -1 neq) def\n'couple (list rot push swap push) def\n"
+    "'isany (0 (or) fold) def\n'isall (1 (and) fold) def\n"
     "'flatten (list (cat) fold) def\n'sort-desc (sort reverse) def\n'fneg (0.0 swap sub) def\n"
     "'fabs (dup 0.0 lt (fneg) () if) def\n"
     "'frecip (1.0 swap div) def\n"
@@ -2496,13 +2519,12 @@ static const char *PRELUDE =
     "'transpose ('m swap def m 0 get len 'cols let m len 'rows let 0 cols range ('c let 0 rows range ('r let m r get c get) map) map) def\n"
     "'keep-mask ('mask swap def 0 mask len range (mask swap get 0 neq) where select) def\n"
     "'group ('idx swap def 'data swap def 0 idx (max) fold 1 plus 'ng let 0 ng range ('g let 0 idx len range (idx swap get g eq) where data swap select) map) def\n"
-    "'partition (group) def\n"
     "'classify (dup 'l swap def (l swap index-of) map dup dedup 'u swap def (u swap index-of) map) def\n"
     /* -- bitwise helpers -- */
     "'byte-mask (255 band) def\n"
     "'byte-bits ('b let 0 8 range (7 swap sub b swap shr 1 band) map) def\n"
     "'bits-byte (0 (swap 1 shl bor) fold) def\n"
-    "'chunks ('n let list swap (dup len 0 eq not) (dup n take-n swap (give) dip n drop-n) while drop) def\n"
+    "'chunks ('n let list swap (dup len 0 eq not) (dup n take-n swap (push) dip n drop-n) while drop) def\n"
     /* -- ICN: 1-bit 8x8 tiles -- */
     "'icn-decode ((byte-bits) map flatten) def\n"
     "'icn-encode (8 chunks (bits-byte) map) def\n"
@@ -2530,7 +2552,7 @@ static const char *PRELUDE =
     "   rec addr 'addr into color 'color into) map\n"
     ") def\n"
     "'nmt-encode (\n"
-    "  (dup 'addr at dup byte-mask swap 8 shr byte-mask couple swap 'color at give) map flatten\n"
+    "  (dup 'addr at dup byte-mask swap 8 shr byte-mask couple swap 'color at push) map flatten\n"
     ") def\n"
     /* -- TGA: uncompressed true-color (type 2) -- */
     "'tga-decode (\n"
@@ -2543,10 +2565,10 @@ static const char *PRELUDE =
     ") def\n"
     "'tga-header (\n"
     "  'px let 'd let 'h let 'w let\n"
-    "  list 0 give 0 give 2 give 0 give 0 give 0 give 0 give 0 give 0 give 0 give 0 give 0 give\n"
-    "  w byte-mask give w 8 shr byte-mask give\n"
-    "  h byte-mask give h 8 shr byte-mask give\n"
-    "  d give 0 give px cat\n"
+    "  list 0 push 0 push 2 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push\n"
+    "  w byte-mask push w 8 shr byte-mask push\n"
+    "  h byte-mask push h 8 shr byte-mask push\n"
+    "  d push 0 push px cat\n"
     ") def\n"
     "'tga-encode (\n"
     "  dup 'width at swap dup 'height at swap dup 'depth at swap 'pixels at tga-header\n"
@@ -2555,14 +2577,14 @@ static const char *PRELUDE =
     "'gly-parse-rows recur ('input let 'cur let 'rows let 'maxw let\n"
     "  input len 0 eq (\n"
     "    cur len 0 eq not\n"
-    "      (cur len maxw max rows cur give)\n"
+    "      (cur len maxw max rows cur push)\n"
     "      (maxw rows) if\n"
     "  ) (\n"
     "    input first 'ch let  input 1 drop-n 'rest let\n"
     "    ch 10 eq (\n"
-    "      cur len maxw max  rows cur give  list  rest  gly-parse-rows\n"
+    "      cur len maxw max  rows cur push  list  rest  gly-parse-rows\n"
     "    ) (\n"
-    "      ch 32 eq (cur 0 give) (cur ch 63 sub give) if 'ncur let\n"
+    "      ch 32 eq (cur 0 push) (cur ch 63 sub push) if 'ncur let\n"
     "      maxw  rows  ncur  rest  gly-parse-rows\n"
     "    ) if\n"
     "  ) if\n"
@@ -2574,7 +2596,7 @@ static const char *PRELUDE =
     "  0 h range ('y let\n"
     "    0 w range ('c let\n"
     "      y 4 div 'r let  y 4 mod 'bit let\n"
-    "      rows len r gt (rows r get dup len c gt (c get bit shr 1 band) (drop 0) if) (0) if give\n"
+    "      rows len r gt (rows r get dup len c gt (c get bit shr 1 band) (drop 0) if) (0) if push\n"
     "    ) each\n"
     "  ) each\n"
     "  'pixels let\n"
@@ -2590,9 +2612,9 @@ static const char *PRELUDE =
     "        px r 4 mul bit plus w mul c plus get\n"
     "        bit shl bor\n"
     "      ) each\n"
-    "      63 plus give\n"
+    "      63 plus push\n"
     "    ) each\n"
-    "    r nrows 1 sub lt (10 give) () if\n"
+    "    r nrows 1 sub lt (10 push) () if\n"
     "  ) each\n"
     ") def\n"
     /* -- UFX: proportional font (widths + ICN tiles) -- */
@@ -2611,16 +2633,16 @@ static const char *PRELUDE =
     "    dup src swap get 'op let  1 plus\n"
     "    op 128 band 0 eq (\n"
     "      op 127 band 1 plus 'cnt let\n"
-    "      cnt (dup src swap get swap (give) dip 1 plus) repeat\n"
+    "      cnt (dup src swap get swap (push) dip 1 plus) repeat\n"
     "    ) (\n"
     "      op 64 band 0 eq (\n"
     "        op 63 band 4 plus 'lng let\n"
     "        dup src swap get 1 plus 'off let  1 plus\n"
-    "        lng (swap dup dup len off sub get give swap) repeat\n"
+    "        lng (swap dup dup len off sub get push swap) repeat\n"
     "      ) (\n"
     "        op 63 band 8 shl (dup src swap get) dip swap bor 4 plus 'lng let  1 plus\n"
     "        dup src swap get 1 plus 'off let  1 plus\n"
-    "        lng (swap dup dup len off sub get give swap) repeat\n"
+    "        lng (swap dup dup len off sub get push swap) repeat\n"
     "      ) if\n"
     "    ) if\n"
     "  ) while\n"
@@ -2628,15 +2650,14 @@ static const char *PRELUDE =
     ") def\n"
 #ifndef SLAP_WASM
     /* -- string helpers -- */
-    "'crlf (list 13 give 10 give) def\n"
-    "'space (32) def\n"
+    "'crlf (list 13 push 10 push) def\n"
     "'int-str-digits recur ('n let n 0 gt\n"
-    "  (n 10 mod 48 plus give  n 10 div int-str-digits)\n"
+    "  (n 10 mod 48 plus push  n 10 div int-str-digits)\n"
     "  () if\n"
     ") def\n"
     "'int-str ('n let n 0 lt\n"
-    "  (n neg int-str list 45 give swap cat)\n"
-    "  (n 0 eq (list 48 give) (list n int-str-digits reverse) if)\n"
+    "  (n neg int-str list 45 push swap cat)\n"
+    "  (n 0 eq (list 48 push) (list n int-str-digits reverse) if)\n"
     "  if\n"
     ") def\n"
     "'str-join ('sep let 'parts let\n"
@@ -3228,7 +3249,7 @@ static void prim_cwd(Frame *e){(void)e;char buf[4096];if(!getcwd(buf,sizeof(buf)
 #define PRIM(nm,body) static void prim_##nm(Frame *e){(void)e;body;}
 PRIM(list, spush(val_compound(VAL_LIST,0,1)))
 PRIM(rec, spush(val_compound(VAL_RECORD,0,1)))
-PRIM(pull, prim_elem(0)) PRIM(get, prim_elem(1))
+PRIM(get, prim_elem())
 PRIM(take_n, prim_slice_n(1)) PRIM(drop_n, prim_slice_n(0))
 PRIM(rise, prim_grade(e,1)) PRIM(fall, prim_grade(e,0))
 #undef PRIM
@@ -3243,9 +3264,8 @@ static void register_prims(void) {
         {"itof",prim_itof},{"ftoi",prim_ftoi},{"fsqrt",prim_fsqrt},{"fsin",prim_fsin},{"fcos",prim_fcos},
         {"ftan",prim_ftan},{"ffloor",prim_ffloor},{"fceil",prim_fceil},{"fround",prim_fround},
         {"fexp",prim_fexp},{"flog",prim_flog},{"fpow",prim_fpow},{"fatan2",prim_fatan2},
-        {"stack",prim_stack},{"size",prim_size},{"push",prim_push_op},{"pop",prim_pop_op},
-        {"pull",prim_pull},{"put",prim_replace_at},{"compose",prim_concat},
-        {"list",prim_list},{"len",prim_size},{"give",prim_push_op},{"grab",prim_grab},
+        {"stack",prim_stack},{"compose",prim_concat},
+        {"list",prim_list},{"len",prim_size},{"push",prim_push_op},{"pop",prim_pop_op},
         {"get",prim_get},{"nth",prim_nth},{"set",prim_replace_at},{"cat",prim_concat},
         {"take-n",prim_take_n},{"drop-n",prim_drop_n},{"range",prim_range},
         {"map",prim_map},{"filter",prim_filter},{"fold",prim_fold},{"each",prim_each},
@@ -3268,7 +3288,7 @@ static void register_prims(void) {
         {"tcp-listen",prim_tcp_listen},{"tcp-accept",prim_tcp_accept},
 #endif
 #ifdef SLAP_SDL
-        {"clear",prim_clear},{"pixel",prim_pixel},{"fill-rect",prim_fill_rect},{"millis",prim_millis},{"on",prim_on},{"show",prim_show},
+        {"clear",prim_clear},{"pixel",prim_pixel},{"fill-rect",prim_fill_rect},{"on",prim_on},{"show",prim_show},
 #endif
         {NULL,NULL}
     };

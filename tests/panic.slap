@@ -48,16 +48,16 @@ false assert
 -- EXPECT: index -1 out of bounds
 [1 2 3] -1 get
 
--- EXPECT: expected list
+-- EXPECT: expected sized
 1 len
 
--- EXPECT: expected list
+-- EXPECT: expected seq
 1 2 give
 
 -- EXPECT: expected box
 1 free
 
--- EXPECT: grab: empty list
+-- EXPECT: pop: empty list
 [] grab
 
 -- EXPECT: index 0 out of bounds
@@ -78,7 +78,7 @@ nonexistent_word_xyz
 -- EXPECT: expected box
 1 clone
 
--- EXPECT: empty tuple
+-- EXPECT: expected seq
 stack pop
 
 -- EXPECT: expected list
@@ -93,7 +93,7 @@ stack pop
 -- EXPECT: check: expected preceding type word
 (check)
 
--- EXPECT: sort: only lists of single-slot
+-- EXPECT: expected ord
 [[1 2] [3 4]] sort
 
 -- EXPECT: condition must be int
@@ -141,7 +141,7 @@ stack pop
 -- EXPECT: expected tagged
 123 -1 default
 
--- EXPECT: expected tuple, got tagged
+-- EXPECT: expected sized, got tagged
 1 'ok tag size
 
 -- EXPECT: concat: result too large

@@ -201,8 +201,8 @@ list                        -- []
 0 5 range                   -- [0 1 2 3 4]
 
 -- mutation
-list 10 give 20 give        -- [10 20]
-[10 20 30] grab             -- 30 [10 20]
+list 10 push 20 push        -- [10 20]
+[10 20 30] pop              -- 30 [10 20]
 [10 20 30] 1 get            -- 20
 [10 20 30] 1 99 set         -- [10 99 30]
 [1 2] [3 4] cat             -- [1 2 3 4]
@@ -242,12 +242,11 @@ list 10 give 20 give        -- [10 20]
 
 ### tuples
 
-Immutable sequences. Parenthesized. Also used as code blocks.
+Immutable sequences. Parenthesized. Also used as code blocks. Access via destructuring (`apply`) or `len`.
 
 ```slap
-(10 20 30) 1 pull            -- 20
-(10 20 30) 1 99 put          -- (10 99 30)
-stack 1 push 2 push size     -- 2
+(10 20 30) apply             -- pushes 10 20 30
+(1 2 3) len                  -- 3
 ```
 
 ### records
@@ -355,9 +354,26 @@ Optional type annotations declare stack effects:
 
 Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ownership).
 
+### protocol constraints
+
+Built-in protocols group types by capability. Use in effect annotations:
+
+```slap
+'my-len (len) ['a sized lent in  int move out] effect def
+'my-sort (sort) ['a ord seq own in  'a ord seq move out] effect def
+```
+
+| Protocol | Keyword | Types | Operations |
+|----------|---------|-------|------------|
+| Sized | `sized` | list, tuple, record | `len` |
+| Seq | `seq` | list | `get`, `set`, `push`, `pop`, `cat` |
+| Eq | `eql` | all stackable | `eq` |
+| Ord | `ord` | int, float, sym | `lt`, `sort` |
+| Num | `num` | int, float | `plus`, `sub`, `mul`, `div` |
+
 ## prelude
 
-~95 definitions in slap itself, loaded at startup.
+~90 definitions in slap itself, loaded at startup.
 
 ### stack
 
@@ -427,7 +443,6 @@ Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ow
 | `table` | list f → [[x f(x)]...] | `[1 2 3] (sqr) table` → `[[1 1] [2 4] [3 9]]` |
 | `select` | list indices → sublist | `[10 20 30] [0 2] select` → `[10 30]` |
 | `reduce` | list f → result | `[1 2 3] (plus) reduce` → `6` |
-| `count` | alias of `len` | `[1 2 3] count` → `3` |
 | `isany` | list → any nonzero? | `[0 0 1] isany` → `1` |
 | `isall` | list → all nonzero? | `[1 1 0] isall` → `0` |
 | `keep-mask` | list mask → filtered | `[10 20 30] [1 0 1] keep-mask` → `[10 30]` |
@@ -443,7 +458,6 @@ Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ow
 | `reshape` | list [r c] → matrix | `[1 2 3 4] [2 2] reshape` → `[[1 2] [3 4]]` |
 | `transpose` | matrix → transposed | `[[1 2] [3 4]] transpose` → `[[1 3] [2 4]]` |
 | `group` | data indices → groups | groups data by index labels |
-| `partition` | alias of `group` | `[10 20 30] [0 1 0] partition` |
 | `classify` | list → indices | `[1 2 1 3 2] classify` → `[0 1 0 2 1]` |
 
 ### tagged unions
@@ -489,7 +503,6 @@ String primitives plus prelude helpers. Strings are lists of byte codes.
 | `utf8-encode` | codepoints → bytes | |
 | `utf8-decode` | bytes → codepoints | |
 | `crlf` | → `"\r\n"` as byte list | |
-| `space` | → `32` | |
 
 ### bitwise and byte utilities
 
@@ -574,12 +587,12 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
     i W mod 'x let  i W div 'y let
     'g x y neighbors 'n let
     'g i nth 1 eq (n 2 eq n 3 eq or) (n 3 eq) if
-    (1) (0) if give
+    (1) (0) if push
     i 1 plus 'i let
   ) while
 ) def
 
-list N (2 random give) repeat
+list N (2 random push) repeat
 
 'tick (drop step) on
 ('g let 0 clear

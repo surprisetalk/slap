@@ -98,4 +98,35 @@ true assert
 -- union through then
 42 ok {'ok 'int 'no 'str} union (1 plus) then {'ok () 'no (drop 0)} -1 untag print
 
+-- ===== Protocol constraints =====
+
+-- seq: list-only operations with typed elements
+'my-push ['a seq own in  'a own in  'a seq move out] effect
+'my-len ['a sized lent in  int move out] effect
+'my-max ['a ord lent in  'a ord lent in  'a ord move out] effect
+
+-- sized: works on lists, tuples, and records
+[1 2 3] len drop
+(1 2 3) len drop
+{'x 10} len drop
+
+-- seq: list operations
+[1 2 3] 0 get drop
+[1 2 3] 1 42 set drop
+[1 2] [3 4] cat drop
+[1 2 3] 99 push drop
+[1 2 3] pop drop drop
+
+-- ord: sort requires orderable elements
+[3 1 2] sort drop
+['c 'a 'b] sort ['a 'b 'c] eq assert
+
+-- protocol constraint in user-defined function
+'list-len (len) ['a seq lent in  int move out] effect def
+[1 2 3] list-len 3 eq assert
+
+-- ord constraint in user-defined function
+'my-sort (sort) ['a ord seq own in  'a ord seq move out] effect def
+[3 1 2] my-sort [1 2 3] eq assert
+
 "Type check tests passed!" print

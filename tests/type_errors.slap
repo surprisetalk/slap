@@ -234,8 +234,8 @@
 -- TYPE ERROR: three variants, only two handled
 42 'a tag {'a 'int 'b 'int 'err 'str} union {'a () 'b ()} -1 untag
 
--- EXPECT: body expects list but 'ok variant has int
--- TYPE ERROR: then body expects list but ok variant is int
+-- EXPECT: body expects sized but 'ok variant has int
+-- TYPE ERROR: then body expects sized but ok variant is int
 42 ok {'ok 'int 'no 'str} union (len) then print
 
 -- EXPECT: body expects float but 'ok variant has int
@@ -246,27 +246,27 @@
 -- TYPE ERROR: default preserves payload type (string/list + int)
 "hello" ok -1 default 1 plus print
 
--- EXPECT: expected list, got int
+-- EXPECT: expected sized, got int
 -- TYPE ERROR: default preserves payload type (int given to len)
 42 ok -1 default len print
 
--- EXPECT: expected tuple, got tagged
+-- EXPECT: expected seq, got tagged
 -- TYPE ERROR: push onto tagged
 1 'x tag 99 push
 
--- EXPECT: expected tuple, got tagged
+-- EXPECT: expected seq, got tagged
 -- TYPE ERROR: pop from tagged
 1 'x tag pop
 
--- EXPECT: expected tuple, got tagged
+-- EXPECT: expected sized, got tagged
 -- TYPE ERROR: size on tagged
 1 'x tag size
 
--- EXPECT: expected list, got tagged
+-- EXPECT: expected seq, got tagged
 -- TYPE ERROR: get on tagged
 1 'x tag 0 get
 
--- EXPECT: expected list, got tagged
+-- EXPECT: expected seq, got tagged
 -- TYPE ERROR: cat on tagged
 [1] 1 'x tag cat
 
@@ -298,6 +298,36 @@
 -- TYPE ERROR: dedup of non-list
 42 dedup
 
--- EXPECT: expected list
+-- EXPECT: expected seq, got tagged
 -- TYPE ERROR: grab from tagged value
 1 'x tag grab
+
+-- ===== Protocol constraint errors =====
+
+-- EXPECT: expected seq, got tuple
+-- TYPE ERROR: push onto tuple (seq is list-only)
+(1 2 3) 4 push
+
+-- EXPECT: expected seq, got tuple
+-- TYPE ERROR: pop from tuple
+(1 2 3) pop
+
+-- EXPECT: expected seq, got int
+-- TYPE ERROR: push onto non-seq
+42 99 push
+
+-- EXPECT: expected seq, got tuple
+-- TYPE ERROR: get on tuple (seq is list-only)
+(1 2 3) 0 get
+
+-- EXPECT: expected seq, got tuple
+-- TYPE ERROR: set on tuple
+(1 2 3) 0 99 set
+
+-- EXPECT: expected sized, got int
+-- TYPE ERROR: len on int
+42 len
+
+-- EXPECT: expected ord
+-- TYPE ERROR: sort list of lists (lists aren't Ord)
+[[1] [2]] sort

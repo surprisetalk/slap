@@ -124,6 +124,7 @@ list 10 give 20 give [10 20] eq assert
 
 -- ===== List: sort =====
 [3 1 2] sort [1 2 3] eq assert
+['c 'a 'b] sort ['a 'b 'c] eq assert
 
 -- ===== List: scan =====
 [1 2 3] 0 (plus) scan [1 3 6] eq assert
@@ -140,9 +141,8 @@ list 10 give 20 give [10 20] eq assert
 "ab" "cd" cat "abcd" eq assert
 
 -- ===== Tuples =====
-stack 1 push 2 push pop 2 eq assert pop 1 eq assert stack eq assert
-stack 1 push 2 push size 2 eq assert
-(10 20 30) 1 pull 20 eq assert drop
+(1 2 3) len 3 eq assert
+(10 20 30) apply 30 eq assert 20 eq assert 10 eq assert
 
 -- ===== Records =====
 {'x 10 'y 20} 'x at 10 eq assert
@@ -280,10 +280,9 @@ rec rec eq assert
 ) def
 outer 15 eq assert
 
--- tuple pull/put
-(10 20 30) 0 pull 10 eq assert drop
-(10 20 30) 2 pull 30 eq assert drop
-(10 20 30) 1 99 put (10 99 30) eq assert
+-- tuple access via destructuring
+(10 20 30) apply 30 eq assert 20 eq assert 10 eq assert
+(10 20 30) len 3 eq assert
 
 -- keep-mask all true
 [1 2 3] [1 1 1] keep-mask [1 2 3] eq assert
