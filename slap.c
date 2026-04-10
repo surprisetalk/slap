@@ -145,14 +145,13 @@ static void spush(Value v) { if (sp >= STACK_MAX) die("stack overflow"); stack[s
 static Value spop(void) { if (sp <= 0) die("stack underflow"); return stack[--sp]; }
 static Value speek(void) { if (sp <= 0) die("stack underflow on peek"); return stack[sp - 1]; }
 
-static Value val_int(int64_t i) { Value v; v.tag = VAL_INT; v.loc = 0; v.as.i = i; return v; }
-static Value val_float(double f) { Value v; v.tag = VAL_FLOAT; v.loc = 0; v.as.f = f; return v; }
-static Value val_sym(uint32_t s) { Value v; v.tag = VAL_SYM; v.loc = 0; v.as.sym = s; return v; }
-static Value val_word(uint32_t s) { Value v; v.tag = VAL_WORD; v.loc = 0; v.as.sym = s; return v; }
-static Value val_xt(uint32_t s, PrimFn fn) { Value v; v.tag = VAL_XT; v.loc = 0; v.as.xt.sym = s; v.as.xt.fn = fn; return v; }
-static Value val_compound(ValTag tag, uint32_t len, uint32_t slots) {
-    Value v; v.tag = tag; v.loc = 0; v.as.compound.len = len; v.as.compound.slots = slots; v.as.compound.env = NULL; return v;
-}
+#define MKVAL(t) Value v={0};v.tag=t
+static Value val_int(int64_t i){MKVAL(VAL_INT);v.as.i=i;return v;}
+static Value val_float(double f){MKVAL(VAL_FLOAT);v.as.f=f;return v;}
+static Value val_sym(uint32_t s){MKVAL(VAL_SYM);v.as.sym=s;return v;}
+static Value val_word(uint32_t s){MKVAL(VAL_WORD);v.as.sym=s;return v;}
+static Value val_xt(uint32_t s,PrimFn fn){MKVAL(VAL_XT);v.as.xt.sym=s;v.as.xt.fn=fn;return v;}
+static Value val_compound(ValTag tag,uint32_t len,uint32_t slots){MKVAL(tag);v.as.compound.len=len;v.as.compound.slots=slots;v.as.compound.env=NULL;return v;}
 
 typedef enum {
     TOK_INT, TOK_FLOAT, TOK_SYM, TOK_WORD, TOK_STRING,
@@ -179,12 +178,8 @@ static void lex(const char *src, int fid) {
         if (tok_count >= TOK_MAX) die("too many tokens");
         Token *t = &tokens[tok_count];
         t->line = line; t->col = col; t->fid = fid;
-        if (*p == '(') { t->tag = TOK_LPAREN;   LEX_ADVANCE(); tok_count++; continue; }
-        if (*p == ')') { t->tag = TOK_RPAREN;   LEX_ADVANCE(); tok_count++; continue; }
-        if (*p == '[') { t->tag = TOK_LBRACKET; LEX_ADVANCE(); tok_count++; continue; }
-        if (*p == ']') { t->tag = TOK_RBRACKET; LEX_ADVANCE(); tok_count++; continue; }
-        if (*p == '{') { t->tag = TOK_LBRACE;   LEX_ADVANCE(); tok_count++; continue; }
-        if (*p == '}') { t->tag = TOK_RBRACE;   LEX_ADVANCE(); tok_count++; continue; }
+        { static const char brackets[]="()[]{}"; static const TokTag btags[]={TOK_LPAREN,TOK_RPAREN,TOK_LBRACKET,TOK_RBRACKET,TOK_LBRACE,TOK_RBRACE};
+          const char *bp=strchr(brackets,*p); if(bp){t->tag=btags[bp-brackets];LEX_ADVANCE();tok_count++;continue;} }
         if (*p == '"') {
             LEX_ADVANCE();
             int *codes = NULL; int len = 0, cap = 0;
@@ -229,12 +224,7 @@ static void lex(const char *src, int fid) {
           t->tag = TOK_WORD; t->as.sym = sym_intern(buf); tok_count++;
         }
     }
-    if (tok_count < TOK_MAX) {
-        tokens[tok_count].tag = TOK_EOF;
-        tokens[tok_count].line = line;
-        tokens[tok_count].col = col;
-        tokens[tok_count].fid = fid;
-    }
+    if (tok_count < TOK_MAX) { Token *eof=&tokens[tok_count]; eof->tag=TOK_EOF; eof->line=line; eof->col=col; eof->fid=fid; }
 }
 
 static inline Value with_tok(Value v, const Token *t) {
@@ -663,28 +653,23 @@ static int tvar_find(TypeChecker *tc, int id) {
     return id;
 }
 static TypeConstraint tvar_resolve(TypeChecker *tc, int id) { return tc->tvars[tvar_find(tc, id)].bound; }
-static int tc_constraint_matches(TypeConstraint constraint, TypeConstraint actual) {
-    if (constraint == TC_NONE || constraint == actual) return 1;
-    if (constraint == TC_NUM && (actual == TC_INT || actual == TC_FLOAT)) return 1;
-    if (actual == TC_NUM && (constraint == TC_INT || constraint == TC_FLOAT)) return 1;
-    /* Seq: list only */
-    if (constraint == TC_SEQ && actual == TC_LIST) return 1;
-    if (actual == TC_SEQ && constraint == TC_LIST) return 1;
-    /* Sized: list, tuple, rec, seq */
-    if (constraint == TC_SIZED && (actual == TC_LIST || actual == TC_TUPLE || actual == TC_REC || actual == TC_SEQ)) return 1;
-    if (actual == TC_SIZED && (constraint == TC_LIST || constraint == TC_TUPLE || constraint == TC_REC || constraint == TC_SEQ)) return 1;
-    /* Ord: int, float, sym, num */
-    if (constraint == TC_ORD && (actual == TC_INT || actual == TC_FLOAT || actual == TC_SYM || actual == TC_NUM)) return 1;
-    if (actual == TC_ORD && (constraint == TC_INT || constraint == TC_FLOAT || constraint == TC_SYM || constraint == TC_NUM)) return 1;
-    /* Eq: all stackable types + protocol supertypes */
-    if (constraint == TC_EQ && (actual == TC_INT || actual == TC_FLOAT || actual == TC_SYM || actual == TC_LIST
-        || actual == TC_TUPLE || actual == TC_REC || actual == TC_TAGGED || actual == TC_NUM
-        || actual == TC_ORD || actual == TC_SEQ || actual == TC_SIZED)) return 1;
-    if (actual == TC_EQ && (constraint == TC_INT || constraint == TC_FLOAT || constraint == TC_SYM || constraint == TC_LIST
-        || constraint == TC_TUPLE || constraint == TC_REC || constraint == TC_TAGGED || constraint == TC_NUM
-        || constraint == TC_ORD || constraint == TC_SEQ || constraint == TC_SIZED)) return 1;
-    /* Lattice: Num ⊂ Ord ⊂ Eq, Seq ⊂ Sized (already covered above) */
-    return 0;
+/* Bitmask per TypeConstraint: bit N set means "compatible with TC whose enum == N" */
+#define B(x) (1u<<(x))
+static const uint16_t tc_compat[] = {
+    [TC_NONE]=0xFFFF, [TC_INT]=B(TC_INT)|B(TC_NUM)|B(TC_ORD)|B(TC_EQ),
+    [TC_FLOAT]=B(TC_FLOAT)|B(TC_NUM)|B(TC_ORD)|B(TC_EQ),
+    [TC_SYM]=B(TC_SYM)|B(TC_ORD)|B(TC_EQ), [TC_NUM]=B(TC_NUM)|B(TC_INT)|B(TC_FLOAT)|B(TC_ORD)|B(TC_EQ),
+    [TC_LIST]=B(TC_LIST)|B(TC_SEQ)|B(TC_SIZED)|B(TC_EQ), [TC_TUPLE]=B(TC_TUPLE)|B(TC_SIZED)|B(TC_EQ),
+    [TC_REC]=B(TC_REC)|B(TC_SIZED)|B(TC_EQ), [TC_BOX]=B(TC_BOX), [TC_STACK]=B(TC_STACK),
+    [TC_TAGGED]=B(TC_TAGGED)|B(TC_EQ), [TC_SEQ]=B(TC_SEQ)|B(TC_LIST)|B(TC_SIZED)|B(TC_EQ),
+    [TC_SIZED]=B(TC_SIZED)|B(TC_LIST)|B(TC_TUPLE)|B(TC_REC)|B(TC_SEQ)|B(TC_EQ),
+    [TC_EQ]=B(TC_EQ)|B(TC_INT)|B(TC_FLOAT)|B(TC_SYM)|B(TC_LIST)|B(TC_TUPLE)|B(TC_REC)|B(TC_TAGGED)|B(TC_NUM)|B(TC_ORD)|B(TC_SEQ)|B(TC_SIZED),
+    [TC_ORD]=B(TC_ORD)|B(TC_INT)|B(TC_FLOAT)|B(TC_SYM)|B(TC_NUM)|B(TC_EQ),
+};
+#undef B
+static int tc_constraint_matches(TypeConstraint a, TypeConstraint b) {
+    if (a == TC_NONE || a == b) return 1;
+    return (a <= TC_ORD && b <= TC_ORD) ? (tc_compat[a] >> b) & 1 : 0;
 }
 static int tc_should_narrow(TypeConstraint cur, TypeConstraint c) {
     if (tc_is_concrete(c) && !tc_is_concrete(cur)) return 1;
@@ -708,10 +693,9 @@ static int tvar_unify(TypeChecker *tc, int a, int b, int line) {
     if (ca != TC_NONE && cb != TC_NONE && !tc_constraint_matches(ca, cb) && !tc_constraint_matches(cb, ca))
         { (void)line; return 1; }
     tc->tvars[rb].parent = ra;
-    if (tc->tvars[ra].elem == 0 && tc->tvars[rb].elem != 0) tc->tvars[ra].elem = tc->tvars[rb].elem;
-    if (tc->tvars[ra].box_c == 0 && tc->tvars[rb].box_c != 0) tc->tvars[ra].box_c = tc->tvars[rb].box_c;
-    if (tc->tvars[ra].tag_p == 0 && tc->tvars[rb].tag_p != 0) tc->tvars[ra].tag_p = tc->tvars[rb].tag_p;
-    if (tc->tvars[ra].union_id == 0 && tc->tvars[rb].union_id != 0) tc->tvars[ra].union_id = tc->tvars[rb].union_id;
+#define PROP(f) if (!tc->tvars[ra].f && tc->tvars[rb].f) tc->tvars[ra].f = tc->tvars[rb].f
+    PROP(elem); PROP(box_c); PROP(tag_p); PROP(union_id);
+#undef PROP
     if (ca == TC_NONE) tc->tvars[ra].bound = cb;
     else if (tc_constraint_matches(ca, cb) && tc_should_narrow(ca, cb)) tc->tvars[ra].bound = cb;
     return 0;
@@ -732,26 +716,14 @@ static int tvar_unify_at(TypeChecker *tc, int tvar, AbstractType *at, int line) 
 static void tvar_instantiate(TypeChecker *tc, int base, int count, int *map) {
     for (int i = 0; i < count; i++) map[i] = tvar_fresh(tc);
     for (int i = 0; i < count; i++) {
-        int src = base + i, root = tvar_find(tc, src);
+        int root = tvar_find(tc, base + i);
         tc->tvars[map[i]].bound = tc->tvars[root].bound;
-        if (tc->tvars[root].elem > 0) {
-            int off = tc->tvars[root].elem - base;
-            tc->tvars[map[i]].elem = (off >= 0 && off < count) ? map[off] : tc->tvars[root].elem;
-        }
-        if (tc->tvars[root].box_c > 0) {
-            int off = tc->tvars[root].box_c - base;
-            tc->tvars[map[i]].box_c = (off >= 0 && off < count) ? map[off] : tc->tvars[root].box_c;
-        }
-        if (tc->tvars[root].tag_p > 0) {
-            int off = tc->tvars[root].tag_p - base;
-            tc->tvars[map[i]].tag_p = (off >= 0 && off < count) ? map[off] : tc->tvars[root].tag_p;
-        }
+#define REMAP(f) if (tc->tvars[root].f > 0) { int off = tc->tvars[root].f - base; tc->tvars[map[i]].f = (off >= 0 && off < count) ? map[off] : tc->tvars[root].f; }
+        REMAP(elem) REMAP(box_c) REMAP(tag_p)
+#undef REMAP
         tc->tvars[map[i]].union_id = tc->tvars[root].union_id;
     }
-    for (int i = 0; i < count; i++) {
-        int src_root = tvar_find(tc, base + i), off = src_root - base;
-        if (off >= 0 && off < count && off != i) tvar_unify(tc, map[i], map[off], 0);
-    }
+    for (int i = 0; i < count; i++) { int off = tvar_find(tc, base + i) - base; if (off >= 0 && off < count && off != i) tvar_unify(tc, map[i], map[off], 0); }
 }
 
 static int tc_find_brace_before(Token *toks, int pos) {
@@ -973,12 +945,9 @@ static void tc_apply_scheme(TypeChecker *tc, TupleEffect *eff, int consumed, int
             if (tvar_unify_at(tc, ftv, input, line))
                 tc_error(tc, line, input->source_line, "'%s' input type mismatch: expected %s, got %s (value from line %d)", name, constraint_name(tvar_resolve(tc, ftv)), constraint_name(input->type != TC_NONE ? input->type : tvar_resolve(tc, input->tvar_id)), input->source_line);
             if (full_unify && input->tvar_id > 0) {
-                int fe = tc->tvars[tvar_find(tc, ftv)].elem, ie = tc->tvars[tvar_find(tc, input->tvar_id)].elem;
-                if (fe > 0 && ie > 0) tvar_unify(tc, fe, ie, line);
-                int fb = tc->tvars[tvar_find(tc, ftv)].box_c, ib = tc->tvars[tvar_find(tc, input->tvar_id)].box_c;
-                if (fb > 0 && ib > 0) tvar_unify(tc, fb, ib, line);
-                int ft = tc->tvars[tvar_find(tc, ftv)].tag_p, it = tc->tvars[tvar_find(tc, input->tvar_id)].tag_p;
-                if (ft > 0 && it > 0) tvar_unify(tc, ft, it, line);
+#define UNIFY_SUB(f) { int fa=tc->tvars[tvar_find(tc,ftv)].f, fb2=tc->tvars[tvar_find(tc,input->tvar_id)].f; if(fa>0&&fb2>0)tvar_unify(tc,fa,fb2,line); }
+                UNIFY_SUB(elem) UNIFY_SUB(box_c) UNIFY_SUB(tag_p)
+#undef UNIFY_SUB
             }
         }
     }
@@ -1025,12 +994,9 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         }
         if (tc->sp > 0 && tc->data[tc->sp-1].type != TC_BOX && tc->data[tc->sp-1].type != TC_NONE)
             tc_error(tc, line, 0, "'%s' expected box, got %s", ho->name, constraint_name(tc->data[tc->sp-1].type));
+#define TC_BOX_CONTENTS(tc) ({ TypeConstraint _c=TC_NONE; if((tc)->data[(tc)->sp-1].tvar_id>0){ int _bc=(tc)->tvars[tvar_find((tc),(tc)->data[(tc)->sp-1].tvar_id)].box_c; if(_bc>0)_c=tvar_resolve((tc),_bc); } _c; })
         if ((ho->flags & HO_BOX_BORROW) && tc->sp > 0 && tc->data[tc->sp-1].type == TC_BOX) {
-            TypeConstraint contents = TC_NONE;
-            if (tc->data[tc->sp-1].tvar_id > 0) {
-                int bc = tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].box_c;
-                if (bc > 0) contents = tvar_resolve(tc, bc);
-            }
+            TypeConstraint contents = TC_BOX_CONTENTS(tc);
             tc->data[tc->sp-1].borrowed++;
             int results = body_known ? (1 - eff_c + eff_p) : 1; if (results < 0) results = 0;
             for (int j = 0; j < results; j++) {
@@ -1040,11 +1006,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
             int box_idx = tc->sp - results - 1;
             if (box_idx >= 0) tc->data[box_idx].borrowed--;
         } else if ((ho->flags & HO_BOX_MUTATE) && tc->sp > 0 && tc->data[tc->sp-1].type == TC_BOX) {
-            TypeConstraint contents = TC_NONE;
-            if (tc->data[tc->sp-1].tvar_id > 0) {
-                int bc = tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].box_c;
-                if (bc > 0) contents = tvar_resolve(tc, bc);
-            }
+            TypeConstraint contents = TC_BOX_CONTENTS(tc);
             if (contents != TC_NONE && body_out != TC_NONE && !tc_constraint_matches(contents, body_out) && !tc_constraint_matches(body_out, contents))
                 tc_error(tc, line, 0, "'mutate' body produces %s but box contains %s", constraint_name(body_out), constraint_name(contents));
         }
@@ -1592,7 +1554,6 @@ static void prim_swap(Frame *e) {
     memcpy(&stack[base+top_s],tmp,below_s*sizeof(Value));
 }
 
-
 static void prim_dip(Frame *env) {
     if(sp<2) die("dip: need body and value");
     POP_BODY(body,"dip");
@@ -1622,19 +1583,13 @@ static void prim_div(Frame *e) { (void)e; Value b=spop(),a=spop();
 static void prim_mod(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();if(b==0)die("mod: division by zero");spush(val_int(a%b));}
 static void prim_divmod(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();if(b==0)die("divmod: division by zero");spush(val_int(a%b));spush(val_int(a/b));}
 static void prim_wrap(Frame *e){(void)e;int64_t m=pop_int(),v=pop_int();if(m==0)die("wrap: modulus must be non-zero");spush(val_int(((v%m)+m)%m));}
-static void prim_band(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int(a&b));}
-static void prim_bor(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int(a|b));}
-static void prim_bxor(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int(a^b));}
+#define INTOP2(nm,expr) static void prim_##nm(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int(expr));}
+INTOP2(band,a&b) INTOP2(bor,a|b) INTOP2(bxor,a^b) INTOP2(shl,(int64_t)((uint64_t)a<<b)) INTOP2(shr,(int64_t)((uint64_t)a>>b))
+INTOP2(and,(a&&b)?1:0) INTOP2(or,(a||b)?1:0)
 static void prim_bnot(Frame *e){(void)e;int64_t a=pop_int();spush(val_int(~a));}
-static void prim_shl(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int((int64_t)((uint64_t)a<<b)));}
-static void prim_shr(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int((int64_t)((uint64_t)a>>b)));}
-
 #define CMP2(nm,expr) static void prim_##nm(Frame *e){(void)e;Value bt=stack[sp-1];int bs=val_slots(bt);int as=val_slots(stack[sp-1-bs]);int r=(expr);sp-=as+bs;spush(val_int(r?1:0));}
 CMP2(eq, val_equal(&stack[sp-bs-as],as,&stack[sp-bs],bs))
 CMP2(lt, val_less(&stack[sp-bs-as],as,&stack[sp-bs],bs))
-
-static void prim_and(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int((a&&b)?1:0));}
-static void prim_or(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();spush(val_int((a||b)?1:0));}
 
 static void prim_print(Frame *e){(void)e;if(sp<=0)die("print: stack underflow");Value top=stack[sp-1];int s=val_slots(top);val_print(&stack[sp-s],s,stdout);printf("\n");sp-=s;}
 static void prim_assert(Frame *e){(void)e;if(!pop_int())die("assertion failed");}
@@ -1655,13 +1610,16 @@ static void prim_if(Frame *env) {
     else eval_default(el_buf,el_s,el_top,NULL,0,env);
 }
 
+#define POP_CLAUSES(label) \
+    POP_VAL(def); \
+    Value clauses_top=stack[sp-1]; \
+    if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die(label ": expected tuple or record of clauses, got %s", valtag_name(clauses_top.tag)); \
+    int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len; \
+    if(clauses_s>LOCAL_MAX) die(label ": clauses too large (%d slots, max %d)",clauses_s,LOCAL_MAX); \
+    Value clauses_buf[clauses_s]; memcpy(clauses_buf,&stack[sp-clauses_s],clauses_s*sizeof(Value)); sp-=clauses_s
+
 static void prim_cond(Frame *env) {
-    POP_VAL(def);
-    Value clauses_top=stack[sp-1];
-    if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die("cond: expected tuple or record of clauses, got %s", valtag_name(clauses_top.tag));
-    int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len;
-    if(clauses_s>LOCAL_MAX) die("cond: clauses too large (%d slots, max %d)",clauses_s,LOCAL_MAX);
-    Value clauses_buf[clauses_s]; memcpy(clauses_buf,&stack[sp-clauses_s],clauses_s*sizeof(Value)); sp-=clauses_s;
+    POP_CLAUSES("cond");
     POP_VAL(scrut);
     if(clauses_len%2!=0) die("cond: need even number of clauses (pred/body pairs)");
     for(int i=0;i<clauses_len;i+=2){
@@ -1695,12 +1653,7 @@ static int dispatch_clauses(const char *who, Value *clauses_buf, int clauses_s, 
 }
 
 static void prim_match(Frame *env) {
-    POP_VAL(def);
-    Value clauses_top=stack[sp-1];
-    if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die("match: expected tuple or record of clauses, got %s", valtag_name(clauses_top.tag));
-    int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len;
-    if(clauses_s>LOCAL_MAX) die("match: clauses too large (%d slots, max %d)",clauses_s,LOCAL_MAX);
-    Value clauses_buf[clauses_s]; memcpy(clauses_buf,&stack[sp-clauses_s],clauses_s*sizeof(Value)); sp-=clauses_s;
+    POP_CLAUSES("match");
     Value scrut=spop(); if(scrut.tag!=VAL_SYM) die("match: scrutinee must be a symbol, got %s", valtag_name(scrut.tag));
     if(!dispatch_clauses("match",clauses_buf,clauses_s,clauses_len,clauses_top.tag,scrut.as.sym,NULL,0,env))
         eval_default(def_buf,def_s,def_top,NULL,0,env);
@@ -1716,12 +1669,7 @@ static void prim_tag(Frame *e) {
 }
 
 static void prim_untag(Frame *env) {
-    POP_VAL(def);
-    Value clauses_top=stack[sp-1];
-    if(clauses_top.tag!=VAL_TUPLE&&clauses_top.tag!=VAL_RECORD) die("untag: expected tuple or record of clauses, got %s", valtag_name(clauses_top.tag));
-    int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len;
-    if(clauses_s>LOCAL_MAX) die("untag: clauses too large (%d slots, max %d)",clauses_s,LOCAL_MAX);
-    Value clauses_buf[clauses_s]; memcpy(clauses_buf,&stack[sp-clauses_s],clauses_s*sizeof(Value)); sp-=clauses_s;
+    POP_CLAUSES("untag");
     Value tagged_top=stack[sp-1];
     if(tagged_top.tag!=VAL_TAGGED) die("untag: expected tagged value, got %s", valtag_name(tagged_top.tag));
     int tagged_s=val_slots(tagged_top), payload_s=tagged_s-1;
@@ -1787,8 +1735,8 @@ static void prim_ftoi(Frame *e){(void)e;spush(val_int((int64_t)pop_float()));}
 #define FLOAT1(nm,fn) static void prim_##nm(Frame *e){(void)e;spush(val_float(fn(pop_float())));}
 FLOAT1(fsqrt,sqrt) FLOAT1(fsin,sin) FLOAT1(fcos,cos) FLOAT1(ftan,tan)
 FLOAT1(ffloor,floor) FLOAT1(fceil,ceil) FLOAT1(fround,round) FLOAT1(fexp,exp) FLOAT1(flog,log)
-static void prim_fpow(Frame *e){(void)e;double b=pop_float(),a=pop_float();spush(val_float(pow(a,b)));}
-static void prim_fatan2(Frame *e){(void)e;double b=pop_float(),a=pop_float();spush(val_float(atan2(a,b)));}
+#define FLOAT2(nm,fn) static void prim_##nm(Frame *e){(void)e;double b=pop_float(),a=pop_float();spush(val_float(fn(a,b)));}
+FLOAT2(fpow,pow) FLOAT2(fatan2,atan2)
 
 static void prim_stack(Frame *e){(void)e;spush(val_compound(VAL_TUPLE,0,1));}
 
@@ -1868,9 +1816,6 @@ static void prim_concat(Frame *e) {
     spush(val_compound(tag,len1+len2,new_elem_slots+1));
 }
 
-
-
-
 static void prim_nth(Frame *env) {
     int64_t idx=pop_int(); uint32_t sym=pop_sym();
     Lookup lu=frame_lookup(env,sym); if(!lu.bind) die("nth: unknown word: %s",sym_name(sym));
@@ -1896,36 +1841,28 @@ static void prim_slice_n(int take) {
 
 static void prim_range(Frame *e){(void)e;int64_t end=pop_int(),start=pop_int();int count=0;for(int64_t i=start;i<end;i++){spush(val_int(i));count++;}spush(val_compound(VAL_LIST,count,count+1));}
 
+#define LIST_ITER(label) POP_BODY(fn,label); POP_LIST_BUF(list,label); \
+    int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs)
+#define PUSH_ELEM(i) memcpy(&stack[sp],&list_buf[offs[i]],szs[i]*sizeof(Value));sp+=szs[i]
 static void prim_map(Frame *env) {
-    POP_BODY(fn,"map"); POP_LIST_BUF(list,"map");
-    int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs);
-    int rb=sp;
-    for(int i=0;i<list_len;i++){memcpy(&stack[sp],&list_buf[offs[i]],szs[i]*sizeof(Value));sp+=szs[i];eval_body(fn_buf,fn_s,env);}
+    LIST_ITER("map"); int rb=sp;
+    for(int i=0;i<list_len;i++){PUSH_ELEM(i);eval_body(fn_buf,fn_s,env);}
     spush(val_compound(VAL_LIST,list_len,sp-rb+1));
 }
-
 static void prim_filter(Frame *env) {
-    POP_BODY(fn,"filter"); POP_LIST_BUF(list,"filter");
-    int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs);
-    int rb=sp,rc=0;
-    for(int i=0;i<list_len;i++){
-        memcpy(&stack[sp],&list_buf[offs[i]],szs[i]*sizeof(Value));sp+=szs[i];
-        memcpy(&stack[sp],&list_buf[offs[i]],szs[i]*sizeof(Value));sp+=szs[i];
-        eval_body(fn_buf,fn_s,env); if(pop_int())rc++; else sp-=szs[i];
-    }
+    LIST_ITER("filter"); int rb=sp,rc=0;
+    for(int i=0;i<list_len;i++){PUSH_ELEM(i);PUSH_ELEM(i);eval_body(fn_buf,fn_s,env);if(pop_int())rc++;else sp-=szs[i];}
     spush(val_compound(VAL_LIST,rc,sp-rb+1));
 }
-
 static void prim_fold(Frame *env) {
     POP_BODY(fn,"fold"); POP_VAL(init); POP_LIST_BUF(list,"fold");
     int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs);
     memcpy(&stack[sp],init_buf,init_s*sizeof(Value));sp+=init_s;
-    for(int i=0;i<list_len;i++){memcpy(&stack[sp],&list_buf[offs[i]],szs[i]*sizeof(Value));sp+=szs[i];eval_body(fn_buf,fn_s,env);}
+    for(int i=0;i<list_len;i++){PUSH_ELEM(i);eval_body(fn_buf,fn_s,env);}
 }
 static void prim_each(Frame *env) {
-    POP_BODY(fn,"each"); POP_LIST_BUF(list,"each");
-    int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs);
-    for(int i=0;i<list_len;i++){memcpy(&stack[sp],&list_buf[offs[i]],szs[i]*sizeof(Value));sp+=szs[i];eval_body(fn_buf,fn_s,env);}
+    LIST_ITER("each");
+    for(int i=0;i<list_len;i++){PUSH_ELEM(i);eval_body(fn_buf,fn_s,env);}
 }
 
 static int sort_cmp(const void *a,const void *b) {
@@ -1979,7 +1916,6 @@ static void prim_at(Frame *env) {
     Value vb[LOCAL_MAX]; memcpy(vb,&stack[base+ref.base],ref.slots*sizeof(Value));
     sp-=s; memcpy(&stack[sp],vb,ref.slots*sizeof(Value)); sp+=ref.slots;
 }
-
 
 static void prim_into(Frame *e) {
     (void)e; uint32_t key=pop_sym(); POP_VAL(v);
@@ -2499,171 +2435,96 @@ static void prim_show(Frame *env) {
 #endif
 
 static unsigned char *pop_byte_list_buf(const char *who, int *out_len) {
-    Value top = spop();
-    if (top.tag != VAL_LIST) die("%s: expected list", who);
-    int len = (int)top.as.compound.len;
-    int slots = (int)top.as.compound.slots - 1;
-    if (slots != len) die("%s: list elements must all be single-slot (ints)", who);
-    unsigned char *buf = malloc(len);
-    for (int i = 0; i < len; i++) {
-        Value v = stack[sp - len + i];
-        if (v.tag != VAL_INT) die("%s: byte element %d is not an int", who, i);
-        if (v.as.i < 0 || v.as.i > 255) die("%s: byte %d out of range (got %lld)", who, i, (long long)v.as.i);
-        buf[i] = (unsigned char)v.as.i;
-    }
-    sp -= len;
-    *out_len = len;
-    return buf;
+    Value top=spop();if(top.tag!=VAL_LIST)die("%s: expected list",who);
+    int len=(int)top.as.compound.len;if((int)top.as.compound.slots-1!=len)die("%s: list elements must all be single-slot (ints)",who);
+    unsigned char *buf=malloc(len);
+    for(int i=0;i<len;i++){Value v=stack[sp-len+i];if(v.tag!=VAL_INT)die("%s: byte element %d is not an int",who,i);
+        if(v.as.i<0||v.as.i>255)die("%s: byte %d out of range (got %lld)",who,i,(long long)v.as.i);buf[i]=(unsigned char)v.as.i;}
+    sp-=len;*out_len=len;return buf;
 }
 
 static char *pop_string_path(const char *who) {
-    Value top = spop();
-    if (top.tag != VAL_LIST) die("%s: expected list (string), got %s", who, valtag_name(top.tag));
-    int len = (int)top.as.compound.len;
-    int slots = (int)top.as.compound.slots - 1;
-    if (slots != len) die("%s: path list elements must all be single-slot (ints)", who);
-    char *buf = malloc(len + 1);
-    for (int i = 0; i < len; i++) {
-        Value v = stack[sp - len + i];
-        if (v.tag != VAL_INT) die("%s: path element %d is not an int", who, i);
-        buf[i] = (char)v.as.i;
-    }
-    buf[len] = '\0';
-    sp -= len;
-    return buf;
+    int len; unsigned char *raw = pop_byte_list_buf(who, &len);
+    char *buf = realloc(raw, len + 1); buf[len] = '\0'; return buf;
 }
 
+static void push_c_string(const char *s);
 static void push_byte_list(const unsigned char *buf, size_t len) {
     for (size_t i = 0; i < len; i++) spush(val_int(buf[i]));
     spush(val_compound(VAL_LIST, (int)len, (int)len + 1));
 }
 
 static void prim_read(Frame *e) {
-    (void)e;
-    char *path = pop_string_path("read");
-    FILE *f = fopen(path, "rb");
-    if (!f) die("read: cannot open '%s'", path);
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    unsigned char *buf = malloc(sz);
-    size_t n = fread(buf, 1, sz, f);
-    fclose(f);
-    if ((long)n != sz) { free(buf); free(path); die("read: short read on '%s'", path); }
-    push_byte_list(buf, n);
-    free(buf);
-    free(path);
+    (void)e; char *path=pop_string_path("read");
+    FILE *f=fopen(path,"rb"); if(!f)die("read: cannot open '%s'",path);
+    fseek(f,0,SEEK_END);long sz=ftell(f);fseek(f,0,SEEK_SET);
+    unsigned char *buf=malloc(sz);size_t n=fread(buf,1,sz,f);fclose(f);
+    if((long)n!=sz){free(buf);free(path);die("read: short read on '%s'",path);}
+    push_byte_list(buf,n);free(buf);free(path);
 }
-
 static void prim_write(Frame *e) {
-    (void)e;
-    int len; unsigned char *buf = pop_byte_list_buf("write", &len);
-    char *path = pop_string_path("write");
-    FILE *f = fopen(path, "wb");
-    if (!f) { free(buf); die("write: cannot open '%s'", path); }
-    size_t n = fwrite(buf, 1, len, f);
-    fclose(f);
-    if ((int)n != len) { free(buf); free(path); die("write: short write on '%s'", path); }
-    free(buf);
-    free(path);
+    (void)e; int len;unsigned char *buf=pop_byte_list_buf("write",&len);char *path=pop_string_path("write");
+    FILE *f=fopen(path,"wb");if(!f){free(buf);die("write: cannot open '%s'",path);}
+    size_t n=fwrite(buf,1,len,f);fclose(f);
+    if((int)n!=len){free(buf);free(path);die("write: short write on '%s'",path);}
+    free(buf);free(path);
 }
-
 static void prim_ls(Frame *e) {
-    (void)e;
-    char *path = pop_string_path("ls");
-    DIR *d = opendir(path);
-    if (!d) die("ls: cannot open directory '%s'", path);
-    struct dirent *ent;
-    int base = sp, count = 0;
-    while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        int slen = (int)strlen(ent->d_name);
-        for (int i = 0; i < slen; i++) spush(val_int((unsigned char)ent->d_name[i]));
-        spush(val_compound(VAL_LIST, slen, slen + 1));
-        count++;
-    }
-    closedir(d);
-    spush(val_compound(VAL_LIST, count, sp - base + 1));
-    free(path);
+    (void)e; char *path=pop_string_path("ls");
+    DIR *d=opendir(path); if(!d)die("ls: cannot open directory '%s'",path);
+    struct dirent *ent; int base=sp,count=0;
+    while((ent=readdir(d))!=NULL){if(strcmp(ent->d_name,".")==0||strcmp(ent->d_name,"..")==0)continue;
+        push_c_string(ent->d_name);count++;}
+    closedir(d);spush(val_compound(VAL_LIST,count,sp-base+1));free(path);
 }
 
 static void prim_utf8_encode(Frame *e) {
     (void)e;
     Value top = spop();
     if (top.tag != VAL_LIST) die("utf8-encode: expected list of codepoints, got %s", valtag_name(top.tag));
-    int len = (int)top.as.compound.len;
-    int slots = (int)top.as.compound.slots - 1;
+    int len = (int)top.as.compound.len, slots = (int)top.as.compound.slots - 1;
     if (slots != len) die("utf8-encode: elements must all be ints");
     int64_t *cps = malloc(len * sizeof(int64_t));
-    for (int i = 0; i < len; i++) {
-        Value v = stack[sp - len + i];
-        if (v.tag != VAL_INT) die("utf8-encode: element %d is not an int", i);
-        cps[i] = v.as.i;
-    }
-    sp -= len;
-    int base = sp;
-    int byte_count = 0;
+    for (int i = 0; i < len; i++) { Value v = stack[sp-len+i]; if (v.tag != VAL_INT) die("utf8-encode: element %d is not an int", i); cps[i] = v.as.i; }
+    sp -= len; int base = sp, bc = 0;
+#define PB(x) spush(val_int(x))
     for (int i = 0; i < len; i++) {
         int64_t cp = cps[i];
         if (cp < 0 || cp > 0x10FFFF) { free(cps); die("utf8-encode: codepoint %lld out of range", (long long)cp); }
-        if (cp < 0x80) { spush(val_int(cp)); byte_count++; }
-        else if (cp < 0x800) {
-            spush(val_int(0xC0 | (cp >> 6)));
-            spush(val_int(0x80 | (cp & 0x3F)));
-            byte_count += 2;
-        } else if (cp < 0x10000) {
-            spush(val_int(0xE0 | (cp >> 12)));
-            spush(val_int(0x80 | ((cp >> 6) & 0x3F)));
-            spush(val_int(0x80 | (cp & 0x3F)));
-            byte_count += 3;
-        } else {
-            spush(val_int(0xF0 | (cp >> 18)));
-            spush(val_int(0x80 | ((cp >> 12) & 0x3F)));
-            spush(val_int(0x80 | ((cp >> 6) & 0x3F)));
-            spush(val_int(0x80 | (cp & 0x3F)));
-            byte_count += 4;
-        }
+        if (cp<0x80) { PB(cp); bc++; }
+        else if (cp<0x800) { PB(0xC0|(cp>>6)); PB(0x80|(cp&0x3F)); bc+=2; }
+        else if (cp<0x10000) { PB(0xE0|(cp>>12)); PB(0x80|((cp>>6)&0x3F)); PB(0x80|(cp&0x3F)); bc+=3; }
+        else { PB(0xF0|(cp>>18)); PB(0x80|((cp>>12)&0x3F)); PB(0x80|((cp>>6)&0x3F)); PB(0x80|(cp&0x3F)); bc+=4; }
     }
-    free(cps);
-    spush(val_compound(VAL_LIST, byte_count, sp - base + 1));
+#undef PB
+    free(cps); spush(val_compound(VAL_LIST, bc, sp - base + 1));
 }
 
 static void prim_utf8_decode(Frame *e) {
     (void)e;
     Value top = spop();
     if (top.tag != VAL_LIST) die("utf8-decode: expected list of bytes, got %s", valtag_name(top.tag));
-    int len = (int)top.as.compound.len;
-    int slots = (int)top.as.compound.slots - 1;
+    int len = (int)top.as.compound.len, slots = (int)top.as.compound.slots - 1;
     if (slots != len) die("utf8-decode: elements must all be ints");
     unsigned char *bytes = malloc(len);
     for (int i = 0; i < len; i++) {
-        Value v = stack[sp - len + i];
+        Value v = stack[sp-len+i];
         if (v.tag != VAL_INT) { free(bytes); die("utf8-decode: element %d is not an int", i); }
         if (v.as.i < 0 || v.as.i > 255) { free(bytes); die("utf8-decode: byte %d out of range (got %lld)", i, (long long)v.as.i); }
         bytes[i] = (unsigned char)v.as.i;
     }
-    sp -= len;
-    int base = sp, cp_count = 0, i = 0;
+    sp -= len; int base = sp, nc = 0, i = 0;
     while (i < len) {
-        int64_t cp; int expect;
-        unsigned char b = bytes[i];
-        if (b < 0x80) { cp = b; expect = 0; }
-        else if ((b & 0xE0) == 0xC0) { cp = b & 0x1F; expect = 1; }
-        else if ((b & 0xF0) == 0xE0) { cp = b & 0x0F; expect = 2; }
-        else if ((b & 0xF8) == 0xF0) { cp = b & 0x07; expect = 3; }
-        else { free(bytes); die("utf8-decode: invalid lead byte 0x%02X at position %d", b, i); }
+        int64_t cp; int ex; unsigned char b = bytes[i];
+        if (b<0x80){cp=b;ex=0;}else if((b&0xE0)==0xC0){cp=b&0x1F;ex=1;}else if((b&0xF0)==0xE0){cp=b&0x0F;ex=2;}
+        else if((b&0xF8)==0xF0){cp=b&0x07;ex=3;}else{free(bytes);die("utf8-decode: invalid lead byte 0x%02X at position %d",b,i);}
         i++;
-        for (int j = 0; j < expect; j++) {
-            if (i >= len) { free(bytes); die("utf8-decode: truncated sequence at position %d", i); }
-            if ((bytes[i] & 0xC0) != 0x80) { free(bytes); die("utf8-decode: invalid continuation byte 0x%02X at position %d", bytes[i], i); }
-            cp = (cp << 6) | (bytes[i] & 0x3F);
-            i++;
-        }
-        spush(val_int(cp));
-        cp_count++;
+        for(int j=0;j<ex;j++){if(i>=len){free(bytes);die("utf8-decode: truncated sequence at position %d",i);}
+            if((bytes[i]&0xC0)!=0x80){free(bytes);die("utf8-decode: invalid continuation byte 0x%02X at position %d",bytes[i],i);}
+            cp=(cp<<6)|(bytes[i]&0x3F);i++;}
+        spush(val_int(cp)); nc++;
     }
-    free(bytes);
-    spush(val_compound(VAL_LIST, cp_count, sp - base + 1));
+    free(bytes); spush(val_compound(VAL_LIST, nc, sp - base + 1));
 }
 
 #ifndef SLAP_WASM
@@ -2676,32 +2537,20 @@ static int pop_socket_fd(const char *who) {
 }
 
 static void push_socket_box(int fd) {
-    spush(val_int(fd));
-    Value top = stack[sp-1]; int s = val_slots(top);
-    BoxData *bd = malloc(sizeof(BoxData));
-    bd->data = malloc(s * sizeof(Value));
-    bd->slots = s;
-    memcpy(bd->data, &stack[sp-s], s * sizeof(Value));
-    sp -= s;
-    Value v; v.tag = VAL_BOX; v.loc = 0; v.as.box = bd;
-    spush(v);
+    BoxData *bd=malloc(sizeof(BoxData));bd->data=malloc(sizeof(Value));bd->slots=1;bd->data[0]=val_int(fd);
+    Value v;v.tag=VAL_BOX;v.loc=0;v.as.box=bd;spush(v);
 }
 
 static void prim_tcp_connect(Frame *e) {
-    (void)e;
-    int64_t port = pop_int();
-    char *host = pop_string_path("tcp-connect");
-    struct addrinfo hints = {0}, *res;
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    char port_str[16]; snprintf(port_str, sizeof(port_str), "%lld", (long long)port);
-    int err = getaddrinfo(host, port_str, &hints, &res);
-    if (err) { free(host); die("tcp-connect: getaddrinfo failed for '%s': %s", host, gai_strerror(err)); }
-    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (fd < 0) { freeaddrinfo(res); free(host); die("tcp-connect: socket() failed"); }
-    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) { close(fd); freeaddrinfo(res); free(host); die("tcp-connect: connect to '%s:%lld' failed", host, (long long)port); }
-    freeaddrinfo(res); free(host);
-    push_socket_box(fd);
+    (void)e; int64_t port=pop_int(); char *host=pop_string_path("tcp-connect");
+    struct addrinfo hints={0},*res; hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
+    char ps[16]; snprintf(ps,sizeof(ps),"%lld",(long long)port);
+    int err=getaddrinfo(host,ps,&hints,&res);
+    if(err){free(host);die("tcp-connect: getaddrinfo failed for '%s': %s",host,gai_strerror(err));}
+    int fd=socket(res->ai_family,res->ai_socktype,res->ai_protocol);
+    if(fd<0){freeaddrinfo(res);free(host);die("tcp-connect: socket() failed");}
+    if(connect(fd,res->ai_addr,res->ai_addrlen)<0){close(fd);freeaddrinfo(res);free(host);die("tcp-connect: connect to '%s:%lld' failed",host,(long long)port);}
+    freeaddrinfo(res);free(host);push_socket_box(fd);
 }
 
 static void prim_tcp_send(Frame *e) {
@@ -2743,130 +2592,59 @@ static void prim_tcp_close(Frame *e) {
 }
 
 static void prim_tcp_listen(Frame *e) {
-    (void)e;
-    int64_t port = pop_int();
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) die("tcp-listen: socket() failed");
-    int opt = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    struct sockaddr_in addr = {0};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons((uint16_t)port);
-    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); die("tcp-listen: bind to port %lld failed", (long long)port); }
-    if (listen(fd, 128) < 0) { close(fd); die("tcp-listen: listen() failed"); }
+    (void)e; int64_t port=pop_int(); int fd=socket(AF_INET,SOCK_STREAM,0);
+    if(fd<0)die("tcp-listen: socket() failed");
+    int opt=1;setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
+    struct sockaddr_in addr={0};addr.sin_family=AF_INET;addr.sin_addr.s_addr=INADDR_ANY;addr.sin_port=htons((uint16_t)port);
+    if(bind(fd,(struct sockaddr*)&addr,sizeof(addr))<0){close(fd);die("tcp-listen: bind to port %lld failed",(long long)port);}
+    if(listen(fd,128)<0){close(fd);die("tcp-listen: listen() failed");}
     push_socket_box(fd);
 }
-
 static void prim_tcp_accept(Frame *e) {
-    (void)e;
-    int server_fd = pop_socket_fd("tcp-accept");
-    struct sockaddr_in client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
-    if (client_fd < 0) die("tcp-accept: accept() failed");
-    push_socket_box(server_fd);
-    push_socket_box(client_fd);
+    (void)e; int sfd=pop_socket_fd("tcp-accept");
+    struct sockaddr_in ca; socklen_t al=sizeof(ca);
+    int cfd=accept(sfd,(struct sockaddr*)&ca,&al); if(cfd<0)die("tcp-accept: accept() failed");
+    push_socket_box(sfd); push_socket_box(cfd);
 }
 #endif
 
 static void prim_str_find(Frame *e) {
-    (void)e;
-    int nlen, hlen;
-    unsigned char *needle = pop_byte_list_buf("str-find", &nlen);
-    unsigned char *haystack = pop_byte_list_buf("str-find", &hlen);
-    int result = -1;
-    for (int i = 0; i <= hlen - nlen; i++) {
-        if (memcmp(haystack + i, needle, nlen) == 0) { result = i; break; }
-    }
-    free(needle); free(haystack);
-    spush(val_int(result));
+    (void)e; int nl,hl; unsigned char *needle=pop_byte_list_buf("str-find",&nl); unsigned char *hay=pop_byte_list_buf("str-find",&hl);
+    int r=-1; for(int i=0;i<=hl-nl;i++) if(memcmp(hay+i,needle,nl)==0){r=i;break;}
+    free(needle);free(hay);spush(val_int(r));
 }
-
 static void prim_str_split(Frame *e) {
-    (void)e;
-    int dlen, slen;
-    unsigned char *delim = pop_byte_list_buf("str-split", &dlen);
-    unsigned char *str = pop_byte_list_buf("str-split", &slen);
-    int base = sp, count = 0, pos = 0;
-    while (pos <= slen) {
-        int found = -1;
-        if (dlen > 0) {
-            for (int i = pos; i <= slen - dlen; i++) {
-                if (memcmp(str + i, delim, dlen) == 0) { found = i; break; }
-            }
-        }
-        if (found < 0) {
-            push_byte_list(str + pos, slen - pos);
-            count++;
-            break;
-        }
-        push_byte_list(str + pos, found - pos);
-        count++;
-        pos = found + dlen;
-    }
-    spush(val_compound(VAL_LIST, count, sp - base + 1));
-    free(delim); free(str);
+    (void)e; int dl,sl; unsigned char *delim=pop_byte_list_buf("str-split",&dl); unsigned char *str=pop_byte_list_buf("str-split",&sl);
+    int base=sp,count=0,pos=0;
+    while(pos<=sl){int found=-1;if(dl>0)for(int i=pos;i<=sl-dl;i++)if(memcmp(str+i,delim,dl)==0){found=i;break;}
+        if(found<0){push_byte_list(str+pos,sl-pos);count++;break;}
+        push_byte_list(str+pos,found-pos);count++;pos=found+dl;}
+    spush(val_compound(VAL_LIST,count,sp-base+1));free(delim);free(str);
 }
 
+static int memfind(const unsigned char *hay, int hlen, const char *needle, int nlen, int from) {
+    for(int i=from;i<=hlen-nlen;i++) if(memcmp(hay+i,needle,nlen)==0) return i; return -1;
+}
 static void prim_parse_http(Frame *e) {
-    (void)e;
-    int rlen;
-    unsigned char *raw = pop_byte_list_buf("parse-http", &rlen);
-    /* find \r\n\r\n */
-    int split = -1;
-    for (int i = 0; i <= rlen - 4; i++) {
-        if (raw[i]=='\r' && raw[i+1]=='\n' && raw[i+2]=='\r' && raw[i+3]=='\n') { split = i; break; }
+    (void)e; int rlen; unsigned char *raw=pop_byte_list_buf("parse-http",&rlen);
+    int split=memfind(raw,rlen,"\r\n\r\n",4,0);
+    if(split<0){free(raw);die("parse-http: no header/body separator found");}
+    int se=memfind(raw,split,"\r\n",2,0); if(se<0)se=split;
+    int sp1=-1; for(int i=0;i<se;i++)if(raw[i]==' '){sp1=i;break;}
+    int sc=0; if(sp1>=0)for(int i=sp1+1;i<se&&raw[i]>='0'&&raw[i]<='9';i++)sc=sc*10+(raw[i]-'0');
+    spush(val_int(sc));
+    uint32_t ks=sym_intern("key"),vs=sym_intern("value");
+    int rb=sp,hc=0,pos=se+2;
+    while(pos<split){
+        int le=memfind(raw,split,"\r\n",2,pos); if(le<0)le=split;
+        if(le==pos){pos+=2;continue;}
+        int colon=-1;for(int i=pos;i<le-1;i++)if(raw[i]==':'&&raw[i+1]==' '){colon=i;break;}
+        int kl=colon>=0?colon-pos:le-pos, vo=colon>=0?colon+2:le, vl=colon>=0?le-colon-2:0;
+        spush(val_sym(ks));push_byte_list(raw+pos,kl);spush(val_sym(vs));push_byte_list(raw+vo,vl);
+        spush(val_compound(VAL_RECORD,2,1+(kl+1)+1+(vl+1)+1));hc++;pos=le+2;
     }
-    if (split < 0) { free(raw); die("parse-http: no header/body separator found"); }
-    /* parse status line: find first \r\n */
-    int status_end = -1;
-    for (int i = 0; i < split; i++) {
-        if (raw[i]=='\r' && raw[i+1]=='\n') { status_end = i; break; }
-    }
-    if (status_end < 0) status_end = split;
-    /* parse status code from "HTTP/x.x CODE REASON" */
-    int sp1 = -1;
-    for (int i = 0; i < status_end; i++) { if (raw[i]==' ') { sp1 = i; break; } }
-    int status_code = 0;
-    if (sp1 >= 0) {
-        for (int i = sp1+1; i < status_end && raw[i] >= '0' && raw[i] <= '9'; i++)
-            status_code = status_code * 10 + (raw[i] - '0');
-    }
-    spush(val_int(status_code));
-    /* parse headers into list of {key: ..., value: ...} records */
-    uint32_t key_sym = sym_intern("key");
-    uint32_t value_sym = sym_intern("value");
-    int rec_base = sp;
-    int hdr_count = 0;
-    int pos = status_end + 2; /* skip status-line \r\n */
-    while (pos < split) {
-        int line_end = split;
-        for (int i = pos; i < split - 1; i++) {
-            if (raw[i]=='\r' && raw[i+1]=='\n') { line_end = i; break; }
-        }
-        if (line_end == pos) { pos += 2; continue; }
-        int colon = -1;
-        for (int i = pos; i < line_end - 1; i++) {
-            if (raw[i]==':' && raw[i+1]==' ') { colon = i; break; }
-        }
-        int key_len = colon >= 0 ? colon - pos : line_end - pos;
-        int val_off = colon >= 0 ? colon + 2 : line_end;
-        int val_len = colon >= 0 ? line_end - colon - 2 : 0;
-        spush(val_sym(key_sym));
-        push_byte_list(raw + pos, key_len);
-        spush(val_sym(value_sym));
-        push_byte_list(raw + val_off, val_len);
-        /* record slots: sym + (list header + key_len bytes) + sym + (list header + val_len bytes) + record header */
-        int rec_slots = 1 + (key_len + 1) + 1 + (val_len + 1) + 1;
-        spush(val_compound(VAL_RECORD, 2, rec_slots));
-        hdr_count++;
-        pos = line_end + 2;
-    }
-    spush(val_compound(VAL_LIST, hdr_count, sp - rec_base + 1));
-    /* push body */
-    push_byte_list(raw + split + 4, rlen - split - 4);
-    free(raw);
+    spush(val_compound(VAL_LIST,hc,sp-rb+1));
+    push_byte_list(raw+split+4,rlen-split-4);free(raw);
 }
 
 static void push_c_string(const char *s) {
