@@ -380,7 +380,7 @@ static int eval_depth = 0;
 #define EVAL_DEPTH_MAX 10000
 static uint32_t S_DEF, S_LET, S_RECUR, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_NO, S_UNTAG, S_DEFAULT, S_MUST;
 static uint32_t S_GET, S_POP, S_AT, S_NTH, S_SET, S_EDIT, S_INDEXOF, S_STRFIND;
-static uint32_t S_PLUS, S_SUB, S_EQ, S_SWAP, S_DROP;
+static uint32_t S_PLUS, S_SUB, S_EQ, S_SWAP, S_DROP, S_MUL, S_DIV, S_MOD;
 static void syms_init(void);
 /* ---- TYPE SYSTEM ---- */
 typedef enum { DIR_IN, DIR_OUT } SlotDir;
@@ -415,6 +415,7 @@ static void syms_init(void) {
     S_GET=sym_intern("get"); S_POP=sym_intern("pop"); S_AT=sym_intern("at"); S_NTH=sym_intern("nth");
     S_SET=sym_intern("set"); S_EDIT=sym_intern("edit"); S_INDEXOF=sym_intern("index-of"); S_STRFIND=sym_intern("str-find");
     S_PLUS=sym_intern("plus"); S_SUB=sym_intern("sub"); S_EQ=sym_intern("eq"); S_SWAP=sym_intern("swap"); S_DROP=sym_intern("drop");
+    S_MUL=sym_intern("mul"); S_DIV=sym_intern("div"); S_MOD=sym_intern("mod");
     for (int i = 0; i < HO_OP_COUNT; i++) ho_ops[i].sym = sym_intern(ho_ops[i].name);
 }
 typedef struct {
@@ -1426,6 +1427,14 @@ static void prim_fused_iszero(Frame *e) {
     else if(v.tag==VAL_FLOAT) stack[sp-1]=val_int(v.as.f==0.0?1:0);
     else die("eq: type mismatch");
 }
+static void prim_fused_add2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i+=2; else if(v->tag==VAL_FLOAT) v->as.f+=2.0; else die("plus: type mismatch"); }
+static void prim_fused_sub2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i-=2; else if(v->tag==VAL_FLOAT) v->as.f-=2.0; else die("sub: type mismatch"); }
+static void prim_fused_mul2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i*=2; else if(v->tag==VAL_FLOAT) v->as.f*=2.0; else die("mul: type mismatch"); }
+static void prim_fused_div2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i/=2; else if(v->tag==VAL_FLOAT) v->as.f/=2.0; else die("div: type mismatch"); }
+static void prim_fused_mod2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag!=VAL_INT) die("mod: expected int"); v->as.i=v->as.i%2; }
+static void prim_fused_add6(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i+=6; else if(v->tag==VAL_FLOAT) v->as.f+=6.0; else die("plus: type mismatch"); }
+static void prim_fused_mul10(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i*=10; else if(v->tag==VAL_FLOAT) v->as.f*=10.0; else die("mul: type mismatch"); }
+static void prim_fused_div10(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i/=10; else if(v->tag==VAL_FLOAT) v->as.f/=10.0; else die("div: type mismatch"); }
 static void prim_fused_nip(Frame *e) {
     (void)e; if(sp<2) die("nip: stack underflow");
     Value top=stack[sp-1]; int ts=val_slots(top);
@@ -1730,8 +1739,6 @@ static void dispatch_word(uint32_t sym, Frame *env) {
             int sbc=ee->bind_count,svu=ee->vals_used,sp0=sp,sb0=save_buf_sp;
             int prev_active=frame_save_active; Frame *prev_target=frame_save_target; int prev_sbc=frame_save_sbc;
             frame_save_active=1; frame_save_target=ee; frame_save_sbc=sbc;
-            int16_t saved_hash[FRAME_HASH_SIZE];
-            memcpy(saved_hash,ee->hash,sizeof(ee->hash));
             eval_body(v,b->slots,env);
             frame_save_active=prev_active; frame_save_target=prev_target; frame_save_sbc=prev_sbc;
             if(ee->bind_count==sbc&&save_buf_sp==sb0){return;}
@@ -1758,7 +1765,10 @@ static void dispatch_word(uint32_t sym, Frame *env) {
                     ee->bindings[bi].slots=sl;ee->bindings[bi].kind=kr>>1;ee->bindings[bi].recur=kr&1;}
                 save_buf_sp=sb0;
             }
-            memcpy(ee->hash,saved_hash,sizeof(ee->hash));
+            for(int i=sbc;i<ee->bind_count;i++){
+                uint32_t h=ee->bindings[i].sym%FRAME_HASH_SIZE;
+                for(int j=0;j<FRAME_HASH_SIZE;j++){uint32_t s=(h+j)%FRAME_HASH_SIZE;
+                    if(ee->hash[s]==i+1){ee->hash[s]=0;break;}}}
             ee->bind_count=sbc;ee->vals_used=svu;
             return;
         }
@@ -1813,6 +1823,14 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
                 if(tt->as.i==1 && ns==S_PLUS) fused=prim_fused_inc;
                 else if(tt->as.i==1 && ns==S_SUB) fused=prim_fused_dec;
                 else if(tt->as.i==0 && ns==S_EQ) fused=prim_fused_iszero;
+                else if(tt->as.i==2 && ns==S_PLUS) fused=prim_fused_add2;
+                else if(tt->as.i==2 && ns==S_SUB) fused=prim_fused_sub2;
+                else if(tt->as.i==2 && ns==S_MUL) fused=prim_fused_mul2;
+                else if(tt->as.i==2 && ns==S_DIV) fused=prim_fused_div2;
+                else if(tt->as.i==2 && ns==S_MOD) fused=prim_fused_mod2;
+                else if(tt->as.i==6 && ns==S_PLUS) fused=prim_fused_add6;
+                else if(tt->as.i==10 && ns==S_MUL) fused=prim_fused_mul10;
+                else if(tt->as.i==10 && ns==S_DIV) fused=prim_fused_div10;
                 if(fused){spush(with_tok(val_xt(ns,fused),tt));ec++;j++;break;}
             }
             spush(with_tok(val_int(tt->as.i),tt)); ec++; break;
