@@ -47,11 +47,11 @@ N 2 plus 'I-MY let
       (n 3 eq)
     if
     (1) (0) if
-    swap (give) dip 1 plus
+    swap (push) dip 1 plus
   )
   while
   drop
-  dv give mxv give myv give
+  dv push mxv push myv push
 ) def
 
 -- Draw SxS block for one alive cell
@@ -70,8 +70,8 @@ N 2 plus 'I-MY let
 ) def
 
 -- Random initial grid + state slots
-list N (2 random give) repeat
-0 give -1 give -1 give
+list N (2 random push) repeat
+0 push -1 push -1 push
 
 -- Mouse handlers
 'mousedown (

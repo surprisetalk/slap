@@ -88,7 +88,7 @@
 
 -- ========== Helpers ==========
 
--- _type-name: (jv -- jv name-str). Non-consuming peek at the JSON value's tag.
+-- _type-name: (jv -- jv name-str). Non-consuming over at the JSON value's tag.
 '_type-name (dup
   {'int   (drop "int")
    'float (drop "float")
@@ -310,7 +310,7 @@
 'je-int (int-str) def
 
 -- je-list: (list-of-json-string-fragments -- json-array-string)
--- Stack layout for fold: (iter-list init body).  Since we put items-rest first
+-- Stack layout for fold: (iter-list init body).  Since we set items-rest first
 -- then build acc on top, the order is already correct.
 'je-list ('items let
   items len 0 eq ("[]") (

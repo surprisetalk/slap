@@ -4,7 +4,7 @@
 
 'gd-helper recur (
   'gdh-n let 'gdh-lst let
-  gdh-n 0 gt (gdh-lst gdh-n 10 mod give gdh-n 10 div gd-helper) (gdh-lst) if
+  gdh-n 0 gt (gdh-lst gdh-n 10 mod push gdh-n 10 div gd-helper) (gdh-lst) if
 ) def
 'get-digits (list swap gd-helper) def
 
@@ -19,7 +19,7 @@
   'si-b let 'si-a let 'si-prods let
   si-b 9876 le si-a si-b mul 9999 le and (
     si-a si-b mul 'si-c let
-    si-a si-b si-c is-pan9 (si-prods si-c give) (si-prods) if
+    si-a si-b si-c is-pan9 (si-prods si-c push) (si-prods) if
     si-a si-b 1 plus scan1-inner
   ) (si-prods) if
 ) def
@@ -38,7 +38,7 @@
   'si2-b let 'si2-a let 'si2-prods let
   si2-b 987 le si2-a si2-b mul 9999 le and (
     si2-a si2-b mul 'si2-c let
-    si2-a si2-b si2-c is-pan9 (si2-prods si2-c give) (si2-prods) if
+    si2-a si2-b si2-c is-pan9 (si2-prods si2-c push) (si2-prods) if
     si2-a si2-b 1 plus scan2-inner
   ) (si2-prods) if
 ) def

@@ -377,7 +377,6 @@ Built-in protocols group types by capability. Use in effect annotations:
 | Word | Effect | Example |
 |------|--------|---------|
 | `over` | a b → a b a | `1 2 over` → `1 2 1` |
-| `peek` | alias of `over` | `1 2 peek` → `1 2 1` |
 | `nip` | a b → b | `1 2 nip` → `2` |
 | `rot` | a b c → b c a | `1 2 3 rot` → `2 3 1` |
 | `tuck` | a b → b a b | `1 2 tuck` → `2 1 2` |
@@ -443,7 +442,6 @@ Built-in protocols group types by capability. Use in effect annotations:
 | `isany` | list → any nonzero? | `[0 0 1] isany` → `1` |
 | `isall` | list → all nonzero? | `[1 1 0] isall` → `0` |
 | `keep-mask` | list mask → filtered | `[10 20 30] [1 0 1] keep-mask` → `[10 30]` |
-| `pick` | alias of `select` | `[10 20 30] [0 2] pick` → `[10 30]` |
 
 ### structural utilities
 

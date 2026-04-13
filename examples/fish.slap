@@ -4,19 +4,19 @@
 12 'N let
 8 'NR let
 
-list N (3 random 2 plus give) repeat 'szs let
-list N (5 random 2 sub give) repeat 'bxs let
-list N (5 random 2 sub give) repeat 'bys let
+list N (3 random 2 plus push) repeat 'szs let
+list N (5 random 2 sub push) repeat 'bxs let
+list N (5 random 2 sub push) repeat 'bys let
 
 -- State record on stack
 rec
-  list N (560 random 40 plus give) repeat 'xs into
-  list N (400 random 40 plus give) repeat 'ys into
-  list N (25 random 12 sub give) repeat 'vxs into
-  list N (25 random 12 sub give) repeat 'vys into
-  list NR (0 give) repeat 'rxs into
-  list NR (0 give) repeat 'rys into
-  list NR (-1 give) repeat 'rages into
+  list N (560 random 40 plus push) repeat 'xs into
+  list N (400 random 40 plus push) repeat 'ys into
+  list N (25 random 12 sub push) repeat 'vxs into
+  list N (25 random 12 sub push) repeat 'vys into
+  list NR (0 push) repeat 'rxs into
+  list NR (0 push) repeat 'rys into
+  list NR (-1 push) repeat 'rages into
   0 'rnext into
   -1 'mx into  -1 'my into  0 'frame into
 

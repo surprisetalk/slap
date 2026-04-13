@@ -86,9 +86,9 @@ answer 42 eq assert
 list [] eq assert
 [0 1 2] len 3 eq assert
 
--- ===== Lists: give / grab =====
-list 10 give 20 give [10 20] eq assert
-[10 20 30] grab must 30 eq assert [10 20] eq assert
+-- ===== Lists: push / pop =====
+list 10 push 20 push [10 20] eq assert
+[10 20 30] pop must 30 eq assert [10 20] eq assert
 
 -- ===== Lists: get / set =====
 [10 20 30] 1 get must 20 eq assert
@@ -195,7 +195,7 @@ pi 4.0 lt assert
 -- empty collections
 [] len 0 eq assert
 list len 0 eq assert
-stack size 0 eq assert
+stack len 0 eq assert
 
 -- single element list
 [42] first 42 eq assert
@@ -428,7 +428,7 @@ outer 15 eq assert
 
 -- ===== Adversarial: recursive list building =====
 'iota recur (
-  dup 0 le (drop list) (dup 1 sub iota swap give) if
+  dup 0 le (drop list) (dup 1 sub iota swap push) if
 ) def
 5 iota [1 2 3 4 5] eq assert
 0 iota [] eq assert
@@ -581,7 +581,7 @@ free free
 
 -- ===== Complex: build list in while loop =====
 list 1
-(dup 6 lt) (dup (give) dip 1 plus) while
+(dup 6 lt) (dup (push) dip 1 plus) while
 drop
 [1 2 3 4 5] eq assert
 
@@ -698,93 +698,6 @@ add-lists [1 2 3 4 5 6] eq assert
 [1 2 3 4 5 6] 3 chunks [[1 2 3] [4 5 6]] eq assert
 [1 2 3 4] 2 chunks [[1 2] [3 4]] eq assert
 
--- ===== ICN codec =====
--- circle sprite: 00111100 01000010 10000001 ... (8 bytes)
-[60 66 129 129 129 129 66 60] icn-decode
-  dup len 64 eq assert
-  dup 0 get must 0 eq assert    -- top-left is 0
-  dup 2 get must 1 eq assert    -- third pixel of first row is 1
-  icn-encode [60 66 129 129 129 129 66 60] eq assert
--- all zeros
-[0 0 0 0 0 0 0 0] icn-decode icn-encode [0 0 0 0 0 0 0 0] eq assert
--- all ones
-[255 255 255 255 255 255 255 255] icn-decode icn-encode [255 255 255 255 255 255 255 255] eq assert
-
--- ===== CHR codec =====
--- simple 2-bit test: plane0 = [255 0 0 0 0 0 0 0], plane1 = [255 0 0 0 0 0 0 0]
--- first row: both planes set = color 3, rest = color 0
-[255 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] chr-decode
-  dup len 64 eq assert
-  dup 0 get must 3 eq assert    -- first pixel = both planes = 3
-  dup 8 get must 0 eq assert    -- second row first pixel = 0
-  chr-encode [255 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] eq assert
--- plane0 only (color 1)
-[255 0 0 0 0 0 0 0  0 0 0 0 0 0 0 0] chr-decode
-  dup 0 get must 1 eq assert
-  chr-encode [255 0 0 0 0 0 0 0  0 0 0 0 0 0 0 0] eq assert
--- plane1 only (color 2)
-[0 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] chr-decode
-  dup 0 get must 2 eq assert
-  chr-encode [0 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] eq assert
-
--- ===== NMT codec =====
-[0 1 2  3 4 5] nmt-decode
-  dup len 2 eq assert
-  dup 0 get must dup 'addr at must 256 eq assert 'color at must 2 eq assert
-  1 get must dup 'addr at must 1027 eq assert 'color at must 5 eq assert
--- round-trip
-[0 1 2  3 4 5] nmt-decode nmt-encode [0 1 2  3 4 5] eq assert
-[0 0 0] nmt-decode nmt-encode [0 0 0] eq assert
-
--- ===== TGA codec =====
--- minimal 2x2 24-bit TGA: 18-byte header + 12 pixel bytes
-list 0 give 0 give 2 give 0 give 0 give 0 give 0 give 0 give 0 give 0 give 0 give 0 give
-2 give 0 give 2 give 0 give 24 give 0 give
-255 give 0 give 0 give  0 give 255 give 0 give  0 give 0 give 255 give  128 give 128 give 128 give
-'tga-data let
-tga-data tga-decode
-  dup 'width at must 2 eq assert
-  dup 'height at must 2 eq assert
-  dup 'depth at must 24 eq assert
-  'pixels at must len 12 eq assert
--- round-trip
-tga-data tga-decode tga-encode tga-data eq assert
-
--- ===== UFX codec =====
--- minimal UFX: 256 width bytes + 8 bytes of ICN for 1 glyph
-list
-0 256 range (drop 4) each   -- all widths = 4
-60 give 66 give 129 give 129 give 129 give 129 give 66 give 60 give  -- one circle glyph
-'ufx-data let
-ufx-data ufx-decode
-  dup 'widths at must len 256 eq assert
-  dup 'widths at must 0 get must 4 eq assert
-  'glyphs at must len 1 eq assert
--- round-trip
-ufx-data ufx-decode ufx-encode ufx-data eq assert
-
--- ===== ULZ codec =====
--- LIT-only: opcode 0x02 means 3 literal bytes
-[2 65 66 67] ulz-decode [65 66 67] eq assert
--- CPY1: opcode 0x80 = copy 4 bytes from offset, then offset byte
--- first: 3 literal bytes (opcode 0x02, A B C), then copy 4 from offset 3 (0x80, 0x02)
-[2 65 66 67  128 2] ulz-decode [65 66 67  65 66 67 65] eq assert
-
--- ===== GLY codec =====
--- 2-wide, 4-tall: char values encode 4 vertical pixels each
--- char 68 (0x44) = value 5 = 0b0101 → pixels: bit0=1 bit1=0 bit2=1 bit3=0
--- char 63 (0x3F) = value 0 = 0b0000 → all off
-[68 63] gly-decode
-  dup 'width at must 2 eq assert
-  dup 'height at must 4 eq assert
-  drop
--- round-trip
-[68 63] gly-decode gly-encode [68 63] eq assert
--- single char
-[72] gly-decode gly-encode [72] eq assert
--- two rows (with newline = 10)
-[68 10 72] gly-decode gly-encode [68 10 72] eq assert
-
 -- ===== Filesystem: write & read round-trip =====
 "_test_fs.bin" [72 101 108 108 111] write must drop
 "_test_fs.bin" read must [72 101 108 108 111] eq assert
@@ -882,9 +795,9 @@ crlf 1 get must 10 eq assert
 "a::b" "::" str-split 1 get must "b" eq assert
 
 -- str-join
-list "a" give "b" give "c" give "x" str-join "axbxc" eq assert
+list "a" push "b" push "c" push "x" str-join "axbxc" eq assert
 list "," str-join "" eq assert
-list "hi" give "--" str-join "hi" eq assert
+list "hi" push "--" str-join "hi" eq assert
 
 -- ===== TCP Loopback =====
 'tcp-roundtrip (
@@ -1165,8 +1078,8 @@ nil {'nil (drop 0) 'cons (first)} untag 0 eq assert
 -- over with compound values
 [1 2] [3 4] over [1 2] eq assert drop drop
 
--- peek (alias for over)
-5 6 peek 5 eq assert drop drop
+-- over (alias for over)
+5 6 over 5 eq assert drop drop
 
 -- rot: a b c → b c a
 1 2 3 rot 1 eq assert 3 eq assert 2 eq assert
@@ -1230,7 +1143,7 @@ rec ok must rec eq assert
 42 'a tag {'a (1 plus) 'b (2 plus)} untag 43 eq assert
 42 'b tag {'a (1 plus) 'b (2 plus)} untag 44 eq assert
 
--- then on ok with body that changes payload size (int -> tuple)
+-- then on ok with body that changes payload len (int -> tuple)
 42 ok (dup 1 plus couple ok) then must first 42 eq assert
 
 -- default on 3-level nested tags
@@ -1245,7 +1158,7 @@ rec ok must rec eq assert
   {'no ()} untag "err" eq assert
 
 -- tag with large tuple payload
-(1 2 3 4 5 6 7 8 9 10) ok must size 10 eq assert
+(1 2 3 4 5 6 7 8 9 10) ok must len 10 eq assert
 
 -- tag, untag, re-tag
 42 ok {'ok (1 plus no)} untag -1 default -1 eq assert
@@ -1255,7 +1168,7 @@ rec ok must rec eq assert
 
 -- ===== Adversarial: Record Edit =====
 
--- edit that changes value size (int -> list)
+-- edit that changes value len (int -> list)
 rec 1 'a into 2 'b into 'a (drop [10 20 30]) edit must
   dup 'a at must [10 20 30] eq assert
   'b at must 2 eq assert
@@ -1636,3 +1549,89 @@ dict "a" 1 insert "b" 2 insert "c" 7 insert
 
 -- ===== Done =====
 "All tests passed!" print
+-- ===== ICN codec =====
+-- circle sprite: 00111100 01000010 10000001 ... (8 bytes)
+[60 66 129 129 129 129 66 60] icn-decode
+  dup len 64 eq assert
+  dup 0 get must 0 eq assert    -- top-left is 0
+  dup 2 get must 1 eq assert    -- third pixel of first row is 1
+  icn-encode [60 66 129 129 129 129 66 60] eq assert
+-- all zeros
+[0 0 0 0 0 0 0 0] icn-decode icn-encode [0 0 0 0 0 0 0 0] eq assert
+-- all ones
+[255 255 255 255 255 255 255 255] icn-decode icn-encode [255 255 255 255 255 255 255 255] eq assert
+
+-- ===== CHR codec =====
+-- simple 2-bit test: plane0 = [255 0 0 0 0 0 0 0], plane1 = [255 0 0 0 0 0 0 0]
+-- first row: both planes set = color 3, rest = color 0
+[255 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] chr-decode
+  dup len 64 eq assert
+  dup 0 get must 3 eq assert    -- first pixel = both planes = 3
+  dup 8 get must 0 eq assert    -- second row first pixel = 0
+  chr-encode [255 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] eq assert
+-- plane0 only (color 1)
+[255 0 0 0 0 0 0 0  0 0 0 0 0 0 0 0] chr-decode
+  dup 0 get must 1 eq assert
+  chr-encode [255 0 0 0 0 0 0 0  0 0 0 0 0 0 0 0] eq assert
+-- plane1 only (color 2)
+[0 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] chr-decode
+  dup 0 get must 2 eq assert
+  chr-encode [0 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] eq assert
+
+-- ===== NMT codec =====
+[0 1 2  3 4 5] nmt-decode
+  dup len 2 eq assert
+  dup 0 get must dup 'addr at must 256 eq assert 'color at must 2 eq assert
+  1 get must dup 'addr at must 1027 eq assert 'color at must 5 eq assert
+-- round-trip
+[0 1 2  3 4 5] nmt-decode nmt-encode [0 1 2  3 4 5] eq assert
+[0 0 0] nmt-decode nmt-encode [0 0 0] eq assert
+
+-- ===== TGA codec =====
+-- minimal 2x2 24-bit TGA: 18-byte header + 12 pixel bytes
+list 0 push 0 push 2 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push
+2 push 0 push 2 push 0 push 24 push 0 push
+255 push 0 push 0 push  0 push 255 push 0 push  0 push 0 push 255 push  128 push 128 push 128 push
+'tga-data let
+tga-data tga-decode
+  dup 'width at must 2 eq assert
+  dup 'height at must 2 eq assert
+  dup 'depth at must 24 eq assert
+  'pixels at must len 12 eq assert
+-- round-trip
+tga-data tga-decode tga-encode tga-data eq assert
+
+-- ===== UFX codec =====
+-- minimal UFX: 256 width bytes + 8 bytes of ICN for 1 glyph
+list
+0 256 range (drop 4) each   -- all widths = 4
+60 push 66 push 129 push 129 push 129 push 129 push 66 push 60 push  -- one circle glyph
+'ufx-data let
+ufx-data ufx-decode
+  dup 'widths at must len 256 eq assert
+  dup 'widths at must 0 get must 4 eq assert
+  'glyphs at must len 1 eq assert
+-- round-trip
+ufx-data ufx-decode ufx-encode ufx-data eq assert
+
+-- ===== ULZ codec =====
+-- LIT-only: opcode 0x02 means 3 literal bytes
+[2 65 66 67] ulz-decode [65 66 67] eq assert
+-- CPY1: opcode 0x80 = copy 4 bytes from offset, then offset byte
+-- first: 3 literal bytes (opcode 0x02, A B C), then copy 4 from offset 3 (0x80, 0x02)
+[2 65 66 67  128 2] ulz-decode [65 66 67  65 66 67 65] eq assert
+
+-- ===== GLY codec =====
+-- 2-wide, 4-tall: char values encode 4 vertical pixels each
+-- char 68 (0x44) = value 5 = 0b0101 → pixels: bit0=1 bit1=0 bit2=1 bit3=0
+-- char 63 (0x3F) = value 0 = 0b0000 → all off
+[68 63] gly-decode
+  dup 'width at must 2 eq assert
+  dup 'height at must 4 eq assert
+  drop
+-- round-trip
+[68 63] gly-decode gly-encode [68 63] eq assert
+-- single char
+[72] gly-decode gly-encode [72] eq assert
+-- two rows (with newline = 10)
+[68 10 72] gly-decode gly-encode [68 10 72] eq assert

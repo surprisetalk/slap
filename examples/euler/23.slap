@@ -28,7 +28,7 @@ list
 (dup 28124 lt)
 (
   dup sum-divs over gt
-  (dup (give) dip) () if
+  (dup (push) dip) () if
   1 plus
 ) while
 drop
@@ -36,7 +36,7 @@ drop
 abundants len 'alen let
 
 -- Mark sums of abundant pairs in a boolean array
-list 28124 (0 give) repeat box 'sums-box let
+list 28124 (0 push) repeat box 'sums-box let
 sums-box (
   -- stack: arr
   0

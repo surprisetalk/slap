@@ -7,7 +7,7 @@
 
 -- Precompute divisor counts using sieve in a boxed array.
 -- stack: box step
-list 12377 (1 give) repeat box 2
+list 12377 (1 push) repeat box 2
 (dup 12377 lt)
 (
   -- stack: box step

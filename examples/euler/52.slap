@@ -5,7 +5,7 @@
 -- digit-sig: n -> signature (sorted digit list)
 'digit-sig (
   list swap
-  (dup 0 gt) (dup 10 mod (swap) dip give swap 10 div) while
+  (dup 0 gt) (dup 10 mod (swap) dip push swap 10 div) while
   drop sort
 ) def
 

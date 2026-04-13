@@ -52,13 +52,13 @@ false assert
 1 len
 
 -- EXPECT: expected seq
-1 2 give
+1 2 push
 
 -- EXPECT: expected box
 1 free
 
--- EXPECT: MUST FAILED
-[] grab must
+-- EXPECT: pop: empty list
+[] pop must
 
 -- EXPECT: index 0 out of bounds
 [] (plus) reduce must
@@ -142,7 +142,7 @@ stack pop
 123 -1 default
 
 -- EXPECT: tagged values have no length
-1 'ok tag size
+1 'ok tag len
 
 -- EXPECT: concat: result too large
 0 10000 range 0 10000 range cat

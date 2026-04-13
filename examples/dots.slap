@@ -12,8 +12,8 @@
 rec
   hxs dup 'xs0 let 'xs into
   0 N range (COLS div 90 mul 50 plus) each dup 'ys0 let 'ys into
-  list N (0 give) repeat 'vxs into
-  list N (0 give) repeat 'vys into
+  list N (0 push) repeat 'vxs into
+  list N (0 push) repeat 'vys into
   -1 'mx into  -1 'my into  0 'frame into
 
 'mousemove (

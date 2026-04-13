@@ -73,7 +73,7 @@
 
 -- ========== Atom ==========
 
--- Atom <link href="..." rel="alternate"/> → just grab href of first link.
+-- Atom <link href="..." rel="alternate"/> → just pop href of first link.
 -- Tries first <link> child's href; "" if missing.
 '_atom-href-of-link ("href" xd-attr xd-maybe (_rss-or-empty) xd-map) def
 '_atom-link ("link" _atom-href-of-link xd-child xd-maybe (_rss-or-empty) xd-map) def

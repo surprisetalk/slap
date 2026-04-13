@@ -80,7 +80,7 @@ argv len 0 gt (
     0
     (dup fbytes len lt) (
       dup 'fi let
-      ('fbytes fi nth must give) dip
+      ('fbytes fi nth must push) dip
       1 plus
     ) while
     drop
@@ -94,14 +94,14 @@ argv len 0 gt (
     list 0
     (dup sav-bef len lt) (
       dup 'wi let
-      ('sav-bef wi nth must give) dip
+      ('sav-bef wi nth must push) dip
       1 plus
     ) while
     drop
     sav-aft len 1 sub
     (dup 0 ge) (
       dup 'wj let
-      ('sav-aft wj nth must give) dip
+      ('sav-aft wj nth must push) dip
       1 sub
     ) while
     drop
@@ -218,14 +218,14 @@ argv len 0 gt (
     list 0
     (dup mbef len lt) (
       dup 'mfi let
-      ('mbef mfi nth must give) dip
+      ('mbef mfi nth must push) dip
       1 plus
     ) while
     drop
     maft len 1 sub
     (dup 0 ge) (
       dup 'mfj let
-      ('maft mfj nth must give) dip
+      ('maft mfj nth must push) dip
       1 sub
     ) while
     drop
@@ -268,7 +268,7 @@ argv len 0 gt (
     list 0
     (dup best-pos lt) (
       dup 'rbi let
-      ('full rbi nth must give) dip
+      ('full rbi nth must push) dip
       1 plus
     ) while
     drop
@@ -276,7 +276,7 @@ argv len 0 gt (
     list full len 1 sub
     (dup best-pos ge) (
       dup 'raj let
-      ('full raj nth must give) dip
+      ('full raj nth must push) dip
       1 sub
     ) while
     drop
@@ -289,31 +289,31 @@ argv len 0 gt (
   'key let
   key 8 eq (
     dup 'before at must len 0 gt (
-      dup 'before at must grab drop 'before into do-save
+      dup 'before at must pop drop 'before into do-save
     ) () if
   ) (
   key 13 eq (
-    'before (10 give) edit must do-save
+    'before (10 push) edit must do-save
   ) (
   key 127 eq (
     dup 'after at must len 0 gt (
-      dup 'after at must grab drop 'after into do-save
+      dup 'after at must pop drop 'after into do-save
     ) () if
   ) (
   key 1073741904 eq (
     dup 'before at must len 0 gt (
-      dup 'before at must grab 'mc let 'before into
-      'after (mc give) edit must
+      dup 'before at must pop 'mc let 'before into
+      'after (mc push) edit must
     ) () if
   ) (
   key 1073741903 eq (
     dup 'after at must len 0 gt (
-      dup 'after at must grab 'mc let 'after into
-      'before (mc give) edit must
+      dup 'after at must pop 'mc let 'after into
+      'before (mc push) edit must
     ) () if
   ) (
     key 32 ge key 127 lt and (
-      'before (key give) edit must do-save
+      'before (key push) edit must do-save
     ) () if
   ) if) if) if) if) if
 ) on

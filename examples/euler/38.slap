@@ -10,7 +10,7 @@
 
 'gd-helper recur (
   'gdh-n let 'gdh-lst let
-  gdh-n 0 gt (gdh-lst gdh-n 10 mod give gdh-n 10 div gd-helper) (gdh-lst) if
+  gdh-n 0 gt (gdh-lst gdh-n 10 mod push gdh-n 10 div gd-helper) (gdh-lst) if
 ) def
 'get-digits (list swap gd-helper) def
 

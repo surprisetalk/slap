@@ -119,7 +119,7 @@ rec 0 'sel into "The quick brown fox jumps over the lazy dog" 'txt into
   key 8 eq key 127 eq or (
     dup 'txt at must len 0 gt ('txt (dup len 1 sub take-n) edit must) () if
   ) (
-    key 32 ge key 126 le and ('txt (key give) edit must) () if
+    key 32 ge key 126 le and ('txt (key push) edit must) () if
   ) if) if) if
 ) on
 
@@ -185,7 +185,7 @@ rec 0 'sel into "The quick brown fox jumps over the lazy dog" 'txt into
   -- Separator
   PW 2 plus cur-y ph plus 8 plus pw 1 1 fill-rect
 
-  -- Glyph grid: fixed cell size, 16 columns
+  -- Glyph grid: fixed cell len, 16 columns
   pn 8 mul 2 plus 'cw let
   16 'cols let
   cur-y ph plus 16 plus 'gy0 let

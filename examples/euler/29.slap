@@ -12,7 +12,7 @@
   -- inner: generate e*b for b=2..100, giving into list on stack
   'cg-inner recur (
     'cg-b let 'cg-e let
-    cg-b 100 le (cg-e cg-b mul give cg-e cg-b 1 plus cg-inner) () if
+    cg-b 100 le (cg-e cg-b mul push cg-e cg-b 1 plus cg-inner) () if
   ) def
   -- outer: iterate over exps
   'cg-outer recur (

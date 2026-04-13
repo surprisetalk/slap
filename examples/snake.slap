@@ -76,7 +76,7 @@ rec
         dup 'snake at must nh member (
           frm 'death-at into 'state (drop 2) edit must
         ) (
-          dup 'snake at must nh give 'snk2 let
+          dup 'snake at must nh push 'snk2 let
           nh over 'food at must eq (
             snk2 'snake into 768 random 'food into
           ) (

@@ -55,8 +55,8 @@
 3 1.0 sub
 
 -- EXPECT: type error
--- TYPE ERROR: give to non-list
-42 99 give
+-- TYPE ERROR: push to non-list
+42 99 push
 
 -- EXPECT: type error
 -- TYPE ERROR: range with float args
@@ -275,8 +275,8 @@
 42 dedup
 
 -- EXPECT: expected seq, got tagged
--- TYPE ERROR: grab from tagged value
-1 'x tag grab
+-- TYPE ERROR: pop from tagged value
+1 'x tag pop
 
 -- ===== Protocol constraint errors =====
 
@@ -323,3 +323,15 @@ dict "a" 1 insert "b" "two" insert dict-free
 -- EXPECT: body must be 1->1
 -- TYPE ERROR: each body on dict must be 1->1 (receives (k v) tuple)
 dict (drop) each dict-free
+
+-- EXPECT: must not be a linear value
+-- TYPE ERROR: default with linear fallback (leak on ok path)
+42 box ok 99 box default free
+
+-- EXPECT: discard linear payload
+-- TYPE ERROR: untag on tagged box (branches can leak)
+42 box ok {'ok (drop)} untag
+
+-- EXPECT: linear payload
+-- TYPE ERROR: tagging a box without consuming the tagged
+42 box ok

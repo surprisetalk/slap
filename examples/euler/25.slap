@@ -3,7 +3,7 @@
 -- Answer: 4782
 
 'pad-1100 (
-  (dup len 1100 lt) (0 give) while
+  (dup len 1100 lt) (0 push) while
 ) def
 
 -- add-digits: a-list a-len b-list b-len -> result-list result-len
@@ -12,13 +12,13 @@
   ad-alen ad-blen max 'ad-n let
   'ad-carry-loop recur (
     'adcl-j let 'adcl-carry let
-    adcl-carry 0 gt (adcl-carry 10 mod give adcl-carry 10 div adcl-j 1 plus ad-carry-loop) (adcl-j) if
+    adcl-carry 0 gt (adcl-carry 10 mod push adcl-carry 10 div adcl-j 1 plus ad-carry-loop) (adcl-j) if
   ) def
   'ad-loop recur (
     'ad-j let 'ad-carry let
     ad-j ad-n lt (
       'ad-a ad-j nth must 'ad-b ad-j nth must plus ad-carry plus 'ad-v let
-      ad-v 10 mod give
+      ad-v 10 mod push
       ad-v 10 div ad-j 1 plus ad-loop
     ) (
       ad-carry ad-j ad-carry-loop

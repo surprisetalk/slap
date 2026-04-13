@@ -52,8 +52,8 @@ N 3 plus 'I-STEPS let
 
 -- Initial grid: all white (0)
 0 clear
-list N (0 give) repeat
-80 give 60 give 0 give 0 give
+list N (0 push) repeat
+80 push 60 push 0 push 0 push
 
 -- Step 40 times per tick
 'tick (drop 40 (ant-step) repeat) on

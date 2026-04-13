@@ -3,20 +3,20 @@
 
 60 'N let
 
-list N (3 random 1 plus give) repeat 'szs let
+list N (3 random 1 plus push) repeat 'szs let
 
 -- State record
 rec
-  list N (640 random give) repeat 'xs into
-  list N (480 random give) repeat 'ys into
-  list N (25 random 12 sub give) repeat 'vxs into
-  list N (25 random 12 sub give) repeat 'vys into
-  list N (640 random give) repeat 'p1xs into
-  list N (480 random give) repeat 'p1ys into
-  list N (640 random give) repeat 'p2xs into
-  list N (480 random give) repeat 'p2ys into
-  list N (640 random give) repeat 'p3xs into
-  list N (480 random give) repeat 'p3ys into
+  list N (640 random push) repeat 'xs into
+  list N (480 random push) repeat 'ys into
+  list N (25 random 12 sub push) repeat 'vxs into
+  list N (25 random 12 sub push) repeat 'vys into
+  list N (640 random push) repeat 'p1xs into
+  list N (480 random push) repeat 'p1ys into
+  list N (640 random push) repeat 'p2xs into
+  list N (480 random push) repeat 'p2ys into
+  list N (640 random push) repeat 'p3xs into
+  list N (480 random push) repeat 'p3ys into
   -100 'px into  -100 'py into
   0 'pvx into  0 'pvy into
   0 'ptimer into

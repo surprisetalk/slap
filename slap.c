@@ -542,7 +542,7 @@ typedef struct {
 } AbstractType;
 #define ASTACK_MAX 256
 #define TC_BINDS_MAX 2048
-typedef struct { uint32_t sym; AbstractType atype; int is_def; int def_line; } TCBinding;
+typedef struct { uint32_t sym; AbstractType atype; int is_def; int def_line; int body_depth; } TCBinding;
 typedef struct { uint32_t sym; int line; } TCUnknown;
 #define TC_UNKNOWN_MAX 256
 typedef struct {
@@ -780,11 +780,12 @@ static int tc_is_builtin(uint32_t sym, int prelude_sig_count) {
 }
 static void tc_bind(TypeChecker *tc, uint32_t sym, AbstractType *atype, int is_def, int line) {
     for (int i = 0; i < tc->bind_count; i++) {
-        if (tc->bindings[i].sym == sym) { tc->bindings[i].atype = *atype; tc->bindings[i].is_def = is_def; tc->bindings[i].def_line = line; return; }
+        if (tc->bindings[i].sym == sym) { tc->bindings[i].atype = *atype; tc->bindings[i].is_def = is_def; tc->bindings[i].def_line = line; tc->bindings[i].body_depth = tc->body_depth; return; }
     }
     if (tc->bind_count < TC_BINDS_MAX) {
         tc->bindings[tc->bind_count].sym = sym; tc->bindings[tc->bind_count].atype = *atype;
-        tc->bindings[tc->bind_count].is_def = is_def; tc->bindings[tc->bind_count].def_line = line; tc->bind_count++;
+        tc->bindings[tc->bind_count].is_def = is_def; tc->bindings[tc->bind_count].def_line = line;
+        tc->bindings[tc->bind_count].body_depth = tc->body_depth; tc->bind_count++;
     }
 }
 static void tc_apply_scheme(TypeChecker *tc, TupleEffect *eff, int consumed, int produced,
@@ -1180,8 +1181,14 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                 }
             } else if (sym == S_UNTAG) {
                 int suid = 0;
-                if (tc->sp >= 2 && tc->data[tc->sp-2].type == TC_TAGGED && tc->data[tc->sp-2].tvar_id > 0)
-                    suid = tc->tvars[tvar_find(tc, tc->data[tc->sp-2].tvar_id)].union_id;
+                if (tc->sp >= 2 && tc->data[tc->sp-2].type == TC_TAGGED && tc->data[tc->sp-2].tvar_id > 0) {
+                    int tid = tc->data[tc->sp-2].tvar_id;
+                    suid = tc->tvars[tvar_find(tc, tid)].union_id;
+                    int tp = tvar_content(tc, tid, TC_TAGGED);
+                    if (tp > 0) { TypeConstraint pt = tvar_resolve(tc, tp);
+                        if (pt == TC_BOX || pt == TC_DICT)
+                            tc_error(tc, t->line, 0, "'untag' branches cannot safely discard linear payload; use a typed handler that consumes the box/dict"); }
+                }
                 tc_check_word(tc, sym, t->line);
                 if (suid > 0 && i >= tc->user_start) {
                     UnionDef *ud = &tc->unions[suid-1]; int brace = tc_find_brace_before(toks, i);
@@ -1190,6 +1197,8 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                             if (!found) tc_error(tc, t->line, 0, "'untag' missing variant '%s' declared by union", sym_name(ud->syms[v])); } }
                 }
             } else if (sym == S_DEFAULT) {
+                if (tc->sp >= 1 && ((tc->data[tc->sp-1].flags & AT_LINEAR) || tc->data[tc->sp-1].type == TC_BOX || tc->data[tc->sp-1].type == TC_DICT))
+                    tc_error(tc, t->line, 0, "'default' fallback must not be a linear value (would leak on the 'ok path)");
                 TypeConstraint pt = TC_NONE;
                 if (tc->sp >= 2 && tc->data[tc->sp-2].type == TC_TAGGED && tc->data[tc->sp-2].tvar_id > 0) {
                     int tid = tc->data[tc->sp-2].tvar_id;
@@ -1221,9 +1230,16 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
 static int typecheck_tokens(Token *toks, int count, int user_start) {
     TypeChecker tc; memset(&tc, 0, sizeof(tc)); tc.tvar_count = 1; tc.user_start = user_start;
     tc_process_range(&tc, toks, 0, count, count);
-    for (int i = 0; i < tc.sp; i++)
+    for (int i = 0; i < tc.sp; i++) {
         if ((tc.data[i].flags & AT_LINEAR) && !(tc.data[i].flags & AT_CONSUMED))
             tc_error(&tc, tc.data[i].source_line, 0, "linear value created here was never consumed (must free/dict-free, lend, mutate, or clone)");
+        if (tc.data[i].type == TC_TAGGED && tc.data[i].tvar_id > 0) {
+            int tp = tvar_content(&tc, tc.data[i].tvar_id, TC_TAGGED);
+            if (tp > 0) { TypeConstraint pt = tvar_resolve(&tc, tp);
+                if (pt == TC_BOX || pt == TC_DICT)
+                    tc_error(&tc, tc.data[i].source_line, 0, "tagged value contains a linear payload (%s) that was never consumed", constraint_name(pt)); }
+        }
+    }
     for (int i = 0; i < tc.unknown_count; i++) {
         uint32_t sym = tc.unknowns[i].sym; int defined = 0;
         for (int j = 0; j < tc.bind_count; j++) if (tc.bindings[j].sym == sym) { defined = 1; break; }
@@ -1724,8 +1740,8 @@ static inline void prim_edit_impl(Frame *env, int tagged) {
 static void prim_edit(Frame *e) { prim_edit_impl(e,1); }
 static void prim_edit_must(Frame *e) { prim_edit_impl(e,0); }
 typedef struct BoxData { Value *data; int slots; } BoxData;
-static void prim_box(Frame *e){(void)e;Value top=stack[sp-1];int s=val_slots(top);BoxData *bd=malloc(sizeof(BoxData));bd->data=malloc(s*sizeof(Value));bd->slots=s;VCPY(bd->data,&stack[sp-s],s);sp-=s;Value v;v.tag=VAL_BOX;v.loc=0;v.as.box=bd;spush(v);}
-static void prim_free(Frame *e){(void)e;Value v=spop();if(v.tag!=VAL_BOX)die("free: expected box, got %s", valtag_name(v.tag));BoxData *bd=(BoxData*)v.as.box;free(bd->data);free(bd);}
+static void prim_box(Frame *e){(void)e;Value top=stack[sp-1];int s=val_slots(top);BoxData *bd=malloc(sizeof(BoxData));bd->data=malloc(s*sizeof(Value));bd->slots=s;deep_copy_values(bd->data,&stack[sp-s],s);sp-=s;Value v;v.tag=VAL_BOX;v.loc=0;v.as.box=bd;spush(v);}
+static void prim_free(Frame *e){(void)e;Value v=spop();if(v.tag!=VAL_BOX)die("free: expected box, got %s", valtag_name(v.tag));BoxData *bd=(BoxData*)v.as.box;if(!bd->data)die("free: double-free detected (box already freed, likely captured by a closure that ran twice)");free(bd->data);bd->data=NULL;bd->slots=-1;/* leak bd so double-free check survives */}
 #define BOX_UNPACK(who) POP_BODY(fn,who); Value box_val=spop(); if(box_val.tag!=VAL_BOX) die(who ": expected box, got %s", valtag_name(box_val.tag)); BoxData *bd=(BoxData*)box_val.as.box; SPUSH(bd->data,bd->slots)
 static void prim_lend(Frame *env) {
     BOX_UNPACK("lend"); int sp_before=sp-bd->slots; eval_body(fn_buf,fn_s,env);
@@ -2161,13 +2177,13 @@ static const char *BUILTIN_TYPES =
 #undef LDE
 #undef MO
 static const char *PRELUDE =
-    "'over (swap dup (swap) dip) def\n'peek (over) def\n'nip (swap drop) def\n'rot ((swap) dip swap) def\n'tuck (swap over) def\n'give (push) def\n'grab (pop) def\n'size (len) def\n'put (set) def\n"
+    "'over (swap dup (swap) dip) def\n'nip (swap drop) def\n'rot ((swap) dip swap) def\n'tuck (swap over) def\n"
     "'not (0 eq) [int lent in  int move out] effect def\n'neq (eq not) [lent in  lent in  int move out] effect def\n"
     "'gt (swap lt) [lent in  lent in  int move out] effect def\n'ge (lt not) [lent in  lent in  int move out] effect def\n'le (swap lt not) [lent in  lent in  int move out] effect def\n"
     "'inc (1 plus) [num lent in  num move out] effect def\n'dec (1 sub) [num lent in  num move out] effect def\n'neg (0 swap sub) [num lent in  num move out] effect def\n"
     "'max (over over lt (nip) (drop) if) ['a ord lent in  'a ord lent in  'a ord move out] effect def\n'min (over over lt (drop) (nip) if) ['a ord lent in  'a ord lent in  'a ord move out] effect def\n'abs (dup 0 lt (neg) (dup drop) if) def\n"
     "'bi ('g swap def 'f swap def dup f swap g) def\n'keep ('f swap def dup f swap) def\n'repeat ('f swap def (dup 0 gt) (1 sub (f) dip) while drop) def\n"
-    "'select (swap 'data swap def (data swap get must) each) def\n'pick (swap 'data swap def (data swap get must) each) def\n'reduce (swap dup 0 get must swap 1 drop-n swap rot fold) def\n'table ((dup) swap compose (couple) compose each) def\n"
+    "'select (swap 'data swap def (data swap get must) each) def\n'reduce (swap dup 0 get must swap 1 drop-n swap rot fold) def\n'table ((dup) swap compose (couple) compose each) def\n"
     "'sqr (dup mul) def\n'cube (dup dup mul mul) def\n'ispos (0 swap lt) def\n'isneg (0 lt) def\n"
     "'first (0 get must) def\n'second (1 get must) def\n'third (2 get must) def\n'fourth (3 get must) def\n'fifth (4 get must) def\n"
     "'sixth (5 get must) def\n'seventh (6 get must) def\n'eighth (7 get must) def\n'ninth (8 get must) def\n'tenth (9 get must) def\n"

@@ -9,7 +9,7 @@
   (dup 'j at must ds len lt)
   (
     dup 'j at must ds swap get must n mul over 'carry at must plus 'val let
-    'result (val 10 mod give) edit must
+    'result (val 10 mod push) edit must
     'carry (drop val 10 div) edit must
     'j (1 plus) edit must
   )
@@ -17,7 +17,7 @@
   (dup 'carry at must 0 gt)
   (
     dup 'carry at must 'c let
-    'result (c 10 mod give) edit must
+    'result (c 10 mod push) edit must
     'carry (10 div) edit must
   )
   while
