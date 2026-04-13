@@ -14,11 +14,11 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 #endif
-#define STACK_MAX  65536
+#define STACK_MAX  1048576
 #define SYM_MAX   4096
 #define FRAME_MAX 1024
 #define FRAME_HASH_SIZE 2048
-#define FRAME_VALS_MAX 65536
+#define FRAME_VALS_MAX 262144
 #define TOK_MAX   65536
 #define LOCAL_MAX 16384
 typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_WORD, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX, VAL_TAGGED } ValTag;
@@ -198,7 +198,7 @@ struct Frame {
     Binding bindings[FRAME_MAX]; Value vals[FRAME_VALS_MAX];
     int16_t hash[FRAME_HASH_SIZE]; // maps sym hash -> binding index+1 (0=empty)
 };
-#define SAVE_BUF_MAX 65536
+#define SAVE_BUF_MAX 262144
 static Value save_buf[SAVE_BUF_MAX];
 static int save_buf_sp=0;
 static int frame_save_active=0;
