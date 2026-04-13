@@ -21,7 +21,7 @@
 #define FRAME_VALS_MAX 4194304
 #define TOK_MAX   65536
 #define LOCAL_MAX 16384
-typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_WORD, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX, VAL_TAGGED } ValTag;
+typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_WORD, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX, VAL_TAGGED, VAL_DICT } ValTag;
 typedef struct Frame Frame;
 typedef void (*PrimFn)(Frame *env);
 typedef struct Value {
@@ -40,10 +40,12 @@ typedef struct Value {
 #define LOC_LINE(loc) ((int)(((loc) >> 24) & 0xFFFFFFFFu))
 #define LOC_COL(loc)  ((int)((loc) & 0xFFFFFFu))
 __attribute__((noreturn)) static void die(const char *fmt, ...);
+typedef struct { char *key; int klen; Value *vals; int nvals; } DictEntry;
+typedef struct DictData { DictEntry *entries; int cap; int len; } DictData;
 static int is_compound(ValTag tag) { return tag == VAL_TUPLE || tag == VAL_LIST || tag == VAL_RECORD || tag == VAL_TAGGED; }
 static const char *valtag_name(ValTag t) {
-    const char *names[] = {"int","float","symbol","word","xt","tuple","list","record","box","tagged"};
-    return (t <= VAL_TAGGED) ? names[t] : "?";
+    const char *names[] = {"int","float","symbol","word","xt","tuple","list","record","box","tagged","dict"};
+    return (t <= VAL_DICT) ? names[t] : "?";
 }
 static int val_slots(Value v) {
     if (is_compound(v.tag)) {
@@ -340,6 +342,7 @@ static void val_print(Value *data, int slots, FILE *out) {
         fprintf(out,"}"); break;
     }
     case VAL_BOX: fprintf(out, "<box>"); break;
+    case VAL_DICT: { DictData *dd=(DictData*)top.as.box; fprintf(out,"<dict:%d>",dd?dd->len:0); break; }
     case VAL_TAGGED: val_print(data,(int)top.as.compound.slots-1,out); fprintf(out," '%s tagged",sym_name(top.as.compound.len)); break;
     }
 }
@@ -362,7 +365,7 @@ static int val_equal(Value *a, int aslots, Value *b, int bslots) {
         if (atop.as.compound.len != btop.as.compound.len) return 0;
         for (int i = 0; i < aslots - 1; i++) if (!val_equal(&a[i], 1, &b[i], 1)) return 0;
         return 1;
-    case VAL_BOX: return a == b;
+    case VAL_BOX: case VAL_DICT: return atop.as.box == btop.as.box;
     }
     return 0;
 }
@@ -387,7 +390,7 @@ static void syms_init(void);
 /* ---- TYPE SYSTEM ---- */
 typedef enum { DIR_IN, DIR_OUT } SlotDir;
 typedef enum { OWN_OWN, OWN_COPY, OWN_MOVE, OWN_LENT } OwnMode;
-typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, TC_REC, TC_BOX, TC_STACK, TC_TAGGED, TC_SEQ, TC_EQ, TC_ORD, TC_INTEGRAL, TC_SEMIGROUP, TC_MONOID, TC_FUNCTOR, TC_APPLICATIVE, TC_FOLDABLE, TC_MONAD } TypeConstraint;
+typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, TC_REC, TC_BOX, TC_STACK, TC_TAGGED, TC_SEQ, TC_EQ, TC_ORD, TC_INTEGRAL, TC_SEMIGROUP, TC_MONOID, TC_FUNCTOR, TC_APPLICATIVE, TC_FOLDABLE, TC_MONAD, TC_DICT } TypeConstraint;
 enum { HO_BODY_1TO1=1, HO_BRANCHES_AGREE=2, HO_SAVES_UNDER=4,
        HO_APPLY_EFFECT=16, HO_BOX_BORROW=32, HO_BOX_MUTATE=64, HO_SCRUTINEE_TAGGED=128 };
 typedef struct { const char *name; uint32_t sym; int need; int out; TypeConstraint out_type; uint8_t flags; } HOEffect;
@@ -443,15 +446,15 @@ static const struct { const char *name; TypeConstraint tc; } tc_names[] = {
     {"list",TC_LIST},{"tuple",TC_TUPLE},{"rec",TC_REC},{"box",TC_BOX},{"stack",TC_STACK},{"tagged",TC_TAGGED},
     {"seq",TC_SEQ},{"eq",TC_EQ},{"eql",TC_EQ},{"ord",TC_ORD},
     {"integral",TC_INTEGRAL},{"semigroup",TC_SEMIGROUP},{"monoid",TC_MONOID},
-    {"functor",TC_FUNCTOR},{"applicative",TC_APPLICATIVE},{"foldable",TC_FOLDABLE},{"monad",TC_MONAD},{NULL,TC_NONE}
+    {"functor",TC_FUNCTOR},{"applicative",TC_APPLICATIVE},{"foldable",TC_FOLDABLE},{"monad",TC_MONAD},{"dict",TC_DICT},{NULL,TC_NONE}
 };
 static TypeConstraint parse_constraint(const char *tw) {
     for (int i=0; tc_names[i].name; i++) if (strcmp(tw,tc_names[i].name)==0) return tc_names[i].tc;
     return TC_NONE;
 }
-static int tc_is_container(TypeConstraint c) { return c == TC_LIST || c == TC_BOX || c == TC_TAGGED || c == TC_SEQ || c == TC_FUNCTOR || c == TC_MONAD || c == TC_APPLICATIVE; }
+static int tc_is_container(TypeConstraint c) { return c == TC_LIST || c == TC_BOX || c == TC_TAGGED || c == TC_SEQ || c == TC_FUNCTOR || c == TC_MONAD || c == TC_APPLICATIVE || c == TC_DICT; }
 static int tc_is_concrete(TypeConstraint c) {
-    return c == TC_INT || c == TC_FLOAT || c == TC_SYM || c == TC_LIST || c == TC_TUPLE || c == TC_REC || c == TC_BOX || c == TC_TAGGED;
+    return c == TC_INT || c == TC_FLOAT || c == TC_SYM || c == TC_LIST || c == TC_TUPLE || c == TC_REC || c == TC_BOX || c == TC_TAGGED || c == TC_DICT;
 }
 static TypeSig parse_type_annotation(Token *toks, int start, int end) {
     TypeSig sig; memset(&sig, 0, sizeof(sig));
@@ -520,7 +523,7 @@ static const char *constraint_name(TypeConstraint c) {
 }
 #define TVAR_MAX 32768
 typedef struct { int parent; TypeConstraint bound; int elem; int box_c; int tag_p; int union_id; } TVarEntry;
-#define UNION_MAX 64
+#define UNION_MAX 2048
 #define UNION_VARIANTS_MAX 16
 typedef struct { uint32_t syms[UNION_VARIANTS_MAX]; TypeConstraint types[UNION_VARIANTS_MAX]; int count; } UnionDef;
 #define EFFECT_MAX 256
@@ -538,7 +541,7 @@ typedef struct {
     uint8_t flags; int8_t borrowed; int source_line; int effect_idx;
 } AbstractType;
 #define ASTACK_MAX 256
-#define TC_BINDS_MAX 256
+#define TC_BINDS_MAX 2048
 typedef struct { uint32_t sym; AbstractType atype; int is_def; int def_line; } TCBinding;
 typedef struct { uint32_t sym; int line; } TCUnknown;
 #define TC_UNKNOWN_MAX 256
@@ -582,15 +585,16 @@ static const uint32_t tc_compat[] = {
     [TC_INTEGRAL]=B(TC_INTEGRAL)|B(TC_INT)|B(TC_NUM)|B(TC_EQ),
     [TC_SEMIGROUP]=B(TC_SEMIGROUP)|B(TC_MONOID)|B(TC_LIST)|B(TC_TUPLE)|B(TC_REC)|B(TC_SEQ),
     [TC_MONOID]=B(TC_MONOID)|B(TC_LIST)|B(TC_TUPLE)|B(TC_REC)|B(TC_SEQ)|B(TC_SEMIGROUP),
-    [TC_FUNCTOR]=B(TC_FUNCTOR)|B(TC_APPLICATIVE)|B(TC_MONAD)|B(TC_FOLDABLE)|B(TC_LIST)|B(TC_TAGGED)|B(TC_SEQ),
+    [TC_FUNCTOR]=B(TC_FUNCTOR)|B(TC_APPLICATIVE)|B(TC_MONAD)|B(TC_FOLDABLE)|B(TC_LIST)|B(TC_TAGGED)|B(TC_SEQ)|B(TC_DICT),
     [TC_APPLICATIVE]=B(TC_APPLICATIVE)|B(TC_LIST)|B(TC_TAGGED)|B(TC_SEQ)|B(TC_FUNCTOR)|B(TC_MONAD),
-    [TC_FOLDABLE]=B(TC_FOLDABLE)|B(TC_LIST)|B(TC_SEQ),
+    [TC_FOLDABLE]=B(TC_FOLDABLE)|B(TC_LIST)|B(TC_SEQ)|B(TC_DICT),
     [TC_MONAD]=B(TC_MONAD)|B(TC_LIST)|B(TC_TAGGED)|B(TC_SEQ)|B(TC_FUNCTOR)|B(TC_APPLICATIVE),
+    [TC_DICT]=B(TC_DICT)|B(TC_FUNCTOR)|B(TC_FOLDABLE),
 };
 #undef B
 static int tc_constraint_matches(TypeConstraint a, TypeConstraint b) {
     if (a == TC_NONE || a == b) return 1;
-    return (a <= TC_MONAD && b <= TC_MONAD) ? (tc_compat[a] >> b) & 1 : 0;
+    return (a <= TC_DICT && b <= TC_DICT) ? (tc_compat[a] >> b) & 1 : 0;
 }
 static int tc_should_narrow(TypeConstraint cur, TypeConstraint c) {
     if (tc_is_concrete(c) && !tc_is_concrete(cur)) return 1;
@@ -625,7 +629,7 @@ static int tvar_unify(TypeChecker *tc, int a, int b, int line) {
 }
 static int tvar_content(TypeChecker *tc, int tvar_id, TypeConstraint c) {
     int root = tvar_find(tc, tvar_id);
-    if (c == TC_LIST || c == TC_SEQ) return tc->tvars[root].elem;
+    if (c == TC_LIST || c == TC_SEQ || c == TC_DICT) return tc->tvars[root].elem;
     if (c == TC_BOX) return tc->tvars[root].box_c;
     if (c == TC_TAGGED) return tc->tvars[root].tag_p;
     return 0;
@@ -681,10 +685,10 @@ static int tc_extract_brace_keys(Token *toks, int bs, int tc2, uint32_t *out_sym
 static void tc_push(TypeChecker *tc, TypeConstraint type, int line) {
     if (tc->sp >= ASTACK_MAX) return;
     AbstractType *at = &tc->data[tc->sp++]; memset(at, 0, sizeof(*at));
-    at->type = type; at->flags = (type == TC_BOX) ? AT_LINEAR : 0; at->source_line = line; at->effect_idx = -1;
+    at->type = type; at->flags = (type == TC_BOX || type == TC_DICT) ? AT_LINEAR : 0; at->source_line = line; at->effect_idx = -1;
     if (tc_is_container(type) || type == TC_SEQ) {
         at->tvar_id = tvar_fresh(tc); tc->tvars[at->tvar_id].bound = type; int sub = tvar_fresh(tc);
-        if (type == TC_LIST || type == TC_SEQ) tc->tvars[at->tvar_id].elem = sub;
+        if (type == TC_LIST || type == TC_SEQ || type == TC_DICT) tc->tvars[at->tvar_id].elem = sub;
         else if (type == TC_BOX) tc->tvars[at->tvar_id].box_c = sub;
         else tc->tvars[at->tvar_id].tag_p = sub;
     }
@@ -769,7 +773,7 @@ static int tc_check_body_against_sig(Token *toks, int start, int end, int total_
     if (eff_produced != n_out) { fprintf(stderr, "%s:%d: type error: function body produces %d value(s) but type declares %d output(s)\n", src_files[current_fid], toks[start].line, eff_produced, n_out); errors++; }
     return errors;
 }
-static int tc_is_copyable(AbstractType *t) { return !(t->flags & AT_LINEAR) && t->type != TC_BOX; }
+static int tc_is_copyable(AbstractType *t) { return !(t->flags & AT_LINEAR) && t->type != TC_BOX && t->type != TC_DICT; }
 static int tc_is_builtin(uint32_t sym, int prelude_sig_count) {
     for (int i = 0; i < prelude_sig_count; i++) if (type_sigs[i].sym == sym) return 1;
     return ho_ops_find(sym) != NULL;
@@ -813,7 +817,7 @@ static void tc_apply_scheme(TypeChecker *tc, TupleEffect *eff, int consumed, int
                 if (uid > 0) tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].union_id = uid;
             } else {
                 tc_push(tc, TC_NONE, line); if (r != TC_NONE) tc->data[tc->sp-1].type = r;
-                tc->data[tc->sp-1].tvar_id = ftv; if (fu && r == TC_BOX) tc->data[tc->sp-1].flags |= AT_LINEAR;
+                tc->data[tc->sp-1].tvar_id = ftv; if (fu && (r == TC_BOX || r == TC_DICT)) tc->data[tc->sp-1].flags |= AT_LINEAR;
             }
         } else tc_push(tc, TC_NONE, line);
     }
@@ -978,7 +982,7 @@ apply_sig:;
         tc_push(tc, s->constraint, line); AbstractType *at = &tc->data[tc->sp - 1];
         if (s->type_var) { int tv = FIND_TVAR(s->type_var); if (tv > 0) {
             if (tc_is_container(s->constraint) && at->tvar_id > 0) { int ef = tvar_content(tc, at->tvar_id, s->constraint); if (ef > 0) tvar_unify(tc, ef, tv, line); }
-            else if (!tc_is_container(s->constraint)) { TypeConstraint r = tvar_resolve(tc, tv); if (r != TC_NONE) at->type = r; at->tvar_id = tv; if (r == TC_BOX) at->flags |= AT_LINEAR; }
+            else if (!tc_is_container(s->constraint)) { TypeConstraint r = tvar_resolve(tc, tv); if (r != TC_NONE) at->type = r; at->tvar_id = tv; if (r == TC_BOX || r == TC_DICT) at->flags |= AT_LINEAR; }
         }}
         if (tc_is_container(s->constraint) && s->elem_constraint != TC_NONE && at->tvar_id > 0) { int ef = tvar_content(tc, at->tvar_id, s->constraint); if (ef > 0) tvar_bind(tc, ef, s->elem_constraint, line); }
         if (s->either_count > 0 && at->tvar_id > 0 && tc->union_count < UNION_MAX) {
@@ -1219,7 +1223,7 @@ static int typecheck_tokens(Token *toks, int count, int user_start) {
     tc_process_range(&tc, toks, 0, count, count);
     for (int i = 0; i < tc.sp; i++)
         if ((tc.data[i].flags & AT_LINEAR) && !(tc.data[i].flags & AT_CONSUMED))
-            tc_error(&tc, tc.data[i].source_line, 0, "linear value (box) created here was never consumed (must free, lend, mutate, or clone)");
+            tc_error(&tc, tc.data[i].source_line, 0, "linear value created here was never consumed (must free/dict-free, lend, mutate, or clone)");
     for (int i = 0; i < tc.unknown_count; i++) {
         uint32_t sym = tc.unknowns[i].sym; int defined = 0;
         for (int j = 0; j < tc.bind_count; j++) if (tc.bindings[j].sym == sym) { defined = 1; break; }
@@ -1476,7 +1480,7 @@ static inline void eval_body_fast(Value *body, int slots, Frame *env) {
         } else if(is_compound(elem.tag)){
             SPUSH(&body[k-((int)elem.as.compound.slots-1)],val_slots(elem));
             if(elem.tag==VAL_TUPLE){ee->refcount++;stack[sp-1].as.compound.env=ee;}
-        } else if(elem.tag==VAL_BOX) spush(elem);
+        } else if(elem.tag==VAL_BOX||elem.tag==VAL_DICT) spush(elem);
     }
     if(ee->refcount==0){ee->bind_count=sbc;ee->vals_used=svu;}
     eval_depth--;
@@ -1582,9 +1586,31 @@ static void prim_slice_n(int take) {
     spush(val_compound(VAL_LIST,end_i-start,tmp_sp+1));
 }
 static void prim_range(Frame *e){(void)e;int64_t end=pop_int(),start=pop_int();int count=0;for(int64_t i=start;i<end;i++){spush(val_int(i));count++;}spush(val_compound(VAL_LIST,count,count+1));}
+static void deep_copy_values(Value *dst, const Value *src, int slots);
+static void push_string_bytes(const char *buf, int len);
+static void dict_put(DictData *dd, const char *key, int klen, Value *vals, int nvals);
+static Value dict_val(DictData *dd);
+static void dict_data_free(DictData *dd);
+static void dict_push_kv_tuple(DictEntry *e) {
+    int key_s = e->klen + 1;
+    push_string_bytes(e->key, e->klen);
+    Value vcopy[e->nvals]; deep_copy_values(vcopy, e->vals, e->nvals); SPUSH(vcopy, e->nvals);
+    spush(val_compound(VAL_TUPLE, 2, key_s + e->nvals + 1));
+}
 static void prim_each(Frame *env) {
     POP_BODY(fn,"each");
     Value top=stack[sp-1];
+    if(top.tag==VAL_DICT){
+        Value dv=spop(); DictData *dd=(DictData*)dv.as.box;
+        DictData *nd=calloc(1,sizeof(DictData));
+        for(int i=0;i<dd->cap;i++){DictEntry *e=&dd->entries[i]; if(!e->key) continue;
+            dict_push_kv_tuple(e);
+            eval_body(fn_buf,fn_s,env);
+            Value nt=stack[sp-1]; int ns=val_slots(nt);
+            dict_put(nd,e->key,e->klen,&stack[sp-ns],ns); sp-=ns;
+        }
+        dict_data_free(dd); spush(dict_val(nd)); return;
+    }
     if(top.tag==VAL_LIST){
         POP_LIST_BUF(list,"each");
         int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs);
@@ -1610,7 +1636,17 @@ static void prim_filter(Frame *env) {
     spush(val_compound(VAL_LIST,rc,sp-rb+1));
 }
 static void prim_fold(Frame *env) {
-    POP_BODY(fn,"fold"); POP_VAL(init); POP_LIST_BUF(list,"fold");
+    POP_BODY(fn,"fold"); POP_VAL(init);
+    Value top=speek();
+    if(top.tag==VAL_DICT){
+        Value dv=spop(); DictData *dd=(DictData*)dv.as.box;
+        SPUSH(init_buf,init_s);
+        for(int i=0;i<dd->cap;i++){DictEntry *e=&dd->entries[i]; if(!e->key) continue;
+            dict_push_kv_tuple(e); eval_body(fn_buf,fn_s,env);
+        }
+        dict_data_free(dd); return;
+    }
+    POP_LIST_BUF(list,"fold");
     int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs);
     SPUSH(init_buf,init_s);
     for(int i=0;i<list_len;i++){PUSH_ELEM(i);eval_body(fn_buf,fn_s,env);}
@@ -1702,16 +1738,177 @@ static void prim_mutate(Frame *env) {
     free(bd->data); bd->data=malloc(ns*sizeof(Value)); bd->slots=ns;
     VCPY(bd->data,&stack[sp-ns],ns); sp-=ns; spush(box_val);
 }
+static DictData *dict_clone(DictData *orig);
 static void deep_copy_values(Value *dst, const Value *src, int slots) {
     VCPY(dst,src,slots);
-    for(int i=0;i<slots;i++) if(dst[i].tag==VAL_BOX){
-        BoxData *o=(BoxData*)dst[i].as.box; BoxData *c=malloc(sizeof(BoxData));
-        c->slots=o->slots; c->data=malloc(o->slots*sizeof(Value));
-        deep_copy_values(c->data,o->data,o->slots); dst[i].as.box=c;
+    for(int i=0;i<slots;i++){
+        if(dst[i].tag==VAL_BOX){
+            BoxData *o=(BoxData*)dst[i].as.box; BoxData *c=malloc(sizeof(BoxData));
+            c->slots=o->slots; c->data=malloc(o->slots*sizeof(Value));
+            deep_copy_values(c->data,o->data,o->slots); dst[i].as.box=c;
+        } else if(dst[i].tag==VAL_DICT){
+            dst[i].as.box=dict_clone((DictData*)dst[i].as.box);
+        }
     }
 }
 static BoxData *box_clone(BoxData *orig) { BoxData *c=malloc(sizeof(BoxData));c->data=malloc(orig->slots*sizeof(Value));c->slots=orig->slots;deep_copy_values(c->data,orig->data,orig->slots);return c; }
 static void prim_clone(Frame *e){(void)e;Value v=spop();if(v.tag!=VAL_BOX)die("clone: expected box, got %s",valtag_name(v.tag));BoxData *c=box_clone((BoxData*)v.as.box);spush(v);Value v2={0};v2.tag=VAL_BOX;v2.as.box=c;spush(v2);}
+/* ---- DICT ---- */
+static uint32_t dict_hash(const char *key, int klen) {
+    uint32_t h=2166136261u; for(int i=0;i<klen;i++){h^=(uint8_t)key[i]; h*=16777619u;} return h;
+}
+static int dict_probe(DictData *dd, const char *key, int klen) {
+    /* returns index of matching entry, or first empty slot on the probe chain */
+    if(dd->cap==0) return -1;
+    uint32_t h=dict_hash(key,klen); int mask=dd->cap-1, i=(int)(h&mask);
+    for(int n=0;n<dd->cap;n++){
+        DictEntry *e=&dd->entries[i];
+        if(!e->key) return i;
+        if(e->klen==klen && memcmp(e->key,key,klen)==0) return i;
+        i=(i+1)&mask;
+    }
+    return -1;
+}
+static void dict_grow(DictData *dd) {
+    int old_cap=dd->cap; DictEntry *old=dd->entries;
+    dd->cap = old_cap? old_cap*2 : 8;
+    dd->entries = calloc(dd->cap, sizeof(DictEntry));
+    dd->len = 0;
+    for(int i=0;i<old_cap;i++){
+        DictEntry *e=&old[i]; if(!e->key) continue;
+        int j=dict_probe(dd,e->key,e->klen);
+        dd->entries[j]=*e; dd->len++;
+    }
+    free(old);
+}
+static void dict_put(DictData *dd, const char *key, int klen, Value *vals, int nvals) {
+    if(dd->cap==0 || (dd->len+1)*10 >= dd->cap*7) dict_grow(dd);
+    int i=dict_probe(dd,key,klen); if(i<0) die("dict: probe failed (internal)");
+    DictEntry *e=&dd->entries[i];
+    if(e->key){
+        /* existing: replace value */
+        free(e->vals);
+        e->vals=malloc(nvals*sizeof(Value)); e->nvals=nvals;
+        deep_copy_values(e->vals,vals,nvals);
+    } else {
+        e->key=malloc(klen?klen:1); if(klen) memcpy(e->key,key,klen); e->klen=klen;
+        e->vals=malloc(nvals*sizeof(Value)); e->nvals=nvals;
+        deep_copy_values(e->vals,vals,nvals);
+        dd->len++;
+    }
+}
+static DictEntry *dict_get(DictData *dd, const char *key, int klen) {
+    int i=dict_probe(dd,key,klen); if(i<0) return NULL;
+    return dd->entries[i].key ? &dd->entries[i] : NULL;
+}
+static void dict_free_entry_contents(DictEntry *e) {
+    if(!e->key) return;
+    for(int i=0;i<e->nvals;i++) if(e->vals[i].tag==VAL_BOX){BoxData *bd=(BoxData*)e->vals[i].as.box;free(bd->data);free(bd);}
+        else if(e->vals[i].tag==VAL_DICT){DictData *sub=(DictData*)e->vals[i].as.box;for(int j=0;j<sub->cap;j++)dict_free_entry_contents(&sub->entries[j]);free(sub->entries);free(sub);}
+    free(e->key); free(e->vals); e->key=NULL; e->vals=NULL; e->klen=0; e->nvals=0;
+}
+static int dict_del(DictData *dd, const char *key, int klen) {
+    if(dd->cap==0) return 0;
+    int i=dict_probe(dd,key,klen); if(i<0 || !dd->entries[i].key) return 0;
+    dict_free_entry_contents(&dd->entries[i]);
+    dd->len--;
+    /* rehash tail of probe chain */
+    int mask=dd->cap-1, j=(i+1)&mask;
+    while(dd->entries[j].key){
+        DictEntry tmp=dd->entries[j]; dd->entries[j].key=NULL; dd->entries[j].vals=NULL;
+        dd->len--;
+        int k=dict_probe(dd,tmp.key,tmp.klen);
+        dd->entries[k]=tmp; dd->len++;
+        j=(j+1)&mask;
+    }
+    return 1;
+}
+static DictData *dict_clone(DictData *orig) {
+    DictData *c=calloc(1,sizeof(DictData));
+    c->cap=orig->cap; c->len=0;
+    if(orig->cap){
+        c->entries=calloc(orig->cap,sizeof(DictEntry));
+        for(int i=0;i<orig->cap;i++){
+            DictEntry *e=&orig->entries[i]; if(!e->key) continue;
+            dict_put(c,e->key,e->klen,e->vals,e->nvals);
+        }
+    }
+    return c;
+}
+static int pop_string_bytes(const char *who, char **out, int *out_len) {
+    Value top=stack[sp-1];
+    if(top.tag!=VAL_LIST) die("%s: expected string (list of int), got %s", who, valtag_name(top.tag));
+    int s=val_slots(top), len=(int)top.as.compound.len, base=sp-s;
+    if(s != len+1) die("%s: key must be a simple string (list of int)", who);
+    char *buf=malloc(len?len:1);
+    for(int i=0;i<len;i++){
+        if(stack[base+i].tag!=VAL_INT) die("%s: key string contains non-int at position %d", who, i);
+        buf[i]=(char)stack[base+i].as.i;
+    }
+    sp=base; *out=buf; *out_len=len; return len;
+}
+static void push_string_bytes(const char *buf, int len) {
+    for(int i=0;i<len;i++) spush(val_int((unsigned char)buf[i]));
+    spush(val_compound(VAL_LIST,len,len+1));
+}
+static Value dict_val(DictData *dd){Value v={0};v.tag=VAL_DICT;v.loc=0;v.as.box=dd;return v;}
+static void prim_dict(Frame *e){(void)e;DictData *dd=calloc(1,sizeof(DictData));spush(dict_val(dd));}
+static void prim_insert(Frame *e) {
+    (void)e; POP_VAL(val); char *key; int klen; pop_string_bytes("insert",&key,&klen);
+    Value dv=stack[sp-1]; if(dv.tag!=VAL_DICT) die("insert: expected dict, got %s", valtag_name(dv.tag));
+    DictData *dd=(DictData*)dv.as.box;
+    dict_put(dd,key,klen,val_buf,val_s);
+    free(key);
+}
+static void prim_of(Frame *e) {
+    (void)e; char *key; int klen; pop_string_bytes("of",&key,&klen);
+    Value dv=stack[sp-1]; if(dv.tag!=VAL_DICT) die("of: expected dict, got %s", valtag_name(dv.tag));
+    DictData *dd=(DictData*)dv.as.box;
+    DictEntry *ent=dict_get(dd,key,klen); free(key);
+    if(!ent){ push_none(); return; }
+    SPUSH(ent->vals,ent->nvals); push_ok();
+}
+static void prim_remove(Frame *e) {
+    (void)e; char *key; int klen; pop_string_bytes("remove",&key,&klen);
+    Value dv=stack[sp-1]; if(dv.tag!=VAL_DICT) die("remove: expected dict, got %s", valtag_name(dv.tag));
+    DictData *dd=(DictData*)dv.as.box;
+    dict_del(dd,key,klen); free(key);
+}
+static void prim_keys(Frame *e) {
+    (void)e; Value dv=stack[sp-1]; if(dv.tag!=VAL_DICT) die("dict-keys: expected dict, got %s", valtag_name(dv.tag));
+    DictData *dd=(DictData*)dv.as.box;
+    int rb=sp, count=0;
+    for(int i=0;i<dd->cap;i++){DictEntry *ent=&dd->entries[i]; if(!ent->key) continue;
+        push_string_bytes(ent->key,ent->klen); count++;}
+    spush(val_compound(VAL_LIST,count,sp-rb+1));
+}
+static void prim_values(Frame *e) {
+    (void)e; Value dv=stack[sp-1]; if(dv.tag!=VAL_DICT) die("dict-values: expected dict, got %s", valtag_name(dv.tag));
+    DictData *dd=(DictData*)dv.as.box;
+    int rb=sp, count=0;
+    for(int i=0;i<dd->cap;i++){DictEntry *ent=&dd->entries[i]; if(!ent->key) continue;
+        Value copy[ent->nvals]; deep_copy_values(copy,ent->vals,ent->nvals);
+        SPUSH(copy,ent->nvals); count++;}
+    spush(val_compound(VAL_LIST,count,sp-rb+1));
+}
+static void dict_data_free(DictData *dd);
+static void prim_dict_free(Frame *e) {
+    (void)e; Value v=spop(); if(v.tag!=VAL_DICT) die("dict-free: expected dict, got %s", valtag_name(v.tag));
+    dict_data_free((DictData*)v.as.box);
+}
+static void prim_dict_clone(Frame *e) {
+    (void)e; Value v=spop(); if(v.tag!=VAL_DICT) die("dict-clone: expected dict, got %s", valtag_name(v.tag));
+    DictData *c=dict_clone((DictData*)v.as.box);
+    spush(v); spush(dict_val(c));
+}
+static void prim_dict_len(Frame *e) {
+    (void)e; Value v=stack[sp-1]; if(v.tag!=VAL_DICT) die("dict-len: expected dict, got %s", valtag_name(v.tag));
+    spush(val_int(((DictData*)v.as.box)->len));
+}
+static void dict_data_free(DictData *dd) {
+    for(int i=0;i<dd->cap;i++) dict_free_entry_contents(&dd->entries[i]);
+    free(dd->entries); free(dd);
+}
 typedef struct{int idx;Value val;} GradeIV;
 static int grade_asc(const void *a,const void *b){return val_cmp(&((const GradeIV*)a)->val,&((const GradeIV*)b)->val);}
 static int grade_desc(const void *a,const void *b){return grade_asc(b,a);}
@@ -1806,7 +2003,7 @@ static void eval_body(Value *body, int slots, Frame *env) {
             } else if(sym==S_LET){ uint32_t n=pop_sym(); int ls=val_slots(stack[sp-1]); frame_bind(ee,n,&stack[sp-ls],ls,BIND_LET,0); sp-=ls;
             } else if(sym==S_RECUR){recur_sym=pop_sym();recur_pending=1;}
             else dispatch_word(sym,ee);
-        } else if(elem.tag==VAL_BOX) spush(elem);
+        } else if(elem.tag==VAL_BOX||elem.tag==VAL_DICT) spush(elem);
     }
     if(ee->refcount==0){ee->bind_count=sbc;ee->vals_used=svu;}
     eval_depth--;
@@ -1945,6 +2142,12 @@ static const char *BUILTIN_TYPES =
     "'tcp-recv [int box own in  int lent in  int box move out  {'ok list 'no list} either move out] effect\n'tcp-close [int box own in] effect\n'tcp-listen [int lent in  {'ok box 'no list} either move out] effect\n'tcp-accept [int box own in  int box move out  {'ok box 'no list} either move out] effect\n"
 #endif
     "'tag ['a own in  sym lent in  'a tagged" MO "'default [tagged own in  own in " MO "'must [tagged own in " MO
+    "'dict ['a dict" MO "'insert ['a dict own in  list lent in  'a own in  'a dict" MO
+    "'of ['a dict own in  list lent in  'a dict move out  {'ok 'a 'no list} either move out] effect\n"
+    "'remove ['a dict own in  list lent in  'a dict" MO "'dict-keys ['a dict own in  'a dict move out  list" MO
+    "'dict-values ['a dict own in  'a dict move out  'a list" MO
+    "'dict-free ['a dict own in] effect\n'dict-clone ['a dict own in  'a dict move out  'a dict" MO
+    "'dict-len ['a dict own in  'a dict move out  int" MO
     "'pthen [tagged own in  own in  tuple own in  move out  tagged" MO
 ;
 #undef A2E
@@ -1965,8 +2168,11 @@ static const char *PRELUDE =
     "'max (over over lt (nip) (drop) if) ['a ord lent in  'a ord lent in  'a ord move out] effect def\n'min (over over lt (drop) (nip) if) ['a ord lent in  'a ord lent in  'a ord move out] effect def\n'abs (dup 0 lt (neg) (dup drop) if) def\n"
     "'bi ('g swap def 'f swap def dup f swap g) def\n'keep ('f swap def dup f swap) def\n'repeat ('f swap def (dup 0 gt) (1 sub (f) dip) while drop) def\n"
     "'select (swap 'data swap def (data swap get must) each) def\n'pick (swap 'data swap def (data swap get must) each) def\n'reduce (swap dup 0 get must swap 1 drop-n swap rot fold) def\n'table ((dup) swap compose (couple) compose each) def\n"
-    "'sqr (dup mul) def\n'cube (dup dup mul mul) def\n'ispos (0 swap lt) def\n'isneg (0 lt) def\n'first (0 get) def\n'last (dup len 1 sub get) def\n'sum (0 (plus) fold) def\n'product (1 (mul) fold) def\n"
-    "'max-of (dup first must (max) fold) def\n'min-of (dup first must (min) fold) def\n'member (index-of (drop 1 ok) then 0 default) def\n'couple (list rot push swap push) def\n"
+    "'sqr (dup mul) def\n'cube (dup dup mul mul) def\n'ispos (0 swap lt) def\n'isneg (0 lt) def\n"
+    "'first (0 get must) def\n'second (1 get must) def\n'third (2 get must) def\n'fourth (3 get must) def\n'fifth (4 get must) def\n"
+    "'sixth (5 get must) def\n'seventh (6 get must) def\n'eighth (7 get must) def\n'ninth (8 get must) def\n'tenth (9 get must) def\n"
+    "'last (dup len 1 sub get must) def\n'sum (0 (plus) fold) def\n'product (1 (mul) fold) def\n"
+    "'max-of (dup first (max) fold) def\n'min-of (dup first (min) fold) def\n'member (index-of (drop 1 ok) then 0 default) def\n'couple (list rot push swap push) def\n"
     "'isany (0 (or) fold) def\n'isall (1 (and) fold) def\n'flatten (list (cat) fold) def\n'sort-desc (sort reverse) def\n'fneg (0.0 swap sub) def\n"
     "'fabs (dup 0.0 lt (fneg) () if) def\n'frecip (1.0 swap div) def\n'fsign (dup 0.0 lt (drop -1.0) (dup 0.0 eq (drop 0.0) (drop 1.0) if) if) def\n'sign (dup 0 lt (drop -1) (dup 0 eq (drop 0) (drop 1) if) if) def\n"
     "'clamp (rot swap min max) def\n'fclamp (swap min max) def\n'lerp ((over sub) dip swap mul plus) def\n'isbetween (rot dup (rot swap le) dip rot rot ge and) def\n"
@@ -1985,7 +2191,7 @@ static const char *PRELUDE =
     "'nmt-decode (3 chunks ('c let c 0 get must c 1 get must 8 shl bor 'addr let c 2 get must 'color let rec addr 'addr into color 'color into) each) def\n'nmt-encode ((dup 'addr at must dup byte-mask swap 8 shr byte-mask couple swap 'color at must push) each flatten) def\n"
     "'tga-decode ('data let data 12 get must data 13 get must 8 shl bor 'w let data 14 get must data 15 get must 8 shl bor 'h let data 16 get must 'd let data 18 drop-n 'pixels let rec w 'width into h 'height into d 'depth into pixels 'pixels into) def\n"
     "'tga-header ('px let 'd let 'h let 'w let list 0 push 0 push 2 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push w byte-mask push w 8 shr byte-mask push h byte-mask push h 8 shr byte-mask push d push 0 push px cat) def\n'tga-encode (dup 'width at must swap dup 'height at must swap dup 'depth at must swap 'pixels at must tga-header) def\n"
-    "'gly-parse-rows recur ('input let 'cur let 'rows let 'maxw let input len 0 eq (cur len 0 eq not (cur len maxw max rows cur push) (maxw rows) if) (input first must 'ch let input 1 drop-n 'rest let ch 10 eq (cur len maxw max rows cur push list rest gly-parse-rows) (ch 32 eq (cur 0 push) (cur ch 63 sub push) if 'ncur let maxw rows ncur rest gly-parse-rows) if) if) def\n"
+    "'gly-parse-rows recur ('input let 'cur let 'rows let 'maxw let input len 0 eq (cur len 0 eq not (cur len maxw max rows cur push) (maxw rows) if) (input first 'ch let input 1 drop-n 'rest let ch 10 eq (cur len maxw max rows cur push list rest gly-parse-rows) (ch 32 eq (cur 0 push) (cur ch 63 sub push) if 'ncur let maxw rows ncur rest gly-parse-rows) if) if) def\n"
     "'gly-decode ('input let 0 list list input gly-parse-rows 'rows let 'maxw let rows len 'nrows let maxw 'w let nrows 4 mul 'h let 0 h range ('y let 0 w range ('c let y 4 div 'r let y 4 mod 'bit let rows len r gt (rows r get must dup len c gt (c get must bit shr 1 band) (drop 0) if) (0) if) each) each flatten 'pixels let rec w 'width into h 'height into pixels 'pixels into) def\n"
     "'gly-encode (dup 'width at must 'w let dup 'height at must 'h let 'pixels at must 'px let h 4 div 'nrows let 0 nrows range ('r let 0 w range ('c let 0 4 range 0 ('bit let px r 4 mul bit plus w mul c plus get must bit shl bor) fold 63 plus) each r nrows 1 sub lt (10 push) () if) each flatten) def\n"
     "'ufx-decode (dup 256 take-n 'widths let 256 drop-n 8 chunks (icn-decode) each 'glyphs let rec widths 'widths into glyphs 'glyphs into) def\n'ufx-encode (dup 'widths at must swap 'glyphs at must (icn-encode) each flatten cat) def\n"
@@ -2008,7 +2214,7 @@ static const char *PRELUDE =
     "'parse-float (0.0 (parse-float-core) pthen) def\n"
 #ifndef SLAP_WASM
     "'crlf (list 13 push 10 push) def\n'int-str-digits recur ('n let n 0 gt (n 10 mod 48 plus push n 10 div int-str-digits) () if) def\n"
-    "'int-str ('n let n 0 lt (n neg int-str list 45 push swap cat) (n 0 eq (list 48 push) (list n int-str-digits reverse) if) if) def\n'str-join ('sep let 'parts let parts len 0 eq (list) (parts 1 drop-n parts first must (sep swap cat cat) fold) if) def\n"
+    "'int-str ('n let n 0 lt (n neg int-str list 45 push swap cat) (n 0 eq (list 48 push) (list n int-str-digits reverse) if) if) def\n'str-join ('sep let 'parts let parts len 0 eq (list) (parts 1 drop-n parts first (sep swap cat cat) fold) if) def\n"
     "'http-request ('body let 'headers let 'path let 'host let 'method let method \" \" cat path cat \" HTTP/1.1\" cat crlf cat \"Host: \" cat host cat crlf cat headers cat body len 0 gt (\"Content-Length: \" cat body len int-str cat crlf cat) () if crlf cat body cat) def\n"
     "'http-get ('path let 'port let 'host let host port tcp-connect must \"GET\" host path list list http-request (swap tcp-send must drop) dip swap list swap (swap 4096 tcp-recv must 'chunk let swap chunk cat chunk len 0 gt) () while swap tcp-close parse-http must) def\n"
     "'http-post ('body let 'content-type let 'path let 'port let 'host let host port tcp-connect must \"Content-Type: \" content-type cat crlf cat 'ct-hdr let \"POST\" host path ct-hdr body http-request (swap tcp-send must drop) dip swap list swap (swap 4096 tcp-recv must 'chunk let swap chunk cat chunk len 0 gt) () while swap tcp-close parse-http must) def\n"
@@ -2342,6 +2548,9 @@ static void register_prims(void) {
         R(at,at),R(rise,rise),R(fall,fall),R(shape,shape),
         R(rec,rec),R(into,into),R(edit,edit),R(reverse,reverse),R(dedup,dedup),R(where,where),R(find,find_elem),
         R(millis,millis),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),R(clone,clone),
+        R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),
+        {"dict-keys",prim_keys},{"dict-values",prim_values},
+        {"dict-free",prim_dict_free},{"dict-clone",prim_dict_clone},{"dict-len",prim_dict_len},
         R(tag,tag),R(untag,untag),R(union,union),R(then,then),R(default,default),R(must,must),R(pthen,pthen),
         R(read,read),R(write,write),R(ls,ls),
         {"utf8-encode",prim_utf8_encode},{"utf8-decode",prim_utf8_decode},

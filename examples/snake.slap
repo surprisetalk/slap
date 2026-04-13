@@ -58,7 +58,7 @@ rec
 
   dup 'state at must 1 eq (
     frm 6 mod 0 eq (
-      dup 'snake at must last must 'head let
+      dup 'snake at must last 'head let
       head pos-x 'hx let
       head pos-y 'hy let
       dup 'dir at must 'dr let
@@ -111,7 +111,7 @@ rec
     snk (dup pos-x swap pos-y flash 1 eq (3) (1) if draw-cell) each drop
   ) (
     snk (dup pos-x swap pos-y 2 draw-inset) each drop
-    snk last must dup pos-x swap pos-y 3 draw-inset
+    snk last dup pos-x swap pos-y 3 draw-inset
 
     stv 0 eq frm 20 div 2 mod 0 eq and (
       fd pos-x fd pos-y 3 draw-cell

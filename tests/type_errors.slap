@@ -303,3 +303,23 @@
 -- EXPECT: expected ord
 -- TYPE ERROR: sort list of lists (lists aren't Ord)
 [[1] [2]] sort
+
+-- EXPECT: linear value
+-- TYPE ERROR: dict never freed (linear leak)
+dict "k" 1 insert
+
+-- EXPECT: requires copyable
+-- TYPE ERROR: dup on linear dict
+dict dup dict-free dict-free
+
+-- EXPECT: expected dict
+-- TYPE ERROR: insert expects dict
+42 "k" 1 insert
+
+-- EXPECT: type variable 'a' mismatch
+-- TYPE ERROR: heterogeneous dict values
+dict "a" 1 insert "b" "two" insert dict-free
+
+-- EXPECT: body must be 1->1
+-- TYPE ERROR: each body on dict must be 1->1 (receives (k v) tuple)
+dict (drop) each dict-free

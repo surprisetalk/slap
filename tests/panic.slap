@@ -266,11 +266,11 @@ tuck
 
 -- ===== Uncovered die() sites =====
 
--- EXPECT: MUST FAILED
-[] first must
+-- EXPECT: out of bounds
+[] first
 
--- EXPECT: MUST FAILED
-[] last must
+-- EXPECT: out of bounds
+[] last
 
 -- EXPECT: dip: need body and value
 1 dip
@@ -290,10 +290,10 @@ tuck
 -- EXPECT: key
 {'a 1} 'b at must
 
--- EXPECT: MUST FAILED
+-- EXPECT: out of bounds
 [] max-of
 
--- EXPECT: MUST FAILED
+-- EXPECT: out of bounds
 [] min-of
 
 -- ===== Parser panics (via must on no result) =====

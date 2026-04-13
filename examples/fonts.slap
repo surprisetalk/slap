@@ -80,8 +80,8 @@
   drop
 ) def
 
--- N from filename last must char
-'font-n (last must 49 sub 1 plus) def
+-- N from filename last char
+'font-n (last 49 sub 1 plus) def
 
 -- Font catalog
 [
