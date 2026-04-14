@@ -677,12 +677,29 @@ static int tvar_unify_at(TypeChecker *tc, int tvar, AbstractType *at, int line) 
     if (at->type != TC_NONE) return tvar_bind(tc, tvar, at->type, line);
     return 0;
 }
+/* tvar_instantiate: replicate the scheme's tvars at [base, base+count) into
+   fresh tvars, remapping cross-references within the scheme.
+
+   KNOWN LIMITATION (A7): when an internal tvar's elem/box_c/tag_p/parent
+   points *outside* [base, base+count), we pass the reference through to the
+   original tvar unchanged. This aliases the freshly-instantiated copy to
+   the outer scope, which can leak unification constraints back onto the
+   scheme across separate call sites. Properly fixing this requires
+   distinguishing genuinely-quantified scheme tvars from free variables
+   captured by a closure's enclosing scope, which is a bigger change.
+
+   For now, build a fresh tvar for any out-of-range ref too, but DON'T unify
+   with the original — this breaks shared state. The downside: each
+   instantiation loses the "this tvar is the outer X" information. In
+   practice nothing in the existing prelude/tests depends on that link. */
 static void tvar_instantiate(TypeChecker *tc, int base, int count, int *map) {
     for (int i = 0; i < count; i++) map[i] = tvar_fresh(tc);
     for (int i = 0; i < count; i++) {
         int root = tvar_find(tc, base + i);
         tc->tvars[map[i]].bound = tc->tvars[root].bound;
-#define REMAP(f) if (tc->tvars[root].f > 0) { int off = tc->tvars[root].f - base; tc->tvars[map[i]].f = (off >= 0 && off < count) ? map[off] : tc->tvars[root].f; }
+#define REMAP(f) if (tc->tvars[root].f > 0) { int off = tc->tvars[root].f - base; \
+    if (off >= 0 && off < count) tc->tvars[map[i]].f = map[off]; \
+    else { int fresh = tvar_fresh(tc); tc->tvars[fresh].bound = tc->tvars[tvar_find(tc, tc->tvars[root].f)].bound; tc->tvars[map[i]].f = fresh; } }
         REMAP(elem) REMAP(box_c) REMAP(tag_p)
 #undef REMAP
         tc->tvars[map[i]].union_id = tc->tvars[root].union_id;
