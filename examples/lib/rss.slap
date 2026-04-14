@@ -1,6 +1,6 @@
 -- rss.slap: RSS 2.0 + Atom feed parser built on xd-*.
--- Requires xml.slap to be loaded first.
--- Run tests via: cat examples/xml.slap examples/rss.slap | ./slap
+-- Requires parse.slap + xml.slap loaded first.
+-- Run tests via: cat examples/lib/parse.slap examples/lib/xml.slap examples/lib/rss.slap | ./slap
 --
 -- rss-parse: (source-string -- feed-record ok | err no)
 -- Feed record: {'kind "rss"|"atom" 'title 'link 'description 'items [...]}
@@ -365,4 +365,3 @@ art rss-items 0 get must rss-item-title "Atom Post" eq assert
 art rss-items 0 get must rss-item-link "http://a/1" eq assert
 art rss-items 0 get must rss-item-id "urn:uuid:1" eq assert
 
-"All RSS tests passed!" print

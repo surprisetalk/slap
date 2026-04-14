@@ -23,19 +23,17 @@ slap-wasm: slap.c shell.html
 clean:
 	rm -f slap slap-sdl *.wasm
 test: slap
-	@./slap < tests/expect.slap
+	@cat examples/lib/parse.slap tests/expect.slap | ./slap
 	@./slap --check < tests/type.slap
 	@./slap < tests/type.slap > /dev/null
-	@./slap --check < tests/expect.slap
+	@cat examples/lib/parse.slap tests/expect.slap | ./slap --check
 	@python3 tests/run_panic.py
 	@python3 tests/run_type_errors.py
 	@echo 'args len 2 eq assert  args 0 get must "hello" eq assert  args 1 get must "world" eq assert' | ./slap hello world
 	@echo 'args len 0 eq assert' | ./slap
 	@rm -f _test_fs.bin
 	@python3 tests/run_euler.py
-	@./slap < examples/xml.slap > /dev/null
-	@./slap --check < examples/xml.slap
-	@cat examples/xml.slap examples/rss.slap | ./slap > /dev/null
-	@cat examples/xml.slap examples/rss.slap | ./slap --check
+	@for f in icn chr nmt tga gly ulz parse; do ./slap < examples/lib/$$f.slap > /dev/null && ./slap --check < examples/lib/$$f.slap; done
+	@for combo in "icn ufx" "parse xml" "parse xml rss" "parse json"; do files=$$(echo $$combo | sed 's|[^ ]*|examples/lib/&.slap|g'); cat $$files | ./slap > /dev/null && cat $$files | ./slap --check; done
 	@echo "All test suites passed."
 .PHONY: clean test

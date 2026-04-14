@@ -510,17 +510,21 @@ String primitives plus prelude helpers. Strings are lists of byte codes.
 
 ### binary format codecs
 
-Decoders/encoders for compact binary formats. Each pairs a `*-decode`/`*-encode` that round-trip with the corresponding byte layout. Useful for tile graphics, tilemaps, fonts, and lightweight compression.
+Decoders/encoders for compact binary formats. These live in `examples/lib/` as loadable libraries (not prelude) — cat the file with your program: `cat examples/lib/icn.slap myprog.slap | ./slap`. Each pairs a `*-decode`/`*-encode` that round-trip with the corresponding byte layout. Useful for tile graphics, tilemaps, fonts, and lightweight compression.
 
-| Format | Purpose |
-|--------|---------|
-| `icn-*` | 1-bit 8×8 tiles |
-| `chr-*` | 2-bit 8×8 tiles (two planes) |
-| `nmt-*` | Nametable cells (addr + color per 3 bytes) |
-| `tga-*` | Uncompressed true-color TGA images |
-| `gly-*` | ASCII-inline 1-bit glyphs |
-| `ufx-*` | Proportional bitmap fonts |
-| `ulz-decode` | LZ-compressed byte stream |
+| File | Format |
+|------|--------|
+| `examples/lib/icn.slap` | 1-bit 8×8 tiles |
+| `examples/lib/chr.slap` | 2-bit 8×8 tiles (two planes) |
+| `examples/lib/nmt.slap` | Nametable cells (addr + color per 3 bytes) |
+| `examples/lib/tga.slap` | Uncompressed true-color TGA images |
+| `examples/lib/gly.slap` | ASCII-inline 1-bit glyphs |
+| `examples/lib/ufx.slap` | Proportional bitmap fonts (requires `icn.slap`) |
+| `examples/lib/ulz.slap` | LZ-compressed byte stream (decode only) |
+| `examples/lib/parse.slap` | `parse-int`/`parse-float`/`parse-exact`/`parse-spaces`/`parse-while`/`parse-until` |
+| `examples/lib/xml.slap` | Elm-style XML decoder |
+| `examples/lib/rss.slap` | RSS/Atom feed parser (requires `xml.slap`) |
+| `examples/lib/json.slap` | Elm-style JSON decoder (requires `parse.slap`) |
 
 ### networking / http
 

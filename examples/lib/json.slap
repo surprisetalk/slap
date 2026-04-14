@@ -449,4 +449,3 @@ list "a" 1 je-int couple push je-obj "{\"a\":1}" eq assert
 list "a" 1 je-int couple push "b" "hi" je-str couple push je-obj
   "{\"a\":1,\"b\":\"hi\"}" eq assert
 
-"All JSON tests passed!" print

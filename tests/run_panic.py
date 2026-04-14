@@ -12,6 +12,9 @@ def main():
     with open("tests/panic.slap") as f:
         lines = f.readlines()
 
+    with open("examples/lib/parse.slap") as f:
+        parse_lib = f.read()
+
     expect = None
     expect_line = None
     expect_col = None
@@ -32,7 +35,10 @@ def main():
         if expect is None:
             continue
 
+        needs_parse = re.search(r"parse-(int|float|exact|spaces|while|until)\b", line) is not None
         with tempfile.NamedTemporaryFile(mode="w", suffix=".slap", delete=False) as tmp:
+            if needs_parse:
+                tmp.write(parse_lib)
             tmp.write(line + "\n")
             tmp_path = tmp.name
 

@@ -709,4 +709,3 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 "<feed xmlns=\"http://www.w3.org/2005/Atom\"/>" xd-default-ns xd-run
   "http://www.w3.org/2005/Atom" ok eq assert
 
-"All XML tests passed!" print
