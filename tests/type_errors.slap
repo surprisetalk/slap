@@ -359,3 +359,39 @@ dict (drop) each free
 -- EXPECT: needs 3 input
 -- TYPE ERROR: untag without default arg (would stack-underflow at runtime)
 123 'foo tag {'foo (1 plus)} untag
+
+-- EXPECT: already been consumed
+-- TYPE ERROR: linear-capturing closure returned from def, applied twice
+'make-freer (42 box 'b let (b free)) def
+make-freer 'f let
+f apply
+f apply
+
+-- EXPECT: already been consumed
+-- TYPE ERROR: linear-capturing closure via def chain, applied twice
+'inner-maker (42 box 'b let (b free)) def
+'outer-maker (inner-maker) def
+outer-maker 'f let
+f apply
+f apply
+
+-- EXPECT: already been consumed
+-- TYPE ERROR: linear-capturing closure from apply, applied twice
+(42 box 'b let (b free)) apply 'f let
+f apply
+f apply
+
+-- EXPECT: clause body may not produce a linear value
+-- TYPE ERROR: cond clause producing a linear closure
+'bad-cond (1 0 {(1 eq) (42 box 'b let (b free))} cond) def
+
+-- EXPECT: already been consumed
+-- TYPE ERROR: if-branch returning linear closure, applied twice
+'maker (1 (42 box 'b let (b free)) (99 box 'c let (c free)) if) def
+maker 'f let
+f apply
+f apply
+
+-- EXPECT: body may not produce a linear-capturing closure
+-- TYPE ERROR: each body producing linear closure (would alias into list)
+[1] (drop 42 box 'b let (b free)) each

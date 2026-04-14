@@ -550,6 +550,7 @@ typedef struct {
     int out_effect;
     int has_let;
     int captures_linear;  /* body looked up a linear binding from outer scope; tuple is single-use */
+    int output_is_linear; /* body's sole output is itself a linear-capturing closure; apply should mark output AT_LINEAR */
 } TupleEffect;
 #define AT_LINEAR 1
 #define AT_CONSUMED 2
@@ -944,6 +945,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         return;
     }
     TypeConstraint lpt = TC_NONE; int tptv = 0, lptv = 0;
+    int branch_linear = 0; /* any popped body tuple captures or outputs linear */
     for (int n = ho->need; n > 0 && tc->sp > tc->sp_floor; n--) {
         AbstractType *top = &tc->data[tc->sp - 1];
         if ((ho->flags & HO_SAVES_UNDER) && n == 1) { saved = *top; had_saved = 1; tc->sp--; continue; }
@@ -953,12 +955,18 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         if (top->type == TC_TUPLE && top->effect_idx >= 0) {
             TupleEffect *te = &tc->effects[top->effect_idx];
             if (!bk) { eff_c = te->consumed; eff_p = te->produced; bo = te->out_type; bk = 1; boe = te->out_effect; bteff = te; }
+            if (te->output_is_linear || (te->captures_linear && (top->flags & AT_LINEAR))) branch_linear = 1;
             if (ib && bc < 8) { barr_c[bc]=te->consumed; barr_p[bc]=te->produced; barr_has[bc]=1; bouts[bc++] = te->out_type; }
         } else if (ib && top->type != TC_NONE && bc < 8) bouts[bc++] = top->type;
         tc->sp--;
     }
     if ((ho->flags & HO_BODY_1TO1) && bk && (eff_c != 1 || eff_p != 1) && (eff_c + eff_p > 0))
         tc_error(tc, line, 0, "'%s' body must be 1->1, got %d->%d", ho->name, eff_c, eff_p);
+    /* HO ops that aggregate body outputs into a container (each/fold/scan/etc.)
+       would alias a linear closure across iterations or package it into a list.
+       Apply/dip execute the body directly and are fine. */
+    if (bteff && bteff->output_is_linear && !(ho->flags & HO_APPLY_EFFECT))
+        tc_error(tc, line, 0, "'%s' body may not produce a linear-capturing closure (would alias it across iterations or package it into a container)", ho->name);
     if ((ho->flags & HO_BRANCHES_AGREE) && bc >= 2 && !tc->sp_floor) {
         TypeConstraint ref = TC_NONE;
         for (int i = 0; i < bc; i++) if (bouts[i] != TC_NONE) { ref = bouts[i]; break; }
@@ -983,13 +991,26 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
                 if(bi!=TC_NONE&&!tc_constraint_matches(bi,ok_t)&&!tc_constraint_matches(ok_t,bi)) tc_error(tc,line,0,"'then' body expects %s but 'ok variant has %s",constraint_name(bi),constraint_name(ok_t)); } }
     }
     if (ho->flags & HO_APPLY_EFFECT) {
-        if (bk) { tc_apply_effect(tc, eff_c, eff_p, bo, line); if (boe >= 0 && tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE) tc->data[tc->sp-1].effect_idx = boe; }
+        if (bk) {
+            tc_apply_effect(tc, eff_c, eff_p, bo, line);
+            if (boe >= 0 && tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE) tc->data[tc->sp-1].effect_idx = boe;
+            /* apply of a body whose output is a linear-capturing closure must
+               propagate AT_LINEAR onto the result — otherwise subsequent let+apply
+               would lose the single-use property. */
+            if (bteff && bteff->output_is_linear && tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE)
+                tc->data[tc->sp-1].flags |= AT_LINEAR;
+        }
         if (had_saved && tc->sp < ASTACK_MAX) tc->data[tc->sp++] = saved;
         return;
     }
     if (ho->sym == S_IF && bk) {
         if (bteff && bteff->scheme_count > 0 && bteff->in_count > 0) tc_apply_scheme(tc, bteff, eff_c, eff_p, bo, "if", line, 0);
         else tc_apply_effect(tc, eff_c, eff_p, bo, line);
+        /* If either branch body produces a linear-capturing closure, mark the
+           result linear. Runtime dispatches one branch at a time, but static
+           TC can't know which branch wins — both must be treated as tainted. */
+        if (branch_linear && tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE)
+            tc->data[tc->sp-1].flags |= AT_LINEAR;
         return;
     }
     TypeConstraint out = ho->out_type;
@@ -1041,6 +1062,10 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
             TupleEffect *eff = &tc->effects[b->atype.effect_idx];
             if (eff->scheme_count > 0) tc_apply_scheme(tc, eff, eff->consumed, eff->produced, eff->out_type, sym_name(sym), line, 1);
             else tc_apply_effect(tc, eff->consumed, eff->produced, eff->out_type, line);
+            /* Def returns a linear-capturing closure → mark output AT_LINEAR so
+               the linear-closure single-use check catches second application. */
+            if (eff->output_is_linear && tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE)
+                tc->data[tc->sp-1].flags |= AT_LINEAR;
             return;
         } else { tc_push(tc, b->atype.type, line); if (b->atype.flags & AT_LINEAR) { tc->data[tc->sp-1].flags |= AT_LINEAR; tc->saw_linear_capture = 1; } return; }
       }
@@ -1208,12 +1233,25 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     if (ao == 1 && tc->data[tc->sp-1].type == TC_TUPLE && tc->data[tc->sp-1].effect_idx >= 0) out_eff = tc->data[tc->sp-1].effect_idx;
                 }
                 int body_captured = tc->saw_linear_capture;
+                /* output_is_linear: body's sole output is itself a linear-capturing
+                   closure (e.g. `'make-freer (42 box 'b let (b free)) def` or any
+                   chain thereof `'outer (make-freer) def`). Distinct from
+                   captures_linear, which only tracks whether THIS body refs
+                   outer-scope linears. tcp-style defs have captures_linear but
+                   not output_is_linear, so their output isn't marked. */
+                int output_captures_linear = 0;
+                if (!skip && (tc->sp - _s[0]) == 1) {
+                    AbstractType *top = &tc->data[tc->sp-1];
+                    if (top->type == TC_TUPLE && (top->flags & AT_LINEAR)) output_captures_linear = 1;
+                    else if (top->type == TC_TUPLE && top->effect_idx >= 0 && tc->effects[top->effect_idx].captures_linear) output_captures_linear = 1;
+                }
                 tc->sp=_s[0];tc->bind_count=_s[1];tc->unknown_count=_s[2];tc->recur_pending=_s[3];tc->suppress_errors=_s[4];type_sig_count=_s[5];tc->effect_count=_s[6];tc->sp_floor=_s[7];tc->saw_linear_capture=_s[8];tc->in_recur_body=_s[9];
                 tc_push(tc, TC_TUPLE, t->line);
                 int eidx = tc_alloc_effect(tc); TupleEffect *eff = &tc->effects[eidx];
                 eff->consumed = eff_c; eff->produced = eff_p; eff->out_type = eff_out; eff->out_effect = out_eff;
                 eff->scheme_base = scheme_base; eff->scheme_count = sc; eff->in_count = ic; eff->out_count = oc;
                 eff->captures_linear = body_captured;
+                eff->output_is_linear = output_captures_linear;
                 for (int j = 0; j < ic; j++) eff->in_tvars[j] = itv[j];
                 for (int j = 0; j < oc; j++) eff->out_tvars[j] = otv[j];
                 for (int k = i+1; k < close; k++) if (toks[k].tag == TOK_WORD && (toks[k].as.sym == S_LET || toks[k].as.sym == S_DEF)) { eff->has_let = 1; break; }
@@ -1257,6 +1295,18 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     tv = TC_TUPLE; if (!pairs) { veffout = vo; has_eff = 1; }
                     if (has_eff && vo != TC_NONE && veffout != TC_NONE && vo != veffout && !tc_constraint_matches(veffout, vo) && !tc_constraint_matches(vo, veffout))
                         tc_error(tc, t->line, 0, "clause bodies produce different types: %s vs %s", constraint_name(veffout), constraint_name(vo));
+                    /* A cond/case/untag clause body that creates a linear closure
+                       escapes conditional dispatch — the resulting value can be
+                       applied twice without detection. Ban box creation nested in
+                       clause bodies. Runtime catches double-free but we'd rather
+                       surface this at TC. */
+                    for (int k = j+1; k < vc2; k++) {
+                        if (toks[k].tag == TOK_LPAREN) { k = find_matching(toks, k+1, total_count, TOK_LPAREN, TOK_RPAREN); continue; }
+                        if (toks[k].tag == TOK_LBRACKET) { k = find_matching(toks, k+1, total_count, TOK_LBRACKET, TOK_RBRACKET); continue; }
+                        if (toks[k].tag == TOK_LBRACE) { k = find_matching(toks, k+1, total_count, TOK_LBRACE, TOK_RBRACE); continue; }
+                        if (toks[k].tag == TOK_WORD && tc_word_produces_linear(toks[k].as.sym))
+                            tc_error(tc, t->line, 0, "clause body may not produce a linear value (via '%s') — linear-capturing closures from conditional branches cannot be tracked for single-use", sym_name(toks[k].as.sym));
+                    }
                     j = vc2 + 1;
                 } else {
                     if (toks[j].tag == TOK_INT) tv = TC_INT; else if (toks[j].tag == TOK_FLOAT) tv = TC_FLOAT;
@@ -1863,7 +1913,8 @@ static inline void prim_indexof_impl(Frame *e, int tagged) {
     (void)e; POP_VAL(val); Value top=speek(); if(top.tag!=VAL_LIST) die("index-of: expected list, got %s",valtag_name(top.tag));
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s,r=-1;
     for(int i=0;i<len&&r<0;i++){ElemRef ref=compound_elem(&stack[base],s,len,i);if(val_equal(&stack[base+ref.base],ref.slots,val_buf,val_s))r=i;}
-    sp-=s; if(r<0) { if(tagged) push_none(); else die("index-of: element not found"); }
+    sp-=s;
+    if(r<0) { if(tagged) push_none(); else die("index-of: element not found"); }
     else { spush(val_int(r)); if(tagged) push_ok(); }
 }
 static void prim_index_of(Frame *e) { prim_indexof_impl(e,1); }
@@ -2017,8 +2068,10 @@ static DictEntry *dict_get(DictData *dd, const char *key, int klen) {
 }
 static void dict_free_entry_contents(DictEntry *e) {
     if(!e->key) return;
-    for(int i=0;i<e->nvals;i++) if(e->vals[i].tag==VAL_BOX){BoxData *bd=(BoxData*)e->vals[i].as.box;free(bd->data);free(bd);}
+    for(int i=0;i<e->nvals;i++) {
+        if(e->vals[i].tag==VAL_BOX){BoxData *bd=(BoxData*)e->vals[i].as.box;free(bd->data);free(bd);}
         else if(e->vals[i].tag==VAL_DICT){DictData *sub=(DictData*)e->vals[i].as.box;for(int j=0;j<sub->cap;j++)dict_free_entry_contents(&sub->entries[j]);free(sub->entries);free(sub);}
+    }
     free(e->key); free(e->vals); e->key=NULL; e->vals=NULL; e->klen=0; e->nvals=0;
 }
 static int dict_del(DictData *dd, const char *key, int klen) {
