@@ -310,7 +310,7 @@ dict "k" 1 insert
 
 -- EXPECT: requires copyable
 -- TYPE ERROR: dup on linear dict
-dict dup dict-free dict-free
+dict dup free free
 
 -- EXPECT: expected dict
 -- TYPE ERROR: insert expects dict
@@ -318,11 +318,11 @@ dict dup dict-free dict-free
 
 -- EXPECT: type variable 'a' mismatch
 -- TYPE ERROR: heterogeneous dict values
-dict "a" 1 insert "b" "two" insert dict-free
+dict "a" 1 insert "b" "two" insert free
 
 -- EXPECT: body must be 1->1
 -- TYPE ERROR: each body on dict must be 1->1 (receives (k v) tuple)
-dict (drop) each dict-free
+dict (drop) each free
 
 -- EXPECT: must not be a linear value
 -- TYPE ERROR: default with linear fallback (leak on ok path)

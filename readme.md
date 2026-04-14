@@ -259,13 +259,17 @@ rec 10 'x into 20 'y into   -- {'x 10 'y 20}
 
 ### strings
 
-Strings are lists of character codes.
+Strings are lists of Unicode codepoints. String literals are UTF-8 decoded at lex time — `len` counts characters, not bytes.
 
 ```slap
 "hello" len                  -- 5
 "hello" 0 get                -- 104
+"héllo" len                  -- 5 (not 6)
+"héllo" 1 get must           -- 233 (U+00E9)
 "ab" "cd" cat                -- "abcd"
 ```
+
+For byte-oriented I/O (file reads, TCP, binary formats) use `utf8-encode` / `utf8-decode` to convert between codepoints and UTF-8 bytes explicitly.
 
 ### tagged unions (sum types)
 
@@ -487,7 +491,7 @@ Built-in protocols group types by capability. Use in effect annotations:
 
 ### strings
 
-String primitives plus prelude helpers. Strings are lists of byte codes.
+String primitives plus prelude helpers. Strings are lists of Unicode codepoints; `utf8-encode`/`utf8-decode` convert to/from UTF-8 byte lists.
 
 | Word | Effect | Example |
 |------|--------|---------|

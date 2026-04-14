@@ -54,7 +54,7 @@ false assert
 -- EXPECT: expected seq
 1 2 push
 
--- EXPECT: expected box
+-- EXPECT: expected linear
 1 free
 
 -- EXPECT: pop: empty list
@@ -75,7 +75,7 @@ nonexistent_word_xyz
 -- EXPECT: expected box
 1 lend
 
--- EXPECT: expected box
+-- EXPECT: expected linear
 1 clone
 
 -- EXPECT: expected seq

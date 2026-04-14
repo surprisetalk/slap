@@ -1482,33 +1482,33 @@ none () no eq assert
 
 -- ===== Dict =====
 -- empty dict
-dict dict-len 0 eq assert dict-free
+dict dict-len 0 eq assert free
 
 -- insert + of (hit)
-dict "name" "alice" insert "name" of "missing" default "alice" eq assert dict-free
+dict "name" "alice" insert "name" of "missing" default "alice" eq assert free
 -- insert + of (miss)
-dict "x" 1 insert "y" of 42 default 42 eq assert dict-free
+dict "x" 1 insert "y" of 42 default 42 eq assert free
 
 -- overwrite preserves len, updates value
 dict "k" 1 insert "k" 2 insert dict-len 1 eq assert
-"k" of 0 default 2 eq assert dict-free
+"k" of 0 default 2 eq assert free
 
 -- remove existing decreases len; removing absent is no-op
 dict "a" 1 insert "b" 2 insert "c" 3 insert "b" remove
 dict-len 2 eq assert
 "b" of 0 default 0 eq assert
-"nope" remove dict-len 2 eq assert dict-free
+"nope" remove dict-len 2 eq assert free
 
 -- keys/values snapshot (hash order undefined — check length and sum)
 dict "x" 1 insert "y" 2 insert "z" 3 insert
 dict-keys len 3 eq assert
-dict-values sum 6 eq assert dict-free
+dict-values sum 6 eq assert free
 
--- dict-clone independence
-dict "a" 1 insert dict-clone "b" 2 insert
+-- clone independence
+dict "a" 1 insert clone "b" 2 insert
 dict-len 2 eq assert
 swap dict-len 1 eq assert
-dict-free dict-free
+free free
 
 -- grow path (>8 entries)
 dict
@@ -1518,17 +1518,17 @@ dict
 dict-len 12 eq assert
 "h" of 0 default 8 eq assert
 "z" of 999 default 999 eq assert
-dict-free
+free
 
 -- empty-string key is valid
-dict "" 7 insert "" of 0 default 7 eq assert dict-free
+dict "" 7 insert "" of 0 default 7 eq assert free
 
 -- remove then reinsert (probe chain correctness)
 dict "a" 1 insert "b" 2 insert "c" 3 insert
 "b" remove "b" 20 insert
 "a" of 0 default 1 eq assert
 "b" of 0 default 20 eq assert
-"c" of 0 default 3 eq assert dict-free
+"c" of 0 default 3 eq assert free
 
 -- each: fmap over dict, body receives (k v) tuple and returns new value
 dict "a" 1 insert "b" 2 insert "c" 3 insert
@@ -1536,7 +1536,7 @@ dict "a" 1 insert "b" 2 insert "c" 3 insert
 "a" of 0 default 10 eq assert
 "b" of 0 default 20 eq assert
 "c" of 0 default 30 eq assert
-dict-free
+free
 
 -- fold: reduce over dict, body receives acc + (k v) tuple
 dict "a" 1 insert "b" 2 insert "c" 7 insert
