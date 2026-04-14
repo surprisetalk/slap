@@ -1556,5 +1556,13 @@ dict "a" 1 insert "b" 2 insert "c" 7 insert
 [10 20 30 40 50 60 70 80 90 100] third 30 eq assert
 [10 20 30 40 50 60 70 80 90 100] tenth 100 eq assert
 
+-- ===== apply scoping: body let must not overwrite caller's same-name let =====
+-- body is stored as a value, so TC can't detect the shadow; runtime must still
+-- restore the outer binding after apply completes (let_scoping_gotcha fix).
+('outer-val let outer-val) 'shadower let
+99 'outer-val let
+42 shadower apply drop
+outer-val 99 eq assert
+
 -- ===== Done =====
 "All tests passed!" print

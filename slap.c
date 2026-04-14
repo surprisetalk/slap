@@ -267,6 +267,7 @@ static Lookup frame_lookup(Frame *f, uint32_t sym) {
 }
 static void eval(Token *toks, int count, Frame *env);
 static void eval_body(Value *body, int slots, Frame *env);
+static void eval_tuple_scoped(Value *body, int slots, Frame *env);
 static void dispatch_word(uint32_t sym, Frame *env);
 static void prim_strfind_must(Frame *e);
 static inline void eval_body_fast(Value *body, int slots, Frame *env);
@@ -1446,10 +1447,10 @@ static void prim_swap(Frame *e) {
 }
 static void prim_dip(Frame *env) {
     if(sp<2)die("dip: need body and value"); POP_BODY(body,"dip");
-    POP_VAL(saved); eval_body(body_buf,body_s,env);
+    POP_VAL(saved); eval_tuple_scoped(body_buf,body_s,env);
     SPUSH(saved_buf,saved_s);
 }
-static void prim_apply(Frame *env) { if(sp<=0) die("apply: stack underflow"); POP_BODY(body,"apply"); eval_body(body_buf,body_s,env); }
+static void prim_apply(Frame *env) { if(sp<=0) die("apply: stack underflow"); POP_BODY(body,"apply"); eval_tuple_scoped(body_buf,body_s,env); }
 #define ARITH2(nm,iop,fop) static void prim_##nm(Frame *e){(void)e;Value b=spop(),a=spop(); \
     if(a.tag==VAL_INT&&b.tag==VAL_INT) spush(val_int(a.as.i iop b.as.i)); \
     else if(a.tag==VAL_FLOAT&&b.tag==VAL_FLOAT) spush(val_float(a.as.f fop b.as.f)); \
@@ -2129,50 +2130,59 @@ static void prim_shape(Frame *e) {
     sp-=s; for(int i=0;i<nd;i++) spush(val_int(dims[i])); spush(val_compound(VAL_LIST,nd,nd+1));
 }
 /* ---- EVAL ---- */
+/* eval_tuple_scoped: run a tuple body with proper let-scope isolation.
+   Captures ee's bind_count/vals_used before the call, activates save_buf so
+   any overwritten bindings are snapshotted, runs the body, then:
+   - if the body returned closures over ee (new bindings escape), promotes
+     those bindings into a fresh child frame the closures point at;
+   - restores overwritten bindings from save_buf;
+   - trims new bindings from ee.
+   Shared by dispatch_word (for def-tuples), apply, and dip. Fixes the
+   let-scoping-gotcha where apply previously stomped outer bindings. */
+static void eval_tuple_scoped(Value *body, int slots, Frame *env) {
+    Frame *ee=body[slots-1].as.compound.env?body[slots-1].as.compound.env:env;
+    int sbc=ee->bind_count,svu=ee->vals_used,sp0=sp,sb0=save_buf_sp;
+    int prev_active=frame_save_active; Frame *prev_target=frame_save_target; int prev_sbc=frame_save_sbc;
+    frame_save_active=1; frame_save_target=ee; frame_save_sbc=sbc;
+    eval_body(body,slots,env);
+    frame_save_active=prev_active; frame_save_target=prev_target; frame_save_sbc=prev_sbc;
+    if(ee->bind_count==sbc&&save_buf_sp==sb0) return;
+    int has_closure=0;
+    for(int i=sp;i>sp0;){Value vi=stack[i-1];int vs=val_slots(vi);
+        if(vi.tag==VAL_TUPLE&&vi.as.compound.env==ee){has_closure=1;break;} i-=vs;}
+    if(has_closure){
+        Frame *cf=frame_new(ee);
+        for(int i=sbc;i<ee->bind_count;i++){
+            Binding *bi=&ee->bindings[i];
+            frame_bind(cf,bi->sym,&ee->vals[bi->offset],bi->slots,bi->kind,bi->recur);
+        }
+        for(int i=sp;i>sp0;){Value vi=stack[i-1];int vs=val_slots(vi);
+            if(vi.tag==VAL_TUPLE&&vi.as.compound.env==ee) stack[i-1].as.compound.env=cf;
+            i-=vs;}
+    }
+    if(save_buf_sp>sb0){
+        for(int p=sb0;p<save_buf_sp;){
+            int bi=(int)save_buf[p++].as.i;
+            int off=(int)save_buf[p++].as.i;
+            int alloc=(int)save_buf[p++].as.i;
+            int sl=(int)save_buf[p++].as.i;
+            int kr=(int)save_buf[p++].as.i;
+            VCPY(&ee->vals[off],&save_buf[p],sl);p+=sl;
+            ee->bindings[bi].offset=off;ee->bindings[bi].allocated=alloc;
+            ee->bindings[bi].slots=sl;ee->bindings[bi].kind=kr>>1;ee->bindings[bi].recur=kr&1;}
+        save_buf_sp=sb0;
+    }
+    for(int i=sbc;i<ee->bind_count;i++){
+        uint32_t h=ee->bindings[i].sym%FRAME_HASH_SIZE;
+        for(int j=0;j<FRAME_HASH_SIZE;j++){uint32_t s=(h+j)%FRAME_HASH_SIZE;
+            if(ee->hash[s]==i+1){ee->hash[s]=0;break;}}}
+    ee->bind_count=sbc;ee->vals_used=svu;
+}
 static void dispatch_word(uint32_t sym, Frame *env) {
     Lookup lu=frame_lookup(env,sym);
     if(lu.bind){
         Binding *b=lu.bind; Value *v=&lu.frame->vals[b->offset];
-        if(b->kind==BIND_DEF&&v[b->slots-1].tag==VAL_TUPLE){
-            Frame *ee=v[b->slots-1].as.compound.env?v[b->slots-1].as.compound.env:env;
-            int sbc=ee->bind_count,svu=ee->vals_used,sp0=sp,sb0=save_buf_sp;
-            int prev_active=frame_save_active; Frame *prev_target=frame_save_target; int prev_sbc=frame_save_sbc;
-            frame_save_active=1; frame_save_target=ee; frame_save_sbc=sbc;
-            eval_body(v,b->slots,env);
-            frame_save_active=prev_active; frame_save_target=prev_target; frame_save_sbc=prev_sbc;
-            if(ee->bind_count==sbc&&save_buf_sp==sb0){return;}
-            int has_closure=0;
-            for(int i=sp;i>sp0;){Value vi=stack[i-1];int vs=val_slots(vi);
-                if(vi.tag==VAL_TUPLE&&vi.as.compound.env==ee){has_closure=1;break;} i-=vs;}
-            if(has_closure){
-                Frame *cf=frame_new(ee);
-                for(int i=sbc;i<ee->bind_count;i++){
-                    Binding *bi=&ee->bindings[i];
-                    frame_bind(cf,bi->sym,&ee->vals[bi->offset],bi->slots,bi->kind,bi->recur);
-                }
-                for(int i=sp;i>sp0;){Value vi=stack[i-1];int vs=val_slots(vi);
-                    if(vi.tag==VAL_TUPLE&&vi.as.compound.env==ee) stack[i-1].as.compound.env=cf;
-                    i-=vs;}
-            }
-            if(save_buf_sp>sb0){
-                for(int p=sb0;p<save_buf_sp;){
-                    int bi=(int)save_buf[p++].as.i;
-                    int off=(int)save_buf[p++].as.i;
-                    int alloc=(int)save_buf[p++].as.i;
-                    int sl=(int)save_buf[p++].as.i;
-                    int kr=(int)save_buf[p++].as.i;
-                    VCPY(&ee->vals[off],&save_buf[p],sl);p+=sl;
-                    ee->bindings[bi].offset=off;ee->bindings[bi].allocated=alloc;
-                    ee->bindings[bi].slots=sl;ee->bindings[bi].kind=kr>>1;ee->bindings[bi].recur=kr&1;}
-                save_buf_sp=sb0;
-            }
-            for(int i=sbc;i<ee->bind_count;i++){
-                uint32_t h=ee->bindings[i].sym%FRAME_HASH_SIZE;
-                for(int j=0;j<FRAME_HASH_SIZE;j++){uint32_t s=(h+j)%FRAME_HASH_SIZE;
-                    if(ee->hash[s]==i+1){ee->hash[s]=0;break;}}}
-            ee->bind_count=sbc;ee->vals_used=svu;
-            return;
-        }
+        if(b->kind==BIND_DEF&&v[b->slots-1].tag==VAL_TUPLE){ eval_tuple_scoped(v,b->slots,env); return; }
         SPUSH(v,b->slots);
         return;
     }
