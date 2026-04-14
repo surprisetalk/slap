@@ -41,7 +41,7 @@ Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.
 - **Evaluator** (`eval` → `build_tuple` → `eval_body`): Tokens → compound values (tuples), then stack-machine execution. `dispatch_word` resolves names via frame lookup then primitive table.
 - **Frames**: Lexical scope chain with refcounting. Closures capture their defining frame. `def` bindings auto-execute tuples on lookup; `let` bindings push values.
 - **Primitives**: ~75 C functions registered via `prim_register`. Macros `ARITH2`, `FLOAT1`, `CMP2` generate families of math/comparison ops.
-- **Prelude**: ~70 derived definitions in Slap itself (embedded string in slap.c). Loaded at startup before user code. Compat aliases (`give`→`push`, `grab`→`pop`, `size`→`len`, `put`→`set`) preserved for backward compat.
+- **Prelude**: ~70 derived definitions in Slap itself (embedded string in slap.c). Loaded at startup before user code.
 - **Recur**: `'name recur (body) def` enables self-referencing definitions for recursion.
 
 ### Tagged unions (sum types)
@@ -155,7 +155,7 @@ Supports type variables (`'a`) that resolve against the sig's other slots. `defa
 
 Parsed in `parse_type_annotation`. Stored in `TypeSlot.either_syms/either_types/either_tvars`. Applied via `UnionDef` creation in `tc_check_word`.
 
-Canonical names for list ops: `push` (was `give`), `pop` (was `grab`), `set` (was `put`), `len` (was `size`), `cat` (was `compose` for lists). `compose` is kept as a separate tuple-concat primitive for function composition. `pull` was removed (use destructuring for tuple access).
+List ops: `push`, `pop`, `set`, `len`, `cat`. `compose` is a separate tuple-concat primitive for function composition.
 
 ### def vs let
 

@@ -335,3 +335,19 @@ dict (drop) each dict-free
 -- EXPECT: linear payload
 -- TYPE ERROR: tagging a box without consuming the tagged
 42 box ok
+
+-- EXPECT: stack effects
+-- TYPE ERROR: if branches produce different arity
+1 1 lt (99 99) (0) if drop drop
+
+-- EXPECT: never referenced
+-- TYPE ERROR: linear value let-bound inside quotation, never used → captured and leaked
+'leak (42 box 'b let) def leak
+
+-- EXPECT: aliases the box
+-- TYPE ERROR: let-bind compound inside lend body (aliases box backing)
+[1 2 3] box ('snap let snap) lend swap free drop
+
+-- EXPECT: does not handle tag
+-- TYPE ERROR: untag missing the tag that was just produced
+42 'unknown tag {'foo (drop 0)} untag

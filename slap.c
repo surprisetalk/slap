@@ -533,6 +533,7 @@ typedef struct {
     int scheme_base, scheme_count;
     int in_tvars[8], out_tvars[8], in_count, out_count;
     int out_effect;
+    int has_let;
 } TupleEffect;
 #define AT_LINEAR 1
 #define AT_CONSUMED 2
@@ -552,7 +553,7 @@ typedef struct {
     TCUnknown unknowns[TC_UNKNOWN_MAX]; int unknown_count;
     TVarEntry tvars[TVAR_MAX]; int tvar_count;
     TupleEffect effects[EFFECT_MAX]; int effect_count;
-    int user_start, prelude_sig_count, suppress_errors, sp_floor, body_depth;
+    int user_start, prelude_sig_count, suppress_errors, sp_floor, body_depth, lend_depth;
     UnionDef unions[UNION_MAX]; int union_count;
 } TypeChecker;
 static int tvar_fresh(TypeChecker *tc) {
@@ -845,10 +846,11 @@ static void tc_apply_scheme(TypeChecker *tc, TupleEffect *eff, int consumed, int
 static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
     int eff_c = 0, eff_p = 0, bk = 0, boe = -1; TypeConstraint bo = TC_NONE; TupleEffect *bteff = NULL;
     TypeConstraint bouts[8] = {0}; int bc = 0;
+    int barr_c[8] = {0}, barr_p[8] = {0}, barr_has[8] = {0};
     AbstractType saved = {0}; int had_saved = 0;
     if (ho->flags & (HO_BOX_BORROW|HO_BOX_MUTATE)) {
         if (tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE) {
-            if (tc->data[tc->sp-1].effect_idx >= 0) { TupleEffect *te = &tc->effects[tc->data[tc->sp-1].effect_idx]; eff_c = te->consumed; eff_p = te->produced; bo = te->out_type; bk = 1; }
+            if (tc->data[tc->sp-1].effect_idx >= 0) { TupleEffect *te = &tc->effects[tc->data[tc->sp-1].effect_idx]; eff_c = te->consumed; eff_p = te->produced; bo = te->out_type; bk = 1; bteff = te; }
             tc->sp--;
         }
         if (tc->sp > 0 && tc->data[tc->sp-1].type != TC_BOX && tc->data[tc->sp-1].type != TC_NONE)
@@ -856,6 +858,8 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
 #define TC_BOX_CONTENTS(tc) ({ TypeConstraint _c=TC_NONE; if((tc)->data[(tc)->sp-1].tvar_id>0){ int _bc=(tc)->tvars[tvar_find((tc),(tc)->data[(tc)->sp-1].tvar_id)].box_c; if(_bc>0)_c=tvar_resolve((tc),_bc); } _c; })
         if ((ho->flags & HO_BOX_BORROW) && tc->sp > 0 && tc->data[tc->sp-1].type == TC_BOX) {
             TypeConstraint ct = TC_BOX_CONTENTS(tc); tc->data[tc->sp-1].borrowed++;
+            if (bk && bteff && bteff->has_let && (ct == TC_LIST || ct == TC_REC || ct == TC_TUPLE || ct == TC_TAGGED))
+                tc_error(tc, line, 0, "'lend' body may not 'let'/'def'-bind values when the box contains a compound value (%s) — the borrowed snapshot aliases the box's backing storage and later 'mutate' calls would silently corrupt the binding", constraint_name(ct));
             int r = bk ? (1 - eff_c + eff_p) : 1; if (r < 0) r = 0;
             for (int j = 0; j < r; j++) tc_push(tc, (j==r-1&&bo!=TC_NONE)?bo:(j==0&&ct!=TC_NONE)?ct:TC_NONE, line);
             int bi = tc->sp - r - 1; if (bi >= 0) tc->data[bi].borrowed--;
@@ -876,7 +880,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         if (top->type == TC_TUPLE && top->effect_idx >= 0) {
             TupleEffect *te = &tc->effects[top->effect_idx];
             if (!bk) { eff_c = te->consumed; eff_p = te->produced; bo = te->out_type; bk = 1; boe = te->out_effect; bteff = te; }
-            if (ib && bc < 8) bouts[bc++] = te->out_type;
+            if (ib && bc < 8) { barr_c[bc]=te->consumed; barr_p[bc]=te->produced; barr_has[bc]=1; bouts[bc++] = te->out_type; }
         } else if (ib && top->type != TC_NONE && bc < 8) bouts[bc++] = top->type;
         tc->sp--;
     }
@@ -888,6 +892,13 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         for (int i = 0; i < bc; i++)
             if (bouts[i] != TC_NONE && ref != TC_NONE && bouts[i] != ref && !tc_constraint_matches(ref, bouts[i]) && !tc_constraint_matches(bouts[i], ref))
                 tc_error(tc, line, 0, "'%s' branches produce different types: %s vs %s", ho->name, constraint_name(ref), constraint_name(bouts[i]));
+        if (!tc->recur_pending) {
+            int rnet = 0, rset = 0, rci = 0;
+            for (int i = 0; i < bc; i++) if (barr_has[i]) { rnet = barr_p[i] - barr_c[i]; rci = i; rset = 1; break; }
+            if (rset) for (int i = 0; i < bc; i++)
+                if (barr_has[i] && (barr_p[i] - barr_c[i]) != rnet)
+                    tc_error(tc, line, 0, "'%s' branches have different stack effects: net %+d vs net %+d (%d->%d vs %d->%d)", ho->name, rnet, barr_p[i]-barr_c[i], barr_c[rci], barr_p[rci], barr_c[i], barr_p[i]);
+        }
     }
     if ((ho->flags & HO_SCRUTINEE_TAGGED) && lpt != TC_TAGGED && lpt != TC_NONE)
         tc_error(tc, line, 0, "'%s' expected tagged value, got %s", ho->name, constraint_name(lpt));
@@ -1082,7 +1093,8 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     int pe = tc_alloc_effect(tc); tc->effects[pe].consumed = eff_c; tc->effects[pe].produced = eff_p; tc->effects[pe].out_type = eff_out;
                     AbstractType pa = {0}; pa.type = TC_TUPLE; pa.effect_idx = pe; tc_bind(tc, tc->recur_sym, &pa, 1, t->line);
                 }
-                if (!skip) { tc->body_depth++; tc_process_range(tc, toks, i+1, close, total_count); tc->body_depth--; }
+                int is_lend_body = (close+1 < total_count && toks[close+1].tag == TOK_WORD && strcmp(sym_name(toks[close+1].as.sym), "lend") == 0);
+                if (!skip) { tc->body_depth++; if (is_lend_body) tc->lend_depth++; tc_process_range(tc, toks, i+1, close, total_count); if (is_lend_body) tc->lend_depth--; tc->body_depth--; }
                 if (wide) tc->suppress_errors = _s[4];
                 else if (!skip) {
                     int ao = tc->sp - _s[0]; oc = ao > 8 ? 8 : (ao > 0 ? ao : 0);
@@ -1100,6 +1112,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
             eff->scheme_base = scheme_base; eff->scheme_count = sc; eff->in_count = ic; eff->out_count = oc;
             for (int j = 0; j < ic; j++) eff->in_tvars[j] = itv[j];
             for (int j = 0; j < oc; j++) eff->out_tvars[j] = otv[j];
+            for (int k = i+1; k < close; k++) if (toks[k].tag == TOK_WORD && (toks[k].as.sym == S_LET || toks[k].as.sym == S_DEF)) { eff->has_let = 1; break; }
             tc->data[tc->sp-1].effect_idx = eidx;
             i = close; break;
         }
@@ -1154,12 +1167,26 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     tc->recur_pending = 0;
                 } else if (tc->sp >= 2) {
                     AbstractType vt = tc->data[tc->sp-1]; uint32_t ns = tc->data[tc->sp-2].sym_id; tc->sp -= 2;
-                    if (ns) { if (i >= tc->user_start) tc_check_redef(tc, ns, t->line); tc_bind(tc, ns, &vt, 1, t->line); }
+                    if (ns) {
+                        if (tc->body_depth > 0 && ((vt.flags & AT_LINEAR) || vt.type == TC_BOX || vt.type == TC_DICT)) {
+                            int seen = 0;
+                            for (int k = i+1; k < end; k++) if (toks[k].tag == TOK_WORD && toks[k].as.sym == ns) { seen = 1; break; }
+                            if (!seen) tc_error(tc, t->line, vt.source_line, "linear value bound as '%s' is never referenced in the enclosing quotation — it will be captured and leaked", sym_name(ns));
+                        }
+                        if (i >= tc->user_start) tc_check_redef(tc, ns, t->line); tc_bind(tc, ns, &vt, 1, t->line);
+                    }
                 } else if (tc->sp_floor == 0) tc->sp = 0;
             } else if (sym == S_LET) {
                 if (tc->sp >= 2) {
                     uint32_t ns = tc->data[tc->sp-1].sym_id; AbstractType val_t = tc->data[tc->sp-2]; tc->sp -= 2;
                     if (ns) {
+                        if (tc->body_depth > 0 && ((val_t.flags & AT_LINEAR) || val_t.type == TC_BOX || val_t.type == TC_DICT)) {
+                            int seen = 0;
+                            for (int k = i+1; k < end; k++) if (toks[k].tag == TOK_WORD && toks[k].as.sym == ns) { seen = 1; break; }
+                            if (!seen) tc_error(tc, t->line, val_t.source_line, "linear value bound as '%s' is never referenced in the enclosing quotation — it will be captured and leaked", sym_name(ns));
+                        }
+                        if (tc->lend_depth > 0 && (val_t.type == TC_LIST || val_t.type == TC_REC || val_t.type == TC_TUPLE || val_t.type == TC_TAGGED))
+                            tc_error(tc, t->line, val_t.source_line, "cannot 'let'-bind compound value '%s' (%s) inside a 'lend' body — the snapshot aliases the box's backing storage and would observe later mutations", sym_name(ns), constraint_name(val_t.type));
                         if (i >= tc->user_start) { int ss=tc->suppress_errors; tc->suppress_errors=0;
                             if(tc_is_builtin(ns,tc->prelude_sig_count)) tc_error(tc,t->line,0,"'%s' shadows existing definition",sym_name(ns));
                             else{TCBinding *ex=tc_lookup(tc,ns);if(ex)tc_error(tc,t->line,0,"'%s' %s (line %d)",sym_name(ns),ex->is_def?"shadows existing definition":"is already bound",ex->def_line);}
@@ -1218,6 +1245,22 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     if (brace >= 0) { uint32_t handled[UNION_VARIANTS_MAX]; int hc = tc_extract_brace_keys(toks, brace, total_count, handled, NULL, UNION_VARIANTS_MAX);
                         for (int v = 0; v < ud->count; v++) { int found = 0; for (int h = 0; h < hc; h++) if (handled[h] == ud->syms[v]) { found = 1; break; }
                             if (!found) tc_error(tc, t->line, 0, "'untag' missing variant '%s' declared by union", sym_name(ud->syms[v])); } }
+                } else if (suid == 0 && i >= tc->user_start) {
+                    int brace = tc_find_brace_before(toks, i);
+                    if (brace >= 1) {
+                        uint32_t known_tag = 0; int bef = brace - 1;
+                        if (toks[bef].tag == TOK_WORD) {
+                            uint32_t ws = toks[bef].as.sym;
+                            if (ws == S_OK) known_tag = S_OK;
+                            else if (ws == S_NO) known_tag = S_NO;
+                            else if (strcmp(sym_name(ws), "tag") == 0 && bef >= 1 && toks[bef-1].tag == TOK_SYM) known_tag = toks[bef-1].as.sym;
+                        }
+                        if (known_tag) {
+                            uint32_t handled[UNION_VARIANTS_MAX]; int hc = tc_extract_brace_keys(toks, brace, total_count, handled, NULL, UNION_VARIANTS_MAX);
+                            int found = 0; for (int h = 0; h < hc; h++) if (handled[h] == known_tag) { found = 1; break; }
+                            if (!found) tc_error(tc, t->line, 0, "'untag' does not handle tag '%s' (produced just before this match) — add a '%s (...)' branch", sym_name(known_tag), sym_name(known_tag));
+                        }
+                    }
                 }
             } else if (sym == S_DEFAULT) {
                 if (tc->sp >= 1 && ((tc->data[tc->sp-1].flags & AT_LINEAR) || tc->data[tc->sp-1].type == TC_BOX || tc->data[tc->sp-1].type == TC_DICT))
@@ -2023,11 +2066,11 @@ static void eval_body(Value *body, int slots, Frame *env) {
     Value hdr=body[slots-1]; if(hdr.tag!=VAL_TUPLE) die("eval_body: expected tuple, got %s (internal: evaluator received non-tuple header)", valtag_name(hdr.tag));
     int len=(int)hdr.as.compound.len; if(len>LOCAL_MAX) die("tuple body too large");
     Frame *ee=hdr.as.compound.env?hdr.as.compound.env:env;
-    int sbc=ee->bind_count,svu=ee->vals_used,asc=(slots==len+1);
-    int ob[asc?1:len], sb[asc?1:len];
-    if(!asc) compute_offsets(body,slots,len,ob,sb);
+    int sbc=ee->bind_count,svu=ee->vals_used;
+    int ob[len>0?len:1], sb[len>0?len:1];
+    compute_offsets(body,slots,len,ob,sb);
     for(int k=0;k<len;k++){
-        int eo=asc?k:ob[k],es=asc?1:sb[k]; Value elem=body[eo+es-1];
+        int eo=ob[k],es=sb[k]; Value elem=body[eo+es-1];
         if(elem.loc){current_fid=LOC_FID(elem.loc);current_line=LOC_LINE(elem.loc);current_col=LOC_COL(elem.loc);}
         if(elem.tag<=VAL_SYM) stack[sp++]=elem;
         else if(is_compound(elem.tag)){

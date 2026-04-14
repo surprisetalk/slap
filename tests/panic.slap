@@ -87,9 +87,6 @@ stack pop
 -- EXPECT: expected list
 42 (1 eq) filter
 
--- EXPECT: unhandled tag 'unknown'
-42 'unknown tag {'foo ()} untag
-
 -- EXPECT: check: expected preceding type word
 (check)
 
