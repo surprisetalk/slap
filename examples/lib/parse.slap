@@ -1,18 +1,18 @@
 -- parse.slap: byte-list parser combinators returning tagged ok/no results.
 
-'parse-int-acc recur ('acc let dup len 0 gt (dup 0 get must 'ch let ch 48 ge ch 57 le and (1 drop-n acc 10 mul ch 48 sub plus parse-int-acc) (acc swap) if) (acc swap) if) def
+'parse-int-acc ('acc let dup len 0 gt (dup 0 get must 'ch let ch 48 ge ch 57 le and (1 drop-n acc 10 mul ch 48 sub plus parse-int-acc) (acc swap) if) (acc swap) if) def
 'parse-int-core (dup len 0 eq (drop 0 "parse-int: empty input" no) (dup 0 get must 'head let head 45 eq (1 drop-n dup len 0 eq (drop 0 "parse-int: expected digit after '-'" no) (dup 0 get must dup 48 ge swap 57 le and not (drop 0 "parse-int: expected digit after '-'" no) (0 parse-int-acc swap neg swap ok) if) if) (head 48 ge head 57 le and not (drop 0 "parse-int: expected digit" no) (0 parse-int-acc ok) if) if) if) def
 'parse-int (0 (parse-int-core) pthen) def
 'parse-exact-core ('lit let 'input let input len lit len lt ("parse-exact: input too short" no) (input lit len take-n lit eq not ("parse-exact: mismatch" no) (input lit len drop-n ok) if) if) def
 'parse-exact ('lit let (lit parse-exact-core) then) def
-'parse-spaces-core recur (dup len 0 gt (dup 0 get must 'ch let ch 32 eq ch 9 eq or ch 10 eq or ch 13 eq or (1 drop-n parse-spaces-core) () if) () if) def
+'parse-spaces-core (dup len 0 gt (dup 0 get must 'ch let ch 32 eq ch 9 eq or ch 10 eq or ch 13 eq or (1 drop-n parse-spaces-core) () if) () if) def
 'parse-spaces ((parse-spaces-core ok) then) def
-'parse-while-acc recur ('pred let 'acc let dup len 0 gt (dup 0 get must 'ch let ch pred apply (1 drop-n acc ch push pred parse-while-acc) (acc swap) if) (acc swap) if) def
+'parse-while-acc ('pred let 'acc let dup len 0 gt (dup 0 get must 'ch let ch pred apply (1 drop-n acc ch push pred parse-while-acc) (acc swap) if) (acc swap) if) def
 'parse-while-core ('pred let list pred parse-while-acc) def
 'parse-while ('pred let list (pred parse-while-core ok) pthen) def
 'parse-until-core ('delim let dup delim str-find () {'ok ('pos let dup pos take-n swap pos delim len plus drop-n ok) 'no (drop drop "parse-until: delimiter not found" no)} untag) def
 'parse-until ('delim let list (delim parse-until-core) pthen) def
-'parse-float-int recur ('pfv let dup len 0 gt (dup 0 get must 'pfd let pfd 48 ge pfd 57 le and (1 drop-n pfv 10.0 mul pfd 48 sub itof plus parse-float-int) (pfv swap) if) (pfv swap) if) def
-'parse-float-frac recur ('pff let 'pfv let dup len 0 gt (dup 0 get must 'pfd let pfd 48 ge pfd 57 le and (1 drop-n pfv pfd 48 sub itof pff div plus pff 10.0 mul parse-float-frac) (pfv swap) if) (pfv swap) if) def
+'parse-float-int ('pfv let dup len 0 gt (dup 0 get must 'pfd let pfd 48 ge pfd 57 le and (1 drop-n pfv 10.0 mul pfd 48 sub itof plus parse-float-int) (pfv swap) if) (pfv swap) if) def
+'parse-float-frac ('pff let 'pfv let dup len 0 gt (dup 0 get must 'pfd let pfd 48 ge pfd 57 le and (1 drop-n pfv pfd 48 sub itof pff div plus pff 10.0 mul parse-float-frac) (pfv swap) if) (pfv swap) if) def
 'parse-float-core (dup len 0 eq (drop 0.0 "parse-float: empty input" no) (dup 0 get must 45 eq (1 drop-n 1) (0) if 'pfneg let 0.0 parse-float-int dup len 0 gt (dup 0 get must 46 eq) (0) if (1 drop-n 0.0 10.0 parse-float-frac (swap plus) dip) () if pfneg (swap fneg swap) () if ok) if) def
 'parse-float (0.0 (parse-float-core) pthen) def

@@ -48,7 +48,7 @@ svb (
   ) def
 
   -- compute-mult-loop: digits d i -> sum of 10^(L-1-i) for i where digits[i]=d
-  'compute-mult-loop recur (
+  'compute-mult-loop (
     'cml-i let 'cml-d let 'cml-digs let
     cml-i cml-digs len ge (0) (
       cml-digs cml-i get must cml-d eq (
@@ -65,7 +65,7 @@ svb (
     cm-n int-str (48 sub) each cm-d 0 compute-mult-loop
   ) def
 
-  'try-digit recur (
+  'try-digit (
     'td-d let 'td-p let
     td-d 10 ge (0) (
       td-p td-d compute-mult 'td-mult let

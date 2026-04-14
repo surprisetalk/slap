@@ -6,7 +6,7 @@
 -- Tagged shapes: n 'int | f 'float | s 'str | 0/1 'bool | () 'null
 --                list 'arr | list-of-[k,v] 'obj
 
-'_jstr-body recur ('jchars let
+'_jstr-body ('jchars let
   dup len 0 eq ("json: unterminated string" no must) () if
   dup 0 get must 'ch let
   ch 34 eq (1 drop-n jchars swap) (
@@ -25,7 +25,7 @@
 '_jstr (1 drop-n list _jstr-body) def
 
 -- Lookahead: does the numeric prefix contain '.' ?
-'_has-dot recur (
+'_has-dot (
   dup len 0 eq (drop 0) (
     dup 0 get must 'c let
     c 46 eq (drop 1) (
@@ -34,7 +34,7 @@
   ) if
 ) def
 
-'_jarr-items recur ('jitems let
+'_jarr-items ('jitems let
   _jval swap 'jv let jitems jv push 'jitems2 let
   ok parse-spaces must
   dup 0 get must 44 eq (
@@ -42,7 +42,7 @@
   ) (jitems2 swap) if
 ) def
 
-'_jobj-items recur ('jentries let
+'_jobj-items ('jentries let
   _jstr swap 'jk let
   ok parse-spaces ":" parse-exact parse-spaces must
   _jval swap 'jv let
@@ -53,7 +53,7 @@
   ) (jentries2 swap) if
 ) def
 
-'_jval recur (
+'_jval (
   ok parse-spaces must
   dup len 0 eq ("json: unexpected end of input" no must) () if
   dup 0 get must 'ch let
@@ -104,7 +104,7 @@
   _mm-jv _type-name '_mm-tn let drop _mm-tn cat no) def
 
 -- _find-field: (key entries -- payload-ok | none).  entries = list of [k,v] couples.
-'_find-field recur ('_ff-ents let '_ff-key let
+'_find-field ('_ff-ents let '_ff-key let
   _ff-ents len 0 eq (none) (
     _ff-ents 0 get must '_ff-e let
     _ff-e 0 get must _ff-key eq
@@ -135,7 +135,7 @@
 -- ========== _japply: (jv path dec -- result-tagged) ==========
 
 -- List loop: (items idx path inner acc -- resultTagged)
-'_ja-list-loop recur (
+'_ja-list-loop (
   '_l-acc let '_l-inner let '_l-path let '_l-idx let '_l-items let
   _l-items len 0 eq (_l-acc ok) (
     _l-items 0 get must '_l-item let
@@ -148,7 +148,7 @@
 ) def
 
 -- jd-at walk: (jv path keys inner -- resultTagged)
-'_ja-at-walk recur (
+'_ja-at-walk (
   '_w-inner let '_w-keys let '_w-path let '_w-jv let
   _w-keys len 0 eq (_w-jv _w-path _w-inner _japply) (
     _w-keys 0 get must '_w-k let
@@ -167,7 +167,7 @@
 ) def
 
 -- one-of loop: (jv path decoders -- resultTagged)
-'_ja-one-of-loop recur (
+'_ja-one-of-loop (
   '_o-ds let '_o-path let '_o-jv let
   _o-ds len 0 eq (_o-path ": oneOf: no decoders matched" cat no) (
     _o-jv _o-path _o-ds 0 get must _japply
@@ -179,7 +179,7 @@
   ) if
 ) def
 
-'_japply recur (
+'_japply (
   '_a-d let '_a-path let '_a-jv let
   _a-d () {'dec ()} untag '_a-node let
   _a-node 0 get must '_a-dname let
@@ -291,7 +291,7 @@
 
 -- _je-escape-str-loop: (s acc -- acc s')  (acc on top)
 -- Escapes for JSON: \\ \" \n \r \t; control chars <0x20 become \uXXXX.
-'_je-escape-str-loop recur ('acc let
+'_je-escape-str-loop ('acc let
   dup len 0 gt (
     dup 0 get must 'c let
     1 drop-n

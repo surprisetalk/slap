@@ -7,7 +7,7 @@
   ip-n 2 lt (0) (
     ip-n 2 eq (1) (
       ip-n 2 mod 0 eq (0) (
-        'ip-loop recur (
+        'ip-loop (
           'ip-i let 'ip-ok let
           ip-i ip-i mul ip-n le ip-ok and (
             ip-n ip-i mod 0 neq
@@ -22,7 +22,7 @@
 
 'count-primes (
   'cp-b let 'cp-a let
-  'cp-loop recur (
+  'cp-loop (
     'cp-n let
     cp-n cp-n mul cp-a cp-n mul plus cp-b plus is-prime
     (cp-n 1 plus cp-loop) (cp-n) if
@@ -30,7 +30,7 @@
   0 cp-loop
 ) def
 
-'inner-loop recur (
+'inner-loop (
   'il-a let 'il-bestab let 'il-bestcnt let 'il-b let
   il-a 1000 lt (
     il-a il-b count-primes 'il-c let
@@ -40,7 +40,7 @@
   ) (il-bestcnt il-bestab) if
 ) def
 
-'outer-loop recur (
+'outer-loop (
   'ol-b let 'ol-bestab let 'ol-bestcnt let
   ol-b 1000 le (
     ol-b is-prime (

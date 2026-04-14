@@ -1,6 +1,6 @@
 -- gly.slap: ASCII-inline 1-bit glyph codec. Each char encodes 4 vertical pixels.
 
-'gly-parse-rows recur ('input let 'cur let 'rows let 'maxw let input len 0 eq (cur len 0 eq not (cur len maxw max rows cur push) (maxw rows) if) (input first 'ch let input 1 drop-n 'rest let ch 10 eq (cur len maxw max rows cur push list rest gly-parse-rows) (ch 32 eq (cur 0 push) (cur ch 63 sub push) if 'ncur let maxw rows ncur rest gly-parse-rows) if) if) def
+'gly-parse-rows ('input let 'cur let 'rows let 'maxw let input len 0 eq (cur len 0 eq not (cur len maxw max rows cur push) (maxw rows) if) (input first 'ch let input 1 drop-n 'rest let ch 10 eq (cur len maxw max rows cur push list rest gly-parse-rows) (ch 32 eq (cur 0 push) (cur ch 63 sub push) if 'ncur let maxw rows ncur rest gly-parse-rows) if) if) def
 'gly-decode ('input let 0 list list input gly-parse-rows 'rows let 'maxw let rows len 'nrows let maxw 'w let nrows 4 mul 'h let 0 h range ('y let 0 w range ('c let y 4 div 'r let y 4 mod 'bit let rows len r gt (rows r get must dup len c gt (c get must bit shr 1 band) (drop 0) if) (0) if) each) each flatten 'pixels let rec w 'width into h 'height into pixels 'pixels into) def
 'gly-encode (dup 'width at must 'w let dup 'height at must 'h let 'pixels at must 'px let h 4 div 'nrows let 0 nrows range ('r let 0 w range ('c let 0 4 range 0 ('bit let px r 4 mul bit plus w mul c plus get must bit shl bor) fold 63 plus) each r nrows 1 sub lt (10 push) () if) each flatten) def
 

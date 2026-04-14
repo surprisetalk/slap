@@ -66,7 +66,7 @@ rec
   'vxs (i vx3 set must) edit must 'vys (i vy3 set must) edit must
 ) def
 
-'tick-loop recur (
+'tick-loop (
   'frame let 'i let 'st let
   i N lt (
     st i frame update-dot
@@ -87,7 +87,7 @@ rec
   cx r sub cy r sub r 2 mul 1 plus dup c fill-rect
 ) def
 
-'draw-dots recur (
+'draw-dots (
   'frame let 'st let 'i let
   i N lt (
     st 'xs at must i get must 'x let  st 'ys at must i get must 'y let

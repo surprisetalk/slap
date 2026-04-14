@@ -2,7 +2,7 @@
 -- Sum of products c=a*b where digits of a,b,c form 1-9 pandigital
 -- Answer: 45228
 
-'gd-helper recur (
+'gd-helper (
   'gdh-n let 'gdh-lst let
   gdh-n 0 gt (gdh-lst gdh-n 10 mod push gdh-n 10 div gd-helper) (gdh-lst) if
 ) def
@@ -15,7 +15,7 @@
 ) def
 
 -- scan1-inner: products a b -> products'
-'scan1-inner recur (
+'scan1-inner (
   'si-b let 'si-a let 'si-prods let
   si-b 9876 le si-a si-b mul 9999 le and (
     si-a si-b mul 'si-c let
@@ -25,7 +25,7 @@
 ) def
 
 -- scan1: products a -> products'
-'scan1 recur (
+'scan1 (
   's1-a let 'prods1 let
   s1-a 9 le (
     prods1 s1-a 1234 scan1-inner
@@ -34,7 +34,7 @@
 ) def
 
 -- scan2-inner: products a b -> products'
-'scan2-inner recur (
+'scan2-inner (
   'si2-b let 'si2-a let 'si2-prods let
   si2-b 987 le si2-a si2-b mul 9999 le and (
     si2-a si2-b mul 'si2-c let
@@ -44,7 +44,7 @@
 ) def
 
 -- scan2: products a -> products'
-'scan2 recur (
+'scan2 (
   's2-a let 'prods2 let
   s2-a 98 le (
     prods2 s2-a 123 scan2-inner

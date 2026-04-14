@@ -4,14 +4,14 @@
 
 'factorial (
   'fac-n let
-  'fac-loop recur (
+  'fac-loop (
     'fac-j let 'fac-acc let
     fac-j fac-n le (fac-acc fac-j mul fac-j 1 plus fac-loop) (fac-acc) if
   ) def
   1 1 fac-loop
 ) def
 
-'perm-step recur (
+'perm-step (
   'ps-pos let 'ps-digits let 'ps-rem let 'ps-result let
   ps-pos 0 gt (
     ps-pos factorial 'ps-fact let

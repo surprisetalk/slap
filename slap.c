@@ -399,7 +399,7 @@ static uint32_t recur_sym = 0;
 static int recur_pending = 0;
 static int eval_depth = 0;
 #define EVAL_DEPTH_MAX 10000
-static uint32_t S_DEF, S_LET, S_RECUR, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_NO, S_UNTAG, S_DEFAULT, S_MUST;
+static uint32_t S_DEF, S_LET, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_NO, S_UNTAG, S_DEFAULT, S_MUST;
 static uint32_t S_GET, S_POP, S_AT, S_NTH, S_SET, S_EDIT, S_INDEXOF, S_STRFIND;
 static uint32_t S_PLUS, S_SUB, S_EQ, S_SWAP, S_DROP, S_MUL, S_DIV, S_MOD;
 static void syms_init(void);
@@ -432,7 +432,7 @@ static HOEffect *ho_ops_find(uint32_t sym) {
     return NULL;
 }
 static void syms_init(void) {
-    S_DEF=sym_intern("def"); S_LET=sym_intern("let"); S_RECUR=sym_intern("recur");
+    S_DEF=sym_intern("def"); S_LET=sym_intern("let");
     S_IF=sym_intern("if"); S_EFFECT=sym_intern("effect"); S_CHECK=sym_intern("check");
     S_UNION=sym_intern("union"); S_OK=sym_intern("ok"); S_NO=sym_intern("no");
     S_UNTAG=sym_intern("untag"); S_DEFAULT=sym_intern("default"); S_MUST=sym_intern("must");
@@ -818,7 +818,6 @@ static TypeConstraint tc_infer_effect_ctx2(Token *toks, int start, int end, int 
                 else if (sym == S_DEF && i >= start + 3 && toks[i-3].tag == TOK_SYM && local_count < 32) local_binds[local_count++] = toks[i-3].as.sym;
                 EFF_CONSUME(vsp,consumed,2);
             }
-            else if (sym == S_RECUR) { EFF_CONSUME(vsp,consumed,1); }
             else {
                 TypeSig *sig = typesig_find(sym);
                 if (sig) {
@@ -1123,7 +1122,12 @@ apply_sig:;
             }
             for (int j = 0; j < tmc; j++) if (tm[j].var == s->type_var) { if (at->sym_id) tm[j].src_sym = at->sym_id; if (at->effect_idx >= 0) tm[j].src_effect_idx = at->effect_idx; break; }
         }}
-        if ((at->flags & AT_LINEAR) && s->ownership == OWN_OWN) at->flags |= AT_CONSUMED;
+        if ((at->flags & AT_LINEAR) && s->ownership == OWN_OWN) {
+            const char *wn = sym_name(sym);
+            if (strcmp(wn,"push")==0 || strcmp(wn,"into")==0 || strcmp(wn,"set")==0 || strcmp(wn,"insert")==0)
+                tc_error(tc, line, at->source_line, "'%s' cannot embed a linear value into a stackable container — linearity would be lost (value from line %d)", wn, at->source_line);
+            at->flags |= AT_CONSUMED;
+        }
         sp2--;
     }
     tc->sp -= ni; if (tc->sp < tc->sp_floor) tc->sp = tc->sp_floor;
@@ -1216,7 +1220,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                 uint32_t name_sym = tc->data[tc->sp-1].sym_id;
                 for (int j = i+1; j < close; j++) {
                     if (toks[j].tag == TOK_WORD && toks[j].as.sym == name_sym) {
-                        tc->recur_pending = 1; tc->recur_sym = name_sym; break;
+                        tc->recur_pending = 1; tc->recur_sym = name_sym; tc->sp--; break;
                     }
                 }
             }
@@ -1385,8 +1389,6 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                         tc_bind(tc, ns, &val_t, 0, t->line);
                     }
                 } else if (tc->sp_floor == 0) tc->sp = 0;
-            } else if (sym == S_RECUR) {
-                if (tc->sp >= 1) { uint32_t ns = tc->data[tc->sp-1].sym_id; tc->recur_pending = 1; tc->sp--; if (ns) tc->recur_sym = ns; }
             } else if (sym == S_EFFECT) {
                 if (tc->sp > 0) tc->sp--;
                 int be = i - 1;
@@ -2283,8 +2285,7 @@ static void eval_body(Value *body, int slots, Frame *env) {
             if(sym==S_DEF){ int ds=val_slots(stack[sp-1]);
                 if(recur_pending){recur_pending=0;frame_bind(ee,recur_sym,&stack[sp-ds],ds,BIND_DEF,1);sp-=ds;}
                 else{Value db[ds];VCPY(db,&stack[sp-ds],ds);sp-=ds;frame_bind(ee,pop_sym(),db,ds,BIND_DEF,0);}
-            } else if(sym==S_LET){ uint32_t n=pop_sym(); int ls=val_slots(stack[sp-1]); frame_bind(ee,n,&stack[sp-ls],ls,BIND_LET,0); sp-=ls;
-            } else if(sym==S_RECUR){recur_sym=pop_sym();recur_pending=1;}
+            } else if(sym==S_LET){ uint32_t n=pop_sym(); int ls=val_slots(stack[sp-1]); frame_bind(ee,n,&stack[sp-ls],ls,BIND_LET,0); sp-=ls;}
             else dispatch_word(sym,ee);
         } else if(elem.tag==VAL_BOX||elem.tag==VAL_DICT) spush(elem);
     }
@@ -2444,12 +2445,12 @@ static const char *PRELUDE =
     "'select (swap 'data swap def (data swap get must) each) def\n'reduce (swap dup 0 get must swap 1 drop-n swap rot fold) def\n'table ((dup) swap compose (couple) compose each) def\n"
     "'filter ('p swap def list (dup p (push) (drop) if) fold) ['a list own in  tuple own in  'a list move out] effect def\n"
     "'where ('p swap def 0 'idx let list ('elem swap def elem p (idx push) () if idx 1 plus 'idx let) fold) def\n"
-    "'sqr (dup mul) def\n'cube (dup dup mul mul) def\n'ispos (0 swap lt) def\n'isneg (0 lt) def\n"
+    "'sqr (dup mul) def\n'cube (dup dup mul mul) def\n'ispos (0 swap lt) def\n"
     "'first (0 get must) def\n'second (1 get must) def\n'third (2 get must) def\n'fourth (3 get must) def\n'fifth (4 get must) def\n"
     "'sixth (5 get must) def\n'seventh (6 get must) def\n'eighth (7 get must) def\n'ninth (8 get must) def\n'tenth (9 get must) def\n"
     "'last (dup len 1 sub get must) def\n'sum (0 (plus) fold) def\n'product (1 (mul) fold) def\n"
     "'max-of (dup first (max) fold) def\n'min-of (dup first (min) fold) def\n'member (index-of (drop 1 ok) then 0 default) def\n'couple (list rot push swap push) def\n"
-    "'isany (0 (or) fold) def\n'isall (1 (and) fold) def\n'flatten (list (cat) fold) def\n'sort-desc (sort reverse) def\n'fneg (0.0 swap sub) def\n"
+    "'flatten (list (cat) fold) def\n'fneg (0.0 swap sub) def\n"
     "'fabs (dup 0.0 lt (fneg) () if) def\n'frecip (1.0 swap div) def\n'fsign (dup 0.0 lt (drop -1.0) (dup 0.0 eq (drop 0.0) (drop 1.0) if) if) def\n'sign (dup 0 lt (drop -1) (dup 0 eq (drop 0) (drop 1) if) if) def\n"
     "'clamp (rot swap min max) def\n'fclamp (swap min max) def\n'lerp ((over sub) dip swap mul plus) def\n'isbetween (rot dup (rot swap le) dip rot rot ge and) def\n"
     "'iszero (0 eq) [int lent in  int move out] effect def\n'iseven (2 mod 0 eq) [int lent in  int move out] effect def\n'isodd (2 mod 0 neq) [int lent in  int move out] effect def\n'divides (mod 0 eq) [int lent in  int lent in  int move out] effect def\n"
@@ -2463,8 +2464,8 @@ static const char *PRELUDE =
     "'classify (dup 'l swap def (l swap index-of must) each dup dedup 'u swap def (u swap index-of must) each) def\n'byte-mask (255 band) def\n'byte-bits ('b let 0 8 range (7 swap sub b swap shr 1 band) each) def\n"
     "'bits-byte (0 (swap 1 shl bor) fold) def\n'chunks ('n let list swap (dup len 0 eq not) (dup n take-n swap (push) dip n drop-n) while drop) def\n"
 #ifndef SLAP_WASM
-    "'crlf (list 13 push 10 push) def\n'int-str-digits recur ('n let n 0 gt (n 10 mod 48 plus push n 10 div int-str-digits) () if) def\n"
-    "'int-str recur ('n let n 0 lt (n neg int-str list 45 push swap cat) (n 0 eq (list 48 push) (list n int-str-digits reverse) if) if) def\n'str-join ('sep let 'parts let parts len 0 eq (list) (parts 1 drop-n parts first (sep swap cat cat) fold) if) def\n"
+    "'crlf (list 13 push 10 push) def\n'int-str-digits ('n let n 0 gt (n 10 mod 48 plus push n 10 div int-str-digits) () if) def\n"
+    "'int-str ('n let n 0 lt (n neg int-str list 45 push swap cat) (n 0 eq (list 48 push) (list n int-str-digits reverse) if) if) def\n'str-join ('sep let 'parts let parts len 0 eq (list) (parts 1 drop-n parts first (sep swap cat cat) fold) if) def\n"
     "'http-request ('body let 'headers let 'path let 'host let 'method let method \" \" cat path cat \" HTTP/1.1\" cat crlf cat \"Host: \" cat host cat crlf cat headers cat body len 0 gt (\"Content-Length: \" cat body len int-str cat crlf cat) () if crlf cat body cat) def\n"
 #endif
 ;

@@ -10,11 +10,11 @@
 'add-digits (
   'ad-blen let 'ad-b let 'ad-alen let 'ad-a let
   ad-alen ad-blen max 'ad-n let
-  'ad-carry-loop recur (
+  'ad-carry-loop (
     'adcl-j let 'adcl-carry let
     adcl-carry 0 gt (adcl-carry 10 mod push adcl-carry 10 div adcl-j 1 plus ad-carry-loop) (adcl-j) if
   ) def
-  'ad-loop recur (
+  'ad-loop (
     'ad-j let 'ad-carry let
     ad-j ad-n lt (
       'ad-a ad-j nth must 'ad-b ad-j nth must plus ad-carry plus 'ad-v let

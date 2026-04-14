@@ -42,7 +42,7 @@ Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.
 - **Frames**: Lexical scope chain with refcounting. Closures capture their defining frame. `def` bindings auto-execute tuples on lookup; `let` bindings push values.
 - **Primitives**: ~75 C functions registered via `prim_register`. Macros `ARITH2`, `FLOAT1`, `CMP2` generate families of math/comparison ops.
 - **Prelude**: ~70 derived definitions in Slap itself (embedded string in slap.c). Loaded at startup before user code.
-- **Recur**: `'name recur (body) def` enables self-referencing definitions for recursion.
+- **Self-reference**: `def` makes the bound name visible inside its own body when referenced textually, enabling recursion without a keyword.
 
 ### Tagged unions (sum types)
 
@@ -103,44 +103,21 @@ Two categories of types:
 
 ### Protocols (built-in typeclasses)
 
-Haskell-inspired protocol hierarchy. Constraints formalize which operations work on which types. Used in `[...] effect` annotations.
-
-```
-Eq                        -- eq
-├── Ord                   -- lt, sort
-├── Num                   -- plus, sub, mul, div
-│   └── Integral          -- mod, divmod, wrap, bitwise ops
-├── Semigroup             -- cat
-│   ├── Monoid            -- (type-checker only, no runtime method yet)
-│   └── Seq               -- push, pop, get, set
-└── Functor               -- each (fmap)
-    ├── Applicative       -- (type-checker only, no runtime method yet)
-    ├── Foldable          -- fold, filter, scan, len
-    └── Monad             -- then (bind/flatMap)
-```
+Constraints formalize which operations work on which types. Used in `[...] effect` annotations. Protocols live entirely in the type checker (`tc_constraint_matches`); no runtime dispatch.
 
 | Protocol | Keyword | Types | Methods |
 |----------|---------|-------|---------|
-| Eq | `eq` | all stackable types | `eq` |
+| Eq | `eq` | all stackable | `eq` |
 | Ord | `ord` (implies Eq) | int, float | `lt`, `sort` |
-| Num | `num` (implies Eq, NOT Ord) | int, float | `plus`, `sub`, `mul`, `div` |
+| Num | `num` (implies Eq) | int, float | `plus`, `sub`, `mul`, `div` |
 | Integral | `integral` (implies Num) | int | `mod`, `divmod`, `wrap`, bitwise |
 | Semigroup | `semigroup` | list, tuple, record | `cat` |
-| Monoid | `monoid` (implies Semigroup) | list, tuple, record | (none yet) |
 | Seq | `seq` (implies Semigroup) | list | `get`, `set`, `push`, `pop` |
-| Functor | `functor` | list, tagged | `each` (fmap) |
-| Applicative | `applicative` (implies Functor) | list, tagged | (none yet) |
-| Foldable | `foldable` | list | `fold`, `filter`, `scan` |
-| Monad | `monad` (implies Functor) | list, tagged | `then` (bind) |
+| Sized | `sized` | list, tuple, record | `len` |
 
-Key differences from previous system:
-- **Num does NOT extend Ord**. Symbols are NOT Ord.
-- **`map` removed**. `each` is now fmap (Functor) — returns a new container.
-- **`each` on tagged**: if `'ok`, applies body to payload and re-wraps; non-ok passes through.
-- **`then` is monadic bind**: body must return a tagged/list value. For tagged: `5 ok (1 plus ok) then`. For lists: flatMap.
-- **Side-effect iteration**: use `(body) each drop`.
+`each` iterates over lists (producing a new list) and over `'ok`-tagged values (applies body to payload, re-wraps; non-ok passes through). `then` chains on `'ok`-tagged values (hardcoded tag; not yet general over any tag). `fold`, `filter`, `scan` work on lists. These aren't surfaced as named protocols because they don't generalize beyond their current types.
 
-Hierarchy: see protocol tree above. Num ⊂ Eq (NOT Ord). Integral ⊂ Num. Seq ⊂ Semigroup. Functor ⊃ {Applicative, Foldable, Monad}. Protocols live entirely in the type checker (`tc_constraint_matches`). No runtime dispatch changes.
+Side-effect iteration: `(body) each drop`.
 
 ### `either` type annotation
 

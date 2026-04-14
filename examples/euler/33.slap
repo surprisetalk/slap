@@ -2,10 +2,10 @@
 -- Product of four non-trivial digit-cancelling fractions, find denominator
 -- Answer: 100
 
-'gcd recur (dup 0 eq (drop) (swap over mod gcd) if) def
+'gcd (dup 0 eq (drop) (swap over mod gcd) if) def
 
 -- inner-loop: np dp a b -> np' dp'
-'inner-loop recur (
+'inner-loop (
   'il-b let 'il-a let 'il-dp let 'il-np let
   il-b 99 le (
     il-a 10 mod 'a2 let
@@ -19,7 +19,7 @@
 ) def
 
 -- outer-loop: np dp a -> np' dp'
-'outer-loop recur (
+'outer-loop (
   'ol-a let 'ol-dp let 'ol-np let
   ol-a 99 le (
     ol-np ol-dp ol-a ol-a 1 plus inner-loop

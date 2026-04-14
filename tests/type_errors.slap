@@ -155,7 +155,7 @@
 
 -- EXPECT: expected num
 -- TYPE ERROR: plus on list inside recursive non-simple tuple
-'bad6 recur (dup 0 eq (drop 1) (1 sub [2 3] plus) if) def
+'bad6 (dup 0 eq (drop 1) (1 sub [2 3] plus) if) def
 
 -- EXPECT: type error
 -- TYPE ERROR: read expects list, not int
@@ -395,3 +395,15 @@ f apply
 -- EXPECT: body may not produce a linear-capturing closure
 -- TYPE ERROR: each body producing linear closure (would alias into list)
 [1] (drop 42 box 'b let (b free)) each
+
+-- EXPECT: cannot embed a linear value into a stackable container
+-- TYPE ERROR: push a box into a list (would be cloned by deep_copy_values on dup)
+list 42 box push drop
+
+-- EXPECT: cannot embed a linear value into a stackable container
+-- TYPE ERROR: into record would smuggle box past linearity
+rec 42 box 'b into drop
+
+-- EXPECT: cannot embed a linear value into a stackable container
+-- TYPE ERROR: set would place box into list slot
+[1 2 3] 0 42 box set drop

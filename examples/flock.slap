@@ -29,7 +29,7 @@ rec
 ) on
 
 -- Separation inner loop
-'sep-loop recur (
+'sep-loop (
   'ay let 'ax let 'yi let 'xi let 'xsv let 'ysv let 'i let 'j let
   j N lt (
     j i neq (
@@ -109,7 +109,7 @@ rec
   'vxs (i vxi3 set must) edit must 'vys (i vyi3 set must) edit must
 ) def
 
-'update-boids-loop recur (
+'update-boids-loop (
   'frame let 'i let 'st let
   i N lt (
     st i frame update-one-boid
@@ -158,7 +158,7 @@ rec
 ) on
 
 -- Draw diamond outline
-'draw-diamond-cd recur (
+'draw-diamond-cd (
   'dc let 'dy let 'dx let 'dr let 'dd let
   dd dr 1 plus lt (
     dr dd abs sub 'ddy let
@@ -174,7 +174,7 @@ rec
 ) def
 
 -- Draw trail layers
-'draw-trail3 recur (
+'draw-trail3 (
   'st let 'i let
   i N lt (
     st 'p3xs at must i get must st 'p3ys at must i get must 1 pixel
@@ -182,7 +182,7 @@ rec
   ) () if
 ) def
 
-'draw-trail2 recur (
+'draw-trail2 (
   'st let 'i let
   i N lt (
     st 'p2xs at must i get must 'tx let  st 'p2ys at must i get must 'ty let
@@ -192,7 +192,7 @@ rec
   ) () if
 ) def
 
-'draw-trail1 recur (
+'draw-trail1 (
   'st let 'i let
   i N lt (
     st 'p1xs at must i get must 'tx let  st 'p1ys at must i get must 'ty let
@@ -203,7 +203,7 @@ rec
 ) def
 
 -- Draw boids
-'draw-boid-body recur (
+'draw-boid-body (
   'bc let 'sdy let 'sdx let 'by let 'bx let 'sz let 'k let
   k sz 2 plus lt (
     bx sdx k mul sub by sdy k mul sub bc pixel
@@ -211,7 +211,7 @@ rec
   ) () if
 ) def
 
-'draw-boids recur (
+'draw-boids (
   'st let 'i let
   i N lt (
     st 'vxs at must i get must abs st 'vys at must i get must abs plus 'spd let
@@ -257,7 +257,7 @@ rec
     frame 2 div 2 mod 1 plus 'pc let
     st 'px at must 'ppx let  st 'py at must 'ppy let
     -- Thick cross
-    'draw-cross recur (
+    'draw-cross (
       'pd let
       pd 4 lt (
         ppx pd plus ppy pc pixel

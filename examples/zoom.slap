@@ -12,7 +12,7 @@
 
 'tick (drop 1 plus) on
 
-'iterate recur (
+'iterate (
   'cy let 'cx let 'zy let 'zx let 'i let
   i MAX lt  zx dup mul zy dup mul plus 4.0 lt  and (
     zx dup mul zy dup mul sub cx plus
@@ -22,7 +22,7 @@
   ) (i) if
 ) def
 
-'render-col recur (
+'render-col (
   'cy2 let 'cy let 'xoff let 'xscl let 'py let 'px let
   px W lt (
     px itof xscl mul xoff plus 'cx let
@@ -44,7 +44,7 @@
   ) () if
 ) def
 
-'render-row recur (
+'render-row (
   'yoff let 'yscl let 'xoff let 'xscl let 'py let
   py H lt (
     py itof yscl mul yoff plus 'cy let

@@ -50,7 +50,7 @@ false 0 eq assert
 answer 42 eq assert
 
 -- ===== Recursion =====
-'factorial recur (
+'factorial (
   dup 1 le (drop 1) (dup 1 sub factorial mul) if
 ) def
 5 factorial 120 eq assert
@@ -368,11 +368,8 @@ outer 15 eq assert
 [[1 2] [3 4]] flatten [1 2 3 4] eq assert
 [[] [1] []] flatten [1] eq assert
 
--- ===== Prelude: sort-desc =====
-[1 3 2] sort-desc [3 2 1] eq assert
-
--- ===== Complex: fibonacci via recur =====
-'fib recur (
+-- ===== Complex: fibonacci =====
+'fib (
   dup 1 le () (dup 1 sub fib swap 2 sub fib plus) if
 ) def
 0 fib 0 eq assert
@@ -429,14 +426,14 @@ outer 15 eq assert
 3 make-multiplier 7 swap apply 21 eq assert
 
 -- ===== Adversarial: recursive list building =====
-'iota recur (
+'iota (
   dup 0 le (drop list) (dup 1 sub iota swap push) if
 ) def
 5 iota [1 2 3 4 5] eq assert
 0 iota [] eq assert
 
 -- ===== Adversarial: mutual-style via def =====
-'even? recur (dup 0 eq (drop 1) (1 sub odd?) if) def
+'even? (dup 0 eq (drop 1) (1 sub odd?) if) def
 'odd? (dup 0 eq (drop 0) (1 sub even?) if) def
 4 even? assert
 3 odd? assert
@@ -491,7 +488,7 @@ free
 [1 2 3 4] (triple apply) each [3 6 9 12] eq assert
 
 -- ===== Complex: GCD via recursion =====
-'gcd recur (
+'gcd (
   dup 0 eq (drop) (swap over mod gcd) if
 ) def
 12 8 gcd 4 eq assert

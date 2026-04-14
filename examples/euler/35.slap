@@ -2,7 +2,7 @@
 -- How many circular primes are there below one million?
 -- Answer: 55
 
-'ip-loop recur (
+'ip-loop (
   'ipl-i let 'ipl-n let
   ipl-i ipl-i mul ipl-n le (
     ipl-n ipl-i mod 0 eq (0) (ipl-n ipl-i 2 plus ip-loop) if
@@ -17,13 +17,13 @@
   ) if
 ) def
 
-'nd-helper recur (
+'nd-helper (
   'ndh-n let 'ndh-c let
   ndh-n 0 gt (ndh-c 1 plus ndh-n 10 div nd-helper) (ndh-c) if
 ) def
 'num-digits (0 swap nd-helper) def
 
-'cc-loop recur (
+'cc-loop (
   'ccl-i let 'ccl-r let 'ccl-pow let 'ccl-d let
   ccl-i ccl-d lt (
     ccl-r is-prime not (0) (
@@ -50,7 +50,7 @@
 
 -- build-num: idx ndigits -> number using cds digits
 -- Reads base-4 digits from most-significant to least-significant
-'build-num-helper recur (
+'build-num-helper (
   'bnh-k let 'bnh-idx let 'bnh-acc let
   bnh-k 0 ge (
     bnh-acc 10 mul cds bnh-idx bnh-k digit-at get must plus

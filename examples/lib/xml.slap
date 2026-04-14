@@ -31,7 +31,7 @@
 -- All operate on a remaining string on top of stack. Panic on malformed via `no must`.
 
 -- _x-skip-ws: (s -- s')
-'_x-skip-ws recur (
+'_x-skip-ws (
   dup len 0 gt (
     dup 0 get must _x-ws? (1 drop-n _x-skip-ws) () if
   ) () if
@@ -50,7 +50,7 @@
    'no (drop "xml: expected " lit cat " not found" no must)} untag) def
 
 -- _x-skip-trivia: skip whitespace and comments
-'_x-skip-trivia recur (
+'_x-skip-trivia (
   _x-skip-ws
   "<!--" _x-starts-with (4 drop-n "-->" _x-skip-until _x-skip-trivia) () if) def
 
@@ -66,7 +66,7 @@
 -- ========== Entity decode ==========
 
 -- _x-dec-fold: (chars acc -- value)
-'_x-dec-fold recur ('acc let
+'_x-dec-fold ('acc let
   dup len 0 gt (
     dup 0 get must 'c let
     c 48 lt c 57 gt or ("xml: bad dec digit" no must) () if
@@ -74,7 +74,7 @@
   ) (drop acc) if) def
 
 -- _x-hex-fold: (chars acc -- value)
-'_x-hex-fold recur ('acc let
+'_x-hex-fold ('acc let
   dup len 0 gt (
     dup 0 get must 'c let
     c 48 ge c 57 le and (c 48 sub) (
@@ -118,7 +118,7 @@
 
 -- ========== Text reader ==========
 -- _x-read-text-loop: (s acc -- acc s').  acc on bottom, s' on top.
-'_x-read-text-loop recur ('acc let
+'_x-read-text-loop ('acc let
   dup len 0 gt (
     dup 0 get must 'c let
     c 60 eq (acc swap) (
@@ -134,7 +134,7 @@
 
 -- ========== Attribute value ==========
 -- _x-read-av-loop: (s acc q -- acc s').
-'_x-read-av-loop recur ('q let 'acc let
+'_x-read-av-loop ('q let 'acc let
   dup len 0 eq ("xml: unterminated attribute value" no must) () if
   dup 0 get must 'c let
   c q eq (1 drop-n acc swap) (
@@ -154,7 +154,7 @@
 
 -- ========== Attributes ==========
 -- _x-read-attrs-loop: (s acc -- acc s').
-'_x-read-attrs-loop recur ('acc let
+'_x-read-attrs-loop ('acc let
   _x-skip-ws
   dup len 0 gt (
     dup 0 get must 'c let
@@ -180,7 +180,7 @@
 
 -- ========== Children ==========
 -- _x-read-children-loop: (s acc close -- acc s').  close is the expected close tag.
-'_x-read-children-loop recur ('close let 'acc let
+'_x-read-children-loop ('close let 'acc let
   dup len 0 eq ("xml: unexpected EOF in " close cat no must) () if
   "<!--" _x-starts-with (
     4 drop-n "-->" _x-skip-until acc close _x-read-children-loop
@@ -261,14 +261,14 @@
 '_x-is-text (dup 'text at () {'ok (drop 1) 'no (drop 0)} untag) def
 
 -- _x-trim-left: (s -- s')
-'_x-trim-left recur (
+'_x-trim-left (
   dup len 0 gt (dup 0 get must _x-ws? (1 drop-n _x-trim-left) () if) () if) def
 
 -- _x-trim: (s -- s')
 '_x-trim (_x-trim-left reverse _x-trim-left reverse) def
 
 -- _x-find-attr-loop: (attrs-list name -- value-tagged)
-'_x-find-attr-loop recur ('n let 'as let
+'_x-find-attr-loop ('n let 'as let
   as len 0 eq (none) (
     as 0 get must 'pair let
     pair 0 get must n eq
@@ -278,7 +278,7 @@
 '_x-find-attr (_x-find-attr-loop) def
 
 -- _x-find-child-loop: (children-list name -- record-tagged)
-'_x-find-child-loop recur ('n let 'ks let
+'_x-find-child-loop ('n let 'ks let
   ks len 0 eq (none) (
     ks 0 get must 'k let
     k 'text at
@@ -291,7 +291,7 @@
 '_x-find-child (_x-find-child-loop) def
 
 -- _x-filter-children-loop: (children-list name acc -- acc')
-'_x-filter-children-loop recur ('acc let 'n let 'ks let
+'_x-filter-children-loop ('acc let 'n let 'ks let
   ks len 0 eq (acc) (
     ks 0 get must 'k let
     k 'text at
@@ -304,7 +304,7 @@
 '_x-filter-children (list _x-filter-children-loop) def
 
 -- _x-all-elem-children-loop: (children-list acc -- acc')
-'_x-all-elem-children-loop recur ('acc let 'ks let
+'_x-all-elem-children-loop ('acc let 'ks let
   ks len 0 eq (acc) (
     ks 0 get must 'k let
     k 'text at
@@ -316,7 +316,7 @@
 
 -- _x-collect-text-loop: (children-list acc -- result-tagged)
 -- Returns (text ok) if all children are text; (none) if any element present.
-'_x-collect-text-loop recur ('acc let 'ks let
+'_x-collect-text-loop ('acc let 'ks let
   ks len 0 eq (acc ok) (
     ks 0 get must 'text at
     () {'ok ('txt let ks 1 drop-n acc txt cat _x-collect-text-loop)
@@ -363,7 +363,7 @@
 -- ========== _xapply: (elem path dec -- result-tagged) ==========
 
 -- _xa-children-loop: (items idx path inner acc -- resultTagged)
-'_xa-children-loop recur ('acc let 'inner let 'path let 'idx let 'items let
+'_xa-children-loop ('acc let 'inner let 'path let 'idx let 'items let
   items len 0 eq (acc ok) (
     items 0 get must 'item let
     path "[" cat idx int-str cat "]" cat 'ipath let
@@ -374,7 +374,7 @@
   ) if) def
 
 -- _xa-at-walk: (elem path keys inner -- resultTagged)
-'_xa-at-walk recur ('inner let 'keys let 'path let 'elem let
+'_xa-at-walk ('inner let 'keys let 'path let 'elem let
   keys len 0 eq (elem path inner _xapply) (
     keys 0 get must 'k let
     elem 'children at must 'kids let
@@ -386,7 +386,7 @@
 
 -- _xa-all-of-loop: (decs idx elem path acc -- resultTagged).
 -- Walks each decoder, appending results to acc; short-circuits on first 'no.
-'_xa-all-of-loop recur ('acc let 'path let 'elem let 'idx let 'decs let
+'_xa-all-of-loop ('acc let 'path let 'elem let 'idx let 'decs let
   idx decs len ge (acc ok) (
     elem path decs idx get must _xapply
     () {'ok ('v let
@@ -395,7 +395,7 @@
   ) if) def
 
 -- _xa-one-of-loop: (elem path decoders -- resultTagged)
-'_xa-one-of-loop recur ('ds let 'path let 'elem let
+'_xa-one-of-loop ('ds let 'path let 'elem let
   ds len 0 eq (path ": oneOf: no decoders matched" cat no) (
     elem path ds 0 get must _xapply
     () {'ok (ok)
@@ -405,7 +405,7 @@
        ) if)} untag
   ) if) def
 
-'_xapply recur ('d let 'path let 'elem let
+'_xapply ('d let 'path let 'elem let
   d () {'xdec ()} untag 'node let
   node 0 get must 'dname let
 
@@ -488,7 +488,7 @@
 -- ========== Encoder (xml-render) ==========
 
 -- _xe-escape-text-loop: (s acc -- acc s').  Escape & < > in text content.
-'_xe-escape-text-loop recur ('acc let
+'_xe-escape-text-loop ('acc let
   dup len 0 gt (
     dup 0 get must 'c let
     1 drop-n
@@ -502,7 +502,7 @@
 '_xe-escape-text (list _xe-escape-text-loop drop) def
 
 -- _xe-escape-attr-loop: also escapes double-quote.
-'_xe-escape-attr-loop recur ('acc let
+'_xe-escape-attr-loop ('acc let
   dup len 0 gt (
     dup 0 get must 'c let
     1 drop-n
@@ -517,7 +517,7 @@
 '_xe-escape-attr (list _xe-escape-attr-loop drop) def
 
 -- _xe-render-attrs-loop: (attrs-list acc -- acc')
-'_xe-render-attrs-loop recur ('acc let
+'_xe-render-attrs-loop ('acc let
   dup len 0 gt (
     dup 0 get must 'pair let
     1 drop-n
@@ -542,7 +542,7 @@
 
 -- xml-render: (node-record -- xml-string).  Dispatches text vs element.
 -- Body: consume node-record from caller, produce string.
-'xml-render recur ('node let
+'xml-render ('node let
   node 'text at
   () {'ok (_xe-escape-text)
    'no (drop node _xe-render-elem)} untag) def
@@ -554,7 +554,7 @@
   0 n 2 mul range list ('i let 32 push) fold) def
 
 -- _xe-kids-all-text? : (kids-list -- bool).  True if every child is a text node.
-'_xe-kids-all-text?-loop recur ('ks let
+'_xe-kids-all-text?-loop ('ks let
   ks len 0 eq (1) (
     ks 0 get must 'text at
     () {'ok (drop ks 1 drop-n _xe-kids-all-text?-loop)
@@ -586,7 +586,7 @@
   ) if) if) def
 
 -- xml-render-pretty: (depth node-record -- string-with-trailing-newline)
-'xml-render-pretty recur ('node let 'depth let
+'xml-render-pretty ('node let 'depth let
   node 'text at
   () {'ok (_xe-escape-text)
    'no (drop depth node _xe-render-elem-pretty)} untag

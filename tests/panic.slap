@@ -178,7 +178,7 @@ tuck
 {'a 1} 'b (1 plus) edit must
 
 -- EXPECT: recursion depth exceeded
-'inf recur (inf) def inf
+'inf (inf) def inf
 
 -- EXPECT: MUST FAILED
 "garbage" parse-http must

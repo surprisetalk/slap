@@ -2,7 +2,7 @@
 -- Smallest positive number evenly divisible by all numbers 1-20.
 -- Answer: 232792560
 
-'gcd recur (
+'gcd (
   dup 0 eq (drop) (swap over mod gcd) if
 ) def
 

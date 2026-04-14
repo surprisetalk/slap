@@ -156,8 +156,6 @@ answer                -- 42
 12 8 gcd               -- 4
 ```
 
-The `recur` keyword (e.g. `'name recur (body) def`) is still accepted for backward compatibility but no longer required.
-
 ### closures
 
 Functions capture their defining scope:
@@ -444,7 +442,6 @@ Built-in protocols group types by capability. Use in effect annotations:
 | `member` | list val → bool | `[1 2 3] 2 member` → `1` |
 | `couple` | a b → [a b] | `1 2 couple` → `[1 2]` |
 | `flatten` | nested → flat | `[[1 2] [3 4]] flatten` → `[1 2 3 4]` |
-| `sort-desc` | list → sorted | `[1 3 2] sort-desc` → `[3 2 1]` |
 | `table` | list f → [[x f(x)]...] | `[1 2 3] (sqr) table` → `[[1 1] [2 4] [3 9]]` |
 | `select` | list indices → sublist | `[10 20 30] [0 2] select` → `[10 30]` |
 | `reduce` | list f → result | `[1 2 3] (plus) reduce` → `6` |

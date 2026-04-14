@@ -5,7 +5,7 @@
 'sum-divs (
   'sd-n let
   sd-n 1 le (0) (
-    'sd-loop recur (
+    'sd-loop (
       'sd-i let 'sd-total let
       sd-i sd-i mul sd-n le (
         sd-n sd-i mod 0 eq (

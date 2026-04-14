@@ -2,13 +2,13 @@
 -- Largest 1-9 pandigital from concatenating n*1, n*2, ..., n*k
 -- Answer: 932718654
 
-'nd-helper recur (
+'nd-helper (
   'ndh-n let 'ndh-c let
   ndh-n 0 gt (ndh-c 1 plus ndh-n 10 div nd-helper) (ndh-c) if
 ) def
 'num-digits (0 swap nd-helper) def
 
-'gd-helper recur (
+'gd-helper (
   'gdh-n let 'gdh-lst let
   gdh-n 0 gt (gdh-lst gdh-n 10 mod push gdh-n 10 div gd-helper) (gdh-lst) if
 ) def
@@ -25,7 +25,7 @@
 ) def
 
 -- build-concat: n -> val dcount
-'bc-loop recur (
+'bc-loop (
   'bcl-k let 'bcl-dc let 'bcl-val let 'bcl-n let
   bcl-dc 9 lt (
     bcl-n bcl-val bcl-dc bcl-k bcl-n concat-step 'bcl-k2 let 'bcl-dc2 let 'bcl-val2 let
