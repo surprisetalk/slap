@@ -410,7 +410,7 @@ typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, T
 enum { HO_BODY_1TO1=1, HO_BRANCHES_AGREE=2, HO_SAVES_UNDER=4,
        HO_APPLY_EFFECT=16, HO_BOX_BORROW=32, HO_BOX_MUTATE=64, HO_SCRUTINEE_TAGGED=128 };
 typedef struct { const char *name; uint32_t sym; int need; int out; TypeConstraint out_type; uint8_t flags; } HOEffect;
-#define HO_OP_COUNT 23
+#define HO_OP_COUNT 19
 static HOEffect ho_ops[HO_OP_COUNT] = {
     {"apply",0,1,0,TC_NONE,HO_APPLY_EFFECT},{"dip",0,2,1,TC_NONE,HO_APPLY_EFFECT|HO_SAVES_UNDER},
     {"if",0,3,1,TC_NONE,HO_BRANCHES_AGREE},
@@ -418,9 +418,8 @@ static HOEffect ho_ops[HO_OP_COUNT] = {
     {"while",0,2,0,TC_NONE,0},{"loop",0,1,0,TC_NONE,HO_APPLY_EFFECT},
     {"lend",0,2,2,TC_BOX,HO_BOX_BORROW},{"mutate",0,2,1,TC_BOX,HO_BOX_MUTATE},
     {"cond",0,3,1,TC_NONE,HO_BRANCHES_AGREE},{"case",0,3,1,TC_NONE,HO_BRANCHES_AGREE},
-    {"find",0,3,1,TC_NONE,0},{"table",0,2,1,TC_LIST,0},
+    {"find",0,3,1,TC_NONE,0},
     {"scan",0,3,1,TC_LIST,0},
-    {"repeat",0,2,0,TC_NONE,0},{"bi",0,3,2,TC_NONE,0},{"keep",0,1,1,TC_NONE,0},
     {"on",0,1,0,TC_NONE,0},{"show",0,1,0,TC_NONE,0},
     {"untag",0,3,1,TC_NONE,HO_BRANCHES_AGREE|HO_SCRUTINEE_TAGGED},
     {"then",0,2,1,TC_MONAD,HO_BODY_1TO1},
@@ -2367,7 +2366,7 @@ static const char *PRELUDE =
     "'gt (swap lt) [lent in  lent in  int move out] effect def\n'ge (lt not) [lent in  lent in  int move out] effect def\n'le (swap lt not) [lent in  lent in  int move out] effect def\n"
     "'inc (1 plus) [num lent in  num move out] effect def\n'dec (1 sub) [num lent in  num move out] effect def\n'neg (0 swap sub) [num lent in  num move out] effect def\n"
     "'max (over over lt (nip) (drop) if) ['a ord lent in  'a ord lent in  'a ord move out] effect def\n'min (over over lt (drop) (nip) if) ['a ord lent in  'a ord lent in  'a ord move out] effect def\n'abs (dup 0 lt (neg) (dup drop) if) def\n"
-    "'bi ('g swap def 'f swap def dup f swap g) def\n'keep ('f swap def dup f swap) def\n'repeat ('f swap def (dup 0 gt) (1 sub (f) dip) while drop) def\n"
+    "'keep (over (apply) dip) def\n'bi ((keep) dip apply) def\n'repeat ('f swap def (dup 0 gt) (1 sub (f) dip) while drop) def\n"
     "'select (swap 'data swap def (data swap get must) each) def\n'reduce (swap dup 0 get must swap 1 drop-n swap rot fold) def\n'table ((dup) swap compose (couple) compose each) def\n"
     "'filter ('p swap def list (dup p (push) (drop) if) fold) ['a list own in  tuple own in  'a list move out] effect def\n"
     "'where ('p swap def 0 'idx let list ('elem swap def elem p (idx push) () if idx 1 plus 'idx let) fold) def\n"
