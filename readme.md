@@ -137,24 +137,26 @@ answer                -- 42
 
 ### recursion
 
-Use `recur` before `def` to allow self-reference:
+`def` is self-visible by default when the body references its own name:
 
 ```slap
-'factorial recur (
+'factorial (
   dup 1 le (drop 1) (dup 1 sub factorial mul) if
 ) def
 5 factorial            -- 120
 
-'fib recur (
+'fib (
   dup 1 le () (dup 1 sub fib swap 2 sub fib plus) if
 ) def
 10 fib                 -- 55
 
-'gcd recur (
+'gcd (
   dup 0 eq (drop) (swap over mod gcd) if
 ) def
 12 8 gcd               -- 4
 ```
+
+The `recur` keyword (e.g. `'name recur (body) def`) is still accepted for backward compatibility but no longer required.
 
 ### closures
 

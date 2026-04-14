@@ -410,14 +410,14 @@ typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, T
 enum { HO_BODY_1TO1=1, HO_BRANCHES_AGREE=2, HO_SAVES_UNDER=4,
        HO_APPLY_EFFECT=16, HO_BOX_BORROW=32, HO_BOX_MUTATE=64, HO_SCRUTINEE_TAGGED=128 };
 typedef struct { const char *name; uint32_t sym; int need; int out; TypeConstraint out_type; uint8_t flags; } HOEffect;
-#define HO_OP_COUNT 19
+#define HO_OP_COUNT 18
 static HOEffect ho_ops[HO_OP_COUNT] = {
     {"apply",0,1,0,TC_NONE,HO_APPLY_EFFECT},{"dip",0,2,1,TC_NONE,HO_APPLY_EFFECT|HO_SAVES_UNDER},
     {"if",0,3,1,TC_NONE,HO_BRANCHES_AGREE},
     {"fold",0,3,1,TC_NONE,0},{"reduce",0,2,1,TC_NONE,0},{"each",0,2,1,TC_FUNCTOR,HO_BODY_1TO1},
     {"while",0,2,0,TC_NONE,0},{"loop",0,1,0,TC_NONE,HO_APPLY_EFFECT},
     {"lend",0,2,2,TC_BOX,HO_BOX_BORROW},{"mutate",0,2,1,TC_BOX,HO_BOX_MUTATE},
-    {"cond",0,3,1,TC_NONE,HO_BRANCHES_AGREE},{"case",0,3,1,TC_NONE,HO_BRANCHES_AGREE},
+    {"case",0,3,1,TC_NONE,HO_BRANCHES_AGREE},
     {"find",0,3,1,TC_NONE,0},
     {"scan",0,3,1,TC_LIST,0},
     {"on",0,1,0,TC_NONE,0},{"show",0,1,0,TC_NONE,0},
@@ -425,7 +425,12 @@ static HOEffect ho_ops[HO_OP_COUNT] = {
     {"then",0,2,1,TC_MONAD,HO_BODY_1TO1},
     {"edit",0,3,1,TC_TAGGED,HO_BODY_1TO1},
 };
-static HOEffect *ho_ops_find(uint32_t sym) { for (int i = 0; i < HO_OP_COUNT; i++) if (ho_ops[i].sym == sym) return &ho_ops[i]; return NULL; }
+static uint32_t S_COND;
+static HOEffect *ho_ops_find(uint32_t sym) {
+    if (sym == S_COND) sym = sym_intern("case"); /* cond is a runtime/TC alias for case */
+    for (int i = 0; i < HO_OP_COUNT; i++) if (ho_ops[i].sym == sym) return &ho_ops[i];
+    return NULL;
+}
 static void syms_init(void) {
     S_DEF=sym_intern("def"); S_LET=sym_intern("let"); S_RECUR=sym_intern("recur");
     S_IF=sym_intern("if"); S_EFFECT=sym_intern("effect"); S_CHECK=sym_intern("check");
@@ -435,6 +440,7 @@ static void syms_init(void) {
     S_SET=sym_intern("set"); S_EDIT=sym_intern("edit"); S_INDEXOF=sym_intern("index-of"); S_STRFIND=sym_intern("str-find");
     S_PLUS=sym_intern("plus"); S_SUB=sym_intern("sub"); S_EQ=sym_intern("eq"); S_SWAP=sym_intern("swap"); S_DROP=sym_intern("drop");
     S_MUL=sym_intern("mul"); S_DIV=sym_intern("div"); S_MOD=sym_intern("mod");
+    S_COND=sym_intern("cond");
     for (int i = 0; i < HO_OP_COUNT; i++) ho_ops[i].sym = sym_intern(ho_ops[i].name);
 }
 typedef struct {
@@ -1199,6 +1205,21 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
             TypeConstraint eff_out = tc_infer_effect_ctx(toks, i+1, close, total_count, &eff_c, &eff_p, tc);
             int is_simple = 1;
             for (int j = i+1; j < close; j++) if (toks[j].tag == TOK_LPAREN || toks[j].tag == TOK_LBRACKET || toks[j].tag == TOK_LBRACE) { is_simple = 0; break; }
+            /* Default `def` to self-visible: if this tuple is about to be bound
+               as a def AND the body textually references the name, synthesize
+               recur state so the self-reference typechecks. Narrower than
+               unconditional recur (which would skip branch-effect checks for
+               non-recursive defs). Explicit `recur` keyword still works. */
+            if (!tc->recur_pending && close+1 < total_count
+                && toks[close+1].tag == TOK_WORD && toks[close+1].as.sym == S_DEF
+                && tc->sp >= 1 && tc->data[tc->sp-1].type == TC_SYM && tc->data[tc->sp-1].sym_id) {
+                uint32_t name_sym = tc->data[tc->sp-1].sym_id;
+                for (int j = i+1; j < close; j++) {
+                    if (toks[j].tag == TOK_WORD && toks[j].as.sym == name_sym) {
+                        tc->recur_pending = 1; tc->recur_sym = name_sym; break;
+                    }
+                }
+            }
             int scheme_base = tc->tvar_count, ic = 0, oc = 0, out_eff = -1;
             int itv[8] = {0}, otv[8] = {0}, sc = 0;
             { int _s[]={tc->sp,tc->bind_count,tc->unknown_count,tc->recur_pending,tc->suppress_errors,type_sig_count,tc->effect_count,tc->sp_floor,tc->saw_linear_capture,tc->in_recur_body};
