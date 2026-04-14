@@ -567,6 +567,7 @@ typedef struct {
     AbstractType data[ASTACK_MAX]; int sp, errors;
     TCBinding bindings[TC_BINDS_MAX]; int bind_count;
     int recur_pending; uint32_t recur_sym;
+    int in_recur_body;  /* non-zero inside the immediate body of a recur'd function; gates branch-effect checks */
     TCUnknown unknowns[TC_UNKNOWN_MAX]; int unknown_count;
     TVarEntry tvars[TVAR_MAX]; int tvar_count;
     TupleEffect effects[EFFECT_MAX]; int effect_count;
@@ -926,7 +927,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         for (int i = 0; i < bc; i++)
             if (bouts[i] != TC_NONE && ref != TC_NONE && bouts[i] != ref && !tc_constraint_matches(ref, bouts[i]) && !tc_constraint_matches(bouts[i], ref))
                 tc_error(tc, line, 0, "'%s' branches produce different types: %s vs %s", ho->name, constraint_name(ref), constraint_name(bouts[i]));
-        if (!tc->recur_pending) {
+        if (!tc->in_recur_body) {
             int rnet = 0, rset = 0, rci = 0;
             for (int i = 0; i < bc; i++) if (barr_has[i]) { rnet = barr_p[i] - barr_c[i]; rci = i; rset = 1; break; }
             if (rset) for (int i = 0; i < bc; i++)
@@ -1126,7 +1127,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
             for (int j = i+1; j < close; j++) if (toks[j].tag == TOK_LPAREN || toks[j].tag == TOK_LBRACKET || toks[j].tag == TOK_LBRACE) { is_simple = 0; break; }
             int scheme_base = tc->tvar_count, ic = 0, oc = 0, out_eff = -1;
             int itv[8] = {0}, otv[8] = {0}, sc = 0;
-            { int _s[]={tc->sp,tc->bind_count,tc->unknown_count,tc->recur_pending,tc->suppress_errors,type_sig_count,tc->effect_count,tc->sp_floor,tc->saw_linear_capture};
+            { int _s[]={tc->sp,tc->bind_count,tc->unknown_count,tc->recur_pending,tc->suppress_errors,type_sig_count,tc->effect_count,tc->sp_floor,tc->saw_linear_capture,tc->in_recur_body};
                 int wide = (eff_c > 8 || eff_p > 8), skip = 0;
                 tc->saw_linear_capture = 0;
                 if (!is_simple) { tc->sp_floor = tc->sp; }
@@ -1140,7 +1141,12 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                 if (tc->recur_pending && tc->recur_sym) {
                     int pe = tc_alloc_effect(tc); tc->effects[pe].consumed = eff_c; tc->effects[pe].produced = eff_p; tc->effects[pe].out_type = eff_out;
                     AbstractType pa = {0}; pa.type = TC_TUPLE; pa.effect_idx = pe; tc_bind(tc, tc->recur_sym, &pa, 1, t->line);
+                    tc->in_recur_body = 1;  /* permit mismatched branch effects inside this body */
                 }
+                /* Inside the body, recur_pending must be 0 so nested defs don't
+                   mis-attribute to recur_sym. _s[3] restores it at exit so the
+                   outer def post-body still consumes it. */
+                tc->recur_pending = 0;
                 int is_lend_body = (close+1 < total_count && toks[close+1].tag == TOK_WORD && strcmp(sym_name(toks[close+1].as.sym), "lend") == 0);
                 if (!skip) { tc->body_depth++; if (is_lend_body) tc->lend_depth++; tc_process_range(tc, toks, i+1, close, total_count); if (is_lend_body) tc->lend_depth--; tc->body_depth--; }
                 if (wide) tc->suppress_errors = _s[4];
@@ -1153,7 +1159,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     if (ao == 1 && tc->data[tc->sp-1].type == TC_TUPLE && tc->data[tc->sp-1].effect_idx >= 0) out_eff = tc->data[tc->sp-1].effect_idx;
                 }
                 int body_captured = tc->saw_linear_capture;
-                tc->sp=_s[0];tc->bind_count=_s[1];tc->unknown_count=_s[2];tc->recur_pending=_s[3];tc->suppress_errors=_s[4];type_sig_count=_s[5];tc->effect_count=_s[6];tc->sp_floor=_s[7];tc->saw_linear_capture=_s[8];
+                tc->sp=_s[0];tc->bind_count=_s[1];tc->unknown_count=_s[2];tc->recur_pending=_s[3];tc->suppress_errors=_s[4];type_sig_count=_s[5];tc->effect_count=_s[6];tc->sp_floor=_s[7];tc->saw_linear_capture=_s[8];tc->in_recur_body=_s[9];
                 tc_push(tc, TC_TUPLE, t->line);
                 int eidx = tc_alloc_effect(tc); TupleEffect *eff = &tc->effects[eidx];
                 eff->consumed = eff_c; eff->produced = eff_p; eff->out_type = eff_out; eff->out_effect = out_eff;
