@@ -106,7 +106,7 @@ Constraints formalize which operations work on which types. Used in `[...] effec
 | Protocol | Keyword | Types | Methods |
 |----------|---------|-------|---------|
 | Eq | `eq` | all stackable | `eq` |
-| Ord | `ord` (implies Eq) | int, float | `lt`, `sort` |
+| Ord | `ord` (implies Eq) | int, float, sym | `lt`, `sort` |
 | Num | `num` (implies Eq) | int, float | `plus`, `sub`, `mul`, `div` |
 | Integral | `integral` (implies Num) | int | `mod`, `divmod`, `wrap`, bitwise |
 | Semigroup | `semigroup` | list, tuple, record | `cat` |

@@ -396,7 +396,7 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
 }
 static int eval_depth = 0;
 #define EVAL_DEPTH_MAX 10000
-static uint32_t S_LET, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_NO, S_CASE, S_DEFAULT, S_MUST;
+static uint32_t S_LET, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_NO, S_CASE, S_DEFAULT, S_MUST, S_QUOTE;
 static uint32_t S_GET, S_POP, S_AT, S_NTH, S_SET, S_EDIT, S_INDEXOF, S_STRFIND;
 static uint32_t S_PLUS, S_SUB, S_EQ, S_SWAP, S_DROP, S_MUL, S_DIV, S_MOD;
 static void syms_init(void);
@@ -428,7 +428,7 @@ static void syms_init(void) {
     S_LET=sym_intern("let");
     S_IF=sym_intern("if"); S_EFFECT=sym_intern("effect"); S_CHECK=sym_intern("check");
     S_UNION=sym_intern("union"); S_OK=sym_intern("ok"); S_NO=sym_intern("no");
-    S_CASE=sym_intern("case"); S_DEFAULT=sym_intern("default"); S_MUST=sym_intern("must");
+    S_CASE=sym_intern("case"); S_DEFAULT=sym_intern("default"); S_MUST=sym_intern("must"); S_QUOTE=sym_intern("quote");
     S_GET=sym_intern("get"); S_POP=sym_intern("pop"); S_AT=sym_intern("at"); S_NTH=sym_intern("nth");
     S_SET=sym_intern("set"); S_EDIT=sym_intern("edit"); S_INDEXOF=sym_intern("index-of"); S_STRFIND=sym_intern("str-find");
     S_PLUS=sym_intern("plus"); S_SUB=sym_intern("sub"); S_EQ=sym_intern("eq"); S_SWAP=sym_intern("swap"); S_DROP=sym_intern("drop");
@@ -548,7 +548,9 @@ typedef struct {
     int out_effect;
     int has_let;     /* body contains let/def — snapshot could alias a binding */
     int has_nested;  /* body contains a nested tuple literal — snapshot could be captured into a closure env */
-    int captures_linear;  /* body looked up a linear binding from outer scope; tuple is single-use */
+    /* `captures_linear` was redundant with AT_LINEAR on the corresponding
+       stack tuple value — set by the same code path. Consumers now check
+       AT_LINEAR directly. See line ~1003 and ~1341 for the old disjunctions. */
     int output_is_linear; /* body's sole output is itself a linear-capturing closure; apply should mark output AT_LINEAR */
 } TupleEffect;
 #define AT_LINEAR 1
@@ -591,7 +593,7 @@ static const uint32_t tc_compat[] = {
     [TC_NONE]=0xFFFFFFFF,
     [TC_INT]=B(TC_INT)|B(TC_NUM)|B(TC_INTEGRAL)|B(TC_ORD)|B(TC_EQ),
     [TC_FLOAT]=B(TC_FLOAT)|B(TC_NUM)|B(TC_ORD)|B(TC_EQ),
-    [TC_SYM]=B(TC_SYM)|B(TC_EQ),
+    [TC_SYM]=B(TC_SYM)|B(TC_EQ)|B(TC_ORD),
     [TC_NUM]=B(TC_NUM)|B(TC_INT)|B(TC_FLOAT)|B(TC_EQ)|B(TC_ORD),
     [TC_LIST]=B(TC_LIST)|B(TC_SEQ)|B(TC_SEMIGROUP)|B(TC_MONOID)|B(TC_FUNCTOR)|B(TC_APPLICATIVE)|B(TC_FOLDABLE)|B(TC_MONAD)|B(TC_EQ)|B(TC_SIZED),
     [TC_TUPLE]=B(TC_TUPLE)|B(TC_SEMIGROUP)|B(TC_MONOID)|B(TC_EQ)|B(TC_SIZED),
@@ -605,7 +607,7 @@ static const uint32_t tc_compat[] = {
        signature beyond what was written. Keep this row minimal: EQ and the
        concrete stackable types that inherently satisfy Eq. */
     [TC_EQ]=B(TC_EQ)|B(TC_INT)|B(TC_FLOAT)|B(TC_SYM)|B(TC_LIST)|B(TC_TUPLE)|B(TC_REC)|B(TC_TAGGED),
-    [TC_ORD]=B(TC_ORD)|B(TC_INT)|B(TC_FLOAT)|B(TC_EQ)|B(TC_NUM),
+    [TC_ORD]=B(TC_ORD)|B(TC_INT)|B(TC_FLOAT)|B(TC_SYM)|B(TC_EQ)|B(TC_NUM),
     [TC_INTEGRAL]=B(TC_INTEGRAL)|B(TC_INT)|B(TC_NUM)|B(TC_EQ),
     [TC_SEMIGROUP]=B(TC_SEMIGROUP)|B(TC_MONOID)|B(TC_LIST)|B(TC_TUPLE)|B(TC_REC)|B(TC_SEQ),
     [TC_MONOID]=B(TC_MONOID)|B(TC_LIST)|B(TC_TUPLE)|B(TC_REC)|B(TC_SEQ)|B(TC_SEMIGROUP),
@@ -688,6 +690,14 @@ static int tvar_content(TypeChecker *tc, int tvar_id, TypeConstraint c) {
     if (c == TC_BOX) return tc->tvars[root].box_c;
     if (c == TC_TAGGED) return tc->tvars[root].tag_p;
     return 0;
+}
+/* Resolve the content type of the top-of-stack value, viewed as a container
+   of the given kind (TC_BOX, TC_LIST, TC_TAGGED, etc). Returns TC_NONE if
+   the stack top has no tvar or the content slot is unbound. */
+static inline TypeConstraint tc_top_content(TypeChecker *tc, TypeConstraint kind) {
+    if (tc->sp <= 0 || tc->data[tc->sp-1].tvar_id <= 0) return TC_NONE;
+    int sub = tvar_content(tc, tc->data[tc->sp-1].tvar_id, kind);
+    return sub > 0 ? tvar_resolve(tc, sub) : TC_NONE;
 }
 static int tvar_unify_at(TypeChecker *tc, int tvar, AbstractType *at, int line) {
     if (at->tvar_id > 0) return tvar_unify(tc, tvar, at->tvar_id, line);
@@ -954,9 +964,8 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         }
         if (tc->sp > 0 && tc->data[tc->sp-1].type != TC_BOX && tc->data[tc->sp-1].type != TC_NONE)
             tc_error(tc, line, 0, "'%s' expected box, got %s", ho->name, constraint_name(tc->data[tc->sp-1].type));
-#define TC_BOX_CONTENTS(tc) ({ TypeConstraint _c=TC_NONE; if((tc)->data[(tc)->sp-1].tvar_id>0){ int _bc=(tc)->tvars[tvar_find((tc),(tc)->data[(tc)->sp-1].tvar_id)].box_c; if(_bc>0)_c=tvar_resolve((tc),_bc); } _c; })
         if ((ho->flags & HO_BOX_BORROW) && tc->sp > 0 && tc->data[tc->sp-1].type == TC_BOX) {
-            TypeConstraint ct = TC_BOX_CONTENTS(tc); tc->data[tc->sp-1].borrowed++;
+            TypeConstraint ct = tc_top_content(tc, TC_BOX); tc->data[tc->sp-1].borrowed++;
             if (bk && bteff && (bteff->has_let || bteff->has_nested) && (ct == TC_LIST || ct == TC_REC || ct == TC_TUPLE || ct == TC_TAGGED))
                 tc_error_hard(tc, line, 0, "'lend' body may not %s when the box contains a compound value (%s) — the borrowed snapshot aliases the box's backing storage and later 'mutate' calls would silently corrupt the binding",
                     bteff->has_let ? "'let'-bind values" : "contain a nested tuple literal",
@@ -965,7 +974,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
             for (int j = 0; j < r; j++) tc_push(tc, (j==r-1&&bo!=TC_NONE)?bo:(j==0&&ct!=TC_NONE)?ct:TC_NONE, line);
             int bi = tc->sp - r - 1; if (bi >= 0) tc->data[bi].borrowed--;
         } else if ((ho->flags & HO_BOX_MUTATE) && tc->sp > 0 && tc->data[tc->sp-1].type == TC_BOX) {
-            TypeConstraint ct = TC_BOX_CONTENTS(tc);
+            TypeConstraint ct = tc_top_content(tc, TC_BOX);
             if (ct != TC_NONE && bo != TC_NONE && !tc_constraint_matches(ct, bo) && !tc_constraint_matches(bo, ct))
                 tc_error(tc, line, 0, "'mutate' body produces %s but box contains %s", constraint_name(bo), constraint_name(ct));
         }
@@ -996,7 +1005,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         if (top->type == TC_TUPLE && top->effect_idx >= 0) {
             TupleEffect *te = &tc->effects[top->effect_idx];
             if (!bk) { eff_c = te->consumed; eff_p = te->produced; bo = te->out_type; bk = 1; boe = te->out_effect; bteff = te; }
-            if (te->output_is_linear || (te->captures_linear && (top->flags & AT_LINEAR))) branch_linear = 1;
+            if (te->output_is_linear || (top->flags & AT_LINEAR)) branch_linear = 1;
             if (ib && bc < 8) { barr_c[bc]=te->consumed; barr_p[bc]=te->produced; barr_has[bc]=1; bouts[bc++] = te->out_type; }
         } else if (ib && top->type != TC_NONE && bc < 8) bouts[bc++] = top->type;
         tc->sp--;
@@ -1099,6 +1108,19 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
     }
 }
 static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
+    /* quote pushes a binding's raw value (no auto-exec). If that value is a
+       linear-capturing closure, applying it twice double-consumes the captured
+       linear. Mirror the consumed_line check done for ordinary lookup at the
+       b->atype path below. */
+    if (sym == S_QUOTE && tc->sp > 0 && tc->data[tc->sp-1].type == TC_SYM && tc->data[tc->sp-1].sym_id) {
+        uint32_t target = tc->data[tc->sp-1].sym_id;
+        TCBinding *qb = tc_lookup(tc, target);
+        if (qb && (qb->atype.flags & AT_LINEAR) && qb->atype.type == TC_TUPLE) {
+            if (qb->consumed_line > 0)
+                tc_error_hard(tc, line, qb->consumed_line, "linear-capturing closure '%s' has already been consumed (previous use on line %d) — 'quote' on a linear closure consumes it just like applying it", sym_name(target), qb->consumed_line);
+            else qb->consumed_line = line;
+        }
+    }
     TypeSig *sig = typesig_find(sym);
     if (sig) goto apply_sig;
     { HOEffect *ho = ho_ops_find(sym); if (ho) { tc_apply_ho(tc, ho, line); return; } }
@@ -1252,7 +1274,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
         case TOK_STRING: {
             tc_push(tc, TC_LIST, t->line);
             if (tc->data[tc->sp-1].tvar_id > 0) {
-                int ev = tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].elem;
+                int ev = tvar_content(tc, tc->data[tc->sp-1].tvar_id, TC_LIST);
                 if (ev > 0) tvar_bind(tc, ev, TC_INT, t->line);
             }
             break;
@@ -1278,7 +1300,10 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
             }
             int scheme_base = tc->tvar_count, ic = 0, oc = 0, out_eff = -1;
             int itv[8] = {0}, otv[8] = {0}, sc = 0;
-            { int _s[]={tc->sp,tc->bind_count,tc->unknown_count,tc->recur_pending,tc->suppress_errors,type_sig_count,tc->effect_count,tc->sp_floor,tc->saw_linear_capture,tc->in_recur_body};
+            { struct { int sp, bind_count, unknown_count, recur_pending, suppress_errors, type_sig_count, sp_floor, saw_linear_capture, in_recur_body; } _s = {
+                    tc->sp, tc->bind_count, tc->unknown_count, tc->recur_pending, tc->suppress_errors, type_sig_count, tc->sp_floor, tc->saw_linear_capture, tc->in_recur_body };
+                /* Note: effect_count is intentionally NOT saved — effects allocated during
+                   body processing must persist so the outer TupleEffect's fields stay valid. */
                 int wide = (eff_c > 8 || eff_p > 8), skip = 0;
                 tc->saw_linear_capture = 0;
                 if (!is_simple) { tc->sp_floor = tc->sp; }
@@ -1295,14 +1320,14 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     tc->in_recur_body = 1;  /* permit mismatched branch effects inside this body */
                 }
                 /* Inside the body, recur_pending must be 0 so nested defs don't
-                   mis-attribute to recur_sym. _s[3] restores it at exit so the
-                   outer def post-body still consumes it. */
+                   mis-attribute to recur_sym. _s.recur_pending restores it at exit
+                   so the outer def post-body still consumes it. */
                 tc->recur_pending = 0;
                 int is_lend_body = (close+1 < total_count && toks[close+1].tag == TOK_WORD && strcmp(sym_name(toks[close+1].as.sym), "lend") == 0);
                 if (!skip) { tc->body_depth++; if (is_lend_body) tc->lend_depth++; tc_process_range(tc, toks, i+1, close, total_count); if (is_lend_body) tc->lend_depth--; tc->body_depth--; }
-                if (wide) tc->suppress_errors = _s[4];
+                if (wide) tc->suppress_errors = _s.suppress_errors;
                 else if (!skip) {
-                    int ao = tc->sp - _s[0]; oc = ao > 8 ? 8 : (ao > 0 ? ao : 0);
+                    int ao = tc->sp - _s.sp; oc = ao > 8 ? 8 : (ao > 0 ? ao : 0);
                     for (int j = 0; j < oc; j++) { int idx = tc->sp - oc + j; if (idx < 0) continue;
                         otv[j] = tc->data[idx].tvar_id;
                         if (!otv[j]) { otv[j] = tvar_fresh(tc); if (tc->data[idx].type != TC_NONE) tc->tvars[otv[j]].bound = tc->data[idx].type; } }
@@ -1310,24 +1335,22 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     if (ao == 1 && tc->data[tc->sp-1].type == TC_TUPLE && tc->data[tc->sp-1].effect_idx >= 0) out_eff = tc->data[tc->sp-1].effect_idx;
                 }
                 int body_captured = tc->saw_linear_capture;
-                /* output_is_linear: body's sole output is itself a linear-capturing
-                   closure (e.g. `'make-freer (42 box 'b let (b free)) def` or any
-                   chain thereof `'outer (make-freer) def`). Distinct from
-                   captures_linear, which only tracks whether THIS body refs
-                   outer-scope linears. tcp-style defs have captures_linear but
-                   not output_is_linear, so their output isn't marked. */
-                int output_captures_linear = 0;
-                if (!skip && (tc->sp - _s[0]) == 1) {
-                    AbstractType *top = &tc->data[tc->sp-1];
-                    if (top->type == TC_TUPLE && (top->flags & AT_LINEAR)) output_captures_linear = 1;
-                    else if (top->type == TC_TUPLE && top->effect_idx >= 0 && tc->effects[top->effect_idx].captures_linear) output_captures_linear = 1;
-                }
-                tc->sp=_s[0];tc->bind_count=_s[1];tc->unknown_count=_s[2];tc->recur_pending=_s[3];tc->suppress_errors=_s[4];type_sig_count=_s[5];tc->sp_floor=_s[7];tc->saw_linear_capture=_s[8];tc->in_recur_body=_s[9];(void)_s;
+                /* output_is_linear: the body's sole output is itself a linear-capturing
+                   closure (e.g. `(42 box 'b let (b free))` or a def chain thereof).
+                   Detected by checking that the one residual stack value is a tuple
+                   carrying AT_LINEAR. */
+                int output_captures_linear = !skip
+                    && (tc->sp - _s.sp) == 1
+                    && tc->data[tc->sp-1].type == TC_TUPLE
+                    && (tc->data[tc->sp-1].flags & AT_LINEAR);
+                tc->sp = _s.sp; tc->bind_count = _s.bind_count; tc->unknown_count = _s.unknown_count;
+                tc->recur_pending = _s.recur_pending; tc->suppress_errors = _s.suppress_errors;
+                type_sig_count = _s.type_sig_count; tc->sp_floor = _s.sp_floor;
+                tc->saw_linear_capture = _s.saw_linear_capture; tc->in_recur_body = _s.in_recur_body;
                 tc_push(tc, TC_TUPLE, t->line);
                 int eidx = tc_alloc_effect(tc); TupleEffect *eff = &tc->effects[eidx];
                 eff->consumed = eff_c; eff->produced = eff_p; eff->out_type = eff_out; eff->out_effect = out_eff;
                 eff->scheme_base = scheme_base; eff->scheme_count = sc; eff->in_count = ic; eff->out_count = oc;
-                eff->captures_linear = body_captured;
                 eff->output_is_linear = output_captures_linear;
                 for (int j = 0; j < ic; j++) eff->in_tvars[j] = itv[j];
                 for (int j = 0; j < oc; j++) eff->out_tvars[j] = otv[j];
@@ -1356,7 +1379,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
             TypeConstraint elem = tc_check_list_elements(tc, toks, i+1, close, total_count, t->line);
             tc_push(tc, TC_LIST, t->line);
             if (elem != TC_NONE && tc->data[tc->sp-1].tvar_id > 0) {
-                int ev = tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].elem;
+                int ev = tvar_content(tc, tc->data[tc->sp-1].tvar_id, TC_LIST);
                 if (ev > 0) tvar_bind(tc, ev, elem, t->line);
             }
             i = close; break;
@@ -1646,51 +1669,47 @@ static void prim_if(Frame *env) {
     int clauses_s=val_slots(clauses_top),clauses_len=(int)clauses_top.as.compound.len; \
     if(clauses_s>LOCAL_MAX) die(label ": clauses too large (%d slots, max %d)",clauses_s,LOCAL_MAX); \
     Value clauses_buf[clauses_s]; VCPY(clauses_buf,&stack[sp-clauses_s],clauses_s); sp-=clauses_s
-static int dispatch_clauses(const char *who, Value *cb, int cs, int cl, ValTag ct,
-                            uint32_t ms, Value *pp, int pps, Frame *env);
 /* Unified scrutinee/default/clauses dispatch.
-   - Scrutinee TAGGED → match by tag symbol (payload pushed on match).
-   - Scrutinee anything else → evaluate each clause predicate against a
-     fresh copy of the scrutinee; on truthy, push scrutinee and run body.
-   If nothing matches, the default is pushed.
-
-   Single entry point: `case`. */
+   Three modes, all sharing the same epilogue (run body, or push default):
+   - TAGGED scrutinee + RECORD clauses: tag-symbol keyed field lookup, payload pushed before body.
+   - TAGGED scrutinee + tuple clauses:  linear scan for 'sym (body) pair, payload pushed before body.
+   - Non-TAGGED scrutinee:              linear scan of (pred) (body) pairs, scrutinee pushed before each predicate and before the winning body.
+*/
 static void prim_case(Frame *env) {
     POP_CLAUSES("case");
     POP_VAL(def);
     if (sp <= 0) die("case: stack underflow");
     Value top = stack[sp-1];
     if (top.tag == VAL_TAGGED) {
+        ElemRef br = {0};
         int tagged_s=val_slots(top), payload_s=tagged_s-1;
         if(payload_s>LOCAL_MAX) die("case: payload too large (%d slots, max %d)",payload_s,LOCAL_MAX);
         Value payload_buf[payload_s]; VCPY(payload_buf,&stack[sp-tagged_s],payload_s);
-        uint32_t tag_sym=top.as.compound.len;
-        sp-=tagged_s;
-        if(!dispatch_clauses("case",clauses_buf,clauses_s,clauses_len,clauses_top.tag,tag_sym,payload_buf,payload_s,env))
-            SPUSH(def_buf,def_s);
-        return;
+        uint32_t tag_sym=top.as.compound.len; sp-=tagged_s;
+        int found = 0;
+        if (clauses_top.tag == VAL_RECORD) {
+            br = record_field(clauses_buf,clauses_s,clauses_len,tag_sym,&found);
+        } else {
+            if(clauses_len%2!=0) die("case: need even number of clauses");
+            for(int i=0;i<clauses_len&&!found;i+=2){
+                ElemRef pr=compound_elem(clauses_buf,clauses_s,clauses_len,i);
+                if(clauses_buf[pr.base].tag==VAL_SYM&&clauses_buf[pr.base].as.sym==tag_sym){
+                    br=compound_elem(clauses_buf,clauses_s,clauses_len,i+1); found=1;
+                }
+            }
+        }
+        if (found) { SPUSH(payload_buf,payload_s); eval_body(&clauses_buf[br.base],br.slots,env); return; }
+        SPUSH(def_buf,def_s); return;
     }
     int scrut_s=val_slots(top); Value scrut_buf[scrut_s]; VCPY(scrut_buf,&stack[sp-scrut_s],scrut_s); sp-=scrut_s;
     if(clauses_len%2!=0) die("case: need even number of clauses (pred/body pairs)");
     for(int i=0;i<clauses_len;i+=2){
         ElemRef pred_ref=compound_elem(clauses_buf,clauses_s,clauses_len,i);
-        ElemRef body_ref=compound_elem(clauses_buf,clauses_s,clauses_len,i+1);
-        SPUSH(scrut_buf,scrut_s);
-        eval_body(&clauses_buf[pred_ref.base],pred_ref.slots,env);
-        if(pop_int()){SPUSH(scrut_buf,scrut_s);eval_body(&clauses_buf[body_ref.base],body_ref.slots,env);return;}
+        SPUSH(scrut_buf,scrut_s); eval_body(&clauses_buf[pred_ref.base],pred_ref.slots,env);
+        if(pop_int()){ElemRef br=compound_elem(clauses_buf,clauses_s,clauses_len,i+1);
+            SPUSH(scrut_buf,scrut_s); eval_body(&clauses_buf[br.base],br.slots,env); return;}
     }
     SPUSH(def_buf,def_s);
-}
-static int dispatch_clauses(const char *who, Value *cb, int cs, int cl, ValTag ct,
-                            uint32_t ms, Value *pp, int pps, Frame *env) {
-#define DC_PUSH() if(pp){SPUSH(pp,pps);}
-    if(ct==VAL_RECORD){ int found; ElemRef br=record_field(cb,cs,cl,ms,&found);
-        if(found){DC_PUSH();eval_body(&cb[br.base],br.slots,env);return 1;}
-    } else { if(cl%2!=0) die("%s: need even number of clauses", who);
-        for(int i=0;i<cl;i+=2){ElemRef pr=compound_elem(cb,cs,cl,i);Value pat=cb[pr.base];
-            if(pat.tag==VAL_SYM&&pat.as.sym==ms){ElemRef br=compound_elem(cb,cs,cl,i+1);DC_PUSH();eval_body(&cb[br.base],br.slots,env);return 1;}} }
-#undef DC_PUSH
-    return 0;
 }
 static void prim_tag(Frame *e) {
     (void)e;
