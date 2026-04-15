@@ -1561,5 +1561,47 @@ dict "a" 1 insert "b" 2 insert "c" 7 insert
 42 shadower apply drop
 outer-val 99 eq assert
 
+-- ===== lend snapshot independence after mutate =====
+-- Stackable compounds are inlined in flat Value arrays; `get` VCPYs.
+-- A snapshot extracted via lend must survive any later mutate/free
+-- because it shares no heap with the box's backing.
+
+-- extract inner list snapshot, mutate outer box, snapshot still valid
+[[1 2 3] [4 5 6]] box
+  (0 get must) lend 'snap-a let
+  ([[99 99 99] [88 88 88]]) mutate
+  free
+  snap-a [1 2 3] eq assert
+
+-- extract record snapshot, mutate, snapshot unaffected
+{'x [10 20 30] 'y 'tag} box
+  ('x at must) lend 'snap-xs let
+  ({'x [0] 'y 'gone}) mutate
+  free
+  snap-xs [10 20 30] eq assert
+
+-- snapshot survives the box's free (box-free reclaims only bd->data)
+[[1 2 3]] box
+  (0 get must) lend 'snap-b let
+  free
+  snap-b sum 6 eq assert
+
+-- deeply nested: 3-level record, extract leaf list, mutate entirely, verify
+{'a {'b {'c [7 8 9]}}} box
+  ('a at must 'b at must 'c at must) lend 'snap-leaf let
+  ({'a {'b {'c [0]}}}) mutate
+  free
+  snap-leaf [7 8 9] eq assert
+
+-- repeated mutate cycles do not corrupt prior snapshot
+[100] box
+  (0 get must) lend 'snap-v1 let
+  ([200]) mutate
+  (0 get must) lend 'snap-v2 let
+  ([300]) mutate
+  free
+  snap-v1 100 eq assert
+  snap-v2 200 eq assert
+
 -- ===== Done =====
 "All tests passed!" print

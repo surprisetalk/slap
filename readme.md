@@ -369,9 +369,13 @@ Built-in protocols group types by capability. Use in effect annotations:
 |----------|---------|-------|------------|
 | Sized | `sized` | list, tuple, record, dict | `len` (polymorphic; returns dict through stack since dicts are linear) |
 | Seq | `seq` | list | `get`, `set`, `push`, `pop`, `cat` |
-| Eq | `eql` | all stackable | `eq` |
-| Ord | `ord` | int, float, sym | `lt`, `sort` |
+| Eq | `eq` (alias: `eql`) | all stackable | `eq` |
+| Ord | `ord` | int, float | `lt`, `sort` |
 | Num | `num` | int, float | `plus`, `sub`, `mul`, `div` |
+| Integral | `integral` | int | `mod`, `divmod`, `wrap`, bitwise |
+| Semigroup | `semigroup` | list, tuple, record | `cat` |
+
+Additional keywords recognized in annotations (`monoid`, `functor`, `applicative`, `foldable`, `monad`, `dict`, `linear`) exist in the constraint lattice but currently don't gate extra user-visible operations. Note: `lt`/`sort` also accept symbols at runtime, but the `ord` constraint itself admits only int and float.
 
 ## prelude
 

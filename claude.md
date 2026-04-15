@@ -97,7 +97,7 @@ Two categories of types:
 - **Stackable** (copyable): Int, Float, Symbol, Tuple, Record, List, String, Tagged. Support `dup`/`drop`.
 - **Linear**: Box only. Must be consumed exactly once via `free`, `lend`, `mutate`, or `clone`.
 
-`lend` borrows a stackable snapshot from a Box. No escape constraints needed because borrowed values are always stackable.
+`lend` borrows a stackable snapshot from a Box. The snapshot itself is stackable, but when the box contains a compound value (list/record/tuple/tagged) the checker forbids `let`/`def`-binding the snapshot inside the `lend` body — a later `mutate` would silently corrupt the binding, which aliases the box's backing storage (slap.c:950–953).
 
 ### Protocols (built-in typeclasses)
 
@@ -111,7 +111,9 @@ Constraints formalize which operations work on which types. Used in `[...] effec
 | Integral | `integral` (implies Num) | int | `mod`, `divmod`, `wrap`, bitwise |
 | Semigroup | `semigroup` | list, tuple, record | `cat` |
 | Seq | `seq` (implies Semigroup) | list | `get`, `set`, `push`, `pop` |
-| Sized | `sized` | list, tuple, record | `len` |
+| Sized | `sized` | list, tuple, record, dict | `len` |
+
+Additional constraint keywords recognized in effect annotations: `eql` (alias for `eq`), `monoid`, `functor`, `applicative`, `foldable`, `monad`, `dict`, `linear`. These exist in the constraint lattice (slap.c:589–624) but currently don't gate additional user-visible prelude operations — use sparingly.
 
 `each` iterates over lists (producing a new list) and over `'ok`-tagged values (applies body to payload, re-wraps; non-ok passes through). `then` chains on `'ok`-tagged values (hardcoded tag; not yet general over any tag). `fold`, `filter`, `scan` work on lists. These aren't surfaced as named protocols because they don't generalize beyond their current types.
 
