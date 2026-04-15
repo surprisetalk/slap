@@ -548,7 +548,8 @@ typedef struct {
     int scheme_base, scheme_count;
     int in_tvars[8], out_tvars[8], in_count, out_count;
     int out_effect;
-    int has_let;
+    int has_let;     /* body contains let/def — snapshot could alias a binding */
+    int has_nested;  /* body contains a nested tuple literal — snapshot could be captured into a closure env */
     int captures_linear;  /* body looked up a linear binding from outer scope; tuple is single-use */
     int output_is_linear; /* body's sole output is itself a linear-capturing closure; apply should mark output AT_LINEAR */
 } TupleEffect;
@@ -657,6 +658,24 @@ static int tvar_unify(TypeChecker *tc, int a, int b, int line) {
     TypeConstraint ca = tc->tvars[ra].bound, cb = tc->tvars[rb].bound;
     if (ca != TC_NONE && cb != TC_NONE && !tc_constraint_matches(ca, cb) && !tc_constraint_matches(cb, ca))
         { (void)line; return 1; }
+    /* Reject merging two tvars with incompatible union schemas. Same shape
+       (same variant syms, compatible types) is fine — keep ra's. Defensive:
+       no well-formed slap program currently reaches this path (all extant
+       union_id assignments attach distinct UnionDefs to distinct tvars, and
+       tvar_instantiate copies rather than merges). Kept to prevent silent
+       corruption if a future change introduces a unification path. */
+    { int ua = tc->tvars[ra].union_id, ub = tc->tvars[rb].union_id;
+      if (ua > 0 && ub > 0 && ua != ub) {
+          UnionDef *da = &tc->unions[ua-1], *db = &tc->unions[ub-1];
+          if (da->count != db->count) { (void)line; return 1; }
+          for (int i = 0; i < da->count; i++) {
+              if (da->syms[i] != db->syms[i]) { (void)line; return 1; }
+              TypeConstraint ta = da->types[i], tb = db->types[i];
+              if (ta != TC_NONE && tb != TC_NONE && !tc_constraint_matches(ta, tb) && !tc_constraint_matches(tb, ta))
+                  { (void)line; return 1; }
+          }
+      }
+    }
     tc->tvars[rb].parent = ra;
 #define PROP(f) if (!tc->tvars[ra].f && tc->tvars[rb].f) tc->tvars[ra].f = tc->tvars[rb].f
     PROP(elem); PROP(box_c); PROP(tag_p); PROP(union_id);
@@ -940,8 +959,10 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
 #define TC_BOX_CONTENTS(tc) ({ TypeConstraint _c=TC_NONE; if((tc)->data[(tc)->sp-1].tvar_id>0){ int _bc=(tc)->tvars[tvar_find((tc),(tc)->data[(tc)->sp-1].tvar_id)].box_c; if(_bc>0)_c=tvar_resolve((tc),_bc); } _c; })
         if ((ho->flags & HO_BOX_BORROW) && tc->sp > 0 && tc->data[tc->sp-1].type == TC_BOX) {
             TypeConstraint ct = TC_BOX_CONTENTS(tc); tc->data[tc->sp-1].borrowed++;
-            if (bk && bteff && bteff->has_let && (ct == TC_LIST || ct == TC_REC || ct == TC_TUPLE || ct == TC_TAGGED))
-                tc_error_hard(tc, line, 0, "'lend' body may not 'let'/'def'-bind values when the box contains a compound value (%s) — the borrowed snapshot aliases the box's backing storage and later 'mutate' calls would silently corrupt the binding", constraint_name(ct));
+            if (bk && bteff && (bteff->has_let || bteff->has_nested) && (ct == TC_LIST || ct == TC_REC || ct == TC_TUPLE || ct == TC_TAGGED))
+                tc_error_hard(tc, line, 0, "'lend' body may not %s when the box contains a compound value (%s) — the borrowed snapshot aliases the box's backing storage and later 'mutate' calls would silently corrupt the binding",
+                    bteff->has_let ? "'let'/'def'-bind values" : "contain a nested tuple literal",
+                    constraint_name(ct));
             int r = bk ? (1 - eff_c + eff_p) : 1; if (r < 0) r = 0;
             for (int j = 0; j < r; j++) tc_push(tc, (j==r-1&&bo!=TC_NONE)?bo:(j==0&&ct!=TC_NONE)?ct:TC_NONE, line);
             int bi = tc->sp - r - 1; if (bi >= 0) tc->data[bi].borrowed--;
@@ -989,22 +1010,35 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
        Apply/dip execute the body directly and are fine. */
     if (bteff && bteff->output_is_linear && !(ho->flags & HO_APPLY_EFFECT))
         tc_error(tc, line, 0, "'%s' body may not produce a linear-capturing closure (would alias it across iterations or package it into a container)", ho->name);
-    /* Branch agreement only fires at top level (body_depth==0) and outside
-       recursive bodies. Infer-from-empty undercounts effects of branches that
-       pop from the outer stack, so enforcement inside nested scopes would
-       flag false positives whenever one branch is a shape-preserving identity
-       and another consumes-then-produces the same shape. */
-    if ((ho->flags & HO_BRANCHES_AGREE) && bc >= 2 && !tc->in_recur_body && !tc->body_depth) {
+    /* Branch agreement splits into two checks:
+       - Output *type* agreement: safe to enforce everywhere. A branch returning
+         list vs int is always a bug, regardless of inferred pop counts.
+       - Net stack-effect agreement: only enforced at top level, because inferring
+         body effects from an empty stack undercounts pops from outer scope inside
+         nested/recursive bodies, producing false positives on shape-preserving
+         branches. */
+    if ((ho->flags & HO_BRANCHES_AGREE) && bc >= 2) {
+        int nested = tc->in_recur_body || tc->body_depth;
+        /* Inside nested/recursive scopes, a TC_TUPLE output often means the
+           effect of an empty body `()` couldn't be inferred (it's pushed as a
+           value rather than analyzed as a branch body). Exclude those from the
+           type comparison to avoid false positives on shape-preserving
+           identity branches, but still catch concrete type mismatches. */
         TypeConstraint ref = TC_NONE;
-        for (int i = 0; i < bc; i++) if (bouts[i] != TC_NONE) { ref = bouts[i]; break; }
         for (int i = 0; i < bc; i++)
-            if (bouts[i] != TC_NONE && ref != TC_NONE && bouts[i] != ref && !tc_constraint_matches(ref, bouts[i]) && !tc_constraint_matches(bouts[i], ref))
+            if (bouts[i] != TC_NONE && !(nested && bouts[i] == TC_TUPLE)) { ref = bouts[i]; break; }
+        for (int i = 0; i < bc; i++) {
+            if (bouts[i] == TC_NONE || (nested && bouts[i] == TC_TUPLE)) continue;
+            if (ref != TC_NONE && bouts[i] != ref && !tc_constraint_matches(ref, bouts[i]) && !tc_constraint_matches(bouts[i], ref))
                 tc_error(tc, line, 0, "'%s' branches produce different types: %s vs %s", ho->name, constraint_name(ref), constraint_name(bouts[i]));
-        int rnet = 0, rset = 0, rci = 0;
-        for (int i = 0; i < bc; i++) if (barr_has[i]) { rnet = barr_p[i] - barr_c[i]; rci = i; rset = 1; break; }
-        if (rset) for (int i = 0; i < bc; i++)
-            if (barr_has[i] && (barr_p[i] - barr_c[i]) != rnet)
-                tc_error(tc, line, 0, "'%s' branches have different stack effects: net %+d vs net %+d (%d->%d vs %d->%d)", ho->name, rnet, barr_p[i]-barr_c[i], barr_c[rci], barr_p[rci], barr_c[i], barr_p[i]);
+        }
+        if (!nested) {
+            int rnet = 0, rset = 0, rci = 0;
+            for (int i = 0; i < bc; i++) if (barr_has[i]) { rnet = barr_p[i] - barr_c[i]; rci = i; rset = 1; break; }
+            if (rset) for (int i = 0; i < bc; i++)
+                if (barr_has[i] && (barr_p[i] - barr_c[i]) != rnet)
+                    tc_error(tc, line, 0, "'%s' branches have different stack effects: net %+d vs net %+d (%d->%d vs %d->%d)", ho->name, rnet, barr_p[i]-barr_c[i], barr_c[rci], barr_p[rci], barr_c[i], barr_p[i]);
+        }
     }
     if ((ho->flags & HO_SCRUTINEE_TAGGED) && lpt != TC_TAGGED && lpt != TC_NONE)
         tc_error(tc, line, 0, "'%s' expected tagged value, got %s", ho->name, constraint_name(lpt));
@@ -1297,7 +1331,11 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                 eff->output_is_linear = output_captures_linear;
                 for (int j = 0; j < ic; j++) eff->in_tvars[j] = itv[j];
                 for (int j = 0; j < oc; j++) eff->out_tvars[j] = otv[j];
-                for (int k = i+1; k < close; k++) if (toks[k].tag == TOK_WORD && (toks[k].as.sym == S_LET || toks[k].as.sym == S_DEF)) { eff->has_let = 1; break; }
+                for (int k = i+1; k < close; k++) {
+                    if (toks[k].tag == TOK_WORD && (toks[k].as.sym == S_LET || toks[k].as.sym == S_DEF)) eff->has_let = 1;
+                    else if (toks[k].tag == TOK_LPAREN) { eff->has_nested = 1; k = find_matching(toks, k+1, total_count, TOK_LPAREN, TOK_RPAREN); }
+                    if (eff->has_let && eff->has_nested) break;
+                }
                 tc->data[tc->sp-1].effect_idx = eidx;
                 if (body_captured) tc->data[tc->sp-1].flags |= AT_LINEAR;
             }
@@ -1462,6 +1500,25 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     tc_error(tc, t->line, 0, "'default' fallback type %s doesn't match 'ok payload type %s", constraint_name(ft), constraint_name(pt));
                 tc_check_word(tc, sym, t->line);
                 if (pt != TC_NONE && tc->sp > 0 && tc->data[tc->sp-1].type == TC_NONE) tc->data[tc->sp-1].type = pt;
+            } else if (sym == S_CASE) {
+                /* Exhaustiveness: when scrutinee has a declared union, require every variant to appear as a clause. */
+                if (tc->sp >= 3 && tc->data[tc->sp-3].type == TC_TAGGED && tc->data[tc->sp-3].tvar_id > 0) {
+                    int uid = tc->tvars[tvar_find(tc, tc->data[tc->sp-3].tvar_id)].union_id;
+                    if (uid > 0) {
+                        int brace = tc_find_brace_before(toks, i);
+                        if (brace >= 0) {
+                            uint32_t csyms[UNION_VARIANTS_MAX]; TypeConstraint ctypes[UNION_VARIANTS_MAX];
+                            int cc = tc_extract_brace_keys(toks, brace, total_count, csyms, ctypes, UNION_VARIANTS_MAX);
+                            UnionDef *ud = &tc->unions[uid-1];
+                            for (int v = 0; v < ud->count; v++) {
+                                int found = 0;
+                                for (int k = 0; k < cc; k++) if (csyms[k] == ud->syms[v]) { found = 1; break; }
+                                if (!found) tc_error(tc, t->line, 0, "'case' missing clause for '%s variant", sym_name(ud->syms[v]));
+                            }
+                        }
+                    }
+                }
+                tc_check_word(tc, sym, t->line);
             } else tc_check_word(tc, sym, t->line);
             break;
         }

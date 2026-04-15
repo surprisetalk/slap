@@ -395,3 +395,20 @@ rec 42 box 'b into drop
 -- EXPECT: cannot embed a linear value into a stackable container
 -- TYPE ERROR: set would place box into list slot
 [1 2 3] 0 42 box set drop
+
+-- EXPECT: nested tuple literal
+-- TYPE ERROR: lend body captures snapshot into a nested tuple (would alias past mutate)
+{'x 1} box (dup (swap) dip) lend free
+
+-- EXPECT: missing clause
+-- TYPE ERROR: case on a typed union missing a variant
+1 ok {'ok 'int 'no 'int} union 0 {'ok (1 plus)} case drop
+
+-- EXPECT: missing clause
+-- TYPE ERROR: case on a 3-variant union missing two
+1 'alpha tag {'alpha 'int 'beta 'int 'gamma 'int} union 0 {'alpha (1 plus)} case drop
+
+-- EXPECT: branches produce different types
+-- TYPE ERROR: if inside a recursive body with type-mismatched branches
+'bad (dup 0 eq ("hi") (99) if) def
+5 bad drop
