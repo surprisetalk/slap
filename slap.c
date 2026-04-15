@@ -458,9 +458,9 @@ static TypeSig *typesig_find(uint32_t sym) {
 static const struct { const char *name; TypeConstraint tc; } tc_names[] = {
     {"int",TC_INT},{"float",TC_FLOAT},{"sym",TC_SYM},{"num",TC_NUM},
     {"list",TC_LIST},{"tuple",TC_TUPLE},{"rec",TC_REC},{"box",TC_BOX},{"stack",TC_STACK},{"tagged",TC_TAGGED},
-    {"seq",TC_SEQ},{"eq",TC_EQ},{"eql",TC_EQ},{"ord",TC_ORD},
-    {"integral",TC_INTEGRAL},{"semigroup",TC_SEMIGROUP},{"monoid",TC_MONOID},
-    {"functor",TC_FUNCTOR},{"applicative",TC_APPLICATIVE},{"foldable",TC_FOLDABLE},{"monad",TC_MONAD},{"dict",TC_DICT},{"linear",TC_LINEAR},{"sized",TC_SIZED},{NULL,TC_NONE}
+    {"seq",TC_SEQ},{"eq",TC_EQ},{"ord",TC_ORD},
+    {"integral",TC_INTEGRAL},{"semigroup",TC_SEMIGROUP},
+    {"functor",TC_FUNCTOR},{"monad",TC_MONAD},{"dict",TC_DICT},{"linear",TC_LINEAR},{"sized",TC_SIZED},{NULL,TC_NONE}
 };
 static TypeConstraint parse_constraint(const char *tw) {
     for (int i=0; tc_names[i].name; i++) if (strcmp(tw,tc_names[i].name)==0) return tc_names[i].tc;
