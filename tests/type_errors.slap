@@ -182,33 +182,10 @@
 -- TYPE ERROR: default on list
 [1 2 3] -1 default
 
--- EXPECT: fallback type
--- TYPE ERROR: default fallback type doesn't match ok payload (read returns either ok=list no=list)
-"test.txt" read () default
-
--- EXPECT: fallback type
--- TYPE ERROR: default fallback type mismatch via either type variable (pop on int list, default tuple)
-[1 2 3] pop () default
-
--- EXPECT: fallback type
--- TYPE ERROR: default fallback type mismatch via either type variable (get on list-of-lists, default int)
-[[1] [2]] 0 get -1 default
-
--- EXPECT: body must be 1->1
--- TYPE ERROR: then body consumes 2, produces 1
-42 ok (swap plus) then
-
--- EXPECT: body must be 1->1
--- TYPE ERROR: then body produces 2 (dup)
-42 ok (dup) then
-
 -- EXPECT: produce different types
 -- TYPE ERROR: case clause bodies disagree (int vs list)
 42 ok () {'ok (1 plus) 'no (list)} case
 
--- EXPECT: expected num, got list
--- TYPE ERROR: default preserves payload type (string/list + int)
-"hello" ok -1 default 1 plus print
 
 -- EXPECT: expected seq, got tagged
 -- TYPE ERROR: push onto tagged
@@ -300,9 +277,6 @@ dict "a" 1 insert "b" "two" insert free
 -- TYPE ERROR: each body on dict must be 1->1 (receives (k v) tuple)
 dict (drop) each free
 
--- EXPECT: must not be a linear value
--- TYPE ERROR: default with linear fallback (leak on ok path)
-42 box ok 99 box default free
 
 -- EXPECT: discard linear payload
 -- TYPE ERROR: case on tagged box (branches can leak)

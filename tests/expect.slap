@@ -1426,10 +1426,10 @@ none () no eq assert
 () no (1 plus) each () {'no ()} case () eq assert
 "hello" no (1 plus) each "hello" no eq assert
 
--- ===== Monad: then on list (flatMap) =====
-[1 2 3] (dup couple) then [1 1 2 2 3 3] eq assert
-[] (dup couple) then list eq assert
-[1 2 3] (drop list) then list eq assert
+-- ===== list flat-map via each + flatten =====
+[1 2 3] (dup couple) each flatten [1 1 2 2 3 3] eq assert
+[] (dup couple) each flatten list eq assert
+[1 2 3] (drop list) each flatten list eq assert
 
 -- ===== Side-effect iteration pattern =====
 [1 2 3] (1 plus) each drop

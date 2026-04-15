@@ -408,7 +408,7 @@ typedef enum { TC_NONE=0, TC_INT, TC_FLOAT, TC_SYM, TC_NUM, TC_LIST, TC_TUPLE, T
 enum { HO_BODY_1TO1=1, HO_BRANCHES_AGREE=2, HO_SAVES_UNDER=4,
        HO_APPLY_EFFECT=16, HO_BOX_BORROW=32, HO_BOX_MUTATE=64, HO_SCRUTINEE_TAGGED=128 };
 typedef struct { const char *name; uint32_t sym; int need; int out; TypeConstraint out_type; uint8_t flags; } HOEffect;
-#define HO_OP_COUNT 17
+#define HO_OP_COUNT 16
 static HOEffect ho_ops[HO_OP_COUNT] = {
     {"apply",0,1,0,TC_NONE,HO_APPLY_EFFECT},{"dip",0,2,1,TC_NONE,HO_APPLY_EFFECT|HO_SAVES_UNDER},
     {"if",0,3,1,TC_NONE,HO_BRANCHES_AGREE},
@@ -419,7 +419,6 @@ static HOEffect ho_ops[HO_OP_COUNT] = {
     {"find",0,3,1,TC_NONE,0},
     {"scan",0,3,1,TC_LIST,0},
     {"on",0,1,0,TC_NONE,0},{"show",0,1,0,TC_NONE,0},
-    {"then",0,2,1,TC_MONAD,HO_BODY_1TO1},
     {"edit",0,3,1,TC_TAGGED,HO_BODY_1TO1},
 };
 static HOEffect *ho_ops_find(uint32_t sym) {
@@ -1503,24 +1502,6 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                         tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].union_id = uid;
                     }
                 }
-            } else if (sym == S_DEFAULT) {
-                if (tc->sp >= 1 && ((tc->data[tc->sp-1].flags & AT_LINEAR) || tc->data[tc->sp-1].type == TC_BOX))
-                    tc_error(tc, t->line, 0, "'default' fallback must not be a linear value (would leak on the 'ok path)");
-                TypeConstraint pt = TC_NONE;
-                if (tc->sp >= 2 && tc->data[tc->sp-2].type == TC_TAGGED && tc->data[tc->sp-2].tvar_id > 0) {
-                    int tid = tc->data[tc->sp-2].tvar_id;
-                    int tp = tvar_content(tc, tid, TC_TAGGED); if (tp > 0) pt = tvar_resolve(tc, tp);
-                    if (pt == TC_NONE) {
-                        int uid = tc->tvars[tvar_find(tc, tid)].union_id;
-                        if (uid > 0) { UnionDef *ud = &tc->unions[uid-1];
-                            for (int v = 0; v < ud->count; v++) if (ud->syms[v] == S_OK && ud->types[v] != TC_NONE) { pt = ud->types[v]; break; } }
-                    }
-                }
-                TypeConstraint ft = (tc->sp >= 1) ? tc->data[tc->sp-1].type : TC_NONE;
-                if (pt != TC_NONE && ft != TC_NONE && pt != ft && !tc_constraint_matches(pt, ft) && !tc_constraint_matches(ft, pt))
-                    tc_error(tc, t->line, 0, "'default' fallback type %s doesn't match 'ok payload type %s", constraint_name(ft), constraint_name(pt));
-                tc_check_word(tc, sym, t->line);
-                if (pt != TC_NONE && tc->sp > 0 && tc->data[tc->sp-1].type == TC_NONE) tc->data[tc->sp-1].type = pt;
             } else if (sym == S_CASE) {
                 /* Predicate-mode lint: when the scrutinee isn't tagged, clause bodies
                    run with the scrutinee on top of stack. An empty body `()` preserves
@@ -1729,42 +1710,6 @@ static void prim_tag(Frame *e) {
 #define LIST_ITER(label) POP_BODY(fn,label); POP_LIST_BUF(list,label); \
     int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs)
 #define PUSH_ELEM(i) SPUSH(&list_buf[offs[i]],szs[i])
-static void prim_then(Frame *env) {
-    POP_BODY(body,"then");
-    Value top=stack[sp-1];
-    if(top.tag==VAL_TAGGED){
-        if(top.as.compound.len==S_OK){
-            sp--; /* remove header, payload stays */
-            eval_body(body_buf,body_s,env);
-        }
-        /* non-ok: leave tagged value untouched */
-    } else if(top.tag==VAL_LIST){
-        POP_LIST_BUF(list,"then");
-        int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs);
-        int rb=sp,rc=0;
-        for(int i=0;i<list_len;i++){
-            PUSH_ELEM(i); eval_body(body_buf,body_s,env);
-            Value r=stack[sp-1];
-            if(r.tag!=VAL_LIST) die("then: body must return list for list bind, got %s",valtag_name(r.tag));
-            rc+=(int)r.as.compound.len; sp--; /* remove list header, elements stay */
-        }
-        spush(val_compound(VAL_LIST,rc,sp-rb+1));
-    } else {
-        die("then: expected list or tagged, got %s", valtag_name(top.tag));
-    }
-}
-static void prim_default(Frame *e) {
-    (void)e; POP_VAL(def);
-    Value top=stack[sp-1];
-    if(top.tag!=VAL_TAGGED) die("default: expected tagged value, got %s", valtag_name(top.tag));
-    int tagged_s=val_slots(top);
-    if(top.as.compound.len==S_OK){
-        sp--;
-    } else {
-        sp-=tagged_s;
-        SPUSH(def_buf,def_s);
-    }
-}
 static void prim_must(Frame *e) {
     (void)e; Value top=speek();
     if(top.tag!=VAL_TAGGED) die("must: expected tagged value, got %s", valtag_name(top.tag));
@@ -2525,7 +2470,7 @@ static const char *BUILTIN_TYPES =
     "'tcp-connect [int list own in  int lent in  {'ok box 'no list} either move out] effect\n'tcp-send [int box own in  int list own in  {'ok int 'no list} either move out] effect\n"
     "'tcp-recv [int box own in  int lent in  int box move out  {'ok list 'no list} either move out] effect\n'tcp-close [int box own in] effect\n'tcp-listen [int lent in  {'ok box 'no list} either move out] effect\n'tcp-accept [int box own in  int box move out  {'ok box 'no list} either move out] effect\n"
 #endif
-    "'tag ['a own in  sym lent in  'a tagged" MO "'default [tagged own in  own in " MO "'must [tagged own in " MO
+    "'tag ['a own in  sym lent in  'a tagged" MO "'must [tagged own in " MO
     "'dict ['a dict" MO "'insert ['a dict own in  list lent in  'a own in  'a dict" MO
     "'of ['a dict own in  list lent in  'a dict move out  {'ok 'a 'no list} either move out] effect\n"
     "'remove ['a dict own in  list lent in  'a dict" MO "'dict-keys ['a dict own in  'a dict move out  list" MO
@@ -2584,7 +2529,7 @@ static const char *PRELUDE =
     "(1 (mul) fold) 'product def\n"
     "(dup first (max) fold) 'max-of def\n"
     "(dup first (min) fold) 'min-of def\n"
-    "(index-of (drop 1 ok) then 0 default) 'member def\n"
+    "(index-of 0 {'ok (drop 1) 'no (drop 0)} case) 'member def\n"
     "(list rot push swap push) 'couple def\n"
     "(list (cat) fold) 'flatten def\n"
     "(0.0 swap sub) 'fneg def\n"
@@ -2603,6 +2548,8 @@ static const char *PRELUDE =
     "('ok tag) ['a own in  'a tagged move out] effect 'ok def\n"
     "('no tag) ['a own in  'a tagged move out] effect 'no def\n"
     "(() no) [tagged move out] effect 'none def\n"
+    "('body let () {'ok (body apply) 'no (no)} case) [tagged own in  tuple own in  tagged move out] effect 'then def\n"
+    "('fb let fb {'ok () 'no (drop fb)} case) [{'ok 'a 'no 'b} either own in  'a own in  'a move out] effect 'default def\n"
     "('f def 'n let 0 (dup n lt) (dup (f) dip 1 plus) while drop) 'times-i def\n"
     "3.14159265358979323846 'pi let\n"
     "6.28318530717958647692 'tau let\n"
@@ -2958,7 +2905,7 @@ static void register_prims(void) {
         R(millis,millis),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),R(clone,clone),
         R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),
         {"dict-keys",prim_keys},{"dict-values",prim_values},
-        R(tag,tag),R(union,union),R(then,then),R(default,default),R(must,must),R(pthen,pthen),
+        R(tag,tag),R(union,union),R(must,must),R(pthen,pthen),
         R(read,read),R(write,write),R(ls,ls),
         {"utf8-encode",prim_utf8_encode},{"utf8-decode",prim_utf8_decode},
         {"str-find",prim_str_find},{"str-split",prim_str_split},{"parse-http",prim_parse_http},

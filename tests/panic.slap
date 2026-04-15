@@ -129,7 +129,7 @@ stack pop
 -- EXPECT: MUST FAILED
 [195 65] utf8-decode must
 
--- EXPECT: expected list or tagged
+-- EXPECT: expected tagged
 123 (1 plus) then
 
 -- EXPECT: expected tagged

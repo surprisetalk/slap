@@ -52,8 +52,8 @@ Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.
 - **`case`**: unified conditional. Two dispatch modes:
   - On tagged scrutinee: `tagged default {'sym1 (body1) 'sym2 (body2)} case` — match by tag symbol, payload pushed before body. Default fires on unmatched tag.
   - On non-tagged scrutinee: `value default {(pred1) (body1) (pred2) (body2)} case` — evaluates predicates in order (scrutinee pushed for each); on truthy, runs body.
-- **`then`**: `tagged (body) then` — monadic chain (hardcoded `'ok`): unwrap, apply body, re-wrap. Non-ok passes through.
-- **`default`**: `tagged fallback default` — unwrap `'ok` payload, or drop tagged and push fallback.
+- **`then`** (prelude def): `tagged (body) then` — if `'ok`, unwrap payload, run body (body returns a new tagged); if not ok, re-wrap with `'no`. Implemented as `'body let () {'ok (body apply) 'no (no)} case`.
+- **`default`** (prelude def): `tagged fallback default` — unwrap `'ok` payload, or drop tagged and push fallback. Implemented as `'fb let fb {'ok () 'no (drop fb)} case`.
 - **`union`**: `{'ok 'int 'no 'str} union` — runtime no-op, type annotation only. Drops the schema record.
 - **`ok`/`no`** (prelude): sugar for `'ok tag` / `'no tag`
 - **`none`** (prelude): sugar for `() no` — the empty error value
@@ -115,7 +115,7 @@ Constraints formalize which operations work on which types. Used in `[...] effec
 
 Additional constraint keywords recognized in effect annotations: `functor` (input constraint for `each`), `monad` (for `then`), `dict` (for the dict type), `linear` (supertype of Box).
 
-`each` iterates over lists (producing a new list) and over `'ok`-tagged values (applies body to payload, re-wraps; non-ok passes through). `then` chains on `'ok`-tagged values (hardcoded tag; not yet general over any tag). `fold`, `filter`, `scan` work on lists. These aren't surfaced as named protocols because they don't generalize beyond their current types.
+`each` iterates over lists (producing a new list) and over `'ok`-tagged values (applies body to payload, re-wraps; non-ok passes through). `fold`, `filter`, `scan` work on lists. These aren't surfaced as named protocols because they don't generalize beyond their current types. `then`/`default` are prelude-level sugar over `case` — see above.
 
 Side-effect iteration: `(body) each drop`.
 
