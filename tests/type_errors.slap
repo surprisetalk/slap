@@ -394,3 +394,8 @@ rec 42 box 'b into drop
 -- EXPECT: unknown type
 -- TYPE ERROR: A6 — either schema with typo'd variant type
 'badsig [list own in  {'ok 'typoedtype 'no ()} either move out] effect (pop) let
+
+-- EXPECT: unknown word
+-- TYPE ERROR: unknown word inside a wide-effect tuple body must still be reported
+('a let 'b let 'c let 'd let 'e let 'f let 'g let 'h let 'i let
+  a undefined-word-xyz) 'wide-tup let

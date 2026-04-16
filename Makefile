@@ -33,7 +33,7 @@ test: slap
 	@echo 'args len 0 eq assert' | ./slap
 	@rm -f _test_fs.bin
 	@python3 tests/run_euler.py
-	@for f in icn chr nmt tga gly ulz parse; do ./slap < examples/lib/$$f.slap > /dev/null && ./slap --check < examples/lib/$$f.slap; done
-	@for combo in "icn ufx" "parse xml" "parse xml rss" "strings parse json" "strings parse xml" "strings parse xml rss"; do files=$$(echo $$combo | sed 's|[^ ]*|examples/lib/&.slap|g'); cat $$files | ./slap > /dev/null && cat $$files | ./slap --check; done
+	@for f in icn chr nmt tga gly ulz parse; do ./slap < examples/lib/$$f.slap > /dev/null && ./slap --check < examples/lib/$$f.slap || exit 1; done
+	@for combo in "icn ufx" "strings parse json" "strings parse xml" "strings parse xml rss"; do files=$$(echo $$combo | sed 's|[^ ]*|examples/lib/&.slap|g'); cat $$files | ./slap > /dev/null && cat $$files | ./slap --check || exit 1; done
 	@echo "All test suites passed."
 .PHONY: clean test

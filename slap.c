@@ -1374,7 +1374,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     && (tc->sp - _s.sp) == 1
                     && tc->data[tc->sp-1].type == TC_TUPLE
                     && (tc->data[tc->sp-1].flags & AT_LINEAR);
-                tc->sp = _s.sp; tc->bind_count = _s.bind_count; tc->unknown_count = _s.unknown_count;
+                tc->sp = _s.sp; tc->bind_count = _s.bind_count;
                 tc->recur_pending = _s.recur_pending; tc->suppress_errors = _s.suppress_errors;
                 type_sig_count = _s.type_sig_count; tc->sp_floor = _s.sp_floor;
                 tc->saw_linear_capture = _s.saw_linear_capture; tc->in_recur_body = _s.in_recur_body;
