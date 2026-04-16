@@ -15,9 +15,11 @@ def main():
         name = path.split("/")[-1]
         start = time.time()
         try:
+            with open("examples/lib/strings.slap") as lib, open(path) as prog:
+                src = lib.read() + prog.read()
             r = subprocess.run(
-                ["./slap"],
-                stdin=open(path), capture_output=True, text=True, timeout=TIMEOUT
+                ["./slap"], input=src,
+                capture_output=True, text=True, timeout=TIMEOUT
             )
             dur = time.time() - start
             if r.returncode != 0:

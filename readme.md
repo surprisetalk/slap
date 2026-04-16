@@ -8,7 +8,7 @@
 
 # slap
 
-A stack-based programming language with static type inference and linear types. Single-file C99 interpreter (~3300 lines).
+A stack-based programming language with static type inference and linear types. Single-file C99 interpreter (~3000 lines).
 
 ## install
 
@@ -79,7 +79,6 @@ Stack manipulation:
 42 itof              -- 42.0
 3.7 ftoi             -- 3
 2.0 3.0 fpow         -- 8.0
-0.0 fsin             -- 0.0
 1.0 flog             -- 0.0
 ```
 
@@ -349,12 +348,12 @@ All code is type-checked before execution. Types are inferred — no annotations
 
 ### stackable vs linear
 
-| Category   | Types                                           | Rules                        |
-|------------|-------------------------------------------------|------------------------------|
-| Stackable  | Int, Float, Symbol, Tuple, Record, List, String, Tagged | Freely `dup` and `drop`      |
-| Linear     | Box                                             | Must consume exactly once    |
+| Category   | Types                                                        | Rules                        |
+|------------|--------------------------------------------------------------|------------------------------|
+| Stackable  | Int, Float, Symbol, Tuple, Record, List, String, Tagged, Dict | Freely `dup` and `drop`      |
+| Linear     | Box                                                          | Must consume exactly once    |
 
-Boxes must be consumed via `free`, `lend`, `mutate`, or `clone`. `lend` borrows a stackable snapshot from a box.
+Boxes must be consumed via `free`, `lend`, `mutate`, or `clone`. `lend` borrows a stackable snapshot from a box. Dicts are stackable: use `dup` to branch and `drop` to discard. `free`/`clone` reject dicts at type time — boxes only.
 
 ### effect annotations
 
@@ -386,7 +385,7 @@ Built-in protocols group types by capability. Use in effect annotations:
 
 | Protocol | Keyword | Types | Operations |
 |----------|---------|-------|------------|
-| Sized | `sized` | list, tuple, record, dict | `len` (polymorphic; returns dict through stack since dicts are linear) |
+| Sized | `sized` | list, tuple, record, dict | `len` |
 | Seq | `seq` | list | `get`, `set`, `push`, `pop`, `cat` |
 | Eq | `eq` | all stackable | `eq` |
 | Ord | `ord` | int, float, sym | `lt`, `sort` |
@@ -398,7 +397,7 @@ Additional keywords recognized in annotations: `functor` (required by `each`), `
 
 ## prelude
 
-~90 definitions in slap itself, loaded at startup.
+~70 definitions in slap itself, loaded at startup.
 
 ### stack
 
@@ -510,17 +509,23 @@ Additional keywords recognized in annotations: `functor` (required by `each`), `
 
 ### strings
 
-String primitives plus prelude helpers. Strings are lists of Unicode codepoints; `utf8-encode`/`utf8-decode` convert to/from UTF-8 byte lists.
+String primitives plus library helpers. Strings are lists of Unicode codepoints; `utf8-encode`/`utf8-decode` convert to/from UTF-8 byte lists. Higher-level helpers (`int-str`, `str-join`, `crlf`, `http-request`) live in `examples/lib/strings.slap` — cat it with your program: `cat examples/lib/strings.slap myprog.slap | slap`.
 
 | Word | Effect | Example |
 |------|--------|---------|
 | `str-find` | haystack needle → `index ok` or `none` | `"hello world" "world" str-find must` → `6` |
 | `str-split` | str delim → list of substrings | `"a,b,c" "," str-split` → `["a" "b" "c"]` |
-| `str-join` | parts sep → joined | `["a" "b" "c"] "," str-join` → `"a,b,c"` |
-| `int-str` | n → decimal string | `42 int-str` → `"42"` |
 | `utf8-encode` | codepoints → bytes | |
 | `utf8-decode` | bytes → codepoints | |
+
+From `examples/lib/strings.slap`:
+
+| Word | Effect | Example |
+|------|--------|---------|
+| `str-join` | parts sep → joined | `["a" "b" "c"] "," str-join` → `"a,b,c"` |
+| `int-str` | n → decimal string | `42 int-str` → `"42"` |
 | `crlf` | → `"\r\n"` as byte list | |
+| `http-request` | `method host path headers body → request-bytes` | |
 
 ### bitwise and byte utilities
 
@@ -547,18 +552,17 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/parse.slap` | `parse-int`/`parse-float`/`parse-exact`/`parse-spaces`/`parse-while`/`parse-until` |
 | `examples/lib/xml.slap` | Elm-style XML decoder |
 | `examples/lib/rss.slap` | RSS/Atom feed parser (requires `xml.slap`) |
-| `examples/lib/json.slap` | Elm-style JSON decoder (requires `parse.slap`) |
+| `examples/lib/json.slap` | Elm-style JSON decoder (requires `parse.slap` and `strings.slap` for `int-str`) |
+| `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request` (formerly prelude) |
 
 ### networking / http
 
-Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http`.
+Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http`. `http-request` lives in `examples/lib/strings.slap`.
 
 | Word | Effect |
 |------|--------|
-| `http-request` | `method host path headers body → request-bytes` |
-| `http-get` | `host port path → parsed-response` |
-| `http-post` | `host port path content-type body → parsed-response` |
 | `parse-http` | raw bytes → `status headers body` |
+| `http-request` | `method host path headers body → request-bytes` (from `strings.slap`) |
 
 ## SDL graphics
 
@@ -680,12 +684,15 @@ cat lib.slap main.slap | slap
 make test
 ```
 
-Runs five checks:
-1. `./slap < tests/expect.slap` — 250+ integration tests (assert-based)
-2. `./slap --check < tests/type.slap` — type system validation
-3. `./slap < tests/type.slap > /dev/null` — execute type tests
-4. `./slap --check < tests/expect.slap` — type-check integration tests
-5. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — expected error messages
+Runs:
+1. `cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap` — 250+ integration tests (assert-based)
+2. `./slap --check < tests/type.slap` + `./slap < tests/type.slap` — type system validation
+3. Same expect.slap stream re-run under `--check`
+4. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — expected error messages
+5. `python3 tests/run_euler.py` — 52 Project Euler solutions (strings.slap prepended)
+6. Loadable libraries under `examples/lib/` — each run and type-checked in the combos it's designed for
+
+Adversarial probes (`bash tests/adversarial/run.sh`) are a separate suite that classifies each probe as `TYPECHECK_REJECT` / `PANIC` / `CLEAN_RUN` — useful for spotting soundness regressions.
 
 ## building
 

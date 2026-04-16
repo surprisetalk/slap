@@ -21,7 +21,7 @@
 #define FRAME_VALS_MAX 4194304
 #define TOK_MAX   65536
 #define LOCAL_MAX 16384
-typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_WORD, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX, VAL_TAGGED, VAL_DICT } ValTag;
+typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX, VAL_TAGGED, VAL_DICT } ValTag;
 typedef struct Frame Frame;
 typedef void (*PrimFn)(Frame *env);
 typedef struct Value {
@@ -44,7 +44,7 @@ typedef struct { char *key; int klen; Value *vals; int nvals; } DictEntry;
 typedef struct DictData { DictEntry *entries; int cap; int len; } DictData;
 static int is_compound(ValTag tag) { return tag == VAL_TUPLE || tag == VAL_LIST || tag == VAL_RECORD || tag == VAL_TAGGED; }
 static const char *valtag_name(ValTag t) {
-    const char *names[] = {"int","float","symbol","word","xt","tuple","list","record","box","tagged","dict"};
+    const char *names[] = {"int","float","symbol","xt","tuple","list","record","box","tagged","dict"};
     return (t <= VAL_DICT) ? names[t] : "?";
 }
 static int val_slots(Value v) {
@@ -115,7 +115,6 @@ static Value speek(void) { if (sp <= 0) die("stack underflow on peek"); return s
 static Value val_int(int64_t i){MKVAL(VAL_INT);v.as.i=i;return v;}
 static Value val_float(double f){MKVAL(VAL_FLOAT);v.as.f=f;return v;}
 static Value val_sym(uint32_t s){MKVAL(VAL_SYM);v.as.sym=s;return v;}
-static Value val_word(uint32_t s){MKVAL(VAL_WORD);v.as.sym=s;return v;}
 static Value val_xt(uint32_t s,PrimFn fn){MKVAL(VAL_XT);v.as.xt.sym=s;v.as.xt.fn=fn;return v;}
 static Value val_compound(ValTag tag,uint32_t len,uint32_t slots){MKVAL(tag);v.as.compound.len=len;v.as.compound.slots=slots;v.as.compound.env=NULL;return v;}
 typedef enum {
@@ -337,7 +336,7 @@ static void val_print(Value *data, int slots, FILE *out) {
     case VAL_INT: fprintf(out, "%lld", (long long)top.as.i); break;
     case VAL_FLOAT: fprintf(out, "%g", top.as.f); break;
     case VAL_SYM: fprintf(out, "'%s", sym_name(top.as.sym)); break;
-    case VAL_WORD: case VAL_XT: fprintf(out, "%s", sym_name(top.tag==VAL_XT?top.as.xt.sym:top.as.sym)); break;
+    case VAL_XT: fprintf(out, "%s", sym_name(top.as.xt.sym)); break;
     case VAL_LIST: {
         int len=(int)top.as.compound.len, is_str=len>0;
         for(int i=0;is_str&&i<len;i++){Value v=data[i];if(v.tag!=VAL_INT||v.as.i<32||v.as.i>126)is_str=0;}
@@ -375,7 +374,8 @@ static int val_equal(Value *a, int aslots, Value *b, int bslots) {
     switch (atop.tag) {
     case VAL_INT: return atop.as.i == btop.as.i;
     case VAL_FLOAT: return atop.as.f == btop.as.f;
-    case VAL_SYM: case VAL_WORD: case VAL_XT: return atop.as.sym == btop.as.sym;
+    case VAL_SYM: return atop.as.sym == btop.as.sym;
+    case VAL_XT: return atop.as.xt.sym == btop.as.xt.sym;
     case VAL_TUPLE: case VAL_LIST: case VAL_RECORD: case VAL_TAGGED:
         if (atop.as.compound.len != btop.as.compound.len) return 0;
         for (int i = 0; i < aslots - 1; i++) if (!val_equal(&a[i], 1, &b[i], 1)) return 0;
@@ -615,12 +615,9 @@ static const uint32_t tc_compat[] = {
     [TC_APPLICATIVE]=B(TC_APPLICATIVE)|B(TC_LIST)|B(TC_TAGGED)|B(TC_SEQ)|B(TC_FUNCTOR)|B(TC_MONAD),
     [TC_FOLDABLE]=B(TC_FOLDABLE)|B(TC_LIST)|B(TC_SEQ)|B(TC_DICT),
     [TC_MONAD]=B(TC_MONAD)|B(TC_LIST)|B(TC_TAGGED)|B(TC_SEQ)|B(TC_FUNCTOR)|B(TC_APPLICATIVE),
-    /* DICT still cross-matches LINEAR at the constraint level so ops declared
-       with `linear` (free, clone) accept a dict. Runtime linearity is a
-       separate flag on the AbstractType (AT_LINEAR), which is off for dicts
-       post-A2. */
-    [TC_DICT]=B(TC_DICT)|B(TC_FUNCTOR)|B(TC_FOLDABLE)|B(TC_LINEAR)|B(TC_SIZED),
-    [TC_LINEAR]=B(TC_LINEAR)|B(TC_BOX)|B(TC_DICT),
+    /* DICT is stackable (dup deep-clones, drop deep-frees). Linear is box-only. */
+    [TC_DICT]=B(TC_DICT)|B(TC_FUNCTOR)|B(TC_FOLDABLE)|B(TC_SIZED),
+    [TC_LINEAR]=B(TC_LINEAR)|B(TC_BOX),
     [TC_SIZED]=B(TC_SIZED)|B(TC_LIST)|B(TC_TUPLE)|B(TC_REC)|B(TC_DICT)|B(TC_SEQ)|B(TC_SEMIGROUP)|B(TC_MONOID),
 };
 #undef B
@@ -893,6 +890,40 @@ static int tc_check_body_against_sig(Token *toks, int start, int end, int total_
     tc_infer_effect_ctx(toks, start, end, total_count, &eff_consumed, &eff_produced, NULL);
     if (eff_consumed != n_in) { fprintf(stderr, "%s:%d: type error: function body consumes %d value(s) but type declares %d input(s)\n", src_files[current_fid], toks[start].line, eff_consumed, n_in); errors++; }
     if (eff_produced != n_out) { fprintf(stderr, "%s:%d: type error: function body produces %d value(s) but type declares %d output(s)\n", src_files[current_fid], toks[start].line, eff_produced, n_out); errors++; }
+    /* either-schema validation: collect declared output variant symbols and
+       reject any literal `'sym tag` / bare `ok`/`no`/`none` whose symbol isn't
+       in the schema. Flat scan — false positives on intermediate tags are
+       possible but rare; fix by dropping the either declaration or routing
+       through a tag-variable if you need non-schema intermediates. */
+    uint32_t allowed[TYPE_SLOTS_MAX * 4]; int na = 0; int have_either = 0;
+    for (int s = 0; s < sig->slot_count; s++) {
+        if (sig->slots[s].direction != DIR_OUT) continue;
+        for (int e = 0; e < sig->slots[s].either_count; e++) {
+            if (na < (int)(sizeof allowed / sizeof allowed[0])) allowed[na++] = sig->slots[s].either_syms[e];
+            have_either = 1;
+        }
+    }
+    if (have_either) {
+        uint32_t s_tag = sym_intern("tag"), s_ok = sym_intern("ok"), s_no = sym_intern("no"), s_none = sym_intern("none");
+        uint32_t ok_sym = sym_intern("ok"), no_sym = sym_intern("no");
+        for (int i = start; i < end; i++) {
+            uint32_t found = 0; int line = toks[i].line;
+            if (toks[i].tag == TOK_WORD) {
+                if (toks[i].as.sym == s_tag && i > start && toks[i-1].tag == TOK_SYM) found = toks[i-1].as.sym;
+                else if (toks[i].as.sym == s_ok) found = ok_sym;
+                else if (toks[i].as.sym == s_no || toks[i].as.sym == s_none) found = no_sym;
+            }
+            if (!found) continue;
+            int ok = 0;
+            for (int a = 0; a < na; a++) if (allowed[a] == found) { ok = 1; break; }
+            if (!ok) {
+                fprintf(stderr, "%s:%d: type error: body emits '%s tagged but declared either only allows {", src_files[current_fid], line, sym_name(found));
+                for (int a = 0; a < na; a++) fprintf(stderr, "%s'%s", a ? " " : "", sym_name(allowed[a]));
+                fprintf(stderr, "}\n");
+                errors++;
+            }
+        }
+    }
     return errors;
 }
 static int tc_is_copyable(AbstractType *t) { return !(t->flags & AT_LINEAR) && t->type != TC_BOX; }
@@ -1449,6 +1480,20 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                             break;
                         }
                         if (!is_recur && i >= tc->user_start) tc_check_redef(tc, ns, t->line);
+                        /* Reconcile with prior forward `effect` declaration: if
+                           `'name [sig] effect` registered a sig in user code,
+                           validate the body against it. Only runs in user code —
+                           the builtin/prelude handoff already relies on trust. */
+                        if (i >= tc->user_start && vt.type == TC_TUPLE && i-2 >= start && toks[i-2].tag == TOK_RPAREN) {
+                            TypeSig *fsig = typesig_find(ns);
+                            if (fsig && !tc_is_builtin(ns, tc->prelude_sig_count)) {
+                                int d2 = 1, b2 = i-2;
+                                for (int k = b2-1; k >= start; k--) {
+                                    if (toks[k].tag == TOK_RPAREN) d2++;
+                                    else if (toks[k].tag == TOK_LPAREN && --d2 == 0) { tc->errors += tc_check_body_against_sig(toks, k+1, b2, end, fsig); break; }
+                                }
+                            }
+                        }
                         tc_bind(tc, ns, &vt, t->line);
                     }
                 } else if (tc->sp_floor == 0) tc->sp = 0;
@@ -1485,8 +1530,19 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                         if (i+2 < total_count && toks[i+1].tag == TOK_SYM
                             && toks[i+2].tag == TOK_WORD && toks[i+2].as.sym == S_LET)
                             typesig_register(toks[i+1].as.sym, &sig);
-                        for (int b2 = i-2; b2 >= 0; b2--) if (toks[b2].tag == TOK_RPAREN) {
-                            int d2=1; for(int k=b2-1;k>=0;k--){if(toks[k].tag==TOK_RPAREN)d2++;else if(toks[k].tag==TOK_LPAREN&&--d2==0){tc->errors+=tc_check_body_against_sig(toks,k+1,b2,total_count,&sig);break;}} break; }
+                        /* Body is the RPAREN-terminated tuple immediately before the
+                           [sig] brackets, which start at `bs`. Step from bs-1 backward
+                           for RPAREN, then find matching LPAREN, skipping any nested
+                           brackets/braces so we don't latch onto `()` inside the sig's
+                           either schema. */
+                        int b2 = bs - 1;
+                        if (b2 >= 0 && toks[b2].tag == TOK_RPAREN) {
+                            int d2 = 1;
+                            for (int k = b2 - 1; k >= 0; k--) {
+                                if (toks[k].tag == TOK_RPAREN) d2++;
+                                else if (toks[k].tag == TOK_LPAREN && --d2 == 0) { tc->errors += tc_check_body_against_sig(toks, k+1, b2, total_count, &sig); break; }
+                            }
+                        }
                     } else if (tc->sp >= 1 && tc->data[tc->sp-1].type == TC_SYM) {
                         /* BUILTIN_TYPES prim registration: `'name [sig] effect` (no def). */
                         typesig_register(tc->data[tc->sp-1].sym_id, &sig);
@@ -1545,10 +1601,18 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                             uint32_t csyms[UNION_VARIANTS_MAX]; TypeConstraint ctypes[UNION_VARIANTS_MAX];
                             int cc = tc_extract_brace_keys(toks, brace, total_count, csyms, ctypes, UNION_VARIANTS_MAX);
                             UnionDef *ud = &tc->unions[uid-1];
+                            int has_linear = 0;
+                            for (int v = 0; v < ud->count; v++)
+                                if (ud->types[v] == TC_BOX || ud->types[v] == TC_LINEAR) { has_linear = 1; break; }
                             for (int v = 0; v < ud->count; v++) {
                                 int found = 0;
                                 for (int k = 0; k < cc; k++) if (csyms[k] == ud->syms[v]) { found = 1; break; }
-                                if (!found) tc_error(tc, t->line, 0, "'case' missing clause for '%s variant", sym_name(ud->syms[v]));
+                                if (!found) {
+                                    if (has_linear)
+                                        tc_error_hard(tc, t->line, 0, "'case' missing clause for '%s variant — union carries a linear variant, exhaustiveness is required", sym_name(ud->syms[v]));
+                                    else
+                                        tc_error(tc, t->line, 0, "'case' missing clause for '%s variant", sym_name(ud->syms[v]));
+                                }
                             }
                         }
                     }
@@ -1750,40 +1814,6 @@ static void prim_pthen(Frame *env) {
         SPUSH(tbuf,ts);
     }
 }
-static void prim_fused_inc(Frame *e) {
-    (void)e; Value *v=&stack[sp-1];
-    if(v->tag==VAL_INT) v->as.i++;
-    else if(v->tag==VAL_FLOAT) v->as.f+=1.0;
-    else die("plus: type mismatch, got %s and int",valtag_name(v->tag));
-}
-static void prim_fused_dec(Frame *e) {
-    (void)e; Value *v=&stack[sp-1];
-    if(v->tag==VAL_INT) v->as.i--;
-    else if(v->tag==VAL_FLOAT) v->as.f-=1.0;
-    else die("sub: type mismatch, got %s and int",valtag_name(v->tag));
-}
-static void prim_fused_iszero(Frame *e) {
-    (void)e; Value v=stack[sp-1];
-    if(v.tag==VAL_INT) stack[sp-1]=val_int(v.as.i==0?1:0);
-    else if(v.tag==VAL_FLOAT) stack[sp-1]=val_int(v.as.f==0.0?1:0);
-    else die("eq: type mismatch");
-}
-static void prim_fused_add2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i+=2; else if(v->tag==VAL_FLOAT) v->as.f+=2.0; else die("plus: type mismatch"); }
-static void prim_fused_sub2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i-=2; else if(v->tag==VAL_FLOAT) v->as.f-=2.0; else die("sub: type mismatch"); }
-static void prim_fused_mul2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i*=2; else if(v->tag==VAL_FLOAT) v->as.f*=2.0; else die("mul: type mismatch"); }
-static void prim_fused_div2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i/=2; else if(v->tag==VAL_FLOAT) v->as.f/=2.0; else die("div: type mismatch"); }
-static void prim_fused_mod2(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag!=VAL_INT) die("mod: expected int"); v->as.i=v->as.i%2; }
-static void prim_fused_add6(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i+=6; else if(v->tag==VAL_FLOAT) v->as.f+=6.0; else die("plus: type mismatch"); }
-static void prim_fused_mul10(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i*=10; else if(v->tag==VAL_FLOAT) v->as.f*=10.0; else die("mul: type mismatch"); }
-static void prim_fused_div10(Frame *e) { (void)e; Value *v=&stack[sp-1]; if(v->tag==VAL_INT) v->as.i/=10; else if(v->tag==VAL_FLOAT) v->as.f/=10.0; else die("div: type mismatch"); }
-static void prim_fused_nip(Frame *e) {
-    (void)e; if(sp<2) die("nip: stack underflow");
-    Value top=stack[sp-1]; int ts=val_slots(top);
-    int below_top=sp-ts-1; if(below_top<0) die("nip: stack underflow");
-    int bs=val_slots(stack[below_top]);
-    Value tmp[ts]; VCPY(tmp,&stack[sp-ts],ts);
-    sp-=ts+bs; SPUSH(tmp,ts);
-}
 static void prim_union(Frame *e) {
     (void)e;
     Value top=stack[sp-1];
@@ -1806,11 +1836,12 @@ static inline void eval_body_fast(Value *body, int slots, Frame *env) {
     for(int k=0;k<len;k++){
         Value elem=body[k];
         if(elem.tag<=VAL_SYM) stack[sp++]=elem;
-        else if(elem.tag==VAL_XT) elem.as.xt.fn(ee);
-        else if(elem.tag==VAL_WORD){
-            uint32_t sym=elem.as.sym;
-            if(sym==S_LET){ uint32_t n=pop_sym(); int ds=val_slots(stack[sp-1]); Value db[ds]; VCPY(db,&stack[sp-ds],ds); sp-=ds; frame_bind(ee,n,db,ds,0); }
-            else dispatch_word(sym,ee);
+        else if(elem.tag==VAL_XT){
+            if(elem.as.xt.fn) elem.as.xt.fn(ee);
+            else { uint32_t sym=elem.as.xt.sym;
+                if(sym==S_LET){ uint32_t n=pop_sym(); int ds=val_slots(stack[sp-1]); Value db[ds]; VCPY(db,&stack[sp-ds],ds); sp-=ds; frame_bind(ee,n,db,ds,0); }
+                else dispatch_word(sym,ee);
+            }
         } else if(is_compound(elem.tag)){
             SPUSH(&body[k-((int)elem.as.compound.slots-1)],val_slots(elem));
             if(elem.tag==VAL_TUPLE){ee->refcount++;stack[sp-1].as.compound.env=ee;}
@@ -1832,7 +1863,7 @@ static void prim_while(Frame *env) {
 static void prim_itof(Frame *e){(void)e;spush(val_float((double)pop_int()));}
 static void prim_ftoi(Frame *e){(void)e;spush(val_int((int64_t)pop_float()));}
 #define FLOAT1(nm,fn) static void prim_##nm(Frame *e){(void)e;spush(val_float(fn(pop_float())));}
-FLOAT1(fsqrt,sqrt) FLOAT1(fsin,sin) FLOAT1(fcos,cos) FLOAT1(ftan,tan)
+FLOAT1(fsqrt,sqrt)
 FLOAT1(ffloor,floor) FLOAT1(fceil,ceil) FLOAT1(fround,round) FLOAT1(fexp,exp) FLOAT1(flog,log)
 #define FLOAT2(nm,fn) static void prim_##nm(Frame *e){(void)e;double b=pop_float(),a=pop_float();spush(val_float(fn(a,b)));}
 FLOAT2(fpow,pow) FLOAT2(fatan2,atan2)
@@ -2062,8 +2093,7 @@ static void dict_data_free(DictData *dd);
 static void prim_free(Frame *e){
     (void)e;Value v=spop();
     if(v.tag==VAL_BOX){BoxData *bd=(BoxData*)v.as.box;if(!bd->data)die("free: double-free detected (box already freed, likely captured by a closure that ran twice)");free(bd->data);bd->data=NULL;bd->slots=-1;return;}
-    if(v.tag==VAL_DICT){dict_data_free((DictData*)v.as.box);return;}
-    die("free: expected box or dict, got %s", valtag_name(v.tag));
+    die("free: expected box, got %s", valtag_name(v.tag));
 }
 #define BOX_UNPACK(who) POP_BODY(fn,who); Value box_val=spop(); if(box_val.tag!=VAL_BOX) die(who ": expected box, got %s", valtag_name(box_val.tag)); BoxData *bd=(BoxData*)box_val.as.box; SPUSH(bd->data,bd->slots)
 static void prim_lend(Frame *env) {
@@ -2094,7 +2124,10 @@ static void deep_copy_values(Value *dst, const Value *src, int slots) {
 static void deep_free_values(Value *vals, int slots) {
     for(int i=0;i<slots;i++){
         if(vals[i].tag==VAL_DICT) dict_data_free((DictData*)vals[i].as.box);
-        /* boxes are linear and rejected at TC time; not freed here */
+        else if(vals[i].tag==VAL_BOX){
+            BoxData *bd=(BoxData*)vals[i].as.box;
+            if(bd->data){ deep_free_values(bd->data,bd->slots); free(bd->data); bd->data=NULL; bd->slots=-1; }
+        }
     }
 }
 static BoxData *box_clone(BoxData *orig) { BoxData *c=malloc(sizeof(BoxData));c->data=malloc(orig->slots*sizeof(Value));c->slots=orig->slots;deep_copy_values(c->data,orig->data,orig->slots);return c; }
@@ -2103,8 +2136,7 @@ static Value dict_val(DictData *dd);
 static void prim_clone(Frame *e){
     (void)e;Value v=spop();
     if(v.tag==VAL_BOX){BoxData *c=box_clone((BoxData*)v.as.box);spush(v);Value v2={0};v2.tag=VAL_BOX;v2.as.box=c;spush(v2);return;}
-    if(v.tag==VAL_DICT){DictData *c=dict_clone((DictData*)v.as.box);spush(v);spush(dict_val(c));return;}
-    die("clone: expected box or dict, got %s",valtag_name(v.tag));
+    die("clone: expected box, got %s",valtag_name(v.tag));
 }
 /* ---- DICT ---- */
 static uint32_t dict_hash(const char *key, int klen) {
@@ -2344,11 +2376,12 @@ static void eval_body(Value *body, int slots, Frame *env) {
         else if(is_compound(elem.tag)){
             SPUSH(&body[eo],es);
             if(elem.tag==VAL_TUPLE){ee->refcount++;stack[sp-1].as.compound.env=ee;}
-        } else if(elem.tag==VAL_XT) elem.as.xt.fn(ee);
-        else if(elem.tag==VAL_WORD){
-            uint32_t sym=elem.as.sym;
-            if(sym==S_LET){ uint32_t n=pop_sym(); int ds=val_slots(stack[sp-1]); Value db[ds]; VCPY(db,&stack[sp-ds],ds); sp-=ds; frame_bind(ee,n,db,ds,0); }
-            else dispatch_word(sym,ee);
+        } else if(elem.tag==VAL_XT){
+            if(elem.as.xt.fn) elem.as.xt.fn(ee);
+            else { uint32_t sym=elem.as.xt.sym;
+                if(sym==S_LET){ uint32_t n=pop_sym(); int ds=val_slots(stack[sp-1]); Value db[ds]; VCPY(db,&stack[sp-ds],ds); sp-=ds; frame_bind(ee,n,db,ds,0); }
+                else dispatch_word(sym,ee);
+            }
         } else if(elem.tag==VAL_BOX||elem.tag==VAL_DICT) spush(elem);
     }
     if(ee->refcount==0){ee->bind_count=sbc;ee->vals_used=svu;}
@@ -2365,26 +2398,11 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
         Token *tt=&toks[j]; current_fid=tt->fid; current_line=tt->line; current_col=tt->col;
         switch(tt->tag){
         case TOK_INT:
-            if(j+1<end && toks[j+1].tag==TOK_WORD) {
-                uint32_t ns=toks[j+1].as.sym; PrimFn fused=NULL;
-                if(tt->as.i==1 && ns==S_PLUS) fused=prim_fused_inc;
-                else if(tt->as.i==1 && ns==S_SUB) fused=prim_fused_dec;
-                else if(tt->as.i==0 && ns==S_EQ) fused=prim_fused_iszero;
-                else if(tt->as.i==2 && ns==S_PLUS) fused=prim_fused_add2;
-                else if(tt->as.i==2 && ns==S_SUB) fused=prim_fused_sub2;
-                else if(tt->as.i==2 && ns==S_MUL) fused=prim_fused_mul2;
-                else if(tt->as.i==2 && ns==S_DIV) fused=prim_fused_div2;
-                else if(tt->as.i==2 && ns==S_MOD) fused=prim_fused_mod2;
-                else if(tt->as.i==6 && ns==S_PLUS) fused=prim_fused_add6;
-                else if(tt->as.i==10 && ns==S_MUL) fused=prim_fused_mul10;
-                else if(tt->as.i==10 && ns==S_DIV) fused=prim_fused_div10;
-                if(fused){spush(with_tok(val_xt(ns,fused),tt));ec++;j++;break;}
-            }
             spush(with_tok(val_int(tt->as.i),tt)); ec++; break;
         case TOK_FLOAT: spush(with_tok(val_float(tt->as.f),tt)); ec++; break;
         case TOK_SYM: spush(with_tok(val_sym(tt->as.sym),tt)); ec++; break;
         case TOK_WORD:
-            if(tt->as.sym==S_CHECK){if(ec>0&&(stack[sp-1].tag==VAL_WORD||stack[sp-1].tag==VAL_XT)){sp--;ec--;}else die("check: expected preceding type word, got %s",ec>0?valtag_name(stack[sp-1].tag):"empty stack");}
+            if(tt->as.sym==S_CHECK){if(ec>0&&stack[sp-1].tag==VAL_XT){sp--;ec--;}else die("check: expected preceding type word, got %s",ec>0?valtag_name(stack[sp-1].tag):"empty stack");}
             else{
                 PrimFn xf=prim_lookup(tt->as.sym);
                 if(xf && j+1<end && toks[j+1].tag==TOK_WORD && toks[j+1].as.sym==S_MUST) {
@@ -2395,9 +2413,7 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
                     else if(s==S_INDEXOF) fused=prim_indexof_must; else if(s==S_STRFIND) fused=prim_strfind_must;
                     if(fused){spush(with_tok(val_xt(s,fused),tt));ec++;j++;break;}
                 }
-                if(xf && j+1<end && toks[j+1].tag==TOK_WORD && toks[j+1].as.sym==S_DROP && tt->as.sym==S_SWAP)
-                    {spush(with_tok(val_xt(tt->as.sym,prim_fused_nip),tt));ec++;j++;break;}
-                spush(with_tok(xf?val_xt(tt->as.sym,xf):val_word(tt->as.sym),tt));ec++;
+                spush(with_tok(val_xt(tt->as.sym,xf),tt));ec++;
             }
             break;
         case TOK_STRING:
@@ -2462,15 +2478,15 @@ static const char *BUILTIN_TYPES =
     "'and" I2E "'or" I2E
     "'print [own in] effect\n'assert [int own in] effect\n'millis [int" MO
     "'itof [int lent in  float" MO "'ftoi [float lent in  int" MO
-    "'fsqrt" F1E "'fsin" F1E "'fcos" F1E "'ftan" F1E "'ffloor" F1E "'fceil" F1E "'fround" F1E "'fexp" F1E "'flog" F1E
+    "'fsqrt" F1E "'ffloor" F1E "'fceil" F1E "'fround" F1E "'fexp" F1E "'flog" F1E
     "'fpow" F2E "'fatan2" F2E
     "'list [list" MO "'len [sized auto in  int" MO "'push ['a seq own in  'a own in  'a seq" MO "'pop ['a seq own in  'a seq move out  {'ok 'a 'no ()} either move out] effect\n"
     "'get ['a seq own in  int lent in  {'ok 'a 'no ()} either move out] effect\n'nth [sym lent in  int lent in  {'ok 'a 'no ()} either move out] effect\n'set ['a seq own in  int lent in  'a own in  {'ok 'a 'no ()} either move out] effect\n'cat ['a semigroup own in  'a semigroup own in  'a semigroup" MO
     "'take-n" LNE "'drop-n" LNE "'range [int lent in  int lent in  int list" MO "'sort ['a ord list own in  'a ord list" MO
     "'reverse" L1E "'dedup" L1E "'index-of ['a list own in  'a lent in  {'ok int 'no ()} either move out] effect\n'select" LIE "'pick" LIE "'keep-mask" LIE
     "'rise" LGE "'fall" LGE "'shape" LGE "'classify" LGE "'stack [tuple" MO "'compose [tuple own in  tuple own in  tuple" MO "'rec [rec" MO
-    "'random [int lent in  int" MO "'halt [] effect\n'box ['a own in  'a box" MO "'free [linear own in] effect\n"
-    "'at [rec own in  sym lent in  {'ok 'a 'no ()} either move out] effect\n'into [rec own in  own in  sym lent in  rec" MO "'clone ['a linear own in  'a linear move out  'a linear" MO
+    "'random [int lent in  int" MO "'halt [] effect\n'box ['a own in  'a box" MO "'free ['a box own in] effect\n"
+    "'at [rec own in  sym lent in  {'ok 'a 'no ()} either move out] effect\n'into [rec own in  own in  sym lent in  rec" MO "'clone ['a box own in  'a box move out  'a box" MO
     "'clear [int lent in] effect\n'pixel [int lent in  int lent in  int lent in] effect\n'fill-rect [int lent in  int lent in  int lent in  int lent in  int lent in] effect\n"
     "'rotate" LNE "'windows" LNE "'zip ['a list own in  'a list own in  list" MO "'group" LDE "'reshape" LDE "'transpose [list own in  list" MO
     "'read [list own in  {'ok list 'no list} either move out] effect\n'write [list own in  int list own in  {'ok int 'no list} either move out] effect\n'ls [list own in  {'ok list 'no list} either move out] effect\n"
@@ -2526,15 +2542,6 @@ static const char *PRELUDE =
     "(dup dup mul mul) 'cube let\n"
     "(0 swap lt) 'ispos let\n"
     "(0 get must) 'first let\n"
-    "(1 get must) 'second let\n"
-    "(2 get must) 'third let\n"
-    "(3 get must) 'fourth let\n"
-    "(4 get must) 'fifth let\n"
-    "(5 get must) 'sixth let\n"
-    "(6 get must) 'seventh let\n"
-    "(7 get must) 'eighth let\n"
-    "(8 get must) 'ninth let\n"
-    "(9 get must) 'tenth let\n"
     "(dup len 1 sub get must) 'last let\n"
     "(0 (plus) fold) 'sum let\n"
     "(1 (mul) fold) 'product let\n"
@@ -2577,13 +2584,6 @@ static const char *PRELUDE =
     "('b let 0 8 range (7 swap sub b swap shr 1 band) each) 'byte-bits let\n"
     "(0 (swap 1 shl bor) fold) 'bits-byte let\n"
     "('n let list swap (dup len 0 eq not) (dup n take-n swap (push) dip n drop-n) while drop) 'chunks let\n"
-#ifndef SLAP_WASM
-    "(list 13 push 10 push) 'crlf let\n"
-    "('n let n 0 gt (n 10 mod 48 plus push n 10 div int-str-digits) () if) 'int-str-digits let\n"
-    "('n let n 0 lt (n neg int-str list 45 push swap cat) (n 0 eq (list 48 push) (list n int-str-digits reverse) if) if) 'int-str let\n"
-    "('sep let 'parts let parts len 0 eq (list) (parts 1 drop-n parts first (sep swap cat cat) fold) if) 'str-join let\n"
-    "('body let 'headers let 'path let 'host let 'method let method \" \" cat path cat \" HTTP/1.1\" cat crlf cat \"Host: \" cat host cat crlf cat headers cat body len 0 gt (\"Content-Length: \" cat body len int-str cat crlf cat) () if crlf cat body cat) 'http-request let\n"
-#endif
 
 ;
 #define LIST_POP(who,buf,len,ts,offs,szs) do{ \
@@ -2905,7 +2905,7 @@ static void register_prims(void) {
         R(eq,eq),R(lt,lt),R(and,and),R(or,or),
         R(print,print),R(assert,assert),R(halt,halt),R(random,random),
         R(if,if),R(case,case),R(loop,loop),R(while,while),
-        R(itof,itof),R(ftoi,ftoi),R(fsqrt,fsqrt),R(fsin,fsin),R(fcos,fcos),R(ftan,ftan),
+        R(itof,itof),R(ftoi,ftoi),R(fsqrt,fsqrt),
         R(ffloor,ffloor),R(fceil,fceil),R(fround,fround),R(fexp,fexp),R(flog,flog),R(fpow,fpow),R(fatan2,fatan2),
         R(stack,stack),{"compose",prim_concat},R(list,list),R(len,size),R(push,push_op),R(pop,pop_op),
         {"get",prim_get},R(nth,nth),R(set,replace_at),R(cat,concat),

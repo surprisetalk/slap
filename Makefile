@@ -23,10 +23,10 @@ slap-wasm: slap.c shell.html
 clean:
 	rm -f slap slap-sdl *.wasm
 test: slap
-	@cat examples/lib/parse.slap tests/expect.slap | ./slap
+	@cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap
 	@./slap --check < tests/type.slap
 	@./slap < tests/type.slap > /dev/null
-	@cat examples/lib/parse.slap tests/expect.slap | ./slap --check
+	@cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap --check
 	@python3 tests/run_panic.py
 	@python3 tests/run_type_errors.py
 	@echo 'args len 2 eq assert  args 0 get must "hello" eq assert  args 1 get must "world" eq assert' | ./slap hello world
@@ -34,6 +34,6 @@ test: slap
 	@rm -f _test_fs.bin
 	@python3 tests/run_euler.py
 	@for f in icn chr nmt tga gly ulz parse; do ./slap < examples/lib/$$f.slap > /dev/null && ./slap --check < examples/lib/$$f.slap; done
-	@for combo in "icn ufx" "parse xml" "parse xml rss" "parse json"; do files=$$(echo $$combo | sed 's|[^ ]*|examples/lib/&.slap|g'); cat $$files | ./slap > /dev/null && cat $$files | ./slap --check; done
+	@for combo in "icn ufx" "parse xml" "parse xml rss" "strings parse json" "strings parse xml" "strings parse xml rss"; do files=$$(echo $$combo | sed 's|[^ ]*|examples/lib/&.slap|g'); cat $$files | ./slap > /dev/null && cat $$files | ./slap --check; done
 	@echo "All test suites passed."
 .PHONY: clean test

@@ -38,10 +38,10 @@ Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.
 
 - **Lexer** (`lex`): Source → tokens. Token types: INT, FLOAT, SYM, WORD, STRING, brackets, EOF.
 - **Type checker** (`typecheck_tokens` → `tc_process_range`): Union-find type inference, effect system (consumed/produced stack slots), linear value tracking. Type variables use path-compressed union-find for unification.
-- **Evaluator** (`eval` → `build_tuple` → `eval_body`): Tokens → compound values (tuples), then stack-machine execution. `dispatch_word` resolves names via frame lookup then primitive table.
+- **Evaluator** (`eval` → `build_tuple` → `eval_body`): Tokens → compound values (tuples), then stack-machine execution. Words that resolve to a primitive at build time are stored as `VAL_XT` with a direct function pointer; unresolved names are stored as `VAL_XT` with `fn=NULL` and looked up at dispatch via `dispatch_word` (frame lookup → primitive table).
 - **Frames**: Lexical scope chain with refcounting. Closures capture their defining frame. `let` bindings auto-execute tuples on lookup; scalars push as values.
-- **Primitives**: ~75 C functions registered via `prim_register`. Macros `ARITH2`, `FLOAT1`, `CMP2` generate families of math/comparison ops.
-- **Prelude**: ~70 derived definitions in Slap itself (embedded string in slap.c). Loaded at startup before user code.
+- **Primitives**: ~100 C functions registered via `prim_register`. Macros `ARITH2`, `FLOAT1`, `CMP2` generate families of math/comparison ops.
+- **Prelude**: ~70 derived definitions in Slap itself (embedded string in slap.c). Loaded at startup before user code. Non-core string helpers (`crlf`, `int-str`, `str-join`, `http-request`) live in `examples/lib/strings.slap` — cat alongside your program when needed.
 - **Self-reference**: A name bound via `let` is visible inside its own body when referenced textually, enabling recursion without a keyword.
 
 ### Tagged unions (sum types)
@@ -94,10 +94,12 @@ Pattern: `[] pop (1 plus ok) then -1 default` → `-1` (empty list, default). `[
 ### Type system
 
 Two categories of types:
-- **Stackable** (copyable): Int, Float, Symbol, Tuple, Record, List, String, Tagged. Support `dup`/`drop`.
-- **Linear**: Box only. Must be consumed exactly once via `free`, `lend`, `mutate`, or `clone`.
+- **Stackable** (copyable): Int, Float, Symbol, Tuple, Record, List, String, Tagged, Dict. Support `dup`/`drop`. Dict `dup` deep-clones; `drop` deep-frees.
+- **Linear**: Box only. Must be consumed exactly once via `free`, `lend`, `mutate`, or `clone`. `free`/`clone` reject dicts at type time — use `drop`/`dup` instead.
 
 `lend` borrows a stackable snapshot from a Box. The snapshot itself is stackable, but when the box contains a compound value (list/record/tuple/tagged) the checker forbids `let`-binding a borrowed compound snapshot inside the `lend` body — a later `mutate` would silently corrupt the binding, which aliases the box's backing storage. Only fires when the bound value carries the borrowed flag; binding a freshly-built tuple literal inside a lend body is fine.
+
+`deep_free_values` recursively frees boxes inside compounds (poisoning `BoxData->data=NULL` so any stale reference hits `double-free detected` rather than use-after-free). This catches rare TC gaps where a linear value escapes into a stackable compound that's later dropped.
 
 ### Protocols (built-in typeclasses)
 
@@ -113,7 +115,7 @@ Constraints formalize which operations work on which types. Used in `[...] effec
 | Seq | `seq` (implies Semigroup) | list | `get`, `set`, `push`, `pop` |
 | Sized | `sized` | list, tuple, record, dict | `len` |
 
-Additional constraint keywords recognized in effect annotations: `functor` (input constraint for `each`), `monad` (for `then`), `dict` (for the dict type), `linear` (supertype of Box).
+Additional constraint keywords recognized in effect annotations: `functor` (input constraint for `each`), `monad` (for `then`), `dict` (for the dict type), `linear` (synonym for box; no longer cross-matches dict).
 
 `each` iterates over lists (producing a new list) and over `'ok`-tagged values (applies body to payload, re-wraps; non-ok passes through). `fold`, `filter`, `scan` work on lists. These aren't surfaced as named protocols because they don't generalize beyond their current types. `then`/`default` are prelude-level sugar over `case` — see above.
 
@@ -131,6 +133,10 @@ Declares tagged variant types in effect annotations: `{'ok type 'no type} either
 Supports type variables (`'a`) that resolve against the sig's other slots. `default` enforces that the fallback value matches the `ok` payload type — `[1 2 3] pop () default` is a type error because `()` (tuple) doesn't match the list element type (int).
 
 Parsed in `parse_type_annotation`. Stored in `TypeSlot.either_syms/either_types/either_tvars`. Applied via `UnionDef` creation in `tc_check_word`.
+
+**Producer-side validation** (`tc_check_body_against_sig`): when a `(body) [sig] effect 'name let` declaration has an either-constrained output, the body is scanned for literal `'sym tag` emissions and bare `ok`/`no`/`none`. Any tag not in the declared variant set is a type error. Also: `'name [sig] effect` followed by a later `(body) 'name let` reconciles the body's effect shape against the forward declaration.
+
+**Exhaustiveness enforcement**: `case` with missing variant clauses on a union that carries a linear payload is a *hard* error (non-recoverable) — silent drop of a linear variant is always a bug. Unions without linear variants remain soft errors for easier recovery during editing.
 
 List ops: `push`, `pop`, `set`, `len`, `cat`. `compose` is a separate tuple-concat primitive for function composition.
 

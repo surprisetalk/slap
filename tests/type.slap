@@ -31,8 +31,6 @@
 
 -- ===== Float math =====
 2.0 fsqrt drop
-1.0 fsin drop
-1.0 fcos drop
 3.7 ffloor drop
 3.2 fceil drop
 2.5 fround drop

@@ -75,7 +75,7 @@ drop
 
 -- Fold over dict entries; acc carries first answer found (0 = not yet).
 0 (
-  second 'fb-g let
+  1 get must 'fb-g let
   dup 0 gt () (
     drop
     fb-g len 3 lt (0) (fb-g scan-group) if
