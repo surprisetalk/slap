@@ -79,7 +79,7 @@ nonexistent_word_xyz
 1 clone
 
 -- EXPECT: expected seq
-stack pop
+() pop
 
 -- EXPECT: expected list or tagged
 42 (1 plus) each

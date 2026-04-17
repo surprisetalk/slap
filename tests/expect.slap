@@ -195,7 +195,7 @@ pi 4.0 lt assert
 -- empty collections
 [] len 0 eq assert
 list len 0 eq assert
-stack len 0 eq assert
+() len 0 eq assert
 
 -- single element list
 [42] first 42 eq assert

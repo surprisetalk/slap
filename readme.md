@@ -678,6 +678,43 @@ curl -so lib.slap https://example.com/lib.slap
 cat lib.slap main.slap | slap
 ```
 
+## what the type system catches
+
+The type checker runs on all code (builtins, prelude, user) before execution.
+It catches the following at compile time:
+
+**Linear resources (boxes):**
+- A box must be consumed exactly once via `free`, `lend`, `mutate`, or `clone`.
+- Embedding a box into a stackable container (list, tuple, record, tagged) is rejected.
+- Duplicating a box with `dup` is rejected (boxes aren't copyable).
+- A closure that captures a linear outer binding is marked linear itself — applying it twice is rejected.
+- Higher-order ops (`each`, `fold`, `scan`, `while`, `find`) reject bodies that capture linear outer bindings.
+- `compose` propagates linear-capture: merging a linear-capturing closure with a pure one yields a linear-capturing result.
+- A linear-capturing closure cannot recurse on itself — each recursive call would re-consume the capture.
+
+**Aliasing through `lend`/`mutate`:**
+- `lend`'s body may not `let`-bind the compound-box snapshot as a word-accessible name — pulling the snapshot to the stack aliases the box's backing storage, and a later `mutate` would corrupt it.
+- Indexed read access via `'name k nth` is exempt — nth doesn't pull the list to the stack.
+
+**Tagged unions:**
+- Tags are open by default; `case` on an untyped tagged value accepts any variant with a default clause.
+- Declaring a closed schema via `{'sym 'type ...} union` enables exhaustiveness: `case` must cover every variant (hard-errored when any variant carries a linear payload, soft-warned otherwise).
+- `either` in effect annotations (`{'ok int 'no str} either`) validates `tag` emission sites: the body may only emit variants named in the schema.
+
+**Protocols (typeclasses):**
+- `ord` (`lt`, `sort`) accepts int and float only. Symbols are Eq but not Ord — ordering symbols by intern id is an implementation accident, not a semantic.
+- `num`, `integral`, `seq`, `semigroup`, `sized`, `functor`, `monad` gate other ops.
+
+**Effect annotations:**
+- `(body) [sig] effect 'name let` validates the body's stack shape against the declared signature.
+- Forward declarations `'name [sig] effect` reconcile with the body when `name` is later defined.
+
+**What the type system does *not* catch:**
+- Division by zero, modulo by zero, out-of-bounds `set` or `nth` (runtime panics).
+- Non-exhaustive `case` on a tagged value with no `union` declaration — the default clause silently fires on any unmatched variant (this is by design; declare a union to opt into exhaustiveness).
+- Correctness of effect-annotation schemas (the user is trusted when they write `[sig] effect`; only the body's *shape* is validated, not its meaning).
+- Recursion depth, memory limits, or other runtime resource exhaustion.
+
 ## testing
 
 ```bash

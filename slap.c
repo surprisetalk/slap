@@ -999,6 +999,10 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
             TypeConstraint ct = tc_top_content(tc, TC_BOX);
             if (ct != TC_NONE && bo != TC_NONE && !tc_constraint_matches(ct, bo) && !tc_constraint_matches(bo, ct))
                 tc_error(tc, line, 0, "'mutate' body produces %s but box contains %s", constraint_name(bo), constraint_name(ct));
+            /* Unlike lend, mutate's body output is copied to new bd->data AT
+               THE END of the body — the binding's aliased reference to old
+               bd->data never survives past the copy. No analog to the lend
+               aliasing guard is needed; probe 27 is actually safe. */
         }
         return;
     }
@@ -1223,6 +1227,14 @@ apply_sig:;
     }
     #define FIND_TVAR(tv_name) ({ int _tv = 0; for (int _j = 0; _j < tmc; _j++) if (tm[_j].var == (tv_name)) { _tv = tm[_j].tvar; break; } _tv; })
     AbstractType passthrough[8] = {0}; int pt_count = 0;
+    /* Track whether any input tuple carries AT_LINEAR, so that sig-declared
+       tuple outputs (e.g. `compose`) can propagate linear-capture downstream.
+       Without this, `(b free) (1 plus) compose apply apply` double-consumes. */
+    int any_input_linear_tuple = 0;
+    for (int i = 0; i < ni && i < tc->sp; i++) {
+        AbstractType *at = &tc->data[tc->sp-1-i];
+        if ((at->flags & AT_LINEAR) && at->type == TC_TUPLE) { any_input_linear_tuple = 1; break; }
+    }
     int sp2 = tc->sp - 1;
     for (int i = sig->slot_count - 1; i >= 0; i--) {
         TypeSlot *s = &sig->slots[i]; if (s->direction != DIR_IN || sp2 < 0) { if (s->direction == DIR_IN) sp2--; continue; }
@@ -1265,6 +1277,10 @@ apply_sig:;
         TypeSlot *s = &sig->slots[i]; if (s->direction != DIR_OUT) continue;
         if (tc->sp >= ASTACK_MAX) { tc->errors++; return; }
         tc_push(tc, s->constraint, line); AbstractType *at = &tc->data[tc->sp - 1];
+        /* Propagate AT_LINEAR onto a sig-declared tuple output when an input
+           tuple was AT_LINEAR. Covers `compose`: merging two closures where
+           one captures linear must yield a linear-capturing closure. */
+        if (any_input_linear_tuple && s->constraint == TC_TUPLE) at->flags |= AT_LINEAR;
         if (s->type_var) { int tv = FIND_TVAR(s->type_var); if (tv > 0) {
             if (tc_is_container(s->constraint) && at->tvar_id > 0) { int ef = tvar_content(tc, at->tvar_id, s->constraint); if (ef > 0) tvar_unify(tc, ef, tv, line); }
             else if (!tc_is_container(s->constraint)) { TypeConstraint r = tvar_resolve(tc, tv); if (r != TC_NONE) at->type = r; at->tvar_id = tv; if (r == TC_BOX) at->flags |= AT_LINEAR; }
@@ -1381,6 +1397,11 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                         if (!otv[j]) { otv[j] = tvar_fresh(tc); if (tc->data[idx].type != TC_NONE) tc->tvars[otv[j]].bound = tc->data[idx].type; } }
                     sc = tc->tvar_count - scheme_base;
                     if (ao == 1 && tc->data[tc->sp-1].type == TC_TUPLE && tc->data[tc->sp-1].effect_idx >= 0) out_eff = tc->data[tc->sp-1].effect_idx;
+                    /* Partial C1 unification: prefer real-checker's observed top
+                       for eff_out. Fixes cases where the static pre-scan's `tt`
+                       tracker goes stale after consume ops like `drop` (see G2
+                       round 1 band-aid). */
+                    if (ao > 0 && tc->data[tc->sp-1].type != TC_NONE) eff_out = tc->data[tc->sp-1].type;
                 }
                 int body_captured = tc->saw_linear_capture;
                 /* output_is_linear: the body's sole output is itself a linear-capturing
@@ -1912,7 +1933,6 @@ FLOAT1(fsqrt,sqrt)
 FLOAT1(ffloor,floor) FLOAT1(fceil,ceil) FLOAT1(fround,round) FLOAT1(fexp,exp) FLOAT1(flog,log)
 #define FLOAT2(nm,fn) static void prim_##nm(Frame *e){(void)e;double b=pop_float(),a=pop_float();spush(val_float(fn(a,b)));}
 FLOAT2(fpow,pow) FLOAT2(fatan2,atan2)
-static void prim_stack(Frame *e){(void)e;spush(val_compound(VAL_TUPLE,0,1));}
 static void dict_data_free(DictData *dd);
 static void prim_size(Frame *e) {
     (void)e; Value top=speek();
@@ -2528,8 +2548,8 @@ static const char *BUILTIN_TYPES =
     "'list [list" MO "'len [sized auto in  int" MO "'push ['a seq own in  'a own in  'a seq" MO "'pop ['a seq own in  'a seq move out  {'ok 'a 'no ()} either move out] effect\n"
     "'get ['a seq own in  int lent in  {'ok 'a 'no ()} either move out] effect\n'nth [sym lent in  int lent in  {'ok 'a 'no ()} either move out] effect\n'set ['a seq own in  int lent in  'a own in  {'ok 'a 'no ()} either move out] effect\n'cat ['a semigroup own in  'a semigroup own in  'a semigroup" MO
     "'take-n" LNE "'drop-n" LNE "'range [int lent in  int lent in  int list" MO "'sort ['a ord list own in  'a ord list" MO
-    "'reverse" L1E "'dedup" L1E "'index-of ['a list own in  'a lent in  {'ok int 'no ()} either move out] effect\n'select" LIE "'pick" LIE "'keep-mask" LIE
-    "'rise" LGE "'fall" LGE "'shape" LGE "'classify" LGE "'stack [tuple" MO "'compose [tuple own in  tuple own in  tuple" MO "'rec [rec" MO
+    "'index-of ['a list own in  'a lent in  {'ok int 'no ()} either move out] effect\n'select" LIE "'keep-mask" LIE
+    "'rise" LGE "'fall" LGE "'shape" LGE "'classify" LGE "'compose [tuple own in  tuple own in  tuple" MO "'rec [rec" MO
     "'random [int lent in  int" MO "'halt [] effect\n'box ['a own in  'a box" MO "'free ['a box own in] effect\n"
     "'at [rec own in  sym lent in  {'ok 'a 'no ()} either move out] effect\n'into [rec own in  own in  sym lent in  rec" MO "'clone ['a box own in  'a box move out  'a box" MO
     "'clear [int lent in] effect\n'pixel [int lent in  int lent in  int lent in] effect\n'fill-rect [int lent in  int lent in  int lent in  int lent in  int lent in] effect\n"
@@ -2613,7 +2633,8 @@ static const char *PRELUDE =
     "(() no) [tagged move out] effect 'none let\n"
     "('body let () {'ok (body) 'no (no)} case) [tagged own in  tuple own in  tagged move out] effect 'then let\n"
     "('fb let fb {'ok () 'no (drop fb)} case) [{'ok 'a 'no 'b} either own in  'a own in  'a move out] effect 'default let\n"
-    "('f let 'n let 0 (dup n lt) (dup (f) dip 1 plus) while drop) 'times-i let\n"
+    "('rv-lst let rv-lst len 'rv-n let 0 rv-n range ('rv-i let rv-n 1 sub rv-i sub rv-lst swap get must) each) ['a list own in  'a list move out] effect 'reverse let\n"
+    "(list ('dd-x let dup dd-x member (dd-x drop) (dd-x push) if) fold) ['a list own in  'a list move out] effect 'dedup let\n"
     "3.14159265358979323846 'pi let\n"
     "6.28318530717958647692 'tau let\n"
     "2.71828182845904523536 'e let\n"
@@ -2636,22 +2657,6 @@ static const char *PRELUDE =
     ts=val_slots(_t);len=(int)_t.as.compound.len;int _b=sp-ts; \
     if(ts>LOCAL_MAX)die(who ": too large");VCPY(buf,&stack[_b],ts);sp=_b; \
     compute_offsets(buf,ts,len,offs,szs);}while(0)
-static void prim_reverse(Frame *e) {
-    (void)e; Value buf[LOCAL_MAX]; int len,ts,offs[LOCAL_MAX],szs[LOCAL_MAX];
-    LIST_POP("reverse",buf,len,ts,offs,szs);
-    int rb=sp; for(int i=len-1;i>=0;i--){SPUSH(&buf[offs[i]],szs[i]);}
-    spush(val_compound(VAL_LIST,len,sp-rb+1));
-}
-static void prim_dedup(Frame *e) {
-    (void)e; Value buf[LOCAL_MAX]; int len,ts,offs[LOCAL_MAX],szs[LOCAL_MAX];
-    LIST_POP("dedup",buf,len,ts,offs,szs);
-    int rb=sp,rc=0;
-    for(int i=0;i<len;i++){
-        int dup=0; for(int j=0;j<i;j++) if(val_equal(&buf[offs[i]],szs[i],&buf[offs[j]],szs[j])){dup=1;break;}
-        if(!dup){SPUSH(&buf[offs[i]],szs[i]);rc++;}
-    }
-    spush(val_compound(VAL_LIST,rc,sp-rb+1));
-}
 /* ---- SDL ---- */
 #ifdef SLAP_SDL
 #include <SDL.h>
@@ -2952,12 +2957,12 @@ static void register_prims(void) {
         R(if,if),R(case,case),R(loop,loop),R(while,while),
         R(itof,itof),R(ftoi,ftoi),R(fsqrt,fsqrt),
         R(ffloor,ffloor),R(fceil,fceil),R(fround,fround),R(fexp,fexp),R(flog,flog),R(fpow,fpow),R(fatan2,fatan2),
-        R(stack,stack),{"compose",prim_concat},R(list,list),R(len,size),R(push,push_op),R(pop,pop_op),
+        {"compose",prim_concat},R(list,list),R(len,size),R(push,push_op),R(pop,pop_op),
         {"get",prim_get},R(nth,nth),R(set,replace_at),R(cat,concat),
         {"take-n",prim_take_n},{"drop-n",prim_drop_n},R(range,range),
         R(fold,fold),R(each,each),R(sort,sort),{"index-of",prim_index_of},R(scan,scan),
         R(at,at),R(rise,rise),R(fall,fall),R(shape,shape),
-        R(rec,rec),R(into,into),R(edit,edit),R(reverse,reverse),R(dedup,dedup),R(find,find_elem),
+        R(rec,rec),R(into,into),R(edit,edit),R(find,find_elem),
         R(millis,millis),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),R(clone,clone),
         R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),
         {"dict-keys",prim_keys},{"dict-values",prim_values},

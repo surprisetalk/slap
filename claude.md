@@ -108,14 +108,16 @@ Constraints formalize which operations work on which types. Used in `[...] effec
 | Protocol | Keyword | Types | Methods |
 |----------|---------|-------|---------|
 | Eq | `eq` | all stackable | `eq` |
-| Ord | `ord` (implies Eq) | int, float, sym | `lt`, `sort` |
+| Ord | `ord` (implies Eq) | int, float | `lt`, `sort` |
 | Num | `num` (implies Eq) | int, float | `plus`, `sub`, `mul`, `div` |
 | Integral | `integral` (implies Num) | int | `mod`, `divmod`, `wrap`, bitwise |
 | Semigroup | `semigroup` | list, tuple, record | `cat` |
 | Seq | `seq` (implies Semigroup) | list | `get`, `set`, `push`, `pop` |
 | Sized | `sized` | list, tuple, record, dict | `len` |
 
-Additional constraint keywords recognized in effect annotations: `functor` (input constraint for `each`), `monad` (for `then`), `dict` (for the dict type), `linear` (synonym for box; no longer cross-matches dict).
+Symbols are Eq-only (not Ord). Symbol ordering by intern id is an implementation accident, not a semantic — `lt`/`sort` on symbols is a typecheck error.
+
+Additional constraint keywords recognized in effect annotations: `functor` (input constraint for `each`), `monad` (for `then`), `dict` (for the dict type), `linear` (parse alias for `box`).
 
 `each` iterates over lists (producing a new list) and over `'ok`-tagged values (applies body to payload, re-wraps; non-ok passes through). `fold`, `filter`, `scan` work on lists. These aren't surfaced as named protocols because they don't generalize beyond their current types. `then`/`default` are prelude-level sugar over `case` — see above.
 
