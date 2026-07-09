@@ -19,14 +19,20 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
 
 ## Tests
 
-`make test` runs five checks in order:
-1. `./slap < tests/expect.slap` — integration tests (assert-based, halts on failure)
-2. `./slap --check < tests/type.slap` — type system tests
-3. `./slap < tests/type.slap > /dev/null` — execute type tests
-4. `./slap --check < tests/expect.slap` — type-check the integration tests
-5. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — verify expected errors
+`make test` runs nine checks in order:
+1. `make check-refs` — every file the build and docs reference exists on disk
+2. `cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap` — integration tests (assert-based, halts on failure)
+3. `./slap --check < tests/type.slap` — type system tests
+4. `./slap < tests/type.slap > /dev/null` — execute type tests
+5. The same concatenated expect.slap stream under `--check` — type-check the integration tests
+6. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — verify expected errors
+7. `args` with and without positional arguments
+8. `python3 tests/run_euler.py` — 52 Euler solutions, each prepended with `strings.slap`
+9. `examples/lib/` load/typecheck combos, then `bash tests/adversarial/run.sh`
 
-Tests use `assert` (halts on first failure). Python scripts validate that specific inputs produce expected error messages.
+Note that expect.slap is **not** run bare: it depends on `strings.slap` and `parse.slap`, which must be `cat`ed ahead of it.
+
+Tests use `assert` (halts on first failure). Python scripts validate that specific inputs produce expected error messages. `tests/adversarial/run.sh` classifies probes as `TYPECHECK_REJECT` / `PANIC` / `CLEAN_RUN` and fails if a classification changes.
 
 ## Architecture
 
@@ -132,7 +138,9 @@ Declares tagged variant types in effect annotations: `{'ok type 'no type} either
 'read [list own in  {'ok list 'no list} either move out] effect
 ```
 
-Supports type variables (`'a`) that resolve against the sig's other slots. `default` enforces that the fallback value matches the `ok` payload type — `[1 2 3] pop () default` is a type error because `()` (tuple) doesn't match the list element type (int).
+Supports type variables (`'a`) that resolve against the sig's other slots. An `either` slot in **input** position binds each variant's payload tvar from the incoming union (`tc_check_word`, the `s->either_count > 0` block in the `DIR_IN` loop). That is what makes `default` enforce that its fallback matches the `'ok` payload: `[1 2 3] pop () default` is a type error because `()` (tuple) doesn't match the list element type (int), and so is `[1 2 3] pop "str" default`.
+
+The payload type is read off the incoming value's `UnionDef` (`tvars[...].union_id`), so it only fires when the payload type is known: `[] pop "str" default` still passes, because an empty list literal has no element type to conflict with.
 
 Parsed in `parse_type_annotation`. Stored in `TypeSlot.either_syms/either_types/either_tvars`. Applied via `UnionDef` creation in `tc_check_word`.
 

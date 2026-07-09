@@ -1,0 +1,117 @@
+-- Adversarial soundness probes.
+-- Each probe is classified by running it twice: once with --check, once for real.
+--
+--   TYPECHECK_REJECT  --check exits nonzero (the type system caught it)
+--   PANIC             --check passes, but running exits nonzero
+--   CLEAN_RUN         --check passes and running exits zero
+--
+-- The point is not that a probe "passes" — it is that its classification never
+-- silently downgrades. A TYPECHECK_REJECT that becomes a PANIC means the type
+-- system stopped catching something. A PANIC that becomes a CLEAN_RUN is worse:
+-- it means a program that should have crashed now returns a wrong answer.
+--
+-- FORMAT: -- EXPECT: <classification>
+-- <code, one or more lines, until the next EXPECT>
+
+-- ===== linear discipline: boxes must be consumed exactly once =====
+
+-- EXPECT: TYPECHECK_REJECT
+-- box is linear: not copyable
+42 box dup
+
+-- EXPECT: TYPECHECK_REJECT
+-- box is linear: drop is for stackables
+42 box drop
+
+-- EXPECT: TYPECHECK_REJECT
+-- box is linear: must be consumed, not abandoned
+42 box
+
+-- EXPECT: TYPECHECK_REJECT
+-- consumed twice
+42 box dup free free
+
+-- EXPECT: TYPECHECK_REJECT
+-- free rejects dicts at type time
+dict free
+
+-- EXPECT: CLEAN_RUN
+-- the sanctioned lifecycle
+42 box free
+
+-- ===== protocol constraints =====
+
+-- EXPECT: TYPECHECK_REJECT
+-- symbols are Eq-only, never Ord
+'a 'b lt
+
+-- EXPECT: TYPECHECK_REJECT
+-- sort needs Ord; symbols are not
+['a 'b] sort
+
+-- EXPECT: TYPECHECK_REJECT
+-- mod is Integral: floats are not
+1.0 2.0 mod
+
+-- EXPECT: TYPECHECK_REJECT
+-- no implicit int/float coercion
+1 2.0 plus
+
+-- EXPECT: CLEAN_RUN
+-- symbols do support Eq
+'a 'a eq drop
+
+-- ===== either / tagged discipline =====
+
+-- EXPECT: TYPECHECK_REJECT
+-- default's fallback must match the 'ok payload type: () is a tuple, the
+-- list's elements are ints
+[1 2 3] pop () default
+
+-- EXPECT: TYPECHECK_REJECT
+-- ...and a string fallback cannot stand in for an int payload either
+[1 2 3] pop "str" default len drop
+
+-- EXPECT: CLEAN_RUN
+-- the (()) idiom is fine when the payload really is a tuple
+[(1 2) (3 4)] pop (()) default drop
+
+-- EXPECT: CLEAN_RUN
+-- a fallback of the right type is fine
+[1 2 3] pop -1 default drop
+
+-- EXPECT: CLEAN_RUN
+-- the empty-list path takes the fallback
+[] pop -1 default drop
+
+-- ===== runtime panics: programmer errors that types cannot see =====
+
+-- EXPECT: PANIC
+-- division by zero
+1 0 div drop
+
+-- EXPECT: PANIC
+-- modulo by zero
+1 0 mod drop
+
+-- EXPECT: PANIC
+-- must on a 'no value
+none must drop
+
+-- EXPECT: PANIC
+-- index out of bounds, unwrapped
+[1 2 3] 99 get must drop
+
+-- ===== fallible ops must not panic; they return tagged =====
+
+-- EXPECT: CLEAN_RUN
+-- out-of-bounds get is 'no, not a crash
+[1 2 3] 99 get 0 default drop
+
+-- EXPECT: CLEAN_RUN
+-- take-n clamps rather than panicking
+[1 2 3] 99 take-n drop
+
+-- EXPECT: CLEAN_RUN
+-- drop-n clamps rather than panicking
+[1 2 3] 99 drop-n drop

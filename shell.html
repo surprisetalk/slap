@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>SLAP_NAME</title>
+    <style>
+      body {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        font-family: monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        body { background: #000; color: #ccc; }
+      }
+      @media (prefers-color-scheme: light) {
+        body { background: #fff; color: #333; }
+      }
+      canvas {
+        image-rendering: pixelated;
+        border: 1px solid rgba(128, 128, 128, 0.3);
+        border-radius: 2px;
+      }
+      pre {
+        max-width: 640px;
+        white-space: pre-wrap;
+        margin: 1em;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas" width="640" height="480" tabindex="0"></canvas>
+    <pre id="output"></pre>
+    <script>
+      var c = document.getElementById("canvas");
+      c.addEventListener("click", function () { c.focus(); });
+      var Module = {
+        canvas: c,
+        print: function (text) {
+          document.getElementById("output").textContent += text + "\n";
+        },
+        printErr: function (text) {
+          if (!text.startsWith("Calling stub")) console.warn(text);
+        },
+      };
+    </script>
+    {{{ SCRIPT }}}
+  </body>
+</html>

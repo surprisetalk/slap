@@ -1257,6 +1257,26 @@ apply_sig:;
             }
             for (int j = 0; j < tmc; j++) if (tm[j].var == s->type_var) { if (at->sym_id) tm[j].src_sym = at->sym_id; if (at->effect_idx >= 0) tm[j].src_effect_idx = at->effect_idx; break; }
         }}
+        /* An `either` INPUT slot names each variant's payload type. Bind those
+           vars from the incoming union, so a later slot reusing the same var
+           (default's fallback) must agree with the payload. Without this the
+           fallback silently wins and `default`'s output takes its type. */
+        if (s->either_count > 0 && at->tvar_id > 0) {
+            int uid = tc->tvars[tvar_find(tc, at->tvar_id)].union_id;
+            if (uid > 0) { UnionDef *ud = &tc->unions[uid-1];
+                for (int e = 0; e < s->either_count; e++) {
+                    if (!s->either_tvars[e] || s->either_types[e] != TC_NONE) continue;
+                    int tv = FIND_TVAR(s->either_tvars[e]); if (tv <= 0) continue;
+                    for (int v = 0; v < ud->count; v++) {
+                        if (ud->syms[v] != s->either_syms[e] || ud->types[v] == TC_NONE) continue;
+                        if (tvar_bind(tc, tv, ud->types[v], line))
+                            tc_error(tc, line, at->source_line, "'%s' type variable '%s is %s, but the '%s variant carries %s — they must agree (value from line %d)",
+                                     sym_name(sym), sym_name(s->either_tvars[e]), constraint_name(tvar_resolve(tc, tv)), sym_name(ud->syms[v]), constraint_name(ud->types[v]), at->source_line);
+                        break;
+                    }
+                }
+            }
+        }
         if ((at->flags & AT_LINEAR) && s->ownership == OWN_OWN) {
             const char *wn = sym_name(sym);
             if (strcmp(wn,"push")==0 || strcmp(wn,"into")==0 || strcmp(wn,"set")==0 || strcmp(wn,"insert")==0)
@@ -2670,7 +2690,15 @@ static uint8_t gray_lut[4]={0,85,170,255};
 static void sdl_init(void) {
     if(sdl_window) return;
     if(SDL_Init(SDL_INIT_VIDEO)<0) die("SDL_Init: %s",SDL_GetError());
-    sdl_window=SDL_CreateWindow("slap",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,CANVAS_W,CANVAS_H,SDL_WINDOW_BORDERLESS|SDL_WINDOW_RESIZABLE);
+    /* RESIZABLE tells emscripten's SDL2 to track the canvas's CSS box, which is
+       unsized in shell.html — the canvas collapses to 3x3. The web canvas is
+       fixed at CANVAS_W x CANVAS_H anyway, so only ask for it on desktop. */
+#ifdef __EMSCRIPTEN__
+    Uint32 win_flags=SDL_WINDOW_BORDERLESS;
+#else
+    Uint32 win_flags=SDL_WINDOW_BORDERLESS|SDL_WINDOW_RESIZABLE;
+#endif
+    sdl_window=SDL_CreateWindow("slap",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,CANVAS_W,CANVAS_H,win_flags);
     if(!sdl_window) die("SDL_CreateWindow: %s",SDL_GetError());
 #ifdef __APPLE__
     SDL_SysWMinfo wminfo; SDL_VERSION(&wminfo.version);
@@ -2744,7 +2772,7 @@ static void prim_show(Frame *env) {
             for(int h=0;h<handler_count;h++)
                 if(event_handlers[h].event_sym==sym_tick){spush(val_int(frame));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
             frame++;
-            usleep(16000);
+            SDL_Delay(16);
         }
     }
     sdl_init();

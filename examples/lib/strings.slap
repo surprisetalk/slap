@@ -1,0 +1,12 @@
+-- String helpers. Formerly prelude; cat alongside your program:
+--   cat examples/lib/strings.slap myprog.slap | slap
+
+(list 13 push 10 push) 'crlf let
+
+('n let n 0 gt (n 10 mod 48 plus push n 10 div int-str-digits) () if) 'int-str-digits let
+
+('n let n 0 lt (n neg int-str list 45 push swap cat) (n 0 eq (list 48 push) (list n int-str-digits reverse) if) if) 'int-str let
+
+('sep let 'parts let parts len 0 eq (list) (parts 1 drop-n parts first (sep swap cat cat) fold) if) 'str-join let
+
+('body let 'headers let 'path let 'host let 'method let method " " cat path cat " HTTP/1.1" cat crlf cat "Host: " cat host cat crlf cat headers cat body len 0 gt ("Content-Length: " cat body len int-str cat crlf cat) () if crlf cat body cat) 'http-request let

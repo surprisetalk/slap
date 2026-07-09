@@ -411,3 +411,15 @@ rec 42 box 'b into drop
 -- TYPE ERROR: unknown word inside a wide-effect tuple body must still be reported
 ('a let 'b let 'c let 'd let 'e let 'f let 'g let 'h let 'i let
   a undefined-word-xyz) 'wide-tup let
+
+-- EXPECT: they must agree
+-- TYPE ERROR: default's tuple fallback does not match the int 'ok payload
+[1 2 3] pop () default
+
+-- EXPECT: they must agree
+-- TYPE ERROR: default's string fallback does not match the int 'ok payload
+[1 2 3] pop "str" default drop
+
+-- EXPECT: they must agree
+-- TYPE ERROR: an either input slot binds its payload tvar even through `get`
+[1 2 3] 0 get 'sym default drop

@@ -622,7 +622,7 @@ list N (2 random push) repeat
 
 ## examples
 
-50 [Project Euler](https://projecteuler.net/) solutions in `examples/euler/`:
+52 [Project Euler](https://projecteuler.net/) solutions in `examples/euler/`:
 
 ```slap
 -- Euler #1: sum of multiples of 3 or 5 below 1000
@@ -715,14 +715,17 @@ make test
 ```
 
 Runs:
-1. `cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap` — 250+ integration tests (assert-based)
-2. `./slap --check < tests/type.slap` + `./slap < tests/type.slap` — type system validation
-3. Same expect.slap stream re-run under `--check`
-4. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — expected error messages
-5. `python3 tests/run_euler.py` — 52 Project Euler solutions (strings.slap prepended)
-6. Loadable libraries under `examples/lib/` — each run and type-checked in the combos it's designed for
+1. `make check-refs` — every file the build and docs reference actually exists
+2. `cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap` — 640+ integration assertions
+3. `./slap --check < tests/type.slap` + `./slap < tests/type.slap` — type system validation
+4. Same expect.slap stream re-run under `--check`
+5. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — expected error messages
+6. `args` handling, with and without positional arguments
+7. `python3 tests/run_euler.py` — 52 Project Euler solutions (strings.slap prepended)
+8. Loadable libraries under `examples/lib/` — each run and type-checked in the combos it's designed for
+9. `bash tests/adversarial/run.sh` — adversarial probes
 
-Adversarial probes (`bash tests/adversarial/run.sh`) are a separate suite that classifies each probe as `TYPECHECK_REJECT` / `PANIC` / `CLEAN_RUN` — useful for spotting soundness regressions.
+Adversarial probes classify each probe as `TYPECHECK_REJECT` / `PANIC` / `CLEAN_RUN` and compare against a declared expectation. The point is that a classification never silently downgrades: a probe that slides from `TYPECHECK_REJECT` to `CLEAN_RUN` means the checker went blind. Probes marked `-- KNOWN-GAP:` are cases the docs claim are caught statically but currently are not; they print on every run.
 
 ## building
 
@@ -731,6 +734,10 @@ Requires only a C99 compiler and `-lm`. No dependencies beyond SDL2 for the grap
 ```bash
 make slap          # terminal interpreter
 make slap-sdl      # SDL2 graphics build (requires SDL2)
-make slap-wasm FILE=examples/life.slap  # Emscripten/WASM build
-make clean         # remove binaries
+make slap-wasm FILE=examples/life.slap  # Emscripten/WASM build (requires emcc)
+make clean         # remove binaries and generated pages
 ```
+
+`slap-wasm` writes `<name>.html`, `<name>.js`, and `<name>.wasm`, wrapping the program in `shell.html` (a 640×480 canvas; `SLAP_NAME` is substituted with the program name). It needs `emcc` on `PATH` — `brew install emscripten`, or install [emsdk](https://emscripten.org/docs/getting_started/downloads.html).
+
+The build passes `-sGROWABLE_ARRAYBUFFERS=0`. With `ALLOW_MEMORY_GROWTH`, emscripten ≥6 backs the heap with a resizable `ArrayBuffer`, and browsers' `TextDecoder.decode()` rejects those — startup throws and the canvas stays blank.

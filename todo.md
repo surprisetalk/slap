@@ -1,0 +1,1 @@
+- [ ] borrow checking plus reference counting: https://verdagon.dev/blog/ante-blending-borrowing-rc
