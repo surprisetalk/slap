@@ -1,5 +1,7 @@
 - [ ] borrow checking plus reference counting: https://verdagon.dev/blog/ante-blending-borrowing-rc
 
+- [ ] replicate some big projects using only slap to confirm it works
+
 <!--
 - no vigil. nothing kept in intermediate state outside of physical notes and single working copy. publish sequels not incremental improvements.
 - fullscreen apps only. starts with app launcher like ios.

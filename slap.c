@@ -297,14 +297,10 @@ typedef struct { int base; int slots; } ElemRef;
 static ElemRef compound_elem(Value *data, int total_slots, int len, int index) {
     if (index < 0 || index >= len) { ElemRef ref = { -1, 0 }; return ref; }
     if (total_slots == len + 1) { ElemRef ref = { index, 1 }; return ref; }
-    int elem_end = total_slots - 1, off = 0, sz = 0;
-    for (int i = len - 1; i >= 0; i--) {
-        int lp = elem_end - 1; Value last = data[lp];
-        int esize = val_slots(last);
-        if (i == index) { off = elem_end - esize; sz = esize; }
-        elem_end -= esize;
-    }
-    ElemRef ref = { off, sz }; return ref;
+    int elem_end = total_slots - 1;
+    for (int i = len - 1; i > index; i--) elem_end -= val_slots(data[elem_end - 1]);
+    int sz = val_slots(data[elem_end - 1]);
+    ElemRef ref = { elem_end - sz, sz }; return ref;
 }
 static ElemRef record_field(Value *data, int total_slots, int len, uint32_t key, int *found) {
     int elem_end = total_slots - 1; *found = 0; ElemRef ref = {0, 0};
@@ -395,9 +391,8 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
 }
 static int eval_depth = 0;
 #define EVAL_DEPTH_MAX 10000
-static uint32_t S_LET, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_NO, S_CASE, S_DEFAULT, S_MUST, S_QUOTE;
+static uint32_t S_LET, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_NO, S_CASE, S_MUST, S_QUOTE;
 static uint32_t S_GET, S_POP, S_AT, S_NTH, S_SET, S_EDIT, S_INDEXOF, S_STRFIND;
-static uint32_t S_PLUS, S_SUB, S_EQ, S_SWAP, S_DROP, S_MUL, S_DIV, S_MOD;
 static void syms_init(void);
 /* ---- TYPE SYSTEM ---- */
 typedef enum { DIR_IN, DIR_OUT } SlotDir;
@@ -426,11 +421,9 @@ static void syms_init(void) {
     S_LET=sym_intern("let");
     S_IF=sym_intern("if"); S_EFFECT=sym_intern("effect"); S_CHECK=sym_intern("check");
     S_UNION=sym_intern("union"); S_OK=sym_intern("ok"); S_NO=sym_intern("no");
-    S_CASE=sym_intern("case"); S_DEFAULT=sym_intern("default"); S_MUST=sym_intern("must"); S_QUOTE=sym_intern("quote");
+    S_CASE=sym_intern("case"); S_MUST=sym_intern("must"); S_QUOTE=sym_intern("quote");
     S_GET=sym_intern("get"); S_POP=sym_intern("pop"); S_AT=sym_intern("at"); S_NTH=sym_intern("nth");
     S_SET=sym_intern("set"); S_EDIT=sym_intern("edit"); S_INDEXOF=sym_intern("index-of"); S_STRFIND=sym_intern("str-find");
-    S_PLUS=sym_intern("plus"); S_SUB=sym_intern("sub"); S_EQ=sym_intern("eq"); S_SWAP=sym_intern("swap"); S_DROP=sym_intern("drop");
-    S_MUL=sym_intern("mul"); S_DIV=sym_intern("div"); S_MOD=sym_intern("mod");
     for (int i = 0; i < HO_OP_COUNT; i++) ho_ops[i].sym = sym_intern(ho_ops[i].name);
 }
 typedef struct {
@@ -1005,9 +998,8 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         }
         return;
     }
-    /* `case` with tagged scrutinee: enforce same linearity rules that used
-       to live under S_UNTAG — tagged box payloads can't be discarded by
-       clause dispatch, and a linear default would leak on any match. */
+    /* `case` with tagged scrutinee: tagged box payloads can't be discarded
+       by clause dispatch, and a linear default would leak on any match. */
     if (ho->sym == S_CASE && tc->sp >= 3 && tc->data[tc->sp-3].type == TC_TAGGED) {
         if (tc->data[tc->sp-3].tvar_id > 0) {
             int tid = tc->data[tc->sp-3].tvar_id;
@@ -1876,8 +1868,6 @@ static void prim_tag(Frame *e) {
     int payload_s=val_slots(payload_top);
     spush(val_compound(VAL_TAGGED,tag_sym,payload_s+1));
 }
-#define LIST_ITER(label) POP_BODY(fn,label); POP_LIST_BUF(list,label); \
-    int offs[LOCAL_MAX],szs[LOCAL_MAX]; compute_offsets(list_buf,list_s,list_len,offs,szs)
 #define PUSH_ELEM(i) SPUSH(&list_buf[offs[i]],szs[i])
 static void prim_must(Frame *e) {
     (void)e; Value top=speek();
@@ -1961,22 +1951,23 @@ FLOAT1(ffloor,floor) FLOAT1(fceil,ceil) FLOAT1(fround,round) FLOAT1(fexp,exp) FL
 #define FLOAT2(nm,fn) static void prim_##nm(Frame *e){(void)e;double b=pop_float(),a=pop_float();spush(val_float(fn(a,b)));}
 FLOAT2(fpow,pow) FLOAT2(fatan2,atan2)
 static void dict_data_free(DictData *dd);
+#define COMPOUND_GUARD(v, who, tagmsg) do{ if((v).tag==VAL_TAGGED) die(who ": " tagmsg); \
+    if(!is_compound((v).tag)) die(who ": expected compound, got %s",valtag_name((v).tag)); }while(0)
 static void prim_size(Frame *e) {
     (void)e; Value top=speek();
     if(top.tag==VAL_DICT){ int n=((DictData*)top.as.box)->len; dict_data_free((DictData*)top.as.box); sp--; spush(val_int(n)); return; }
-    if(top.tag==VAL_TAGGED) die("len: tagged values have no length (case-match first)");
-    if(!is_compound(top.tag)) die("len: expected compound, got %s",valtag_name(top.tag));
+    COMPOUND_GUARD(top, "len", "tagged values have no length (case-match first)");
     sp-=val_slots(top); spush(val_int((int)top.as.compound.len));
 }
 static void prim_push_op(Frame *e) {
-    (void)e; POP_VAL(v); Value ct=stack[sp-1]; if(ct.tag==VAL_TAGGED) die("push: cannot push onto tagged value");
-    if(!is_compound(ct.tag)) die("push: expected compound, got %s",valtag_name(ct.tag));
+    (void)e; POP_VAL(v); Value ct=stack[sp-1]; COMPOUND_GUARD(ct, "push", "cannot push onto tagged value");
     ValTag tag=ct.tag; int cs=val_slots(ct),cl=(int)ct.as.compound.len; sp--;
     SPUSH(v_buf,v_s); spush(val_compound(tag,cl+1,cs+v_s));
 }
+#define MUST_PAIR(nm) static void prim_##nm(Frame *e) { prim_##nm##_impl(e,1); } \
+    static void prim_##nm##_must(Frame *e) { prim_##nm##_impl(e,0); }
 static inline void prim_pop_impl(Frame *e, int tagged) {
-    (void)e; Value top=speek(); if(top.tag==VAL_TAGGED) die("pop: cannot pop from tagged value");
-    if(!is_compound(top.tag)) die("pop: expected compound, got %s",valtag_name(top.tag));
+    (void)e; Value top=speek(); COMPOUND_GUARD(top, "pop", "cannot pop from tagged value");
     ValTag tag=top.tag; int s=val_slots(top),len=(int)top.as.compound.len;
     if(len==0) { if(tagged) push_none(); else die("pop: empty %s",tag==VAL_LIST?"list":tag==VAL_TUPLE?"tuple":"record"); return; }
     int base=sp-s; ElemRef last=compound_elem(&stack[base],s,len,len-1);
@@ -1984,24 +1975,20 @@ static inline void prim_pop_impl(Frame *e, int tagged) {
     sp--; sp-=last.slots; spush(val_compound(tag,len-1,s-last.slots));
     SPUSH(eb,last.slots); if(tagged) push_ok();
 }
-static void prim_pop_op(Frame *e) { prim_pop_impl(e,1); }
-static void prim_pop_must(Frame *e) { prim_pop_impl(e,0); }
+MUST_PAIR(pop)
 static inline void prim_get_impl(Frame *e, int tagged) {
     (void)e; int64_t idx=pop_int(); Value top=speek();
-    if(top.tag==VAL_TAGGED) die("get: cannot index tagged value");
-    if(!is_compound(top.tag)) die("get: expected compound, got %s", valtag_name(top.tag));
+    COMPOUND_GUARD(top, "get", "cannot index tagged value");
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,(int)idx);
     if(ref.base<0) { sp-=s; if(tagged) push_none(); else die("get: index %lld out of bounds (len %d)",(long long)idx,len); return; }
     Value eb[LOCAL_MAX]; VCPY(eb,&stack[base+ref.base],ref.slots);
     sp-=s; SPUSH(eb,ref.slots); if(tagged) push_ok();
 }
-static void prim_get(Frame *e) { prim_get_impl(e,1); }
-static void prim_get_must(Frame *e) { prim_get_impl(e,0); }
+MUST_PAIR(get)
 static inline void prim_set_impl(Frame *e, int tagged) {
     (void)e; POP_VAL(v); int64_t idx=pop_int(); Value top=speek();
-    if(top.tag==VAL_TAGGED) die("set: cannot index tagged value");
-    if(!is_compound(top.tag)) die("set: expected compound, got %s", valtag_name(top.tag));
+    COMPOUND_GUARD(top, "set", "cannot index tagged value");
     ValTag tag=top.tag; int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef old_ref=compound_elem(&stack[base],s,len,(int)idx);
     if(old_ref.base<0) { if(tagged) push_none(); else die("set: index %lld out of bounds (len %d)",(long long)idx,len); return; }
@@ -2010,11 +1997,9 @@ static inline void prim_set_impl(Frame *e, int tagged) {
     for(int i=0;i<len;i++){ElemRef r=compound_elem(&stack[base],s,len,i);Value *src=i==(int)idx?v_buf:&stack[base+r.base];int sz=i==(int)idx?v_s:r.slots;VCPY(&tmp[ts],src,sz);ts+=sz;}
     sp=base; SPUSH(tmp,ts); spush(val_compound(tag,len,ts+1)); if(tagged) push_ok();
 }
-static void prim_replace_at(Frame *e) { prim_set_impl(e,1); }
-static void prim_set_must(Frame *e) { prim_set_impl(e,0); }
+MUST_PAIR(set)
 static void prim_concat(Frame *e) {
-    (void)e; Value t2=stack[sp-1]; if(t2.tag==VAL_TAGGED)die("concat: cannot concat tagged values");
-    if(!is_compound(t2.tag))die("concat: expected compound, got %s",valtag_name(t2.tag));
+    (void)e; Value t2=stack[sp-1]; COMPOUND_GUARD(t2, "concat", "cannot concat tagged values");
     ValTag tag=t2.tag; int s2=val_slots(t2),l2=(int)t2.as.compound.len,b2=sp-s2;
     Value bel=stack[b2-1]; if(!is_compound(bel.tag))die("concat: expected compound below top, got %s",valtag_name(bel.tag));
     int s1=val_slots(bel),l1=(int)bel.as.compound.len,b1=b2-s1,ns=(s1-1)+(s2-1); if(ns>LOCAL_MAX)die("concat: result too large");
@@ -2031,8 +2016,7 @@ static inline void prim_nth_impl(Frame *env, int tagged) {
     if(ref.base<0) { if(tagged) push_none(); else die("nth: index %lld out of bounds (len %d)",(long long)idx,len); return; }
     SPUSH(&data[ref.base],ref.slots); if(tagged) push_ok();
 }
-static void prim_nth(Frame *e) { prim_nth_impl(e,1); }
-static void prim_nth_must(Frame *e) { prim_nth_impl(e,0); }
+MUST_PAIR(nth)
 static void prim_slice_n(int take) {
     int64_t n=pop_int(); Value top=speek();
     const char *label=take?"take-n":"drop-n";
@@ -2127,8 +2111,7 @@ static inline void prim_indexof_impl(Frame *e, int tagged) {
     if(r<0) { if(tagged) push_none(); else die("index-of: element not found"); }
     else { spush(val_int(r)); if(tagged) push_ok(); }
 }
-static void prim_index_of(Frame *e) { prim_indexof_impl(e,1); }
-static void prim_indexof_must(Frame *e) { prim_indexof_impl(e,0); }
+MUST_PAIR(indexof)
 static inline void prim_at_impl(Frame *env, int tagged) {
     (void)env; uint32_t key=pop_sym();
     if(sp<=0) die("at: stack underflow"); Value next=stack[sp-1];
@@ -2139,8 +2122,7 @@ static inline void prim_at_impl(Frame *env, int tagged) {
     Value vb[LOCAL_MAX]; VCPY(vb,&stack[base+ref.base],ref.slots);
     sp-=s; SPUSH(vb,ref.slots); if(tagged) push_ok();
 }
-static void prim_at(Frame *e) { prim_at_impl(e,1); }
-static void prim_at_must(Frame *e) { prim_at_impl(e,0); }
+MUST_PAIR(at)
 static void rec_set_field(int rb, int rs, int rl, uint32_t key, Value *nv, int ns, int add) {
     Value tmp[LOCAL_MAX]; int ts=0, replaced=0;
     int kp[LOCAL_MAX],vo[LOCAL_MAX],vs[LOCAL_MAX]; record_offsets(&stack[rb],rs,rl,kp,vo,vs);
@@ -2168,8 +2150,7 @@ static inline void prim_edit_impl(Frame *env, int tagged) {
     else{Value nv[LOCAL_MAX];VCPY(nv,&stack[sp-ns],ns);sp-=ns;rec_set_field(rec_base,rec_s,rec_len,key,nv,ns,0);}
     if(tagged) push_ok();
 }
-static void prim_edit(Frame *e) { prim_edit_impl(e,1); }
-static void prim_edit_must(Frame *e) { prim_edit_impl(e,0); }
+MUST_PAIR(edit)
 typedef struct BoxData { Value *data; int slots; } BoxData;
 static void prim_box(Frame *e){(void)e;Value top=stack[sp-1];int s=val_slots(top);BoxData *bd=malloc(sizeof(BoxData));bd->data=malloc(s*sizeof(Value));bd->slots=s;deep_copy_values(bd->data,&stack[sp-s],s);sp-=s;Value v;v.tag=VAL_BOX;v.loc=0;v.as.box=bd;spush(v);}
 static void dict_data_free(DictData *dd);
@@ -2318,10 +2299,13 @@ static int pop_string_bytes(const char *who, char **out, int *out_len) {
     }
     sp=base; *out=buf; *out_len=len; return len;
 }
-static void push_string_bytes(const char *buf, int len) {
-    for(int i=0;i<len;i++) spush(val_int((unsigned char)buf[i]));
-    spush(val_compound(VAL_LIST,len,len+1));
+static void push_byte_list(const unsigned char *buf, size_t len) {
+    for (size_t i = 0; i < len; i++) spush(val_int(buf[i]));
+    spush(val_compound(VAL_LIST, (int)len, (int)len + 1));
 }
+static void push_string_bytes(const char *buf, int len) { push_byte_list((const unsigned char*)buf, (size_t)len); }
+static void push_c_string(const char *s) { push_byte_list((const unsigned char*)s, strlen(s)); }
+static void push_fail(const char *msg) { push_c_string(msg); push_no(); }
 static Value dict_val(DictData *dd){Value v={0};v.tag=VAL_DICT;v.loc=0;v.as.box=dd;return v;}
 static void prim_dict(Frame *e){(void)e;DictData *dd=calloc(1,sizeof(DictData));spush(dict_val(dd));}
 static void prim_insert(Frame *e) {
@@ -2547,10 +2531,8 @@ static void prim_millis(Frame *e){(void)e;struct timespec ts;clock_gettime(CLOCK
 #define F1E " [float lent in  float move out] effect\n"
 #define F2E " [float lent in  float lent in  float move out] effect\n"
 #define LNE " ['a list own in  int lent in  'a list move out] effect\n"
-#define L1E " ['a list own in  'a list move out] effect\n"
 #define LIE " ['a list own in  int list own in  'a list move out] effect\n"
 #define LGE " ['a list own in  int list move out] effect\n"
-#define LDE " ['a list own in  int list own in  list move out] effect\n"
 #define MO " move out] effect\n"
 static const char *BUILTIN_TYPES =
     "'dup ['a copy in  'a copy out  'a copy out] effect\n"
@@ -2593,10 +2575,8 @@ static const char *BUILTIN_TYPES =
 #undef F1E
 #undef F2E
 #undef LNE
-#undef L1E
 #undef LIE
 #undef LGE
-#undef LDE
 #undef MO
 static const char *PRELUDE =
     "(swap dup (swap) dip) 'over let\n"
@@ -2666,11 +2646,6 @@ static const char *PRELUDE =
     "('n let list swap (dup len 0 eq not) (dup n take-n swap (push) dip n drop-n) while drop) 'chunks let\n"
 
 ;
-#define LIST_POP(who,buf,len,ts,offs,szs) do{ \
-    Value _t=speek();if(_t.tag!=VAL_LIST)die(who ": expected list, got %s",valtag_name(_t.tag)); \
-    ts=val_slots(_t);len=(int)_t.as.compound.len;int _b=sp-ts; \
-    if(ts>LOCAL_MAX)die(who ": too large");VCPY(buf,&stack[_b],ts);sp=_b; \
-    compute_offsets(buf,ts,len,offs,szs);}while(0)
 /* ---- SDL ---- */
 #ifdef SLAP_SDL
 #include <SDL.h>
@@ -2806,30 +2781,25 @@ static char *pop_string_path(const char *who) {
     int len; unsigned char *raw = pop_byte_list_buf(who, &len);
     char *buf = realloc(raw, len + 1); buf[len] = '\0'; return buf;
 }
-static void push_c_string(const char *s);
-static void push_byte_list(const unsigned char *buf, size_t len) {
-    for (size_t i = 0; i < len; i++) spush(val_int(buf[i]));
-    spush(val_compound(VAL_LIST, (int)len, (int)len + 1));
-}
 static void prim_read(Frame *e) {
     (void)e; char *path=pop_string_path("read");
     FILE *f=fopen(path,"rb");
-    if(!f) { push_c_string(path); free(path); push_no(); return; }
+    if(!f) { push_fail(path); free(path); return; }
     fseek(f,0,SEEK_END);long sz=ftell(f);fseek(f,0,SEEK_SET);
     unsigned char *buf=malloc(sz);size_t n=fread(buf,1,sz,f);fclose(f);
-    if((long)n!=sz) { free(buf); push_c_string(path); free(path); push_no(); return; }
+    if((long)n!=sz) { free(buf); push_fail(path); free(path); return; }
     push_byte_list(buf,n);free(buf);free(path); push_ok();
 }
 static void prim_write(Frame *e) {
     (void)e; int len;unsigned char *buf=pop_byte_list_buf("write",&len);char *path=pop_string_path("write");
-    FILE *f=fopen(path,"wb");if(!f){free(buf);push_c_string(path);free(path);push_no();return;}
+    FILE *f=fopen(path,"wb");if(!f){free(buf);push_fail(path);free(path);return;}
     size_t n=fwrite(buf,1,len,f);fclose(f);
-    if((int)n!=len){free(buf);push_c_string(path);free(path);push_no();return;}
+    if((int)n!=len){free(buf);push_fail(path);free(path);return;}
     free(buf);free(path); spush(val_int(1)); push_ok();
 }
 static void prim_ls(Frame *e) {
     (void)e; char *path=pop_string_path("ls");
-    DIR *d=opendir(path); if(!d) { push_c_string(path); free(path); push_no(); return; }
+    DIR *d=opendir(path); if(!d) { push_fail(path); free(path); return; }
     struct dirent *ent; int base=sp,count=0;
     while((ent=readdir(d))!=NULL){if(strcmp(ent->d_name,".")==0||strcmp(ent->d_name,"..")==0)continue;
         push_c_string(ent->d_name);count++;}
@@ -2879,35 +2849,35 @@ static void prim_tcp_connect(Frame *e) {
     (void)e; int64_t port=pop_int(); char *host=pop_string_path("tcp-connect");
     struct addrinfo hints={0},*res; hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
     char ps[16]; snprintf(ps,sizeof(ps),"%lld",(long long)port);
-    int err=getaddrinfo(host,ps,&hints,&res); if(err){free(host);push_c_string("getaddrinfo failed");push_no();return;}
-    int fd=socket(res->ai_family,res->ai_socktype,res->ai_protocol); if(fd<0){freeaddrinfo(res);free(host);push_c_string("socket failed");push_no();return;}
-    if(connect(fd,res->ai_addr,res->ai_addrlen)<0){close(fd);freeaddrinfo(res);free(host);push_c_string("connect failed");push_no();return;}
+    int err=getaddrinfo(host,ps,&hints,&res); if(err){free(host);push_fail("getaddrinfo failed");return;}
+    int fd=socket(res->ai_family,res->ai_socktype,res->ai_protocol); if(fd<0){freeaddrinfo(res);free(host);push_fail("socket failed");return;}
+    if(connect(fd,res->ai_addr,res->ai_addrlen)<0){close(fd);freeaddrinfo(res);free(host);push_fail("connect failed");return;}
     freeaddrinfo(res);free(host);push_socket_box(fd);push_ok();
 }
 static void prim_tcp_send(Frame *e) {
     (void)e; int len; unsigned char *buf = pop_byte_list_buf("tcp-send", &len);
     int fd = pop_socket_fd("tcp-send"); push_socket_box(fd);
-    size_t sent = 0; while (sent < (size_t)len) { ssize_t n = send(fd, buf + sent, len - sent, 0); if (n <= 0) { free(buf); push_c_string("send failed"); push_no(); return; } sent += n; }
+    size_t sent = 0; while (sent < (size_t)len) { ssize_t n = send(fd, buf + sent, len - sent, 0); if (n <= 0) { free(buf); push_fail("send failed"); return; } sent += n; }
     free(buf); spush(val_int(1)); push_ok();
 }
 static void prim_tcp_recv(Frame *e) {
     (void)e; int64_t maxlen = pop_int(); if (maxlen <= 0) maxlen = 1;
     int fd = pop_socket_fd("tcp-recv"); push_socket_box(fd);
     unsigned char *buf = malloc(maxlen); ssize_t n = recv(fd, buf, maxlen, 0);
-    if (n < 0) { free(buf); push_c_string("recv failed"); push_no(); return; }
+    if (n < 0) { free(buf); push_fail("recv failed"); return; }
     push_byte_list(buf, n); free(buf); push_ok();
 }
 static void prim_tcp_close(Frame *e) { (void)e; Value v=spop(); if(v.tag!=VAL_BOX)die("tcp-close: expected box"); BoxData *bd=(BoxData*)v.as.box; close((int)bd->data[0].as.i); free(bd->data); free(bd); }
 static void prim_tcp_listen(Frame *e) {
-    (void)e; int64_t port=pop_int(); int fd=socket(AF_INET,SOCK_STREAM,0); if(fd<0){push_c_string("socket failed");push_no();return;}
+    (void)e; int64_t port=pop_int(); int fd=socket(AF_INET,SOCK_STREAM,0); if(fd<0){push_fail("socket failed");return;}
     int opt=1;setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
     struct sockaddr_in addr={0};addr.sin_family=AF_INET;addr.sin_addr.s_addr=INADDR_ANY;addr.sin_port=htons((uint16_t)port);
-    if(bind(fd,(struct sockaddr*)&addr,sizeof(addr))<0){close(fd);push_c_string("bind failed");push_no();return;}
-    if(listen(fd,128)<0){close(fd);push_c_string("listen failed");push_no();return;} push_socket_box(fd);push_ok();
+    if(bind(fd,(struct sockaddr*)&addr,sizeof(addr))<0){close(fd);push_fail("bind failed");return;}
+    if(listen(fd,128)<0){close(fd);push_fail("listen failed");return;} push_socket_box(fd);push_ok();
 }
 static void prim_tcp_accept(Frame *e) {
     (void)e; int sfd=pop_socket_fd("tcp-accept"); struct sockaddr_in ca; socklen_t al=sizeof(ca);
-    int cfd=accept(sfd,(struct sockaddr*)&ca,&al); if(cfd<0){push_socket_box(sfd);push_c_string("accept failed");push_no();return;} push_socket_box(sfd); push_socket_box(cfd); push_ok();
+    int cfd=accept(sfd,(struct sockaddr*)&ca,&al); if(cfd<0){push_socket_box(sfd);push_fail("accept failed");return;} push_socket_box(sfd); push_socket_box(cfd); push_ok();
 }
 #endif
 static inline void prim_strfind_impl(Frame *e, int tagged) {
@@ -2917,8 +2887,7 @@ static inline void prim_strfind_impl(Frame *e, int tagged) {
     if(r<0) { if(tagged) push_none(); else die("str-find: not found"); }
     else { spush(val_int(r)); if(tagged) push_ok(); }
 }
-static void prim_str_find(Frame *e) { prim_strfind_impl(e,1); }
-static void prim_strfind_must(Frame *e) { prim_strfind_impl(e,0); }
+MUST_PAIR(strfind)
 static void prim_str_split(Frame *e) {
     (void)e; int dl,sl; unsigned char *delim=pop_byte_list_buf("str-split",&dl); unsigned char *str=pop_byte_list_buf("str-split",&sl);
     int base=sp,count=0,pos=0;
@@ -2933,7 +2902,7 @@ static int memfind(const unsigned char *hay, int hlen, const char *needle, int n
 static void prim_parse_http(Frame *e) {
     (void)e; int rlen; unsigned char *raw=pop_byte_list_buf("parse-http",&rlen);
     int split=memfind(raw,rlen,"\r\n\r\n",4,0);
-    if(split<0){free(raw);push_c_string("no header/body separator");push_no();return;}
+    if(split<0){free(raw);push_fail("no header/body separator");return;}
     int se=memfind(raw,split,"\r\n",2,0); if(se<0)se=split;
     int sp1=-1; for(int i=0;i<se;i++)if(raw[i]==' '){sp1=i;break;}
     int sc=0; if(sp1>=0)for(int i=sp1+1;i<se&&raw[i]>='0'&&raw[i]<='9';i++)sc=sc*10+(raw[i]-'0');
@@ -2952,9 +2921,6 @@ static void prim_parse_http(Frame *e) {
     push_byte_list(raw+split+4,rlen-split-4);free(raw);
     int body_s=val_slots(stack[sp-1]),hdrs_s=val_slots(stack[sp-1-body_s]);
     spush(val_compound(VAL_TAGGED,S_OK,1+hdrs_s+body_s+1));
-}
-static void push_c_string(const char *s) {
-    int len=(int)strlen(s); for(int i=0;i<len;i++) spush(val_int((unsigned char)s[i])); spush(val_compound(VAL_LIST,len,len+1));
 }
 static void prim_args(Frame *e) {
     (void)e; int ts=0; for(int i=0;i<cli_argc;i++){push_c_string(cli_args[i]);ts+=(int)strlen(cli_args[i])+1;}
@@ -2979,10 +2945,10 @@ static void register_prims(void) {
         R(if,if),R(case,case),R(loop,loop),R(while,while),
         R(itof,itof),R(ftoi,ftoi),R(fsqrt,fsqrt),
         R(ffloor,ffloor),R(fceil,fceil),R(fround,fround),R(fexp,fexp),R(flog,flog),R(fpow,fpow),R(fatan2,fatan2),
-        {"compose",prim_concat},R(list,list),R(len,size),R(push,push_op),R(pop,pop_op),
-        {"get",prim_get},R(nth,nth),R(set,replace_at),R(cat,concat),
+        {"compose",prim_concat},R(list,list),R(len,size),R(push,push_op),R(pop,pop),
+        R(get,get),R(nth,nth),R(set,set),R(cat,concat),
         {"take-n",prim_take_n},{"drop-n",prim_drop_n},R(range,range),
-        R(fold,fold),R(each,each),R(sort,sort),{"index-of",prim_index_of},
+        R(fold,fold),R(each,each),R(sort,sort),{"index-of",prim_indexof},
         R(at,at),R(rise,rise),R(fall,fall),R(shape,shape),
         R(rec,rec),R(into,into),R(edit,edit),R(find,find_elem),
         R(millis,millis),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),R(clone,clone),
@@ -2991,7 +2957,7 @@ static void register_prims(void) {
         R(tag,tag),R(union,union),R(must,must),R(pthen,pthen),
         R(read,read),R(write,write),R(ls,ls),
         {"utf8-encode",prim_utf8_encode},{"utf8-decode",prim_utf8_decode},
-        {"str-find",prim_str_find},{"str-split",prim_str_split},{"parse-http",prim_parse_http},
+        {"str-find",prim_strfind},{"str-split",prim_str_split},{"parse-http",prim_parse_http},
         R(args,args),R(isheadless,isheadless),R(cwd,cwd),
 #ifndef SLAP_WASM
         {"tcp-connect",prim_tcp_connect},{"tcp-send",prim_tcp_send},{"tcp-recv",prim_tcp_recv},

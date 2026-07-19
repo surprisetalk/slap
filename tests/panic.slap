@@ -310,3 +310,43 @@ tuck
 -- EXPECT: MUST FAILED
 "" ok parse-float must
 
+
+-- Compound-guard messages. These runtime checks are typecheck-shadowed for
+-- ordinary code; `quote` outputs an unconstrained 'a, so a quoted scalar or
+-- tagged binding slips the checker and must die with the exact guard text.
+
+-- EXPECT: len: expected compound, got int
+5 'x let 'x quote len
+
+-- EXPECT: len: tagged values have no length (case-match first)
+5 ok 'x let 'x quote len
+
+-- EXPECT: push: expected compound, got int
+5 'x let 'x quote 1 push
+
+-- EXPECT: push: cannot push onto tagged value
+5 ok 'x let 'x quote 1 push
+
+-- EXPECT: pop: expected compound, got int
+5 'x let 'x quote pop drop
+
+-- EXPECT: pop: cannot pop from tagged value
+5 ok 'x let 'x quote pop drop
+
+-- EXPECT: get: expected compound, got int
+5 'x let 'x quote 0 get drop
+
+-- EXPECT: get: cannot index tagged value
+5 ok 'x let 'x quote 0 get drop
+
+-- EXPECT: set: expected compound, got int
+5 'x let 'x quote 0 1 set drop
+
+-- EXPECT: set: cannot index tagged value
+5 ok 'x let 'x quote 0 1 set drop
+
+-- EXPECT: concat: expected compound, got int
+5 'x let [] 'x quote cat drop
+
+-- EXPECT: concat: cannot concat tagged values
+5 ok 'x let [] 'x quote cat drop
