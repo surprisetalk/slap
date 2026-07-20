@@ -2559,7 +2559,7 @@ static const char *BUILTIN_TYPES =
     "'utf8-encode [int list own in  {'ok list 'no int} either move out] effect\n'utf8-decode [int list own in  {'ok list 'no int} either move out] effect\n'str-find [int list own in  int list own in  {'ok int 'no ()} either move out] effect\n"
     "'str-split [int list own in  int list own in  list" MO "'parse-http [int list own in  {'ok rec 'no list} either move out] effect\n'args [list" MO "'isheadless [int" MO "'cwd [list" MO
 #ifndef SLAP_WASM
-    "'tcp-connect [int list own in  int lent in  {'ok box 'no list} either move out] effect\n'tcp-send [int box own in  int list own in  {'ok int 'no list} either move out] effect\n"
+    "'tcp-connect [int list own in  int lent in  {'ok box 'no list} either move out] effect\n'tcp-send [int box own in  int list own in  int box move out  {'ok int 'no list} either move out] effect\n"
     "'tcp-recv [int box own in  int lent in  int box move out  {'ok list 'no list} either move out] effect\n'tcp-close [int box own in] effect\n'tcp-listen [int lent in  {'ok box 'no list} either move out] effect\n'tcp-accept [int box own in  int box move out  {'ok box 'no list} either move out] effect\n"
 #endif
     "'tag ['a own in  sym lent in  'a tagged" MO "'must [tagged own in " MO
@@ -2705,12 +2705,12 @@ static void prim_on(Frame *e) {
     event_handlers[handler_count].handler_slots=fn_s; sp-=fn_s;
     event_handlers[handler_count].event_sym=pop_sym(); handler_count++;
 }
-static uint32_t sym_tick=0,sym_keydown=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0;
+static uint32_t sym_tick=0,sym_keydown=0,sym_keyup=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0;
 static void show_intern_syms(void) {
-    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");}
+    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_keyup=sym_intern("keyup");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");}
 }
 static void show_dispatch_event(SDL_Event *ev, Frame *env) {
-    if(ev->type==SDL_KEYDOWN){for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==sym_keydown){spush(val_int((int64_t)ev->key.keysym.sym));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}}
+    if(ev->type==SDL_KEYDOWN||ev->type==SDL_KEYUP){uint32_t ksym=ev->type==SDL_KEYDOWN?sym_keydown:sym_keyup;for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==ksym){spush(val_int((int64_t)ev->key.keysym.sym));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}}
     int is_mouse=0; float lx,ly;
     if(ev->type==SDL_MOUSEBUTTONDOWN||ev->type==SDL_MOUSEBUTTONUP||ev->type==SDL_MOUSEMOTION) is_mouse=1;
     if(is_mouse){

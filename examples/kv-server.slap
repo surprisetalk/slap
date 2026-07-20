@@ -1,0 +1,159 @@
+-- kv-server.slap: a persistent key/value store over TCP.
+--
+--   cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-server.slap | ./slap [port] [snapshot]
+--
+-- Defaults: port 4321, snapshot file kv.snap. One LF-terminated command per
+-- connection, one line back, connection closed:
+--
+--   SET k v...  -> OK        GET k -> VALUE v | NIL   DEL k -> OK
+--   KEYS        -> KEYS ...  SAVE  -> OK              PING  -> PONG
+--   SHUTDOWN    -> BYE, then saves and exits 0
+--
+-- Anything else answers ERR <why>. Keys are 1-64 printable non-space bytes;
+-- values may hold spaces but not tabs (the snapshot is one key TAB value LF
+-- per line). The store is a dict threaded on the stack -- dicts must never be
+-- let-bound or boxed.
+
+args len 0 gt (args 0 get must ok parse-int must len 0 eq assert dup 0 gt over 65536 lt and assert) (4321) if 'PORT let
+args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
+4096 'LINE-CAP let
+(list 10 push) 'LF let
+(list 9 push) 'TAB let
+
+-- ===== pure helpers =====
+
+('us let us list ('uc let uc 97 ge uc 122 le and (uc 32 sub) (uc) if push) fold) 'upper let
+
+('vk let vk len 1 ge vk len 64 le and vk ('kc let kc 33 ge kc 126 le and) filter len vk len eq and) 'valid-key let
+
+('hs let hs LF str-find () {'ok (drop 1) 'no (drop 0)} case) 'has-lf let
+
+-- take the bytes before the LF, then drop a single trailing CR (CRLF clients).
+-- An embedded CR is left in place so it surfaces as invalid input, not silently eaten.
+('lh let lh lh LF str-find () {'ok (take-n) 'no (drop)} case
+ dup len 0 gt (dup dup len 1 sub get must 13 eq (dup len 1 sub take-n) () if) () if) 'line-head let
+
+-- no space: the whole line is the head and drop-n clamps the rest to empty
+('sf let sf " " str-find sf len default 'sp let sf sp take-n sf sp 1 plus drop-n) 'split-first let
+
+("ERR bad key: expected 1-64 printable bytes, no spaces") 'bad-key let
+
+-- ===== snapshot =====
+
+-- Fallible: returns the write's tagged result so callers choose crash vs report.
+-- fold hands the body a (key value) tuple; never let-bind it, a bound tuple auto-execs.
+(dup list (dup 0 get must 'fk let 1 get must 'fv let fk cat TAB cat fv cat LF cat) fold
+ SNAP swap write) 'save-snapshot let
+
+-- Every non-empty line must be key<TAB>value. A line without a TAB means the file
+-- was corrupted or a prior save was torn mid-write; refuse to load rather than
+-- silently drop the pair (and then overwrite it on the next save). Missing file
+-- is the normal first-run case: start empty.
+(dict SNAP read () {
+   'no (drop)
+   'ok ('sr let sr LF str-split (len 0 gt) filter 'lines let
+        lines (TAB str-find () {'ok (drop 1) 'no (drop 0)} case) filter len lines len eq (
+          lines
+          (dup len 0 gt) (
+            dup 0 get must 'sl let 1 drop-n swap
+            sl TAB str-find must 'tp let sl tp take-n sl tp 1 plus drop-n insert
+            swap) while
+          drop
+        ) (
+          "/dev/stderr" "kv-server: refusing to load corrupt snapshot " SNAP cat " -- a line has no TAB separator" cat LF cat write must drop
+          0 assert
+        ) if)
+ } case) 'load-snapshot let
+
+-- ===== protocol =====
+
+('cl let cl split-first 'rest let upper 'cmd let
+ cmd "PING" eq ("PONG") (
+ cmd "GET" eq (
+   rest valid-key (rest of () {'ok ('gv let "VALUE " gv cat) 'no (drop "NIL")} case) (bad-key) if) (
+ cmd "SET" eq (
+   rest split-first 'sval let 'skey let
+   skey valid-key (
+     sval (32 lt) filter len 0 gt (
+       "ERR value must not contain control bytes (TAB, CR, etc.)"
+     ) (skey sval insert "OK") if) (bad-key) if) (
+ cmd "DEL" eq (
+   rest valid-key (rest remove "OK") (bad-key) if) (
+ cmd "KEYS" eq (dict-keys " " str-join "KEYS " swap cat) (
+ cmd "SAVE" eq (save-snapshot () {'ok (drop "OK") 'no (drop "ERR save failed: snapshot not writable")} case) (
+ cmd "SHUTDOWN" eq (save-snapshot () {'ok (drop "BYE") 'no (drop "ERR save failed: snapshot not writable; still running")} case) (
+ cmd len 0 eq ("ERR empty command; try PING")
+              ("ERR unknown command: " cmd cat "; try SET GET DEL KEYS SAVE PING SHUTDOWN" cat) if
+ ) if) if) if) if) if) if) if
+ dup "BYE" eq cmd "SHUTDOWN" eq and not) 'handle-cmd let
+
+-- ===== connection =====
+
+(list (swap 4096 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+       swap ch cat
+       dup has-lf not
+       ch len 0 gt and
+       over len LINE-CAP lt and) () while) 'recv-line let
+
+('rtext let 'rcli let
+ rcli rtext LF cat tcp-send () {'ok (drop) 'no (drop)} case tcp-close) 'reply-close let
+
+(recv-line 'rline let 'hcli let
+ rline len 0 eq (hcli tcp-close 1) (
+   rline has-lf not (
+     rline len LINE-CAP ge (
+       hcli "ERR line too long: no newline within 4096 bytes" reply-close 1
+     ) (hcli tcp-close 1) if
+   ) (
+     rline line-head 'hline let hline print
+     hline handle-cmd 'hcont let 'hreply let
+     hcli hreply reply-close hcont
+   ) if
+ ) if) 'handle-conn let
+
+-- ===== self-tests =====
+
+"hello" upper "HELLO" eq assert
+"a-B_9" valid-key assert
+"" valid-key not assert
+"a b" valid-key not assert
+0 64 range (drop 97) each valid-key assert
+0 65 range (drop 97) each valid-key not assert
+"SET a b" split-first "a b" eq assert "SET" eq assert
+"PING" split-first len 0 eq assert "PING" eq assert
+"GET x" LF cat "junk" cat line-head "GET x" eq assert
+"no newline" has-lf not assert
+
+dict
+"SET a hello world" handle-cmd 1 eq assert "OK" eq assert
+"GET a" handle-cmd 1 eq assert "VALUE hello world" eq assert
+"get a" handle-cmd 1 eq assert "VALUE hello world" eq assert
+"GET nope" handle-cmd 1 eq assert "NIL" eq assert
+"SET b x" handle-cmd 1 eq assert "OK" eq assert
+"KEYS" handle-cmd 1 eq assert len 8 eq assert
+"DEL a" handle-cmd 1 eq assert "OK" eq assert
+"GET a" handle-cmd 1 eq assert "NIL" eq assert
+"PING" handle-cmd 1 eq assert "PONG" eq assert
+"GET a b" handle-cmd 1 eq assert bad-key eq assert
+"SET  v" handle-cmd 1 eq assert bad-key eq assert
+"SET k va" TAB cat "lue" cat handle-cmd 1 eq assert 4 take-n "ERR " eq assert
+"SET sp a b c" handle-cmd 1 eq assert "OK" eq assert
+"GET sp" handle-cmd 1 eq assert "VALUE a b c" eq assert
+"" handle-cmd 1 eq assert "ERR empty command; try PING" eq assert
+"FLY" handle-cmd 1 eq assert 4 take-n "ERR " eq assert
+drop
+-- SAVE/SHUTDOWN touch the filesystem, so they're exercised in run_kv.py, not here.
+[97 13 98 10] line-head [97 13 98] eq assert   -- embedded CR is preserved (surfaces as invalid input)
+[97 98 13 10] line-head [97 98] eq assert       -- a trailing CR from CRLF is stripped
+[97 98 13] line-head [97 98] eq assert
+
+-- ===== serve =====
+
+load-snapshot
+save-snapshot must drop  -- an unwritable snapshot is a deployment bug: fail at boot, not on the first SAVE
+PORT print
+PORT tcp-listen must
+(tcp-accept must 'acli let 'asrv let
+ acli handle-conn 'going let
+ asrv going) () while
+tcp-close

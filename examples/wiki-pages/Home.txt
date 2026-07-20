@@ -1,0 +1,5 @@
+Welcome to the slap wiki!
+
+This whole site is served by examples/wiki.slap, an HTTP server written in slap.
+
+Pages are plain text files. Link to another page by writing its name in brackets, like [Sandbox]. Edit any page with the edit link at the bottom.

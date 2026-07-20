@@ -1,6 +1,8 @@
 - [ ] borrow checking plus reference counting: https://verdagon.dev/blog/ante-blending-borrowing-rc
 
 - [ ] replicate some big projects using only slap to confirm it works
+  - done: `examples/wiki.slap` (HTTP wiki server), `examples/kv-server.slap`+`kv-client.slap` (TCP key/value store), `examples/chip8.slap` (CHIP-8 emulator) — all wired into `make test`
+  - next: more emulators (pico8, tic80, uxntal, ...) per the notes below
 
 <!--
 - no vigil. nothing kept in intermediate state outside of physical notes and single working copy. publish sequels not incremental improvements.

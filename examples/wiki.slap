@@ -1,0 +1,268 @@
+-- wiki.slap: an HTTP wiki server.
+--
+--   cat examples/lib/strings.slap examples/lib/parse.slap examples/wiki.slap | ./slap [port] [pages-dir]
+--
+-- Defaults: port 8080, pages in examples/wiki-pages (run from the repo root).
+-- Pages are flat .txt files; [PageName] in a page links to /PageName.
+-- Serves one blocking connection at a time, HTTP/1.0, connection-close.
+-- Needs strings.slap (crlf, int-str) and parse.slap (parse-int, parse-spaces).
+
+args len 0 gt (args 0 get must ok parse-int must len 0 eq assert dup 0 gt over 65536 lt and assert) (8080) if 'PORT let
+args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
+12000 'REQ-CAP let
+
+-- ===== pure helpers =====
+
+('wc let wc 65 ge wc 90 le and wc 97 ge wc 122 le and or wc 48 ge wc 57 le and or wc 95 eq or wc 45 eq or) 'word-char let
+
+('vs let vs len 1 ge vs len 64 le and vs (word-char) filter len vs len eq and) 'valid-name let
+
+('pfx let 'ss let ss pfx len take-n pfx eq) 'starts-with let
+
+('sfx let 'eh let eh eh len sfx len sub drop-n sfx eq) 'ends-with let
+
+(('lc let lc 65 ge lc 90 le and (lc 32 plus) (lc) if) each) 'lower let
+
+('pn let DIR "/" cat pn cat ".txt" cat) 'page-path let
+
+('es let es list ('ec let
+  ec 38 eq ("&amp;" cat) (
+  ec 60 eq ("&lt;" cat) (
+  ec 62 eq ("&gt;" cat) (
+  ec 34 eq ("&quot;" cat) (
+  ec push) if) if) if) if) fold) 'esc let
+
+('bs let bs list ('bc let
+  bc 10 eq ("<br>" cat) (
+  bc 13 eq () (
+  bc push) if) if) fold) 'br let
+
+('hx let hx 48 ge hx 57 le and hx 65 ge hx 70 le and or hx 97 ge hx 102 le and or) 'is-hex let
+
+('hv let hv 57 le (hv 48 sub) (hv 90 le (hv 55 sub) (hv 87 sub) if) if) 'hex-val let
+
+-- percent-decoding for form bodies; '+' is space, malformed '%' copied literally
+(list swap
+ (dup len 0 gt) (
+   dup 0 get must 'uc let
+   uc 43 eq (
+     1 drop-n swap 32 push swap
+   ) (
+     uc 37 eq (
+       dup len 3 ge (
+         dup 1 get must 'h1 let dup 2 get must 'h2 let
+         h1 is-hex h2 is-hex and (
+           3 drop-n swap h1 hex-val 16 mul h2 hex-val plus push swap
+         ) (1 drop-n swap uc push swap) if
+       ) (1 drop-n swap uc push swap) if
+     ) (1 drop-n swap uc push swap) if
+   ) if
+ ) while
+ drop) 'url-decode let
+
+-- turn [PageName] into links (input already escaped, so no stray tags)
+(list swap
+ (dup len 0 gt) (
+   dup "[" str-find () {
+     'no (drop 'r1 let 'a1 let a1 r1 cat list)
+     'ok ('p1 let 'r2 let 'a2 let
+          r2 p1 1 plus drop-n 'rest2 let
+          rest2 "]" str-find () {
+            'no (drop a2 r2 cat list)
+            'ok ('p2 let
+                 rest2 p2 take-n 'cand let
+                 cand valid-name (
+                   a2 r2 p1 take-n cat "<a href='/" cat cand cat "'>" cat cand cat "</a>" cat
+                   rest2 p2 1 plus drop-n
+                 ) (
+                   a2 r2 p1 1 plus take-n cat
+                   rest2
+                 ) if)
+          } case)
+   } case
+ ) while
+ drop) 'linkify let
+
+(esc br linkify) 'render let
+
+-- ===== html =====
+
+("Content-Type: text/html" crlf cat) 'ctype let
+
+('lbody let 'ltitle let
+ "<!doctype html><meta charset=utf-8><title>" ltitle cat
+ "</title><style>body{font-family:sans-serif;max-width:40em;margin:2em auto;padding:0 1em}textarea{width:100%}</style>" cat
+ "<p><a href='/'>Home</a> | <a href='/index'>index</a></p><h1>" cat ltitle cat "</h1>" cat
+ lbody cat) 'layout let
+
+(400 ctype "<p>Invalid page name: 1-64 letters, digits, dash, underscore.</p>" "Bad Request" swap layout) 'bad-name let
+
+('vn let vn page-path read () {
+   'ok ('vraw let 200 ctype
+        vraw render "<p><a href='/edit/" vn cat "'>edit</a></p>" cat cat
+        vn swap layout)
+   'no (drop 404 ctype
+        "<p>No such page.</p><p><a href='/edit/" vn cat "'>create it</a></p>" cat
+        vn swap layout)
+ } case) 'view-page let
+
+('en let 200 ctype
+ "<form method=POST action='/edit/" en cat "'><textarea name=content rows=20>" cat
+ en page-path read "" default esc cat
+ "</textarea><p><button>save</button></p></form>" cat
+ "edit " en cat swap layout) 'edit-page let
+
+(200 ctype
+ "<ul>" DIR ls must
+ (".txt" ends-with) filter
+ ('sfn let sfn sfn len 4 sub take-n) each
+ (valid-name) filter
+ list ('ip let "<li><a href='/" ip cat "'>" cat ip cat "</a></li>" cat cat) fold
+ cat "</ul>" cat
+ "index" swap layout) 'index-page let
+
+-- ===== http =====
+
+-- {'ok n}: n is 0 when the header is absent; 'no when present but not a number.
+-- Only the pre-terminator block is scanned, anchored to a line start, so a
+-- "content-length:" in the request target or in another header name cannot match.
+('cr let cr crlf crlf cat str-find () {
+   'no (drop 0 ok)
+   'ok ('che let cr che take-n lower crlf "content-length:" cat str-find () {
+     'no (drop 0 ok)
+     'ok ('clp let cr clp 17 plus drop-n ok parse-spaces parse-int () {
+       'ok (drop ok)
+       'no (drop drop "bad Content-Length header" no)
+     } case)
+   } case)
+ } case) 'content-length let
+
+('rr let rr crlf crlf cat str-find () {
+   'no (drop 0)
+   'ok ('hp let rr len hp 4 plus rr content-length 0 default plus ge)
+ } case) 'req-complete let
+
+('pq let pq crlf crlf cat str-find () {
+   'no (drop "bad request: no header terminator" no)
+   'ok ('phe let
+        pq phe take-n 'phead let
+        phead crlf str-find () {'ok ('plp let phead plp take-n) 'no (drop phead)} case
+        " " str-split 'pparts let
+        pparts len 2 lt (
+          "bad request: malformed request line" no
+        ) (
+          pq content-length () {
+            'no (no)
+            'ok ('pcl let
+                 pparts 1 get must dup "?" str-find () {'ok (take-n) 'no (drop)} case 'pp let
+                 pq phe 4 plus drop-n pcl take-n 'pb let
+                 list pparts 0 get must push pp push pb push ok)
+          } case
+        ) if)
+ } case) 'parse-request let
+
+-- accumulate one request: until headers + declared body arrive, peer closes, or 12k cap
+(list
+ (swap 4096 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+  swap ch cat
+  dup req-complete not
+  ch len 0 gt and
+  over len REQ-CAP lt and) () while) 'recv-http let
+
+('rbody let 'rextra let 'rcode let
+ "HTTP/1.0 " rcode 200 eq ("200 OK") (rcode 303 eq ("303 See Other") (rcode 404 eq ("404 Not Found") (rcode 405 eq ("405 Method Not Allowed") (rcode 413 eq ("413 Content Too Large") ("400 Bad Request") if) if) if) if) if cat crlf cat
+ rextra cat
+ "Content-Length: " cat rbody len int-str cat crlf cat
+ "Connection: close" cat crlf cat crlf cat
+ rbody cat
+ tcp-send () {'ok (drop) 'no (drop)} case) 'respond let
+
+-- ===== routing =====
+
+('rb let 'rp let 'rm let
+ rm "GET" eq (
+   rp "/" eq ("Home" view-page) (
+   rp "/index" eq (index-page) (
+   rp "/edit/" starts-with (
+     rp 6 drop-n 'ren let ren valid-name (ren edit-page) (bad-name) if
+   ) (
+   rp "/" starts-with rp len 1 gt and (
+     rp 1 drop-n 'rgn let rgn valid-name (rgn view-page) (bad-name) if
+   ) (bad-name) if) if) if) if
+ ) (
+   rm "POST" eq rp "/edit/" starts-with and (
+     rp 6 drop-n 'rpn let rpn valid-name (
+       rb "content=" starts-with (
+         rb 8 drop-n url-decode (13 neq) filter 'rcontent let
+         rcontent len 2000 le (
+           rpn page-path rcontent write must drop
+           303
+           ctype "Location: /" cat rpn cat crlf cat
+           "<p>saved: <a href='/" rpn cat "'>" cat rpn cat "</a></p>" cat "saved" swap layout
+         ) (413 ctype "<p>Too large: pages are capped at 2000 characters in this demo.</p>" "Too Large" swap layout) if
+       ) (400 ctype "<p>Expected a form field named 'content'.</p>" "Bad Request" swap layout) if
+     ) (bad-name) if
+   ) (405 ctype "<p>Method not allowed.</p>" "Not Allowed" swap layout) if
+ ) if) 'route let
+
+(recv-http 'rq let
+ rq len 0 eq (tcp-close) (
+   rq req-complete not (
+     rq len REQ-CAP ge
+       (413 ctype "<p>Request too large: 12000 byte cap.</p>" "Too Large" swap layout respond tcp-close)
+       (tcp-close) if
+   ) (
+     rq parse-request () {
+       'ok ('prr let
+            prr 0 get must 'hm let prr 1 get must 'hp2 let
+            hm " " cat hp2 cat print
+            hm hp2 prr 2 get must route respond tcp-close)
+       'no ('bmsg let 400 ctype "<p>" bmsg cat "</p>" cat "Bad Request" swap layout respond tcp-close)
+     } case
+   ) if
+ ) if) 'handle let
+
+-- ===== self-tests =====
+
+"a<b>& c" esc "a&lt;b&gt;&amp; c" eq assert
+34 list swap push esc "&quot;" eq assert
+"x" br "x" eq assert
+"a+b%21" url-decode "a b!" eq assert
+"a%2Fb" url-decode "a/b" eq assert
+"a%zz%" url-decode "a%zz%" eq assert
+"Home" valid-name assert
+"a_b-9" valid-name assert
+"" valid-name not assert
+"a/b" valid-name not assert
+"a.b" valid-name not assert
+"a%2E" valid-name not assert
+"index.txt" ".txt" ends-with assert
+"index.txt" "ind" starts-with assert
+"see [Home] here" esc br linkify "see <a href='/Home'>Home</a> here" eq assert
+"[a/b] [ok" esc br linkify "[a/b] [ok" eq assert
+"GET /a?q=1 HTTP/1.0" crlf cat crlf cat 'treq1 let
+treq1 req-complete assert
+treq1 parse-request must 'tr1 let
+tr1 0 get must "GET" eq assert
+tr1 1 get must "/a" eq assert
+tr1 2 get must "" eq assert
+"POST /edit/X HTTP/1.0" crlf cat "Content-Length: 5" cat crlf cat crlf cat "hello" cat 'treq2 let
+treq2 content-length must 5 eq assert
+treq2 req-complete assert
+-- a "content-length:" in the target or in another header name must not count
+"GET /content-length:9 HTTP/1.0" crlf cat crlf cat req-complete assert
+"GET / HTTP/1.0" crlf cat "X-Content-Length: 50" cat crlf cat crlf cat req-complete assert
+"POST /x HTTP/1.0" crlf cat "Content-Length: abc" cat crlf cat crlf cat parse-request () {'ok (drop 0) 'no (drop 1)} case assert
+treq2 parse-request must 'tr2 let
+tr2 0 get must "POST" eq assert
+tr2 1 get must "/edit/X" eq assert
+tr2 2 get must "hello" eq assert
+"POST /x HTTP/1.0" crlf cat "Content-Length: 5" cat crlf cat crlf cat "he" cat req-complete not assert
+"junk" parse-request () {'ok (drop 0) 'no (drop 1)} case assert
+
+-- ===== serve =====
+
+DIR ls must drop  -- a missing pages dir is a deployment bug: fail at boot, not on first save
+PORT tcp-listen must
+(tcp-accept must handle 1) () while
+tcp-close

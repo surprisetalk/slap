@@ -1,0 +1,309 @@
+-- chip8.slap: a CHIP-8 emulator.
+--
+--   ./slap-sdl game.ch8 < examples/chip8.slap     -- play a ROM (or no arg: demo)
+--   ./slap --headless < examples/chip8.slap        -- run the opcode self-test, print ok, exit
+--   ./slap --check    < examples/chip8.slap        -- type-check only
+--
+-- Keypad (CHIP-8 -> keyboard):  1 2 3 C -> 1 2 3 4 ,  4 5 6 D -> Q W E R ,
+--   7 8 9 E -> A S D F ,  A 0 B F -> Z X C V.  Sound timer > 0 flashes a border.
+--
+-- The whole machine is one flat int list threaded on the stack (no boxes). Cells
+-- are single-slot ints, so `set` is an in-place O(1) store and `nth` a zero-copy
+-- read. `cycle` reads its operands from a frozen snapshot of the state and writes
+-- results into the working copy on the stack.
+
+-- ===== memory map (indices into the state list) =====
+4096 'PC-I let     -- program counter
+4097 'IDX-I let    -- index register I
+4098 'DT-I let     -- delay timer
+4099 'ST-I let     -- sound timer
+4100 'V-I let      -- V0..VF  (4100..4115)
+4116 'SP-I let     -- stack pointer (0..16, next free slot)
+4117 'STK-I let    -- call stack (4117..4132)
+4133 'KEY-I let    -- key-held flags (4133..4148)
+4149 'DISP-I let   -- display 64x32 (4149..6196)
+6197 'STATE-N let
+
+-- ===== helpers =====
+
+-- a zeroed machine with the PC at the ROM entry point (512)
+(list STATE-N (0 push) repeat PC-I 512 set must) 'blank let
+
+-- write a byte list into memory starting at addr; nth reads the source zero-copy
+('la let 'lbytes let lbytes len 'lblen let
+ 0 (dup lblen lt) ('bi let la bi plus 'lbytes bi nth must set must bi 1 plus) while drop) 'load-at let
+
+-- ===== one instruction =====
+
+(dup 'st let
+ 'st PC-I nth must 'pc let
+ 'st pc nth must 8 shl 'st pc 1 plus nth must bor 'op let
+ op 12 shr 'hi let
+ op 8 shr 15 band 'x let
+ op 4 shr 15 band 'y let
+ op 15 band 'n let
+ op 255 band 'nn let
+ op 4095 band 'nnn let
+ 'st V-I x plus nth must 'vx let
+ 'st V-I y plus nth must 'vy let
+ PC-I pc 2 plus set must
+ hi 0 eq (
+   nn 224 eq (
+     0 (dup 2048 lt) ('ci let DISP-I ci plus 0 set must ci 1 plus) while drop
+   ) (
+   nn 238 eq (
+     'st SP-I nth must 1 sub 'rsp let
+     SP-I rsp set must
+     PC-I 'st STK-I rsp plus nth must set must
+   ) () if) if
+ ) (
+ hi 1 eq ( PC-I nnn set must ) (
+ hi 2 eq (
+   'st SP-I nth must 'csp let
+   STK-I csp plus pc 2 plus set must
+   SP-I csp 1 plus set must
+   PC-I nnn set must
+ ) (
+ hi 3 eq ( vx nn eq (PC-I pc 4 plus set must) () if ) (
+ hi 4 eq ( vx nn neq (PC-I pc 4 plus set must) () if ) (
+ hi 5 eq ( vx vy eq (PC-I pc 4 plus set must) () if ) (
+ hi 6 eq ( V-I x plus nn set must ) (
+ hi 7 eq ( V-I x plus vx nn plus 255 band set must ) (
+ hi 8 eq (
+   n 0 eq ( V-I x plus vy set must ) (
+   n 1 eq ( V-I x plus vx vy bor set must  V-I 15 plus 0 set must ) (   -- OR (COSMAC clears VF)
+   n 2 eq ( V-I x plus vx vy band set must  V-I 15 plus 0 set must ) (  -- AND
+   n 3 eq ( V-I x plus vx vy bxor set must  V-I 15 plus 0 set must ) (  -- XOR
+   n 4 eq (
+     vx vy plus 'add8 let
+     V-I x plus add8 255 band set must
+     V-I 15 plus add8 255 gt (1) (0) if set must
+   ) (
+   n 5 eq (
+     V-I x plus vx vy sub 255 band set must
+     V-I 15 plus vx vy lt not (1) (0) if set must
+   ) (
+   n 6 eq (
+     V-I x plus vy 1 shr set must
+     V-I 15 plus vy 1 band set must
+   ) (
+   n 7 eq (
+     V-I x plus vy vx sub 255 band set must
+     V-I 15 plus vy vx lt not (1) (0) if set must
+   ) (
+   n 14 eq (
+     V-I x plus vy 1 shl 255 band set must
+     V-I 15 plus vy 7 shr 1 band set must
+   ) () if) if) if) if) if) if) if) if) if
+ ) (
+ hi 9 eq ( vx vy neq (PC-I pc 4 plus set must) () if ) (
+ hi 10 eq ( IDX-I nnn set must ) (
+ hi 11 eq ( PC-I nnn 'st V-I nth must plus set must ) (
+ hi 12 eq ( V-I x plus 256 random nn band set must ) (
+ hi 13 eq (
+   'st IDX-I nth must 'ir let
+   vx 64 wrap 'dx let  vy 32 wrap 'dy let
+   V-I 15 plus 0 set must
+   0 (dup n lt) ('row let
+     'st ir row plus nth must 'spr let
+     0 (dup 8 lt) ('bit let
+       spr 7 bit sub shr 1 band 1 eq (
+         dx bit plus 'px let  dy row plus 'py let
+         px 64 lt py 32 lt and (
+           py 64 mul px plus DISP-I plus 'di let
+           'st di nth must 'old let
+           di old 1 bxor set must
+           old 1 eq (V-I 15 plus 1 set must) () if
+         ) () if
+       ) () if
+       bit 1 plus) while drop
+     row 1 plus) while drop
+ ) (
+ hi 14 eq (
+   'st KEY-I vx 15 band plus nth must 'pressed let
+   nn 158 eq ( pressed 1 eq (PC-I pc 4 plus set must) () if ) (
+   nn 161 eq ( pressed 1 eq not (PC-I pc 4 plus set must) () if ) () if) if
+ ) (
+ hi 15 eq (
+   nn 7 eq ( V-I x plus 'st DT-I nth must set must ) (
+   nn 10 eq (
+     list 0 (dup 16 lt) (dup 'ki let 'st KEY-I ki plus nth must swap (push) dip 1 plus) while drop
+     1 index-of () {
+       'ok ('kf let V-I x plus kf set must)
+       'no (drop PC-I pc set must)
+     } case
+   ) (
+   nn 21 eq ( DT-I vx set must ) (
+   nn 24 eq ( ST-I vx set must ) (
+   nn 30 eq ( IDX-I 'st IDX-I nth must vx plus 65535 band set must ) (
+   nn 41 eq ( IDX-I 80 vx 15 band 5 mul plus set must ) (
+   nn 51 eq (
+     'st IDX-I nth must 'ib let
+     ib vx 100 div set must
+     ib 1 plus vx 10 div 10 mod set must
+     ib 2 plus vx 10 mod set must
+   ) (
+   nn 85 eq (
+     'st IDX-I nth must 'is5 let
+     0 (dup x 1 plus lt) ('fi let is5 fi plus 'st V-I fi plus nth must set must fi 1 plus) while drop
+     IDX-I is5 x plus 1 plus set must
+   ) (
+   nn 101 eq (
+     'st IDX-I nth must 'is6 let
+     0 (dup x 1 plus lt) ('gi let V-I gi plus 'st is6 gi plus nth must set must gi 1 plus) while drop
+     IDX-I is6 x plus 1 plus set must
+   ) () if) if) if) if) if) if) if) if) if
+ ) () if) if) if) if) if) if) if) if) if) if) if) if) if) if) if) if
+) 'cycle let
+
+-- ===== test helpers (also harmless in play mode) =====
+
+('v let 'r let V-I r plus v set must) 'sr let          -- set register:  state r v sr
+('r let dup V-I r plus get must) 'rv let               -- read register: state r rv -> state val
+('lo2 let 'hi2 let 512 hi2 set must 513 lo2 set must) 'op2! let  -- place opcode at 512: state hi lo op2!
+('v let 'a let a v set must) 'sm let                   -- set memory:    state addr val sm
+(dup PC-I get must) 'rpc let                           -- read PC:       state rpc -> state pc
+('ncy let 0 (dup ncy lt) (swap cycle swap 1 plus) while drop) 'run-n let  -- run count cycles
+
+-- standard CHIP-8 font, 16 glyphs x 5 bytes, loaded at address 80
+[240 144 144 144 240  32 96 32 32 112  240 16 240 128 240  240 16 240 16 240
+ 144 144 240 16 16  240 128 240 16 240  240 128 240 144 240  240 16 32 64 64
+ 240 144 240 144 240  240 144 240 16 240  240 144 240 144 144  224 144 224 144 224
+ 240 128 128 128 240  224 144 144 144 224  240 128 240 128 240  240 128 240 128 128] 'FONT let
+
+-- keypad: SDL keysym -> CHIP-8 key (1234/qwer/asdf/zxcv positional layout)
+[49 50 51 52 113 119 101 114 97 115 100 102 122 120 99 118] 'KEYMAP-SDL let
+[1 2 3 12 4 5 6 13 7 8 9 14 10 0 11 15] 'KEYMAP-C8 let
+
+-- demo ROM (no file arg): wait for a key, then clear and draw its hex digit.
+--   FX0A  V0=wait key    00E0  clear     FX29  I=font(V0)
+--   6128  V1=28 (x)      620E  V2=14 (y)  D125  draw 5 rows     1200  loop
+[240 10 0 224 240 41 97 28 98 14 209 37 18 0] 'DEMO-ROM let
+
+-- ===== self-test: one cycle per opcode family, asserting the resulting state =====
+
+isheadless (
+
+  blank 98 42 op2! cycle 2 rv 42 eq assert drop                          -- 6XNN LD Vx,nn
+  blank 3 10 sr 115 5 op2! cycle 3 rv 15 eq assert drop                  -- 7XNN ADD Vx,nn
+  blank 3 250 sr 115 10 op2! cycle 3 rv 4 eq assert drop                 -- 7XNN wraps at 256
+  blank 1 7 sr 128 16 op2! cycle 0 rv 7 eq assert drop                   -- 8XY0 LD Vx,Vy
+  blank 0 12 sr 1 10 sr 128 17 op2! cycle 0 rv 14 eq assert drop         -- 8XY1 OR
+  blank 0 12 sr 1 10 sr 128 18 op2! cycle 0 rv 8 eq assert drop          -- 8XY2 AND
+  blank 0 12 sr 1 10 sr 128 19 op2! cycle 0 rv 6 eq assert drop          -- 8XY3 XOR
+  blank 0 12 sr 1 10 sr 15 1 sr 128 17 op2! cycle 15 rv 0 eq assert drop -- 8XY1 clears VF (COSMAC)
+  blank 0 200 sr 1 100 sr 128 20 op2! cycle 0 rv 44 eq assert 15 rv 1 eq assert drop   -- 8XY4 carry
+  blank 0 10 sr 1 20 sr 128 20 op2! cycle 0 rv 30 eq assert 15 rv 0 eq assert drop     -- 8XY4 no carry
+  blank 0 50 sr 1 20 sr 128 21 op2! cycle 0 rv 30 eq assert 15 rv 1 eq assert drop     -- 8XY5 no borrow
+  blank 0 20 sr 1 50 sr 128 21 op2! cycle 0 rv 226 eq assert 15 rv 0 eq assert drop    -- 8XY5 borrow
+  blank 1 5 sr 128 22 op2! cycle 0 rv 2 eq assert 15 rv 1 eq assert drop               -- 8XY6 SHR (of Vy)
+  blank 0 20 sr 1 50 sr 128 23 op2! cycle 0 rv 30 eq assert 15 rv 1 eq assert drop     -- 8XY7 SUBN
+  blank 1 129 sr 128 30 op2! cycle 0 rv 2 eq assert 15 rv 1 eq assert drop             -- 8XYE SHL (of Vy)
+
+  blank 0 5 sr 48 5 op2! cycle rpc 516 eq assert drop                    -- 3XNN SE, taken
+  blank 0 5 sr 48 6 op2! cycle rpc 514 eq assert drop                    -- 3XNN SE, not taken
+  blank 0 5 sr 64 6 op2! cycle rpc 516 eq assert drop                    -- 4XNN SNE, taken
+  blank 0 5 sr 1 5 sr 80 16 op2! cycle rpc 516 eq assert drop            -- 5XY0 SE Vx,Vy, taken
+  blank 0 5 sr 1 6 sr 80 16 op2! cycle rpc 514 eq assert drop            -- 5XY0 SE Vx,Vy, not taken
+  blank 0 5 sr 1 6 sr 144 16 op2! cycle rpc 516 eq assert drop           -- 9XY0 SNE Vx,Vy, taken
+  blank 0 5 sr 1 5 sr 144 16 op2! cycle rpc 514 eq assert drop           -- 9XY0 SNE Vx,Vy, not taken
+  blank 18 52 op2! cycle rpc 564 eq assert drop                          -- 1NNN JP
+  blank 0 2 sr 179 0 op2! cycle rpc 770 eq assert drop                   -- BNNN JP V0+nnn
+  blank 0 55 sr 192 0 op2! cycle 0 rv 0 eq assert drop                   -- CXNN RND masked to 0
+
+  -- 2NNN CALL then 00EE RET
+  blank 36 0 op2! 1024 0 sm 1025 238 sm cycle
+    dup PC-I get must 1024 eq assert dup SP-I get must 1 eq assert dup STK-I get must 514 eq assert
+    cycle dup PC-I get must 514 eq assert SP-I get must 0 eq assert
+
+  blank 161 35 op2! cycle IDX-I get must 291 eq assert                   -- ANNN LD I
+  blank DT-I 9 sm 240 7 op2! cycle 0 rv 9 eq assert drop                 -- FX07 LD Vx,DT
+  blank 0 20 sr 240 21 op2! cycle DT-I get must 20 eq assert             -- FX15 LD DT,Vx
+  blank 0 30 sr 240 24 op2! cycle ST-I get must 30 eq assert             -- FX18 LD ST,Vx
+  blank IDX-I 100 sm 0 50 sr 240 30 op2! cycle IDX-I get must 150 eq assert  -- FX1E ADD I,Vx
+  blank 0 2 sr 240 41 op2! cycle IDX-I get must 90 eq assert             -- FX29 font addr
+  blank IDX-I 1000 sm 0 234 sr 240 51 op2! cycle
+    dup 1000 get must 2 eq assert dup 1001 get must 3 eq assert 1002 get must 4 eq assert  -- FX33 BCD
+  blank IDX-I 1500 sm 0 10 sr 1 20 sr 2 30 sr 242 85 op2! cycle
+    dup 1500 get must 10 eq assert dup 1501 get must 20 eq assert dup 1502 get must 30 eq assert
+    IDX-I get must 1503 eq assert                                        -- FX55 store V0..Vx
+  blank IDX-I 1600 sm 1600 7 sm 1601 8 sm 1602 9 sm 242 101 op2! cycle
+    0 rv 7 eq assert 1 rv 8 eq assert 2 rv 9 eq assert IDX-I get must 1603 eq assert   -- FX65 load V0..Vx
+
+  blank 0 5 sr KEY-I 5 plus 1 sm 224 158 op2! cycle rpc 516 eq assert drop   -- EX9E SKP, key down
+  blank 0 5 sr 224 158 op2! cycle rpc 514 eq assert drop                     -- EX9E SKP, key up
+  blank 0 5 sr 224 161 op2! cycle rpc 516 eq assert drop                     -- EXA1 SKNP, key up (skip)
+  blank 0 5 sr KEY-I 5 plus 1 sm 224 161 op2! cycle rpc 514 eq assert drop   -- EXA1 SKNP, key down (no skip)
+  blank 240 10 op2! cycle rpc 512 eq assert drop                            -- FX0A blocks (no key)
+  blank KEY-I 7 plus 1 sm 240 10 op2! cycle 0 rv 7 eq assert rpc 514 eq assert drop  -- FX0A resolves
+
+  blank DISP-I 100 plus 1 sm 0 224 op2! cycle DISP-I 100 plus get must 0 eq assert    -- 00E0 CLS
+
+  -- DXYN: draw a full row, check span and no collision
+  blank 1700 255 sm IDX-I 1700 sm 0 0 sr 1 0 sr 208 17 op2! cycle
+    dup DISP-I get must 1 eq assert dup DISP-I 7 plus get must 1 eq assert
+    dup DISP-I 8 plus get must 0 eq assert 15 rv 0 eq assert drop
+  -- DXYN: drawing the same sprite twice erases it and flags collision
+  blank 1700 255 sm IDX-I 1700 sm 0 0 sr 1 0 sr 208 17 op2! 514 208 sm 515 17 sm cycle cycle
+    dup DISP-I get must 0 eq assert 15 rv 1 eq assert drop
+  -- DXYN: sprite clips at the right edge (no wrap to the left)
+  blank 1750 255 sm IDX-I 1750 sm 0 60 sr 1 0 sr 208 17 op2! cycle
+    dup DISP-I 60 plus get must 1 eq assert dup DISP-I 63 plus get must 1 eq assert
+    DISP-I get must 0 eq assert                                          -- pixel 0 untouched (no wrap)
+  -- font glyph '0' drawn via FX29 + DXYN
+  blank FONT 80 load-at 0 0 sr 1 0 sr 240 41 op2! 514 208 sm 515 21 sm cycle cycle
+    dup DISP-I get must 1 eq assert DISP-I 4 plus get must 0 eq assert
+
+  -- integration: count V0 up to 5 with a real branch loop, then park
+  blank [96 0 112 1 48 5 18 2 18 8] 512 load-at 40 run-n
+    dup PC-I get must 520 eq assert 0 rv 5 eq assert drop
+
+  -- keypad mapping the SDL handlers rely on: '4' (52) -> CHIP-8 key 0xC; unknown key ignored
+  KEYMAP-SDL 52 index-of must 3 eq assert
+  KEYMAP-C8 3 get must 12 eq assert
+  KEYMAP-SDL 999 index-of none eq assert
+
+  -- timer decrement the tick handler performs (stops at 0, never underflows)
+  blank DT-I 2 sm ST-I 1 sm
+    dup DT-I get must 'dt0 let dt0 0 gt (DT-I dt0 1 sub set must) () if
+    dup ST-I get must 'st0 let st0 0 gt (ST-I st0 1 sub set must) () if
+    dup DT-I get must 1 eq assert ST-I get must 0 eq assert
+
+  -- the actual demo ROM: hold CHIP-8 key 5, run 6 cycles (wait/clear/font/x/y/draw),
+  -- and confirm the '5' glyph landed at (28,14)
+  blank FONT 80 load-at DEMO-ROM 512 load-at KEY-I 5 plus 1 sm 6 run-n
+    DISP-I 14 64 mul plus 28 plus get must 1 eq assert
+
+  "chip8-selftest-ok" print halt
+) () if
+
+-- ===== SDL shell (play mode; the terminal --headless path halts above) =====
+
+args len 0 gt (args 0 get must read must) (DEMO-ROM) if 'ROM let
+
+blank FONT 80 load-at ROM 512 load-at
+
+'keydown ('ksym let
+  KEYMAP-SDL ksym index-of () {
+    'ok ('kix let KEYMAP-C8 kix get must 'c8k let KEY-I c8k plus 1 set must)
+    'no (drop)
+  } case) on
+
+'keyup ('usym let
+  KEYMAP-SDL usym index-of () {
+    'ok ('uix let KEYMAP-C8 uix get must 'uc8 let KEY-I uc8 plus 0 set must)
+    'no (drop)
+  } case) on
+
+'tick (drop
+  dup DT-I get must 'dtv let dtv 0 gt (DT-I dtv 1 sub set must) () if
+  dup ST-I get must 'stv let stv 0 gt (ST-I stv 1 sub set must) () if
+  10 run-n) on
+
+('sg let
+ 0 clear
+ 0 (dup 2048 lt) ('pxi let 'sg DISP-I pxi plus nth must 1 eq (
+     pxi 64 mod 10 mul  pxi 64 div 10 mul 80 plus  10 10 3 fill-rect
+   ) () if pxi 1 plus) while drop
+ 'sg ST-I nth must 0 gt (0 0 640 6 2 fill-rect  0 474 640 6 2 fill-rect) () if
+) show

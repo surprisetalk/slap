@@ -19,7 +19,7 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
 
 ## Tests
 
-`make test` runs nine checks in order:
+`make test` runs twelve checks in order:
 1. `make check-refs` — every file the build and docs reference exists on disk
 2. `cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap` — integration tests (assert-based, halts on failure)
 3. `./slap --check < tests/type.slap` — type system tests
@@ -28,7 +28,10 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
 6. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — verify expected errors
 7. `args` with and without positional arguments
 8. `python3 tests/run_euler.py` — 52 Euler solutions, each prepended with `strings.slap`
-9. `examples/lib/` load/typecheck combos, then `bash tests/adversarial/run.sh`
+9. `python3 tests/run_wiki.py` — boots `examples/wiki.slap` on a random port, drives it over real HTTP (GET/POST/404/traversal/oversize), kills it
+10. `python3 tests/run_kv.py` — boots `examples/kv-server.slap`, drives it through `examples/kv-client.slap` and raw sockets (roundtrip, spaced values, persistence across restart, corrupt-snapshot refusal, unwritable-save survival), kills it
+11. `./slap --check < examples/chip8.slap`, then `./slap --headless < examples/chip8.slap | grep -q chip8-selftest-ok` — the CHIP-8 emulator's in-language opcode self-test (SDL words type-check unconditionally; `halt` fires before any `on`/`show` dispatches, so no SDL build is needed)
+12. `examples/lib/` load/typecheck combos, then `bash tests/adversarial/run.sh`
 
 Note that expect.slap is **not** run bare: it depends on `strings.slap` and `parse.slap`, which must be `cat`ed ahead of it.
 
@@ -188,4 +191,4 @@ Use `quote` sparingly — most HOF patterns work without it via the call-site-wr
 
 ### SDL graphics (optional)
 
-Compiled with `-DSLAP_SDL`. 640×480 canvas, 2-bit grayscale. Primitives: `clear`, `pixel`, `fill-rect`, `on`, `show`. Event callbacks for mouse/keyboard.
+Compiled with `-DSLAP_SDL`. 640×480 canvas, 2-bit grayscale. Primitives: `clear`, `pixel`, `fill-rect`, `on`, `show`. Event callbacks: `tick`, `keydown`, `keyup`, `mousedown`, `mouseup`, `mousemove` — registered `'event (handler) on`.

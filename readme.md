@@ -568,7 +568,7 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
 | `clear` | Fill canvas with color (0-3) |
 | `pixel` | `x y color pixel` — set one pixel |
 | `fill-rect` | `x y w h color fill-rect` — fill a rectangle |
-| `on` | `(handler) 'event on` — register event callback |
+| `on` | `'event (handler) on` — register event callback |
 | `show` | `(render) show` — start event loop with render function |
 
 ### events
@@ -577,6 +577,7 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
 |-------|-------------------|
 | `tick` | frame-count |
 | `keydown` | SDL keycode |
+| `keyup` | SDL keycode |
 | `mousedown` | x y |
 | `mouseup` | x y |
 | `mousemove` | x y |
@@ -584,9 +585,10 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
 ### example: Game of Life (abridged)
 
 ```slap
-160 'W let  120 'H let  19200 'N let  4 'S let
+160 'W let  120 'H let  W H mul 'N let  4 'S let
 
-(H plus H mod W mul swap W plus W mod plus nth) 'cell let
+-- wrapped cell lookup; the grid stays let-bound and nth reads it by symbol
+(H plus H mod W mul  swap W plus W mod  plus nth must) 'cell let
 
 ('cy let 'cx let 'gs let
   gs cx 1 sub cy 1 sub cell
@@ -599,24 +601,25 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
   gs cx 1 plus cy 1 plus cell plus
 ) 'neighbors let
 
-('g let  list  0 'i let
-  (i N lt) (
-    i W mod 'x let  i W div 'y let
-    g x y neighbors 'n let
-    g i nth must 1 eq (n 2 eq n 3 eq or) (n 3 eq) if
-    (1) (0) if push
-    i 1 plus 'i let
-  ) while
+('g let  list 0
+  (dup N lt) (
+    dup W divmod 'y let 'x let
+    'g x y neighbors 'n let
+    'g over nth must 1 eq (n 2 eq n 3 eq or) (n 3 eq) if
+    (1) (0) if
+    swap (push) dip 1 plus
+  ) while drop
 ) 'step let
 
 list N (2 random push) repeat
 
-(drop step) 'tick on
-('g let 0 clear
-  0 'i let (i N lt) (
-    g i nth must 1 eq (i W mod S mul i W div S mul S S 3 fill-rect) () if
-    i 1 plus 'i let
-  ) while
+'tick (drop step) on
+('sg let 0 clear
+  0 (dup N lt) (
+    dup 'i let
+    'sg i nth must 1 eq (i W mod S mul  i W div S mul  S S 3 fill-rect) () if
+    1 plus
+  ) while drop
 ) show
 ```
 
@@ -648,7 +651,40 @@ Interactive SDL demos in `examples/`:
 | `flock.slap` | Boids flocking with mouse attraction and predator |
 | `ant.slap` | Langton's ant cellular automaton |
 | `snake.slap` | Snake game with arrow key controls |
+| `chip8.slap` | CHIP-8 emulator: runs real ROMs, 16-key hex keypad, sound-timer border flash |
 | `dots.slap`, `fish.slap`, `gradient.slap`, `zoom.slap` | More graphics demos |
+
+```bash
+make slap-sdl
+./slap-sdl roms/pong.ch8 < examples/chip8.slap   # or no arg for the built-in demo ROM
+./slap --headless < examples/chip8.slap           # run the opcode self-test (no SDL needed)
+```
+
+The whole machine — 4 KB of memory, registers, call stack, keypad, and the 64×32 display — is one flat int list threaded on the stack, with no boxes. `set` is an in-place O(1) store and `nth` a zero-copy read, so a `cycle` decodes and executes one instruction by reading its operands from a frozen snapshot and writing results back into the working copy. The full opcode set (including the COSMAC shift/`FX55`/`FX65` quirks and `DXYN` sprite collision) is covered by an in-language self-test that runs on the plain terminal build.
+
+App demos (terminal build):
+
+| File | Description |
+|------|-------------|
+| `wiki.slap` | HTTP wiki server: browse, edit, and link pages stored as flat text files |
+| `kv-server.slap` + `kv-client.slap` | Persistent key/value store over TCP with a one-shot CLI client |
+
+```bash
+cat examples/lib/strings.slap examples/lib/parse.slap examples/wiki.slap | ./slap 8080 examples/wiki-pages
+# then open http://localhost:8080/
+```
+
+The wiki serves one blocking connection at a time (HTTP/1.0, connection-close), parses requests with `parse.slap` combinators, escapes all user content, and rejects page names that could escape the pages directory. `[PageName]` in a page body becomes a link.
+
+```bash
+# terminal 1: start the store (port, snapshot file)
+cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-server.slap | ./slap 4321 kv.snap
+# terminal 2: talk to it
+cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-client.slap | ./slap 4321 set greeting hello world
+cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-client.slap | ./slap 4321 get greeting   # -> VALUE hello world
+```
+
+The store keeps its data in a dict threaded on the stack and persists to a flat `key<TAB>value` snapshot on `SAVE`/`SHUTDOWN`. The protocol is one LF-terminated command per connection (`SET`/`GET`/`DEL`/`KEYS`/`SAVE`/`PING`/`SHUTDOWN`); malformed input, dead peers, and an unwritable snapshot are all reported without taking the single-threaded server down, while a corrupt snapshot is refused loudly at boot rather than silently pruned.
 
 ## libraries
 

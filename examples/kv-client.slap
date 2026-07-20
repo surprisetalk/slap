@@ -1,0 +1,43 @@
+-- kv-client.slap: one-shot CLI for kv-server.slap.
+--
+--   cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-client.slap | ./slap PORT COMMAND [ARGS...]
+--
+-- e.g. ... | ./slap 4321 set greeting hello world
+--      ... | ./slap 4321 get greeting        -> VALUE hello world
+--
+-- Connects to 127.0.0.1, sends one line, prints the reply verbatim, exits.
+-- A refused connection or a dead server crashes with the OS error -- there is
+-- nothing sensible to fall back to.
+
+(list 10 push) 'LF let
+('st let "/dev/stdout" st LF cat write must drop) 'say let
+
+args len 2 lt (
+  "usage: PORT COMMAND [ARGS...]" say
+  "  cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-client.slap | ./slap 4321 get greeting" say
+  halt) () if
+
+args 0 get must ok parse-int must len 0 eq assert dup 0 gt over 65536 lt and assert 'PORT let
+args 1 drop-n " " str-join 'LINE let
+
+LINE (32 lt) filter len 0 gt (
+  "kv-client: command arguments must not contain control characters" say
+  "  the protocol is one line per command, so a newline or tab would split it" say
+  halt) () if
+
+('hs let hs LF str-find () {'ok (drop 1) 'no (drop 0)} case) 'has-lf let
+
+"127.0.0.1" PORT tcp-connect must
+LINE LF cat tcp-send must drop
+list (swap 4096 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+      swap ch cat
+      dup has-lf not
+      ch len 0 gt and
+      over len 65536 lt and) () while
+'REPLY let
+tcp-close
+REPLY len 0 eq (
+  "/dev/stderr" "kv-client: server closed the connection without replying" LF cat write must drop
+  0 assert
+) () if
+"/dev/stdout" REPLY write must drop
