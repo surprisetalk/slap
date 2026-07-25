@@ -19,7 +19,7 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
 
 ## Tests
 
-`make test` runs twelve checks in order:
+`make test` runs thirteen checks in order:
 1. `make check-refs` — every file the build and docs reference exists on disk
 2. `cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap` — integration tests (assert-based, halts on failure)
 3. `./slap --check < tests/type.slap` — type system tests
@@ -31,7 +31,8 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
 9. `python3 tests/run_wiki.py` — boots `examples/wiki.slap` on a random port, drives it over real HTTP (GET/POST/404/traversal/oversize), kills it
 10. `python3 tests/run_kv.py` — boots `examples/kv-server.slap`, drives it through `examples/kv-client.slap` and raw sockets (roundtrip, spaced values, persistence across restart, corrupt-snapshot refusal, unwritable-save survival), kills it
 11. `./slap --check < examples/chip8.slap`, then `./slap --headless < examples/chip8.slap | grep -q chip8-selftest-ok` — the CHIP-8 emulator's in-language opcode self-test (SDL words type-check unconditionally; `halt` fires before any `on`/`show` dispatches, so no SDL build is needed)
-12. `examples/lib/` load/typecheck combos, then `bash tests/adversarial/run.sh`
+12. `./slap --check < examples/uxn.slap`, then `./slap --headless < examples/uxn.slap | grep -q uxn-selftest-ok` — the Uxn/Varvara emulator's self-test: every base opcode, each mode flag, the immediates, the System/Console/Screen devices, and an end-to-end boot of the embedded demo ROM. Same no-SDL-needed trick as chip8.
+13. `examples/lib/` load/typecheck combos, then `bash tests/adversarial/run.sh`
 
 Note that expect.slap is **not** run bare: it depends on `strings.slap` and `parse.slap`, which must be `cat`ed ahead of it.
 
@@ -77,7 +78,8 @@ These operations return `value ok` on success and `() no` (or `payload no`) on f
 | Operation | Success | Failure | Notes |
 |-----------|---------|---------|-------|
 | `pop` | `element ok` | `none` | Empty list/tuple/record |
-| `get` | `element ok` | `none` | Index out of bounds |
+| `get` | `element ok` | `none` | Index out of bounds; consumes the compound |
+| `peek` | `element ok` | `none` | Index out of bounds; compound stays on the stack |
 | `set` | `compound ok` | `none` | Index out of bounds |
 | `nth` | `element ok` | `none` | Index out of bounds |
 | `at` | `value ok` | `none` | Key not found |
@@ -104,9 +106,16 @@ Pattern: `[] pop (1 plus ok) then -1 default` → `-1` (empty list, default). `[
 
 Two categories of types:
 - **Stackable** (copyable): Int, Float, Symbol, Tuple, Record, List, String, Tagged, Dict. Support `dup`/`drop`. Dict `dup` deep-clones; `drop` deep-frees.
+
+**Dict is stackable but cannot be `let`-bound.** Unlike every other stackable type it is a heap object, and `frame_bind` copies the `Value` bitwise — so the binding and the stack copy would share one `DictData`, and `drop` (or `len`) on either leaves the other reading freed memory. That surfaced as `of` returning a *wrong answer* rather than crashing, so `'name let` on a dict is now a hard type error. Thread it on the stack instead; `examples/kv-server.slap` is the worked example. A record is the bindable alternative.
 - **Linear**: Box only. Must be consumed exactly once via `free`, `lend`, `mutate`, or `clone`. `free`/`clone` reject dicts at type time — use `drop`/`dup` instead.
 
-`lend` borrows a stackable snapshot from a Box. The snapshot itself is stackable, but when the box contains a compound value (list/record/tuple/tagged) the checker forbids `let`-binding a borrowed compound snapshot inside the `lend` body — a later `mutate` would silently corrupt the binding, which aliases the box's backing storage. Only fires when the bound value carries the borrowed flag; binding a freshly-built tuple literal inside a lend body is fine.
+`lend` borrows a stackable snapshot from a Box. `BOX_UNPACK` copies the box's `Value` run bitwise, so what the snapshot shares with the box depends entirely on what is in it:
+
+- **list / record / tuple / tagged content** — copied. Ints, floats, symbols and compound headers carry no heap pointer, so the snapshot is genuinely independent and survives a later `mutate` or even the box's `free`. `tests/expect.slap` ("lend snapshot independence after mutate") pins this. `let`-binding such a snapshot inside the body is allowed.
+- **box or dict content** — aliased. Only the pointer is copied, and `mutate`'s `deep_free_values` frees the pointee while the binding still refers to it. The checker forbids `let`-binding a borrowed snapshot of these two types inside the `lend` body.
+
+Only fires when the bound value carries the borrowed flag; binding a freshly-built tuple literal inside a lend body is fine. Use `k peek` for indexed reads without binding anything.
 
 `deep_free_values` recursively frees boxes inside compounds (poisoning `BoxData->data=NULL` so any stale reference hits `double-free detected` rather than use-after-free). This catches rare TC gaps where a linear value escapes into a stackable compound that's later dropped.
 
@@ -121,7 +130,7 @@ Constraints formalize which operations work on which types. Used in `[...] effec
 | Num | `num` (implies Eq) | int, float | `plus`, `sub`, `mul`, `div` |
 | Integral | `integral` (implies Num) | int | `mod`, `divmod`, `wrap`, bitwise |
 | Semigroup | `semigroup` | list, tuple, record | `cat` |
-| Seq | `seq` (implies Semigroup) | list | `get`, `set`, `push`, `pop` |
+| Seq | `seq` (implies Semigroup) | list | `get`, `peek`, `set`, `push`, `pop` |
 | Sized | `sized` | list, tuple, record, dict | `len` |
 
 Symbols are Eq-only (not Ord). Symbol ordering by intern id is an implementation accident, not a semantic — `lt`/`sort` on symbols is a typecheck error.
@@ -151,7 +160,19 @@ Parsed in `parse_type_annotation`. Stored in `TypeSlot.either_syms/either_types/
 
 **Exhaustiveness enforcement**: `case` with missing variant clauses on a union that carries a linear payload is a *hard* error (non-recoverable) — silent drop of a linear variant is always a bug. Unions without linear variants remain soft errors for easier recovery during editing.
 
-List ops: `push`, `pop`, `set`, `len`, `cat`. `compose` is a separate tuple-concat primitive for function composition.
+List ops: `push`, `pop`, `get`, `peek`, `set`, `len`, `cat`. `compose` is a separate tuple-concat primitive for function composition.
+
+### Indexed reads: `get` vs `peek` vs `nth`
+
+Three ways to read element `i`, differing only in what happens to the container:
+
+- **`get`** — `compound idx -- tagged`. Consumes the compound.
+- **`peek`** — `compound idx -- compound tagged`. Leaves it. O(1) whenever every element is one slot (`compound_elem`'s `total_slots == len+1` fast path), regardless of list size.
+- **`nth`** — `'sym idx -- tagged`. Reads a *bound name* zero-copy; the list never reaches the stack.
+
+For a state machine threaded on the stack, `peek` to read and `set` to write are both O(1) and neither copies — so per-instruction cost stops scaling with the size of the state. Before `peek` existed the only way to read was `dup` (O(n) deep copy) or a `let` bind (O(n) frame copy); `examples/chip8.slap` got ~7x faster by dropping its `dup 'st let` snapshot.
+
+`peek` needs the compound directly below the index, so chain reads by binding each one (`PC-I peek must 'pc let`) rather than stacking them.
 
 ### let (unified binding)
 

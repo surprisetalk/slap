@@ -1,0 +1,662 @@
+-- uxn.slap: a Uxn/Varvara emulator.
+--
+--   ./slap-sdl game.rom < examples/uxn.slap    -- run a ROM (or no arg: demo)
+--   ./slap --headless   < examples/uxn.slap    -- run the opcode self-test, print ok, exit
+--   ./slap --check      < examples/uxn.slap    -- type-check only
+--
+-- Controls (Varvara Controller buttons): arrow keys, plus Z/X = A/B and
+-- Shift/Enter = select/start. Typed keys are also delivered to Controller/key.
+--
+-- ===== what this is =====
+--
+-- The complete uxn CPU: all 32 base opcodes with all eight mode combinations
+-- (short / return / keep), plus BRK, JCI, JMI, JSI and the four LIT forms.
+-- Devices: System, Console, Screen, Controller, Mouse.
+--
+-- Deliberately absent, and why:
+--   Audio (0x30-0x60)  slap has no audio primitive of any kind. Ports read 0 and
+--                      writes are ignored, so audio ROMs run silently instead of
+--                      crashing.
+--   File (0xa0-0xb0)   needs per-file cursors and streaming semantics that don't
+--                      fit a flat int list, and would hand an arbitrary ROM
+--                      filesystem write access from inside `make test`.
+--   Datetime (0xc0)    the terminal build has no clock (`millis` is SDL-only).
+--   Console/read       impossible: stdin is the slap program itself.
+-- Unimplemented ports read 0 and their writes land in the device page inertly,
+-- which is what a Varvara missing a device is supposed to look like.
+--
+-- ===== the screen =====
+--
+-- Varvara pixels are already 2-bit indices into a 4-entry palette, which is
+-- exactly slap's canvas depth, so no pixel information is lost. What is lost is
+-- hue: slap's canvas has four fixed greys.
+--
+-- The palette is mapped by RANK, not by absolute luminance. Most ROMs pick four
+-- shades of one hue, and quantising each independently collapses two or three
+-- entries onto the same grey and makes the ROM unreadable. Ranking guarantees the
+-- darkest entry lands on canvas 0 and the lightest on canvas 3, with ties kept
+-- tied. A red-on-green ROM renders as grey-on-grey with the right contrast.
+--
+-- 320x240 logical, drawn at 2x to fill the 640x480 canvas exactly. Screen/width
+-- and /height report 320/240 truthfully; writes to them are ignored, since the
+-- canvas cannot resize. ROMs that assume the 512x320 default get their right and
+-- bottom edges clipped, which is honest behaviour on a small screen.
+--
+-- ===== the one discipline rule =====
+--
+-- The machine is one flat int list at TOP OF STACK. `peek` and `set` are both
+-- O(1) there at any size, so nothing is ever copied -- but both need the machine
+-- directly under their arguments. So:
+--
+--   * every helper binds its arguments first (`'v let 'a let ...`)
+--   * every read is `let`-bound before the next address is pushed
+--   * LOOP COUNTERS LIVE IN STATE CELLS, never on the stack, so that nested
+--     loops still see the machine at TOS
+--   * never `swap`, `dip` over, or `let`-bind the machine -- `swap` and `dip`
+--     both die above LOCAL_MAX (16384 slots) and this machine is 220191
+--
+-- `--check` catches most violations for free: `peek` demands a seq, so a stray
+-- value in the way is a type error rather than a silent wrong answer.
+--
+-- Speed is about 290k uxn instructions/sec, roughly 4800 per 60Hz frame. Enough
+-- for sprites and input; not enough for full-screen per-frame effects.
+
+-- ===== state map (indices into the machine list) =====
+0      'RAM-B let     -- main memory 0x0000..0xffff
+65536  'WST-B let     -- working stack data
+65792  'RST-B let     -- return stack data
+66048  'DEV-B let     -- device page
+66304  'WSP-I let     -- working stack pointer  \ adjacent: decode does WSP-I rf plus
+66305  'RSP-I let     -- return  stack pointer  /
+66306  'PC-I let
+66307  'RUN-I let     -- 1 while a vector is executing
+66308  'HALT-I let    -- System/state exit code, 0 = alive
+66309  'M2-I let      -- short-mode flag for the current instruction
+66310  'SRCB-I let    -- base index of the src stack data
+66311  'SRCP-I let    -- cell index of the src stack pointer
+66312  'DSTB-I let    -- base index of the dst stack data (STH/JSR target)
+66313  'DSTP-I let    -- cell index of the dst stack pointer
+66314  'POPP-I let    -- cell index the pops decrement (SRCP-I, or KSP-I in keep mode)
+66315  'KSP-I let     -- keep-mode shadow pointer
+66316  'BUDGET-I let  -- steps left in this vector call
+66317  'SHADE-I let   -- canvas shade 0..3 per palette entry (66317..66320)
+66321  'LUM-I let     -- scratch: luminance per palette entry (66321..66324)
+66325  'RK-I let      -- scratch: rank accumulator
+66326  'DX0-I let     -- dirty box, inclusive
+66327  'DY0-I let
+66328  'DX1-I let
+66329  'DY1-I let
+66330  'SX-I let      -- scratch: sprite/fill inner loop
+66331  'SY-I let      -- scratch: sprite/fill outer loop
+66332  'RX-I let      -- scratch: render inner loop
+66333  'RY-I let      -- scratch: render outer loop
+66334  'CON-N-I let   -- console bytes buffered
+66335  'CON-B let     -- console line buffer (66335..66590)
+66591  'BG-B let      -- background layer 320x240 (66591..143390)
+143391 'FG-B let      -- foreground layer 320x240 (143391..220190)
+220191 'STATE-N let
+
+320 'SCR-W let  240 'SCR-H let  76800 'SCR-N let
+
+-- uxn's 1bpp/2bpp blend table, flattened: BLEND[ch*16 + mode]
+[0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3
+ 0 1 2 3 0 1 2 3 0 1 2 3 0 1 2 3
+ 1 2 3 0 1 2 3 0 1 2 3 0 1 2 3 0
+ 2 3 0 1 2 3 0 1 2 3 0 1 2 3 0 1] 'BLEND let
+
+-- ===== cell access (the machine is at TOS) =====
+('a let a peek must) 'cell let                      -- machine addr -- machine value
+('v let 'a let a v set must) 'cell! let              -- machine addr value -- machine
+('a let a 65535 band cell) 'mrd let
+('v let 'a let a 65535 band v 255 band cell!) 'mwr let
+('a let M2-I cell (a mrd 8 shl 'h let a 1 plus 65535 band mrd h bor) (a mrd) if) 'mrdx let
+('v let 'a let M2-I cell
+   (a v 8 shr mwr  a 1 plus 65535 band v mwr)
+   (a v mwr) if) 'mwrx let
+('p let DEV-B p 255 band plus cell) 'dev let
+('v let 'p let DEV-B p 255 band plus v 255 band cell!) 'dev! let
+('p let p dev 8 shl 'h let p 1 plus dev h bor) 'dev2 let
+('v let 'p let p v 8 shr 255 band dev!  p 1 plus v 255 band dev!) 'dev2! let
+
+-- ===== stack access; all mode handling lives here =====
+-- pops read through POPP-I, which decode points at the real stack pointer or, in
+-- keep mode, at a shadow copy. Pushes always use the real pointer. That is the
+-- whole of keep mode, and return mode is just which stack SRCB/SRCP name.
+(POPP-I cell 'c let c cell 1 sub 255 band 'q let c q cell!
+ SRCB-I cell q plus cell) 'pop1 let
+(pop1 'lo let pop1 'hi let hi 8 shl lo bor) 'pop2 let
+(M2-I cell (pop2) (pop1) if) 'popx let
+('v let SRCP-I cell 'c let c cell 'q let
+ SRCB-I cell q plus v 255 band cell!  c q 1 plus 255 band cell!) 'push1 let
+('v let v 8 shr 255 band push1  v 255 band push1) 'push2 let
+('v let M2-I cell (v push2) (v push1) if) 'pushx let
+('v let DSTP-I cell 'c let c cell 'q let
+ DSTB-I cell q plus v 255 band cell!  c q 1 plus 255 band cell!) 'push1d let
+('v let v 8 shr 255 band push1d  v 255 band push1d) 'push2d let
+('v let M2-I cell (v push2d) (v push1d) if) 'pushxd let
+('v let M2-I cell (v 65535 band) (v 255 band) if) 'mx let
+('v let v 128 ge (v 256 sub) (v) if) 'sign8 let
+
+-- jump target: byte mode is a signed relative hop, short mode is absolute
+('q let PC-I cell 'pc let M2-I cell (q) (pc q sign8 plus 65535 band) if) 'jdst let
+
+-- read an immediate operand at the PC and advance past it
+(PC-I cell 'p let p mrd 'lb let PC-I p 1 plus 65535 band cell! lb) 'fetch1 let
+(fetch1 8 shl 'h let fetch1 h bor) 'fetch2 let
+
+-- ===== screen =====
+
+-- expand the dirty box to include (x,y)
+('y let 'x let
+ DX0-I cell 'a let x a lt (DX0-I x cell!) () if
+ DY0-I cell 'b let y b lt (DY0-I y cell!) () if
+ DX1-I cell 'c let x c gt (DX1-I x cell!) () if
+ DY1-I cell 'd let y d gt (DY1-I y cell!) () if) 'mark let
+
+-- machine layer x y colour spx -- machine   (clipped)
+('c let 'y let 'x let 'lay let
+ x 0 ge x SCR-W lt and 'xin let
+ y 0 ge y SCR-H lt and 'yin let
+ xin yin and
+ ( lay y SCR-W mul plus x plus c cell!  x y mark ) () if) 'spx let
+
+-- Screen/pixel: colour in the low 2 bits, 0x40 layer, 0x80 fill, 0x10/0x20 flips
+('w let
+ w 3 band 'c let
+ w 64 band 0 gt (FG-B) (BG-B) if 'lay let
+ 40 dev2 'x let  42 dev2 'y let
+ w 128 band 0 gt
+ ( w 16 band 0 gt (0) (x) if 'x0 let
+   w 16 band 0 gt (x) (SCR-W 1 sub) if 'x1 let
+   w 32 band 0 gt (0) (y) if 'y0 let
+   w 32 band 0 gt (y) (SCR-H 1 sub) if 'y1 let
+   SY-I y0 cell!
+   (SY-I cell y1 le) (
+     SX-I x0 cell!
+     (SX-I cell x1 le) (
+       SX-I cell 'px let SY-I cell 'py let
+       lay px py c spx
+       SX-I cell 1 plus 'nx let SX-I nx cell!) while
+     SY-I cell 1 plus 'ny let SY-I ny cell!) while )
+ ( lay x y c spx
+   38 dev 'au let
+   au 1 band 0 gt (40 x 1 plus 65535 band dev2!) () if
+   au 2 band 0 gt (42 y 1 plus 65535 band dev2!) () if ) if) 'screen-pixel let
+
+-- one 8x8 sprite from `addr` at (x,y); see uxn's screen_blit
+('two let 'fy let 'fx let 'blend let 'lay let 'y let 'x let 'addr let
+ blend 5 mod 0 neq 'opaque let
+ SY-I 0 cell!
+ (SY-I cell 8 lt) (
+   SY-I cell 'v let
+   fy (7 v sub) (v) if 'sr let
+   addr sr plus 65535 band mrd 'p0 let
+   two (addr sr plus 8 plus 65535 band mrd) (0) if 'p1 let
+   SX-I 0 cell!
+   (SX-I cell 8 lt) (
+     SX-I cell 'h let
+     fx (h) (7 h sub) if 'bi let
+     p0 bi shr 1 band 'c0 let
+     p1 bi shr 1 band 'c1 let
+     two (c1 2 mul c0 plus) (c0) if 'ch let
+     opaque ch 0 neq or
+     ( 'BLEND ch 16 mul blend plus nth must 'col let
+       lay x h plus y v plus col spx ) () if
+     SX-I cell 1 plus 'nx let SX-I nx cell!) while
+   SY-I cell 1 plus 'ny let SY-I ny cell!) while) 'blit let
+
+-- Screen/sprite: blend in the low nibble, 0x10/0x20 flips, 0x40 layer, 0x80 2bpp
+('w let
+ w 15 band 'blend let
+ w 16 band 0 gt 'fx let
+ w 32 band 0 gt 'fy let
+ w 64 band 0 gt (FG-B) (BG-B) if 'lay let
+ w 128 band 0 gt 'two let
+ 38 dev 'au let
+ au 4 shr 15 band 'n let
+ two (16) (8) if 'step-by let
+ RK-I 0 cell!
+ (RK-I cell n le) (
+   RK-I cell 'k let
+   44 dev2 'addr let  40 dev2 'x let  42 dev2 'y let
+   addr x y lay blend fx fy two blit
+   au 1 band 0 gt (40 x 8 plus 65535 band dev2!) () if
+   au 2 band 0 gt (42 y 8 plus 65535 band dev2!) () if
+   au 4 band 0 gt (44 addr step-by plus 65535 band dev2!) () if
+   k 1 plus 'nk let RK-I nk cell!) while) 'screen-sprite let
+
+-- ===== palette: rank the four entries by luminance, spread over four greys =====
+('i let 12 i 4 mul sub 'sh let
+ 8 dev2 sh shr 15 band 'rr let
+ 10 dev2 sh shr 15 band 'gg let
+ 12 dev2 sh shr 15 band 'bb let
+ rr 77 mul gg 150 mul plus bb 29 mul plus) 'lum let
+
+(0 (dup 4 lt) ('i let i lum 'lv let LUM-I i plus lv cell! i 1 plus) while drop
+ 0 (dup 4 lt) ('i let
+   LUM-I i plus cell 'li let
+   RK-I 0 cell!
+   0 (dup 4 lt) ('j let
+     LUM-I j plus cell 'lj let
+     lj li lt (RK-I cell 1 plus 'nr let RK-I nr cell!) () if
+     j 1 plus) while drop
+   RK-I cell 'rv let SHADE-I i plus rv cell!
+   i 1 plus) while drop
+ RK-I 0 cell!
+ 0 (dup 4 lt) ('i let
+   SHADE-I i plus cell 'sv let RK-I cell 'mv let
+   sv mv gt (RK-I sv cell!) () if
+   i 1 plus) while drop
+ RK-I cell 'rmax let
+ 0 (dup 4 lt) ('i let
+   SHADE-I i plus cell 'sv let
+   rmax 0 eq (0) (sv 3 mul rmax div) if 'sh let
+   SHADE-I i plus sh cell!
+   i 1 plus) while drop) 'shades! let
+
+-- ===== console: buffer a line, flush on LF =====
+(CON-N-I cell 'n let
+ list 0 (dup n lt) ('i let (CON-B i plus cell) dip swap push i 1 plus) while drop
+ print
+ CON-N-I 0 cell!) 'con-flush let
+
+('w let
+ w 10 eq
+ ( con-flush )
+ ( CON-N-I cell 'n let
+   n 255 lt ( CON-B n plus w cell!  CON-N-I n 1 plus cell! ) () if ) if) 'con-put let
+
+-- ===== device i/o =====
+('p let p 255 band 'q let
+ q 4 eq (WSP-I cell) (
+ q 5 eq (RSP-I cell) (
+ q 34 eq (SCR-W 8 shr) (
+ q 35 eq (SCR-W 255 band) (
+ q 36 eq (SCR-H 8 shr) (
+ q 37 eq (SCR-H 255 band) (
+ DEV-B q plus cell ) if) if) if) if) if) if) 'dei let
+
+('v let 'p let p 255 band 'q let v 255 band 'w let
+ q w dev!
+ q 15 eq ( w 0 neq (RUN-I 0 cell!  HALT-I w cell!) () if ) (
+ q 4 eq  ( WSP-I w cell! ) (
+ q 5 eq  ( RSP-I w cell! ) (
+ q 9 eq  ( shades! ) (
+ q 11 eq ( shades! ) (
+ q 13 eq ( shades! ) (
+ q 24 eq ( w con-put ) (
+ q 25 eq ( w con-put ) (
+ q 46 eq ( w screen-pixel ) (
+ q 47 eq ( w screen-sprite ) ( ) if) if) if) if) if) if) if) if) if) if) 'deo let
+
+-- ===== the opcode table =====
+-- One body per base opcode. Short, keep and return all fall out of the helpers,
+-- so ADD below is also ADD2, ADDk, ADDr, ADDkr, ADD2k, ADD2r and ADD2kr.
+[ ()                                                                    -- 00 immediates, see step
+  ( popx 'q let q 1 plus mx pushx )                                     -- 01 INC
+  ( popx drop )                                                         -- 02 POP
+  ( popx 'q let popx drop q pushx )                                     -- 03 NIP
+  ( popx 'q let popx 'p let q pushx p pushx )                           -- 04 SWP
+  ( popx 'r let popx 'q let popx 'p let q pushx r pushx p pushx )       -- 05 ROT
+  ( popx 'q let q pushx q pushx )                                       -- 06 DUP
+  ( popx 'q let popx 'p let p pushx q pushx p pushx )                   -- 07 OVR
+  ( popx 'q let popx 'p let p q eq (1) (0) if push1 )                   -- 08 EQU
+  ( popx 'q let popx 'p let p q neq (1) (0) if push1 )                  -- 09 NEQ
+  ( popx 'q let popx 'p let q p lt (1) (0) if push1 )                   -- 0a GTH
+  ( popx 'q let popx 'p let p q lt (1) (0) if push1 )                   -- 0b LTH
+  ( popx 'q let q jdst 'n let PC-I n cell! )                            -- 0c JMP
+  ( popx 'q let pop1 'c let c 0 neq (q jdst) (PC-I cell) if 'n let
+    PC-I n cell! )                                                      -- 0d JCN
+  ( popx 'q let PC-I cell push2d q jdst 'n let PC-I n cell! )           -- 0e JSR
+  ( popx 'q let q pushxd )                                              -- 0f STH
+  ( pop1 'q let q mrdx pushx )                                          -- 10 LDZ
+  ( pop1 'q let popx 'v let q v mwrx )                                  -- 11 STZ
+  ( pop1 'q let PC-I cell q sign8 plus 65535 band mrdx pushx )          -- 12 LDR
+  ( pop1 'q let popx 'v let PC-I cell q sign8 plus 65535 band v mwrx )  -- 13 STR
+  ( pop2 'q let q mrdx pushx )                                          -- 14 LDA
+  ( pop2 'q let popx 'v let q v mwrx )                                  -- 15 STA
+  ( pop1 'q let M2-I cell
+      (q dei 8 shl 'h let q 1 plus 255 band dei h bor) (q dei) if pushx ) -- 16 DEI
+  ( pop1 'q let popx 'v let M2-I cell
+      (q v 8 shr 255 band deo  q 1 plus 255 band v 255 band deo)
+      (q v deo) if )                                                    -- 17 DEO
+  ( popx 'q let popx 'p let p q plus mx pushx )                         -- 18 ADD
+  ( popx 'q let popx 'p let p q sub mx pushx )                          -- 19 SUB
+  ( popx 'q let popx 'p let p q mul mx pushx )                          -- 1a MUL
+  ( popx 'q let popx 'p let q 0 eq (0) (p q div) if mx pushx )          -- 1b DIV  (uxn: /0 is 0)
+  ( popx 'q let popx 'p let p q band pushx )                            -- 1c AND
+  ( popx 'q let popx 'p let p q bor pushx )                             -- 1d ORA
+  ( popx 'q let popx 'p let p q bxor pushx )                            -- 1e EOR
+  ( pop1 'q let popx 'p let p q 15 band shr q 4 shr 15 band shl mx pushx ) -- 1f SFT
+] 'OPTAB let
+
+-- PC += rel16 + 2, where the rel16 sits at the current PC
+(PC-I cell 'p let p mrd 8 shl 'h let p 1 plus 65535 band mrd h bor 'rel let
+ PC-I p 2 plus rel plus 65535 band cell!) 'jrel let
+(PC-I cell 2 plus 65535 band 'sk let PC-I sk cell!) 'jskip let
+
+-- BRK / JCI / JMI / JSI / LIT family. Here the mode bits are part of the encoding
+-- rather than modifiers, so this sets the stack cells itself instead of relying
+-- on step's modal decode.
+('ins let
+ ins 128 band 0 gt
+ ( ins 64 band 0 gt (1) (0) if 'r let
+   SRCB-I WST-B r 256 mul plus cell!
+   SRCP-I WSP-I r plus cell!
+   ins 32 band 0 gt (fetch2 push2) (fetch1 push1) if )
+ ( SRCB-I WST-B cell!  SRCP-I WSP-I cell!  POPP-I WSP-I cell!
+   DSTB-I RST-B cell!  DSTP-I RSP-I cell!
+   ins 0 eq  ( RUN-I 0 cell! ) (
+   ins 32 eq ( pop1 0 eq (jskip) (jrel) if ) (
+   ins 64 eq ( jrel ) (
+              SRCB-I RST-B cell!  SRCP-I RSP-I cell!
+              PC-I cell 2 plus 65535 band push2  jrel ) if) if) if
+ ) if) 'immediate let
+
+-- ===== one instruction =====
+(PC-I cell 'pc let
+ pc mrd 'ins let
+ PC-I pc 1 plus 65535 band cell!
+ ins 31 band 'base let
+ base 0 eq
+ ( ins immediate )
+ ( ins 32 band 0 gt (1) (0) if 'm2 let  M2-I m2 cell!
+   ins 64 band 0 gt (1) (0) if 'rf let
+   SRCB-I WST-B rf 256 mul plus cell!
+   DSTB-I WST-B 256 rf 256 mul sub plus cell!
+   SRCP-I WSP-I rf plus cell!
+   DSTP-I WSP-I 1 rf sub plus cell!
+   ins 128 band 0 gt
+     ( WSP-I rf plus cell 'sv let  KSP-I sv cell!  KSP-I )
+     ( WSP-I rf plus ) if 'pp let
+   POPP-I pp cell!
+   'OPTAB base nth must apply ) if) 'step let
+
+-- Run from `addr` until BRK. The step cap keeps a runaway ROM from making the
+-- SDL window unkillable -- `show` only pumps events between frames.
+('lim let 'a let
+ a 0 eq () (
+   PC-I a cell!  RUN-I 1 cell!  BUDGET-I lim cell!
+   (RUN-I cell 0 neq 'r let BUDGET-I cell 0 gt 'b let r b and)
+   (BUDGET-I cell 1 sub 'n let BUDGET-I n cell! step) while) if) 'run-at let
+
+-- ===== machine construction =====
+(list STATE-N (0 push) repeat
+ DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!) 'blank let
+
+('bs let bs len 'n let
+ 0 (dup n lt) ('i let 256 i plus 'bs i nth must mwr i 1 plus) while drop) 'load-rom let
+
+-- ===== demo ROM: an 8x8 blob you steer with the arrow keys =====
+--
+-- Assembled by hand from the uxntal below; the trailing hex column is the
+-- address of each row, and the three `;label` operands (a0 01 3e, a0 01 b2,
+-- a0 01 ba) must match the @label offsets noted beside them. `len 194` and the
+-- two spot-byte checks in the self-test catch a transcription slip, and the
+-- self-test then boots it for real and asserts what it drew.
+--
+--   |0100 @reset                                              -- 0100
+--       #0ff0 .System/r  DEO2    ( four distinct luminances )
+--       #0f0f .System/g  DEO2
+--       #0ff0 .System/b  DEO2
+--       #50 .px STZ  #3c .py STZ  #50 .ox STZ  #3c .oy STZ
+--       ;on-frame .Screen/vector DEO2                         -- a0 01 3e
+--       #0000 .Screen/x DEO2   #0000 .Screen/y DEO2
+--       #81 .Screen/pixel DEO   ( fill, bg layer, colour 1 )
+--       BRK
+--   @on-frame                                                 -- 013e
+--       #00 .ox LDZ .Screen/x DEO2      ( erase the old position )
+--       #00 .oy LDZ .Screen/y DEO2
+--       ;blank .Screen/addr DEO2                              -- a0 01 ba
+--       #41 .Screen/sprite DEO          ( fg, blend 1, opaque -> writes 0 )
+--       .Controller/button DEI STH      ( stash the buttons on the return stack )
+--       .px LDZ
+--         STHkr #80 AND #07 SFT ADD     ( branchless: px += right )
+--         STHkr #40 AND #06 SFT SUB     (            px -= left  )
+--       .px STZ
+--       .py LDZ
+--         STHkr #20 AND #05 SFT ADD     ( py += down )
+--         STHkr #10 AND #04 SFT SUB     ( py -= up   )
+--       .py STZ
+--       POPr
+--       .px LDZ .ox STZ   .py LDZ .oy STZ
+--       #00 .px LDZ .Screen/x DEO2
+--       #00 .py LDZ .Screen/y DEO2
+--       ;mover .Screen/addr DEO2                              -- a0 01 b2
+--       #41 .Screen/sprite DEO
+--       BRK
+--   @mover  183c 7eff ff7e 3c18                               -- 01b2
+--   @blank  0000 0000 0000 0000                               -- 01ba
+[160  15 240 128   8  55 160  15  15 128  10  55 160  15 240 128   -- 0100
+  12  55 128  80 128   8  17 128  60 128   9  17 128  80 128  10   -- 0110
+  17 128  60 128  11  17 160   1  62 128  32  55 160   0   0 128   -- 0120
+  40  55 160   0   0 128  42  55 128 129 128  46  23   0 128   0   -- 0130
+ 128  10  16 128  40  55 128   0 128  11  16 128  42  55 160   1   -- 0140
+ 186 128  44  55 128  65 128  47  23 128 130  22  15 128   8  16   -- 0150
+ 207 128 128  28 128   7  31  24 207 128  64  28 128   6  31  25   -- 0160
+ 128   8  17 128   9  16 207 128  32  28 128   5  31  24 207 128   -- 0170
+  16  28 128   4  31  25 128   9  17  66 128   8  16 128  10  17   -- 0180
+ 128   9  16 128  11  17 128   0 128   8  16 128  40  55 128   0   -- 0190
+ 128   9  16 128  42  55 160   1 178 128  44  55 128  65 128  47   -- 01a0
+  23   0  24  60 126 255 255 126  60  24   0   0   0   0   0   0   -- 01b0
+   0   0] 'DEMO-ROM let                                            -- 01c0
+
+-- ===== self-test =====
+--
+-- Every case is a ROM: `[bytes] run` resets the machine, loads the bytes at
+-- 0x0100 and executes to BRK, so the DEO/DEI paths are exercised for real rather
+-- than through a back door. `reset` rather than a fresh `blank` because building
+-- 220191 cells costs ~35ms and 120 of those would dominate `make test`.
+
+(0 (dup 256 lt) ('i let
+   WST-B i plus 0 cell!  RST-B i plus 0 cell!  DEV-B i plus 0 cell!
+   256 i plus 0 cell!  8192 i plus 0 cell!
+   i 1 plus) while drop
+ WSP-I 0 cell!  RSP-I 0 cell!  HALT-I 0 cell!  KSP-I 0 cell!  CON-N-I 0 cell!
+ DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!
+ 0 (dup SCR-N lt) ('i let BG-B i plus 0 cell!  FG-B i plus 0 cell!  i 1 plus) while drop
+ 0 (dup 4 lt) ('i let SHADE-I i plus 0 cell! i 1 plus) while drop) 'reset let
+
+('bs let reset bs load-rom 256 20000 run-at) 'run let
+(WSP-I cell) 'wn let
+('i let WSP-I cell 'n let WST-B n 1 sub i sub plus cell) 'wat let
+(RSP-I cell) 'rn let
+('i let RSP-I cell 'n let RST-B n 1 sub i sub plus cell) 'rat let
+(0 wat 'lo let 1 wat 'hi let hi 8 shl lo bor) 'ws2 let
+('a let a mrd) 'gm let
+('p let p dev) 'gd let
+('y let 'x let 'lay let lay y SCR-W mul plus x plus cell) 'gpx let
+(PC-I cell) 'pc? let
+
+blank
+
+isheadless (
+
+  -- --- arithmetic and stack shuffling, byte mode ---
+  [128 3 128 5 24 0] run          wn 1 eq assert  0 wat 8 eq assert
+  [128 3 128 5 25 0] run          0 wat 254 eq assert                  -- SUB wraps
+  [128 3 128 5 26 0] run          0 wat 15 eq assert                   -- MUL
+  [128 9 128 2 27 0] run          0 wat 4 eq assert                    -- DIV
+  [128 9 128 0 27 0] run          0 wat 0 eq assert                    -- DIV by zero is 0
+  [128 12 128 10 28 0] run        0 wat 8 eq assert                    -- AND
+  [128 12 128 10 29 0] run        0 wat 14 eq assert                   -- ORA
+  [128 12 128 10 30 0] run        0 wat 6 eq assert                    -- EOR
+  [128 8 128 1 31 0] run          0 wat 4 eq assert                    -- SFT right
+  [128 8 128 16 31 0] run         0 wat 16 eq assert                   -- SFT left
+  [128 5 1 0] run                 0 wat 6 eq assert                    -- INC
+  [128 5 128 6 2 0] run           wn 1 eq assert 0 wat 5 eq assert     -- POP
+  [128 1 128 2 3 0] run           wn 1 eq assert 0 wat 2 eq assert     -- NIP
+  [128 1 128 2 4 0] run           0 wat 1 eq assert 1 wat 2 eq assert  -- SWP
+  [128 1 128 2 128 3 5 0] run     0 wat 1 eq assert 1 wat 3 eq assert
+                                  2 wat 2 eq assert                    -- ROT
+  [128 7 6 0] run                 wn 2 eq assert 0 wat 7 eq assert     -- DUP
+  [128 1 128 2 7 0] run           wn 3 eq assert 0 wat 1 eq assert
+                                  1 wat 2 eq assert                    -- OVR
+  [128 2 128 2 8 0] run           0 wat 1 eq assert                    -- EQU true
+  [128 1 128 2 8 0] run           0 wat 0 eq assert                    -- EQU false
+  [128 1 128 2 9 0] run           0 wat 1 eq assert                    -- NEQ
+  [128 3 128 2 10 0] run          0 wat 1 eq assert                    -- GTH
+  [128 2 128 3 10 0] run          0 wat 0 eq assert
+  [128 2 128 3 11 0] run          0 wat 1 eq assert                    -- LTH
+  [128 3 128 2 11 0] run          0 wat 0 eq assert
+
+  -- --- short mode ---
+  [160 0 3 160 0 5 56 0] run      wn 2 eq assert ws2 8 eq assert       -- ADD2
+  [160 1 0 160 0 2 57 0] run      ws2 254 eq assert                    -- SUB2 wraps at 16 bits
+  [160 255 255 128 1 63 0] run    ws2 32767 eq assert                  -- SFT2
+  [160 18 52 33 0] run            wn 2 eq assert ws2 4661 eq assert    -- INC2
+  [160 18 52 38 0] run            wn 4 eq assert ws2 4660 eq assert    -- DUP2
+  [160 0 1 160 0 2 40 0] run      wn 1 eq assert 0 wat 0 eq assert     -- EQU2 false -> one byte
+  [160 1 2 34 0] run              wn 0 eq assert                       -- POP2 removes both bytes
+
+  -- --- keep and return mode ---
+  [128 3 128 5 152 0] run         wn 3 eq assert  0 wat 8 eq assert
+                                  1 wat 5 eq assert 2 wat 3 eq assert  -- ADDk keeps operands
+  [128 7 134 0] run               wn 3 eq assert                       -- DUPk
+  [192 9 0] run                   rn 1 eq assert 0 rat 9 eq assert     -- LITr lands on the return stack
+  [192 9 79 0] run                wn 1 eq assert rn 0 eq assert
+                                  0 wat 9 eq assert                    -- STHr moves rst -> wst
+  [128 9 15 0] run                rn 1 eq assert wn 0 eq assert        -- STH moves wst -> rst
+  [192 3 192 5 88 0] run          rn 1 eq assert 0 rat 8 eq assert     -- ADDr works on the return stack
+  [128 3 128 5 207 0] run         wn 3 eq assert                       -- STHkr copies without consuming
+
+  -- --- memory ---
+  [128 66 128 20 17 128 20 16 0] run     0 wat 66 eq assert            -- STZ / LDZ
+  [128 77 160 32 0 21 160 32 0 20 0] run 0 wat 77 eq assert            -- STA / LDA
+  [160 18 52 160 32 0 53 160 32 0 52 0] run ws2 4660 eq assert         -- STA2 / LDA2
+  -- STR writes at (pc-after-opcode)+7 = 0x10c; LDR reads at (pc-after-opcode)+4
+  [128 99 128 7 19 128 4 18 0] run       0 wat 99 eq assert            -- STR / LDR
+
+  -- --- control flow ---
+  -- each of these lays out two tails: the fall-through one prints 9, the
+  -- jump target prints 7, so a jump that lands wrong fails loudly
+  [128 0 32 0 3 128 9 0 128 7 0] run  0 wat 9 eq assert                -- JCI not taken
+  [128 1 32 0 3 128 9 0 128 7 0] run  0 wat 7 eq assert                -- JCI taken
+  [64 0 3 128 9 0 128 7 0] run        0 wat 7 eq assert wn 1 eq assert -- JMI
+  [96 0 3 128 9 0 24 0] run           rn 2 eq assert                   -- JSI pushes a return address
+  [128 3 12 128 9 0 128 7 0] run      0 wat 7 eq assert                -- JMP relative
+  [160 1 7 44 128 9 0 128 7 0] run    0 wat 7 eq assert                -- JMP2 absolute
+  [128 1 128 3 13 128 9 0 128 7 0] run 0 wat 7 eq assert               -- JCN taken
+  [128 0 128 3 13 128 9 0 128 7 0] run 0 wat 9 eq assert               -- JCN not taken
+
+  -- --- System device ---
+  [128 1 128 15 23 0] run         HALT-I cell 1 eq assert              -- System/state halts
+  [128 3 128 4 23 0] run          wn 3 eq assert                       -- System/wst sets the pointer
+  [160 15 240 128 8 55 0] run     8 gd 15 eq assert 9 gd 240 eq assert -- DEO2 writes both ports
+  [128 240 128 8 23 0] run        8 gd 240 eq assert                   -- DEO writes one
+  [160 15 240 128 8 55 160 15 0 128 10 55 160 15 15 128 12 55 0] run
+    SHADE-I 0 plus cell 0 eq assert                                    -- entry 0 (black) -> darkest
+    SHADE-I 1 plus cell 3 eq assert                                    -- entry 1 (white) -> lightest
+  [128 66 128 4 23 128 4 22 0] run 0 wat 66 eq assert                  -- DEI reads back the wst pointer
+
+  -- --- Screen device ---
+  [160 0 5 128 40 55 160 0 6 128 42 55 128 1 128 46 23 0] run
+    BG-B 6 SCR-W mul plus 5 plus cell 1 eq assert                      -- Screen/pixel, bg layer
+    DX0-I cell 5 eq assert  DY0-I cell 6 eq assert                     -- dirty box tracked
+  [160 0 5 128 40 55 160 0 6 128 42 55 128 65 128 46 23 0] run
+    FG-B 6 SCR-W mul plus 5 plus cell 1 eq assert                      -- 0x40 selects the fg layer
+  [128 129 128 46 23 0] run
+    BG-B 0 plus cell 1 eq assert
+    BG-B SCR-W 1 sub plus cell 1 eq assert                             -- fill mode paints to the edge
+    BG-B SCR-N 1 sub plus cell 1 eq assert
+
+  -- 1bpp sprite: 0x3c = 00111100 on row 0, blend 1 (opaque, ch0->0 ch1->1)
+  [128 60 128 0 17
+   160 0 8 128 40 55  160 0 8 128 42 55  160 0 0 128 44 55
+   128 1 128 47 23 0] run
+    BG-B 8 SCR-W mul plus 8 plus cell 0 eq assert                      -- bit 7 clear
+    BG-B 8 SCR-W mul plus 10 plus cell 1 eq assert                     -- bit 5 set
+    BG-B 8 SCR-W mul plus 15 plus cell 0 eq assert                     -- bit 0 clear
+  -- blend 0 leaves ch==0 transparent: the pixel under bit 7 keeps its old value
+  [128 60 128 0 17
+   160 0 8 128 40 55  160 0 8 128 42 55  160 0 0 128 44 55
+   128 1 128 47 23
+   128 0 128 47 23 0] run
+    BG-B 8 SCR-W mul plus 10 plus cell 0 eq assert                     -- ch1 -> colour 0
+    BG-B 8 SCR-W mul plus 8 plus cell 0 eq assert
+  -- flip-x mirrors the row: 0x3c is symmetric, so use 0x0f -> 11110000 reversed
+  [128 15 128 0 17
+   160 0 8 128 40 55  160 0 8 128 42 55  160 0 0 128 44 55
+   128 17 128 47 23 0] run
+    BG-B 8 SCR-W mul plus 8 plus cell 1 eq assert                      -- low nibble flipped to the left
+    BG-B 8 SCR-W mul plus 15 plus cell 0 eq assert
+
+  -- --- Console ---
+  [128 104 128 24 23 128 105 128 24 23 128 10 128 24 23 0] run
+    CON-N-I cell 0 eq assert                                           -- LF flushed the buffer
+
+  -- --- the demo ROM actually boots ---
+  reset DEMO-ROM load-rom 256 2000000 run-at
+  SHADE-I 0 plus cell 0 eq assert
+  32 dev2 0 neq assert                                                 -- it installed a screen vector
+  BG-B 0 plus cell 1 eq assert                                         -- and filled the background
+  8 gm 80 eq assert  9 gm 60 eq assert                                 -- px, py at their start values
+  -- one frame of the screen vector, with the right arrow held
+  130 128 dev!  32 dev2 60000 run-at
+  8 gm 81 eq assert                                                    -- px moved right
+  130 64 dev!   32 dev2 60000 run-at
+  8 gm 80 eq assert                                                    -- left moves it back
+  130 0 dev!    32 dev2 60000 run-at
+  8 gm 80 eq assert                                                    -- and it stays put with no input
+  130 32 dev!   32 dev2 60000 run-at
+  9 gm 61 eq assert                                                    -- down moves py
+
+  "uxn-selftest-ok" print halt
+) () if
+
+-- ===== SDL shell =====
+
+args len 0 gt (args 0 get must read must) (DEMO-ROM) if 'ROM let
+ROM load-rom
+256 2000000 run-at
+
+-- SDL keysym -> Varvara Controller button bit
+--   up down left right  z=A x=B lshift=select return=start
+[1073741906 1073741905 1073741904 1073741903 122 120 1073742049 13] 'KEY-SDL let
+[16         32          64          128         1   2   4          8] 'KEY-BIT let
+
+('k let KEY-SDL k index-of () {
+   'ok ('i let 'KEY-BIT i nth must 'bit let
+        130 dev 'b let 130 b bit bor dev!
+        128 dev2 60000 run-at)
+   'no (drop k 0 gt (131 k 255 band dev!  128 dev2 60000 run-at  131 0 dev!) () if)
+ } case) 'key-down let
+
+'keydown (key-down) on
+'keyup ('k let KEY-SDL k index-of () {
+   'ok ('i let 'KEY-BIT i nth must 'bit let
+        130 dev 'b let 130 b bit bnot band 255 band dev!
+        128 dev2 60000 run-at)
+   'no (drop)
+ } case) on
+
+'mousemove ('y let 'x let
+  146 x 2 div 65535 band dev2!  148 y 2 div 65535 band dev2!
+  144 dev2 60000 run-at) on
+'mousedown ('y let 'x let x drop y drop
+  150 1 dev!  144 dev2 60000 run-at) on
+'mouseup ('y let 'x let x drop y drop
+  150 0 dev!  144 dev2 60000 run-at) on
+
+-- The tick handler owns the real machine, so the dirty box is reset here; the
+-- render body only ever sees a copy and cannot clear it.
+'tick (drop
+  DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!
+  32 dev2 60000 run-at) on
+
+-- The render body gets a COPY of the machine, so anything written here is
+-- discarded -- which is why the dirty box is reset in the tick handler above.
+-- The canvas persists between frames, so only the changed rectangle is redrawn.
+( DX0-I cell 'x0 let DY0-I cell 'y0 let DX1-I cell 'x1 let DY1-I cell 'y1 let
+  RY-I y0 cell!
+  (RY-I cell y1 le) (
+    RX-I x0 cell!
+    (RX-I cell x1 le) (
+      RX-I cell 'x let RY-I cell 'y let
+      FG-B y SCR-W mul plus x plus cell 'fg let
+      fg 0 neq (fg) (BG-B y SCR-W mul plus x plus cell) if 'ci let
+      SHADE-I ci plus cell 'sh let
+      x 2 mul y 2 mul 2 2 sh fill-rect
+      RX-I cell 1 plus 'nx let RX-I nx cell!) while
+    RY-I cell 1 plus 'ny let RY-I ny cell!) while
+  drop) show

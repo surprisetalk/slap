@@ -8,9 +8,14 @@
 --   7 8 9 E -> A S D F ,  A 0 B F -> Z X C V.  Sound timer > 0 flashes a border.
 --
 -- The whole machine is one flat int list threaded on the stack (no boxes). Cells
--- are single-slot ints, so `set` is an in-place O(1) store and `nth` a zero-copy
--- read. `cycle` reads its operands from a frozen snapshot of the state and writes
--- results into the working copy on the stack.
+-- are single-slot ints, so `set` is an in-place O(1) store and `peek` an O(1)
+-- non-consuming read. `cycle` decodes and executes one instruction against the
+-- live state without ever copying it -- which is what keeps the per-cycle cost
+-- independent of how big the machine is.
+--
+-- `peek` wants the machine directly under the index, so every `peek must` is
+-- followed by a `let` before the next one, and the few sites that push a value
+-- first bind the read before computing with it.
 
 -- ===== memory map (indices into the state list) =====
 4096 'PC-I let     -- program counter
@@ -35,31 +40,33 @@
 
 -- ===== one instruction =====
 
-(dup 'st let
- 'st PC-I nth must 'pc let
- 'st pc nth must 8 shl 'st pc 1 plus nth must bor 'op let
+(PC-I peek must 'pc let
+ pc peek must 'b0 let
+ pc 1 plus peek must 'b1 let
+ b0 8 shl b1 bor 'op let
  op 12 shr 'hi let
  op 8 shr 15 band 'x let
  op 4 shr 15 band 'y let
  op 15 band 'n let
  op 255 band 'nn let
  op 4095 band 'nnn let
- 'st V-I x plus nth must 'vx let
- 'st V-I y plus nth must 'vy let
+ V-I x plus peek must 'vx let
+ V-I y plus peek must 'vy let
  PC-I pc 2 plus set must
  hi 0 eq (
    nn 224 eq (
      0 (dup 2048 lt) ('ci let DISP-I ci plus 0 set must ci 1 plus) while drop
    ) (
    nn 238 eq (
-     'st SP-I nth must 1 sub 'rsp let
+     SP-I peek must 1 sub 'rsp let
      SP-I rsp set must
-     PC-I 'st STK-I rsp plus nth must set must
+     STK-I rsp plus peek must 'ret let
+     PC-I ret set must
    ) () if) if
  ) (
  hi 1 eq ( PC-I nnn set must ) (
  hi 2 eq (
-   'st SP-I nth must 'csp let
+   SP-I peek must 'csp let
    STK-I csp plus pc 2 plus set must
    SP-I csp 1 plus set must
    PC-I nnn set must
@@ -98,20 +105,20 @@
  ) (
  hi 9 eq ( vx vy neq (PC-I pc 4 plus set must) () if ) (
  hi 10 eq ( IDX-I nnn set must ) (
- hi 11 eq ( PC-I nnn 'st V-I nth must plus set must ) (
+ hi 11 eq ( V-I peek must 'v0 let  PC-I nnn v0 plus set must ) (
  hi 12 eq ( V-I x plus 256 random nn band set must ) (
  hi 13 eq (
-   'st IDX-I nth must 'ir let
+   IDX-I peek must 'ir let
    vx 64 wrap 'dx let  vy 32 wrap 'dy let
    V-I 15 plus 0 set must
    0 (dup n lt) ('row let
-     'st ir row plus nth must 'spr let
+     ir row plus peek must 'spr let
      0 (dup 8 lt) ('bit let
        spr 7 bit sub shr 1 band 1 eq (
          dx bit plus 'px let  dy row plus 'py let
          px 64 lt py 32 lt and (
            py 64 mul px plus DISP-I plus 'di let
-           'st di nth must 'old let
+           di peek must 'old let
            di old 1 bxor set must
            old 1 eq (V-I 15 plus 1 set must) () if
          ) () if
@@ -120,14 +127,16 @@
      row 1 plus) while drop
  ) (
  hi 14 eq (
-   'st KEY-I vx 15 band plus nth must 'pressed let
+   KEY-I vx 15 band plus peek must 'pressed let
    nn 158 eq ( pressed 1 eq (PC-I pc 4 plus set must) () if ) (
    nn 161 eq ( pressed 1 eq not (PC-I pc 4 plus set must) () if ) () if) if
  ) (
  hi 15 eq (
-   nn 7 eq ( V-I x plus 'st DT-I nth must set must ) (
+   nn 7 eq ( DT-I peek must 'dtr let  V-I x plus dtr set must ) (
    nn 10 eq (
-     list 0 (dup 16 lt) (dup 'ki let 'st KEY-I ki plus nth must swap (push) dip 1 plus) while drop
+     -- the accumulator and counter sit above the machine; nested dip lifts both
+     -- out of the way so peek sees the machine at top of stack
+     list 0 (dup 16 lt) (dup 'ki let ((KEY-I ki plus peek must) dip) dip (swap push) dip 1 plus) while drop
      1 index-of () {
        'ok ('kf let V-I x plus kf set must)
        'no (drop PC-I pc set must)
@@ -135,22 +144,22 @@
    ) (
    nn 21 eq ( DT-I vx set must ) (
    nn 24 eq ( ST-I vx set must ) (
-   nn 30 eq ( IDX-I 'st IDX-I nth must vx plus 65535 band set must ) (
+   nn 30 eq ( IDX-I peek must 'iv let  IDX-I iv vx plus 65535 band set must ) (
    nn 41 eq ( IDX-I 80 vx 15 band 5 mul plus set must ) (
    nn 51 eq (
-     'st IDX-I nth must 'ib let
+     IDX-I peek must 'ib let
      ib vx 100 div set must
      ib 1 plus vx 10 div 10 mod set must
      ib 2 plus vx 10 mod set must
    ) (
    nn 85 eq (
-     'st IDX-I nth must 'is5 let
-     0 (dup x 1 plus lt) ('fi let is5 fi plus 'st V-I fi plus nth must set must fi 1 plus) while drop
+     IDX-I peek must 'is5 let
+     0 (dup x 1 plus lt) ('fi let V-I fi plus peek must 'fv let  is5 fi plus fv set must  fi 1 plus) while drop
      IDX-I is5 x plus 1 plus set must
    ) (
    nn 101 eq (
-     'st IDX-I nth must 'is6 let
-     0 (dup x 1 plus lt) ('gi let V-I gi plus 'st is6 gi plus nth must set must gi 1 plus) while drop
+     IDX-I peek must 'is6 let
+     0 (dup x 1 plus lt) ('gi let is6 gi plus peek must 'mv let  V-I gi plus mv set must  gi 1 plus) while drop
      IDX-I is6 x plus 1 plus set must
    ) () if) if) if) if) if) if) if) if) if
  ) () if) if) if) if) if) if) if) if) if) if) if) if) if) if) if) if
@@ -159,11 +168,11 @@
 -- ===== test helpers (also harmless in play mode) =====
 
 ('v let 'r let V-I r plus v set must) 'sr let          -- set register:  state r v sr
-('r let dup V-I r plus get must) 'rv let               -- read register: state r rv -> state val
+('r let V-I r plus peek must) 'rv let                  -- read register: state r rv -> state val
 ('lo2 let 'hi2 let 512 hi2 set must 513 lo2 set must) 'op2! let  -- place opcode at 512: state hi lo op2!
 ('v let 'a let a v set must) 'sm let                   -- set memory:    state addr val sm
-(dup PC-I get must) 'rpc let                           -- read PC:       state rpc -> state pc
-('ncy let 0 (dup ncy lt) (swap cycle swap 1 plus) while drop) 'run-n let  -- run count cycles
+(PC-I peek must) 'rpc let                              -- read PC:       state rpc -> state pc
+('ncy let ncy (cycle) repeat) 'run-n let               -- run count cycles
 
 -- standard CHIP-8 font, 16 glyphs x 5 bytes, loaded at address 80
 [240 144 144 144 240  32 96 32 32 112  240 16 240 128 240  240 16 240 16 240

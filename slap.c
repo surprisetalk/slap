@@ -246,6 +246,14 @@ static void frame_bind(Frame *f, uint32_t sym, Value *vals, int slots, int recur
         save_buf[save_buf_sp++]=val_int(b->recur);
         VCPY(&save_buf[save_buf_sp],&f->vals[b->offset],b->slots);save_buf_sp+=b->slots;}
     if (slots <= b->allocated) VCPY(&f->vals[b->offset],vals,slots);
+    /* Rebinding a name to a bigger value normally abandons its old region. When
+       that region is the top of the arena nothing live sits above it, so extend
+       in place instead -- otherwise an accumulator loop leaks its whole history
+       and dies with "frame value storage full" after a few hundred turns. */
+    else if (b->allocated > 0 && b->offset + b->allocated == f->vals_used
+             && !(frame_save_active && f==frame_save_target && (b-f->bindings)<frame_save_sbc)) {
+        if (b->offset + slots > FRAME_VALS_MAX) die("frame value storage full");
+        VCPY(&f->vals[b->offset],vals,slots); f->vals_used = b->offset + slots; b->allocated = slots; }
     else { int off = f->vals_used; if (off + slots > FRAME_VALS_MAX) die("frame value storage full");
         VCPY(&f->vals[off],vals,slots ); f->vals_used += slots; b->offset = off; b->allocated = slots; }
     b->slots = slots; b->recur = recur;
@@ -392,7 +400,7 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
 static int eval_depth = 0;
 #define EVAL_DEPTH_MAX 10000
 static uint32_t S_LET, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_NO, S_CASE, S_MUST, S_QUOTE;
-static uint32_t S_GET, S_POP, S_AT, S_NTH, S_SET, S_EDIT, S_INDEXOF, S_STRFIND;
+static uint32_t S_GET, S_PEEK, S_POP, S_AT, S_NTH, S_SET, S_EDIT, S_INDEXOF, S_STRFIND;
 static void syms_init(void);
 /* ---- TYPE SYSTEM ---- */
 typedef enum { DIR_IN, DIR_OUT } SlotDir;
@@ -422,7 +430,7 @@ static void syms_init(void) {
     S_IF=sym_intern("if"); S_EFFECT=sym_intern("effect"); S_CHECK=sym_intern("check");
     S_UNION=sym_intern("union"); S_OK=sym_intern("ok"); S_NO=sym_intern("no");
     S_CASE=sym_intern("case"); S_MUST=sym_intern("must"); S_QUOTE=sym_intern("quote");
-    S_GET=sym_intern("get"); S_POP=sym_intern("pop"); S_AT=sym_intern("at"); S_NTH=sym_intern("nth");
+    S_GET=sym_intern("get"); S_PEEK=sym_intern("peek"); S_POP=sym_intern("pop"); S_AT=sym_intern("at"); S_NTH=sym_intern("nth");
     S_SET=sym_intern("set"); S_EDIT=sym_intern("edit"); S_INDEXOF=sym_intern("index-of"); S_STRFIND=sym_intern("str-find");
     for (int i = 0; i < HO_OP_COUNT; i++) ho_ops[i].sym = sym_intern(ho_ops[i].name);
 }
@@ -982,8 +990,15 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
             tc_error(tc, line, 0, "'%s' expected box, got %s", ho->name, constraint_name(tc->data[tc->sp-1].type));
         if ((ho->flags & HO_BOX_BORROW) && tc->sp > 0 && tc->data[tc->sp-1].type == TC_BOX) {
             TypeConstraint ct = tc_top_content(tc, TC_BOX); tc->data[tc->sp-1].borrowed++;
-            if (bk && bteff && bteff->has_let && (ct == TC_LIST || ct == TC_REC || ct == TC_TUPLE || ct == TC_TAGGED))
-                tc_error_hard(tc, line, 0, "'lend' body may not 'let'-bind the snapshot as a word-accessible name when the box contains a compound value (%s) — pulling the snapshot to the stack aliases the box's backing storage and later 'mutate' calls would silently corrupt it. Use `'name k nth` for indexed access without aliasing.", constraint_name(ct));
+            /* Fires on box/dict content, not on list/rec/tuple/tagged. BOX_UNPACK
+               copies the box's Value run bitwise, so a snapshot built only from
+               ints, floats, symbols and compound headers shares no heap with the
+               box -- tests/expect.slap pins that independence. What it does share
+               is any box or dict pointer inside, and `mutate` frees those out
+               from under the snapshot. So this guard used to reject the safe
+               cases and miss the one that actually use-after-frees. */
+            if (bk && bteff && bteff->has_let && (ct == TC_BOX || ct == TC_DICT))
+                tc_error_hard(tc, line, 0, "'lend' body may not 'let'-bind the snapshot when the box contains a %s — the snapshot copies the pointer, not the contents, so a later 'mutate' would free it while the binding still refers to it. Read it out with `k peek` instead of binding it.", constraint_name(ct));
             int r = bk ? (1 - eff_c + eff_p) : 1; if (r < 0) r = 0;
             for (int j = 0; j < r; j++) tc_push(tc, (j==r-1&&bo!=TC_NONE)?bo:(j==0&&ct!=TC_NONE)?ct:TC_NONE, line);
             int bi = tc->sp - r - 1; if (bi >= 0) tc->data[bi].borrowed--;
@@ -1560,8 +1575,19 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                                 }
                             }
                         }
-                        if (tc->lend_depth > 0 && vt.borrowed > 0 && (vt.type == TC_LIST || vt.type == TC_REC || vt.type == TC_TUPLE || vt.type == TC_TAGGED)) {
-                            tc_error_hard(tc, t->line, vt.source_line, "cannot 'let'-bind compound value '%s' (%s) inside a 'lend' body — the snapshot aliases the box's backing storage and would observe later mutations", sym_name(ns), constraint_name(vt.type));
+                        /* Dict is typed stackable but is a heap object the runtime
+                           treats as uniquely owned: `drop` (and `len`) free the
+                           DictData, while frame_bind copies the Value bitwise. So
+                           a let-bound dict is an alias, and consuming either side
+                           leaves the other reading freed memory -- which surfaces
+                           as a wrong answer from `of`, not a crash. Thread it on
+                           the stack instead; kv-server.slap is the worked example. */
+                        if (vt.type == TC_DICT) {
+                            tc_error_hard(tc, t->line, vt.source_line, "cannot 'let'-bind a dict as '%s' — a dict is a heap object and the binding would alias it, so dropping either copy leaves the other reading freed memory. Thread the dict on the stack instead (see examples/kv-server.slap), or use a record if you want a value you can bind.", sym_name(ns));
+                            break;
+                        }
+                        if (tc->lend_depth > 0 && vt.borrowed > 0 && (vt.type == TC_BOX || vt.type == TC_DICT)) {
+                            tc_error_hard(tc, t->line, vt.source_line, "cannot 'let'-bind '%s' (%s) inside a 'lend' body — the snapshot holds the pointer, not a copy, so a later 'mutate' would free it while '%s' still refers to it", sym_name(ns), constraint_name(vt.type), sym_name(ns));
                             break;
                         }
                         if (!is_recur && i >= tc->user_start) tc_check_redef(tc, ns, t->line);
@@ -1986,6 +2012,26 @@ static inline void prim_get_impl(Frame *e, int tagged) {
     sp-=s; SPUSH(eb,ref.slots); if(tagged) push_ok();
 }
 MUST_PAIR(get)
+/* `get` minus the consume: the compound stays, so reads cost nothing extra and a
+   state machine never needs `dup` to look at itself. O(1) whenever every element
+   is one slot -- see compound_elem's total_slots==len+1 fast path. */
+static inline void prim_peek_impl(Frame *e, int tagged) {
+    (void)e; int64_t idx=pop_int(); Value top=speek();
+    COMPOUND_GUARD(top, "peek", "cannot index tagged value");
+    int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
+    if(base<0) die("peek: stack underflow: need %d slots, have %d", s, sp);
+    ElemRef ref=compound_elem(&stack[base],s,len,(int)idx);
+    if(ref.base<0) { if(tagged) push_none(); else die("peek: index %lld out of bounds (len %d)",(long long)idx,len); return; }
+    if(sp+ref.slots>STACK_MAX) die("peek: stack overflow");
+    /* The element ends at or before base+s-1 == sp-1, strictly below the
+       destination at stack[sp], so the copy cannot overlap and needs no temp
+       buffer (unlike `get`, whose Value eb[LOCAL_MAX] is 512KB of C stack).
+       deep_copy_values, not VCPY: the compound survives, so a shallow copy
+       would leave two owners of any box/dict pointer inside the element. */
+    deep_copy_values(&stack[sp],&stack[base+ref.base],ref.slots); sp+=ref.slots;
+    if(tagged) push_ok();
+}
+MUST_PAIR(peek)
 static inline void prim_set_impl(Frame *e, int tagged) {
     (void)e; POP_VAL(v); int64_t idx=pop_int(); Value top=speek();
     COMPOUND_GUARD(top, "set", "cannot index tagged value");
@@ -2014,7 +2060,10 @@ static inline void prim_nth_impl(Frame *env, int tagged) {
     int len=(int)top.as.compound.len;
     ElemRef ref=compound_elem(data,s,len,(int)idx);
     if(ref.base<0) { if(tagged) push_none(); else die("nth: index %lld out of bounds (len %d)",(long long)idx,len); return; }
-    SPUSH(&data[ref.base],ref.slots); if(tagged) push_ok();
+    /* deep_copy, not SPUSH: the binding keeps its copy, so sharing a box/dict
+       pointer with the pushed value would let one `drop` free the other's data. */
+    if(sp+ref.slots>STACK_MAX) die("nth: stack overflow");
+    deep_copy_values(&stack[sp],&data[ref.base],ref.slots); sp+=ref.slots; if(tagged) push_ok();
 }
 MUST_PAIR(nth)
 static void prim_slice_n(int take) {
@@ -2174,8 +2223,17 @@ static void prim_mutate(Frame *env) {
 }
 static DictData *dict_clone(DictData *orig);
 static void dict_data_free(DictData *dd);
+/* A box whose contents point back at itself is constructible -- `prim_mutate`
+   VCPYs the body's output into bd->data, so a body that pushes the box makes
+   bd->data[0].as.box == bd. Both walks below would then recurse forever, which
+   is a SIGSEGV rather than a diagnosable error. Bound the depth instead: real
+   nesting is shallow, so the only thing that trips this is a cycle. */
+#define BOX_DEPTH_MAX 512
+static int box_walk_depth = 0;
 static void deep_copy_values(Value *dst, const Value *src, int slots) {
     VCPY(dst,src,slots);
+    if(++box_walk_depth > BOX_DEPTH_MAX){ box_walk_depth=0;
+        die("box nesting deeper than %d -- a box that contains itself cannot be copied", BOX_DEPTH_MAX); }
     for(int i=0;i<slots;i++){
         if(dst[i].tag==VAL_BOX){
             BoxData *o=(BoxData*)dst[i].as.box; BoxData *c=malloc(sizeof(BoxData));
@@ -2185,8 +2243,11 @@ static void deep_copy_values(Value *dst, const Value *src, int slots) {
             dst[i].as.box=dict_clone((DictData*)dst[i].as.box);
         }
     }
+    box_walk_depth--;
 }
 static void deep_free_values(Value *vals, int slots) {
+    if(++box_walk_depth > BOX_DEPTH_MAX){ box_walk_depth=0;
+        die("box nesting deeper than %d -- a box that contains itself cannot be freed", BOX_DEPTH_MAX); }
     for(int i=0;i<slots;i++){
         if(vals[i].tag==VAL_DICT) dict_data_free((DictData*)vals[i].as.box);
         else if(vals[i].tag==VAL_BOX){
@@ -2194,6 +2255,7 @@ static void deep_free_values(Value *vals, int slots) {
             if(bd->data){ deep_free_values(bd->data,bd->slots); free(bd->data); bd->data=NULL; bd->slots=-1; }
         }
     }
+    box_walk_depth--;
 }
 static BoxData *box_clone(BoxData *orig) { BoxData *c=malloc(sizeof(BoxData));c->data=malloc(orig->slots*sizeof(Value));c->slots=orig->slots;deep_copy_values(c->data,orig->data,orig->slots);return c; }
 static DictData *dict_clone(DictData *orig);
@@ -2321,7 +2383,11 @@ static void prim_of(Frame *e) {
     DictData *dd=(DictData*)dv.as.box;
     DictEntry *ent=dict_get(dd,key,klen); free(key);
     if(!ent){ push_none(); return; }
-    SPUSH(ent->vals,ent->nvals); push_ok();
+    /* deep_copy, not SPUSH: the dict survives this call, so a shallow copy would
+       leave the entry and the pushed value sharing any box/dict pointer inside.
+       Matches prim_values and dict_push_kv_tuple. */
+    if(sp+ent->nvals>STACK_MAX) die("of: stack overflow");
+    deep_copy_values(&stack[sp],ent->vals,ent->nvals); sp+=ent->nvals; push_ok();
 }
 static void prim_remove(Frame *e) {
     (void)e; char *key; int klen; pop_string_bytes("remove",&key,&klen);
@@ -2475,7 +2541,8 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
                 PrimFn xf=prim_lookup(tt->as.sym);
                 if(xf && j+1<end && toks[j+1].tag==TOK_WORD && toks[j+1].as.sym==S_MUST) {
                     PrimFn fused=NULL; uint32_t s=tt->as.sym;
-                    if(s==S_GET) fused=prim_get_must; else if(s==S_POP) fused=prim_pop_must;
+                    if(s==S_GET) fused=prim_get_must; else if(s==S_PEEK) fused=prim_peek_must;
+                    else if(s==S_POP) fused=prim_pop_must;
                     else if(s==S_AT) fused=prim_at_must; else if(s==S_NTH) fused=prim_nth_must;
                     else if(s==S_SET) fused=prim_set_must; else if(s==S_EDIT) fused=prim_edit_must;
                     else if(s==S_INDEXOF) fused=prim_indexof_must; else if(s==S_STRFIND) fused=prim_strfind_must;
@@ -2547,7 +2614,7 @@ static const char *BUILTIN_TYPES =
     "'fsqrt" F1E "'ffloor" F1E "'fceil" F1E "'fround" F1E "'fexp" F1E "'flog" F1E
     "'fpow" F2E "'fatan2" F2E
     "'list [list" MO "'len [sized auto in  int" MO "'push ['a seq own in  'a own in  'a seq" MO "'pop ['a seq own in  'a seq move out  {'ok 'a 'no ()} either move out] effect\n"
-    "'get ['a seq own in  int lent in  {'ok 'a 'no ()} either move out] effect\n'nth [sym lent in  int lent in  {'ok 'a 'no ()} either move out] effect\n'set ['a seq own in  int lent in  'a own in  {'ok 'a 'no ()} either move out] effect\n'cat ['a semigroup own in  'a semigroup own in  'a semigroup" MO
+    "'get ['a seq own in  int lent in  {'ok 'a 'no ()} either move out] effect\n'peek ['a seq own in  int lent in  'a seq move out  {'ok 'a 'no ()} either move out] effect\n'nth [sym lent in  int lent in  {'ok 'a 'no ()} either move out] effect\n'set ['a seq own in  int lent in  'a own in  {'ok 'a 'no ()} either move out] effect\n'cat ['a semigroup own in  'a semigroup own in  'a semigroup" MO
     "'take-n" LNE "'drop-n" LNE "'range [int lent in  int lent in  int list" MO "'sort ['a ord list own in  'a ord list" MO
     "'index-of ['a list own in  'a lent in  {'ok int 'no ()} either move out] effect\n'select" LIE "'keep-mask" LIE
     "'rise" LGE "'fall" LGE "'shape" LGE "'classify" LGE "'compose [tuple own in  tuple own in  tuple" MO "'rec [rec" MO
@@ -2834,12 +2901,19 @@ static void prim_utf8_decode(Frame *e) {
 }
 
 #ifndef SLAP_WASM
+/* The signatures take the socket `own in` and hand back a fresh box, so the
+   incoming BoxData is dead the moment we have the fd. Freeing it here matters:
+   both server examples loop on tcp-accept/recv/send forever, and leaking 48
+   bytes per operation is a slow leak in exactly the programs meant to stay up.
+   (prim_tcp_close does its own spop and free, so it does not double up.) */
 static int pop_socket_fd(const char *who) {
     Value v = spop();
     if (v.tag != VAL_BOX) die("%s: expected socket (box)", who);
     BoxData *bd = (BoxData*)v.as.box;
     if (bd->slots != 1 || bd->data[0].tag != VAL_INT) die("%s: socket box must contain a single int", who);
-    return (int)bd->data[0].as.i;
+    int fd = (int)bd->data[0].as.i;
+    free(bd->data); free(bd);
+    return fd;
 }
 static void push_socket_box(int fd) {
     BoxData *bd=malloc(sizeof(BoxData));bd->data=malloc(sizeof(Value));bd->slots=1;bd->data[0]=val_int(fd);
@@ -2946,7 +3020,7 @@ static void register_prims(void) {
         R(itof,itof),R(ftoi,ftoi),R(fsqrt,fsqrt),
         R(ffloor,ffloor),R(fceil,fceil),R(fround,fround),R(fexp,fexp),R(flog,flog),R(fpow,fpow),R(fatan2,fatan2),
         {"compose",prim_concat},R(list,list),R(len,size),R(push,push_op),R(pop,pop),
-        R(get,get),R(nth,nth),R(set,set),R(cat,concat),
+        R(get,get),R(peek,peek),R(nth,nth),R(set,set),R(cat,concat),
         {"take-n",prim_take_n},{"drop-n",prim_drop_n},R(range,range),
         R(fold,fold),R(each,each),R(sort,sort),{"index-of",prim_indexof},
         R(at,at),R(rise,rise),R(fall,fall),R(shape,shape),

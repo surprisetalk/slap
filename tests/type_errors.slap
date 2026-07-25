@@ -199,6 +199,18 @@
 -- TYPE ERROR: get on tagged
 1 'x tag 0 get
 
+-- EXPECT: expected seq, got tagged
+-- TYPE ERROR: peek on tagged
+1 'x tag 0 peek
+
+-- EXPECT: expected seq, got tuple
+-- TYPE ERROR: peek on tuple (seq is list-only)
+(1 2 3) 0 peek
+
+-- EXPECT: they must agree
+-- TYPE ERROR: peek's either output binds the payload tvar, so default must match
+[1 2 3] 0 peek 'sym default
+
 -- EXPECT: expected semigroup, got tagged
 -- TYPE ERROR: cat on tagged
 [1] 1 'x tag cat
@@ -306,9 +318,11 @@ dict (drop) each free
 -- TYPE ERROR: linear value let-bound inside quotation, never used → captured and leaked
 (42 box 'b let) 'leak let leak
 
--- EXPECT: aliases the box
--- TYPE ERROR: let-bind compound inside lend body (aliases box backing)
-[1 2 3] box ('snap let snap) lend swap free drop
+-- EXPECT: still refers to it
+-- TYPE ERROR: let-bind a box-typed snapshot inside a lend body. Only box/dict
+-- content is aliased -- BOX_UNPACK copies list/rec/tuple/tagged content bitwise,
+-- so binding those is safe and is deliberately allowed (see expect.slap).
+42 box box 'ob let ob ('inner let ob (99 box) mutate free inner free 1) lend swap free drop
 
 -- EXPECT: requires copyable
 -- TYPE ERROR: closure capturing linear binding cannot be duplicated
@@ -383,8 +397,8 @@ rec 42 box 'b into drop
 [1 2 3] 0 42 box set drop
 
 -- EXPECT: 'let'-bind the snapshot
--- TYPE ERROR: lend body binds the snapshot as a word-accessible name (probe 18 shape)
-[1 2 3] box ('x let x) lend print free
+-- TYPE ERROR: lend body binds a dict-typed snapshot as a word-accessible name
+dict "k" 1 insert box ('x let x) lend print free
 
 -- EXPECT: missing clause
 -- TYPE ERROR: case on a typed union missing a variant

@@ -46,7 +46,7 @@ FIXTURES := tests/expect.slap tests/type.slap tests/panic.slap tests/type_errors
             tests/adversarial/probes.slap tests/adversarial/run.sh \
             tests/run_panic.py tests/run_type_errors.py tests/run_euler.py tests/run_wiki.py tests/run_kv.py \
             examples/wiki.slap examples/wiki-pages/Home.txt examples/kv-server.slap examples/kv-client.slap \
-            examples/chip8.slap shell.html
+            examples/chip8.slap examples/uxn.slap shell.html
 check-refs:
 	@{ for n in $(LIBS); do echo examples/lib/$$n.slap; done; \
 	   for f in $(FIXTURES); do echo $$f; done; \
@@ -79,6 +79,8 @@ test: slap check-refs
 	@python3 tests/run_kv.py
 	@./slap --check < examples/chip8.slap > /dev/null
 	@set -o pipefail; ./slap --headless < examples/chip8.slap | grep -q chip8-selftest-ok && echo "chip8: opcode self-test passed"
+	@./slap --check < examples/uxn.slap > /dev/null
+	@set -o pipefail; ./slap --headless < examples/uxn.slap | grep -q uxn-selftest-ok && echo "uxn: opcode self-test passed"
 	@for f in icn chr nmt tga gly ulz parse; do ./slap < examples/lib/$$f.slap > /dev/null && ./slap --check < examples/lib/$$f.slap || exit 1; done
 	@set -o pipefail; for combo in "icn ufx" "strings parse json" "strings parse xml" "strings parse xml rss"; do files=$$(echo $$combo | sed 's|[^ ]*|examples/lib/&.slap|g'); cat $$files | ./slap > /dev/null && cat $$files | ./slap --check || exit 1; done
 	@bash tests/adversarial/run.sh

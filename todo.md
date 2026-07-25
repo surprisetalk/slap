@@ -1,8 +1,25 @@
 - [ ] borrow checking plus reference counting: https://verdagon.dev/blog/ante-blending-borrowing-rc
+  - investigated and deferred. RC fixes none of the defects that were actually
+    there, and costs 3 of the 6 linear-discipline probes (`42 box dup` and
+    friends would become CLEAN_RUN). Box wants write-through on `mutate` while
+    dict wants copy-on-write, and the ~69 bare `sp--` sites give RC nowhere to
+    hook. RC for lists/records is worse still: compounds are flat Value runs on
+    the stack with no heap identity, and heap-boxing them would destroy the O(1)
+    in-place `set` that chip8/uxn are built on.
+  - what the investigation did turn up, now fixed: the frame value arena leaked
+    on every growing rebind (an accumulator loop died at ~520 iterations);
+    `nth`/`of` pushed heap pointers without copying (SIGTRAP / silent wrong
+    answers); a self-referential box segfaulted the copy and free walks; the
+    lend guard fired on the four provably-safe content types and missed the two
+    that alias; a let-bound dict aliased its heap object; sockets leaked a
+    BoxData per send/recv/accept.
+  - still open, filed as KNOWN-GAP probes: `'x tag` launders a box past
+    `insert`'s linear guard; bare Box bindings aren't single-use checked.
+  - revisit only with a concrete program that needs shared mutable cells.
 
 - [ ] replicate some big projects using only slap to confirm it works
-  - done: `examples/wiki.slap` (HTTP wiki server), `examples/kv-server.slap`+`kv-client.slap` (TCP key/value store), `examples/chip8.slap` (CHIP-8 emulator) — all wired into `make test`
-  - next: more emulators (pico8, tic80, uxntal, ...) per the notes below
+  - done: `examples/wiki.slap` (HTTP wiki server), `examples/kv-server.slap`+`kv-client.slap` (TCP key/value store), `examples/chip8.slap` (CHIP-8 emulator), `examples/uxn.slap` (Uxn/Varvara emulator) — all wired into `make test`
+  - next: pico8/tic80 both need a Lua interpreter first — that's the real next project, not another emulator shell. decker or duskos are closer to reach.
 
 - [ ] convert my personal app library to slap (e.g. snews, snail)?
 

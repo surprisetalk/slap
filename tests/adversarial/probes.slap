@@ -115,3 +115,85 @@ none must drop
 -- EXPECT: CLEAN_RUN
 -- drop-n clamps rather than panicking
 [1 2 3] 99 drop-n drop
+
+-- ===== peek: the non-consuming indexed read =====
+
+-- EXPECT: CLEAN_RUN
+-- out-of-bounds peek is 'no and the list stays on the stack
+[1 2 3] 99 peek 0 default drop drop
+
+-- EXPECT: PANIC
+-- ...but peek must still panics
+[1 2 3] 99 peek must drop drop
+
+-- EXPECT: CLEAN_RUN
+-- peek deep-copies the element, so dropping the extracted dict must not free the
+-- one the list still holds. A shallow VCPY here is CRASH(sig 5).
+dict "k" 1 insert list swap push 0 peek must drop drop
+
+-- EXPECT: CLEAN_RUN
+-- peek inside a lend body reads the snapshot without let-binding it (which the
+-- lend guard would reject). lend leaves the box under both of peek's results.
+[1 2 3] box (1 peek must) lend drop drop free
+
+-- ===== heap identity: box and dict are pointers, everything else is copied =====
+
+-- EXPECT: CLEAN_RUN
+-- `nth` used to SPUSH the binding's storage verbatim, so the pushed dict and the
+-- one still in the list shared a DictData. Dropping one freed the other's
+-- entries and the next read aborted in malloc. Now it deep-copies.
+dict "k" 1 insert list swap push 'l let
+'l 0 nth must drop  'l 0 nth must dict-keys len 1 eq assert drop
+
+-- EXPECT: CLEAN_RUN
+-- same bug in `of`, which unlike dict-values and dict_push_kv_tuple pushed the
+-- entry's storage without copying while the dict lived on
+dict "k" 42 box 'x tag insert "k" of must swap drop 0 {'x (free)} case
+
+-- EXPECT: PANIC
+-- a box whose contents point at itself is constructible through mutate. Both
+-- deep_copy_values and deep_free_values used to recurse on it until the C stack
+-- died (CRASH sig 11); now the walk is depth-bounded and says so.
+42 box box 'b let b (drop b) mutate clone free free
+
+-- EXPECT: CLEAN_RUN
+-- read-only traversal of a boxed list. The lend guard used to reject this even
+-- though BOX_UNPACK copies list content bitwise (expect.slap pins that), which
+-- forced euler/23.slap to use `mutate` for a scan that changes nothing.
+[1 2 3] box ('l let l 0 get must) lend swap free drop
+
+-- EXPECT: TYPECHECK_REJECT
+-- ...while box-in-box, the case that really is aliased by pointer, used to slip
+-- through and use-after-free with a misleading "double-free" message
+42 box box 'ob let
+ob ('inner let ob (99 box) mutate free inner free 1) lend swap free drop
+
+-- ===== frame value arena =====
+
+-- EXPECT: CLEAN_RUN
+-- rebinding a name to a larger value abandoned its arena region every time, so
+-- an accumulator loop leaked its whole history and died with "frame value
+-- storage full" after ~500 turns. Now a binding that owns the top of the arena
+-- grows in place.
+"" 0 (dup 4000 lt) ('gi let 'gacc let gacc "y" cat gi 1 plus) while drop len 4000 eq assert
+
+-- ===== still open =====
+
+-- EXPECT: TYPECHECK_REJECT
+-- a let-bound dict aliases the heap object, so `d drop` frees it and the binding
+-- dangles -- and `of` then returned a wrong answer read out of freed memory
+-- rather than failing. kv-server.slap:14 documented the stack-threading
+-- discipline in a comment; now the checker enforces it.
+dict "a" "b" insert 'd let d drop d "a" of must drop
+
+-- EXPECT: CLEAN_RUN
+-- KNOWN-GAP: insert's linear guard tests the top-level AT_LINEAR flag only, so
+--   wrapping a box in a tag launders it into a stackable dict.
+-- GAP-TARGET: TYPECHECK_REJECT
+dict "k" 42 box 'x tag insert drop
+
+-- EXPECT: PANIC
+-- KNOWN-GAP: bare Box bindings are treated as mutable references and are not
+--   single-use checked; the double-consume is left to the runtime poison.
+-- GAP-TARGET: TYPECHECK_REJECT
+42 box 'b let b free b free

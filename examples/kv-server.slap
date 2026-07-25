@@ -11,8 +11,9 @@
 --
 -- Anything else answers ERR <why>. Keys are 1-64 printable non-space bytes;
 -- values may hold spaces but not tabs (the snapshot is one key TAB value LF
--- per line). The store is a dict threaded on the stack -- dicts must never be
--- let-bound or boxed.
+-- per line). The store is a dict threaded on the stack -- a dict is a heap
+-- object, so binding one would alias it; the checker now rejects `'name let`
+-- on a dict outright.
 
 args len 0 gt (args 0 get must ok parse-int must len 0 eq assert dup 0 gt over 65536 lt and assert) (4321) if 'PORT let
 args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let

@@ -94,6 +94,20 @@ list 10 push 20 push [10 20] eq assert
 [10 20 30] 1 get must 20 eq assert
 [10 20 30] 1 99 set must [10 99 30] eq assert
 
+-- ===== Lists: peek (get without the consume) =====
+[10 20 30] 1 peek must 20 eq assert [10 20 30] eq assert
+[10 20 30] 0 peek must 10 eq assert 2 peek must 30 eq assert drop  -- chains, no dup
+[10 20 30] 99 peek none eq assert [10 20 30] eq assert             -- OOB is 'no, list stays
+[10 20 30] -1 peek none eq assert drop
+[] 0 peek none eq assert [] eq assert
+[[1 2] [3 4]] 1 peek must [3 4] eq assert [[1 2] [3 4]] eq assert  -- multi-slot elem, O(n) path
+"hello" 1 peek must 101 eq assert drop
+[1 2 3] 0 peek -1 default 1 eq assert drop                         -- either plumbing
+[0 0 0] 1 peek must 0 eq assert 1 7 set must 1 peek must 7 eq assert drop
+[1 2 3] box (1 peek must) lend 2 eq assert [1 2 3] eq assert free  -- no snapshot alias
+-- peek deep-copies, so the extracted dict is independent of the one the list holds
+dict "k" 1 insert list swap push 0 peek must dict-keys len 1 eq assert drop drop
+
 -- ===== Lists: len =====
 [1 2 3] len 3 eq assert
 

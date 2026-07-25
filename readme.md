@@ -211,7 +211,8 @@ list                        -- []
 -- mutation (pop/get/set return tagged; must unwraps or panics on no)
 list 10 push 20 push            -- [10 20]
 [10 20 30] pop must             -- 30 [10 20]
-[10 20 30] 1 get must           -- 20
+[10 20 30] 1 get must           -- 20            (consumes the list)
+[10 20 30] 1 peek must          -- 20, with [10 20 30] still under it
 [10 20 30] 1 99 set must        -- [10 99 30]
 [1 2] [3 4] cat                 -- [1 2 3 4]
 
@@ -354,6 +355,8 @@ All code is type-checked before execution. Types are inferred — no annotations
 
 Boxes must be consumed via `free`, `lend`, `mutate`, or `clone`. `lend` borrows a stackable snapshot from a box. Dicts are stackable: use `dup` to branch and `drop` to discard. `free`/`clone` reject dicts at type time — boxes only.
 
+A dict is the one stackable type that cannot be `let`-bound. It is a heap object, and a binding would alias it rather than copy it, so dropping either copy would leave the other reading freed memory. Thread it on the stack (see `examples/kv-server.slap`) or use a record if you need something bindable.
+
 ### effect annotations
 
 Optional type annotations declare stack effects:
@@ -385,7 +388,7 @@ Built-in protocols group types by capability. Use in effect annotations:
 | Protocol | Keyword | Types | Operations |
 |----------|---------|-------|------------|
 | Sized | `sized` | list, tuple, record, dict | `len` |
-| Seq | `seq` | list | `get`, `set`, `push`, `pop`, `cat` |
+| Seq | `seq` | list | `get`, `peek`, `set`, `push`, `pop`, `cat` |
 | Eq | `eq` | all stackable | `eq` |
 | Ord | `ord` | int, float | `lt`, `sort` |
 | Num | `num` | int, float | `plus`, `sub`, `mul`, `div` |
@@ -652,15 +655,19 @@ Interactive SDL demos in `examples/`:
 | `ant.slap` | Langton's ant cellular automaton |
 | `snake.slap` | Snake game with arrow key controls |
 | `chip8.slap` | CHIP-8 emulator: runs real ROMs, 16-key hex keypad, sound-timer border flash |
+| `uxn.slap` | Uxn/Varvara emulator: full 32-opcode CPU with all mode flags, System/Console/Screen/Controller/Mouse |
 | `dots.slap`, `fish.slap`, `gradient.slap`, `zoom.slap` | More graphics demos |
 
 ```bash
 make slap-sdl
 ./slap-sdl roms/pong.ch8 < examples/chip8.slap   # or no arg for the built-in demo ROM
 ./slap --headless < examples/chip8.slap           # run the opcode self-test (no SDL needed)
+./slap-sdl game.rom < examples/uxn.slap           # likewise for the uxn emulator
 ```
 
-The whole machine — 4 KB of memory, registers, call stack, keypad, and the 64×32 display — is one flat int list threaded on the stack, with no boxes. `set` is an in-place O(1) store and `nth` a zero-copy read, so a `cycle` decodes and executes one instruction by reading its operands from a frozen snapshot and writing results back into the working copy. The full opcode set (including the COSMAC shift/`FX55`/`FX65` quirks and `DXYN` sprite collision) is covered by an in-language self-test that runs on the plain terminal build.
+The whole machine — 4 KB of memory, registers, call stack, keypad, and the 64×32 display — is one flat int list threaded on the stack, with no boxes. `set` is an in-place O(1) store and `peek` an O(1) non-consuming read, so a `cycle` decodes and executes one instruction against the live state without ever copying it. That is what keeps the per-cycle cost independent of how big the machine is. The full opcode set (including the COSMAC shift/`FX55`/`FX65` quirks and `DXYN` sprite collision) is covered by an in-language self-test that runs on the plain terminal build.
+
+`uxn.slap` is the same idea at 16× the scale: a 220191-cell machine holding uxn's full 64 KB address space, both 256-byte stacks, the device page, and two 320×240 screen layers. All 32 base opcodes are written once each — keep, return and short modes are handled by six state cells set during decode, so one `ADD` body serves all eight encodings. Varvara pixels are already 2-bit palette indices, which is exactly the canvas depth, so nothing is lost but hue; the palette is mapped by *rank* rather than absolute luminance so that four shades of one colour stay distinguishable. Roughly 290k instructions/sec. Audio, File and Datetime are stubbed — the file header says why.
 
 App demos (terminal build):
 
@@ -722,8 +729,8 @@ It catches the following at compile time:
 - A linear-capturing closure cannot recurse on itself — each recursive call would re-consume the capture.
 
 **Aliasing through `lend`/`mutate`:**
-- `lend`'s body may not `let`-bind the compound-box snapshot as a word-accessible name — pulling the snapshot to the stack aliases the box's backing storage, and a later `mutate` would corrupt it.
-- Indexed read access via `'name k nth` is exempt — nth doesn't pull the list to the stack.
+- `lend`'s body may not `let`-bind the snapshot when the box contains a **box or a dict** — those are copied by pointer, so a later `mutate` frees the contents while the binding still points at them. Boxed lists, records, tuples and tagged values are copied bitwise and are safe to bind.
+- Indexed read access via `'name k nth` or `k peek` is exempt — neither pulls the list to the stack as a binding.
 
 **Tagged unions:**
 - Tags are open by default; `case` on an untyped tagged value accepts any variant with a default clause.
@@ -739,7 +746,7 @@ It catches the following at compile time:
 - Forward declarations `'name [sig] effect` reconcile with the body when `name` is later defined.
 
 **What the type system does *not* catch:**
-- Division by zero, modulo by zero, out-of-bounds `set` or `nth` (runtime panics).
+- Division by zero, modulo by zero, out-of-bounds `set`, `nth`, or `peek` (runtime panics).
 - Non-exhaustive `case` on a tagged value with no `union` declaration — the default clause silently fires on any unmatched variant (this is by design; declare a union to opt into exhaustiveness).
 - Correctness of effect-annotation schemas (the user is trusted when they write `[sig] effect`; only the body's *shape* is validated, not its meaning).
 - Recursion depth, memory limits, or other runtime resource exhaustion.
