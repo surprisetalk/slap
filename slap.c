@@ -18,7 +18,16 @@
 #define SYM_MAX   4096
 #define FRAME_MAX 1024
 #define FRAME_HASH_SIZE 2048
-#define FRAME_VALS_MAX 4194304
+/* Sized against measurement, not guesswork. Peak vals_used across the whole
+   suite is 1,000,822 (euler/37, then euler/10 at 1,000,739) -- both bind a
+   million-element sieve snapshot inside a `lend` body. Everything else is tiny:
+   the uxn ROM dump peaks at 331,841, euler/23 at 35,882, and typical programs
+   under 4,000. So this cannot come down much; 2x the real peak is the honest
+   bound. It matters because `vals` is inline in Frame, making the struct
+   FRAME_VALS_MAX*sizeof(Value) bytes -- 64 MiB here, and up to 7 frames are
+   live at once. frame_new now reports allocation failure instead of
+   dereferencing NULL. */
+#define FRAME_VALS_MAX 2097152
 #define TOK_MAX   65536
 #define LOCAL_MAX 16384
 typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX, VAL_TAGGED, VAL_DICT } ValTag;
@@ -221,6 +230,8 @@ static Frame *frame_save_target=NULL;
 static int frame_save_sbc=0;
 static Frame *frame_new(Frame *parent) {
     Frame *f = malloc(sizeof(Frame));
+    if (!f) die("out of memory: cannot allocate a %zu-byte call frame (FRAME_VALS_MAX=%d values of %zu bytes each). Deep recursion needs one of these per level.",
+                sizeof(Frame), FRAME_VALS_MAX, sizeof(Value));
     f->parent = parent; f->bind_count = 0; f->vals_used = 0; f->refcount = 0;
     memset(f->hash, 0, sizeof(f->hash));
     return f;
@@ -1205,6 +1216,14 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
                 }
             }
             if (b->atype.flags & AT_LINEAR) { tc->data[tc->sp-1].flags |= AT_LINEAR; tc->saw_linear_capture = 1; }
+            /* Tag the pushed value with the binding it came from. Looking a Box
+               binding up is free -- `lend` and `mutate` leave the box in place,
+               so the same name is read many times in ordinary code -- but every
+               lookup names the SAME heap cell, so only one of them may reach a
+               consuming word. apply_sig checks this below. TC_BOX is a
+               container, so the src_sym plumbing there won't copy this onto
+               `clone`'s outputs, which are genuinely two different cells. */
+            if (b->atype.type == TC_BOX) tc->data[tc->sp-1].sym_id = sym;
             return;
         }
       }
@@ -1237,9 +1256,17 @@ apply_sig:;
        tuple outputs (e.g. `compose`) can propagate linear-capture downstream.
        Without this, `(b free) (1 plus) compose apply apply` double-consumes. */
     int any_input_linear_tuple = 0;
+    /* Same idea one level up: a tagged output built from a linear input is
+       itself linear. `tag` is the only builtin shaped that way, and without
+       this `42 box 'x tag` hands back a plain stackable that drop/dup/push/
+       insert all accept -- laundering the box past every linear check. */
+    int any_input_linear = 0;
     for (int i = 0; i < ni && i < tc->sp; i++) {
         AbstractType *at = &tc->data[tc->sp-1-i];
-        if ((at->flags & AT_LINEAR) && at->type == TC_TUPLE) { any_input_linear_tuple = 1; break; }
+        if (at->flags & AT_LINEAR) {
+            any_input_linear = 1;
+            if (at->type == TC_TUPLE) { any_input_linear_tuple = 1; break; }
+        }
     }
     int sp2 = tc->sp - 1;
     for (int i = sig->slot_count - 1; i >= 0; i--) {
@@ -1288,6 +1315,22 @@ apply_sig:;
             const char *wn = sym_name(sym);
             if (strcmp(wn,"push")==0 || strcmp(wn,"into")==0 || strcmp(wn,"set")==0 || strcmp(wn,"insert")==0)
                 tc_error(tc, line, at->source_line, "'%s' cannot embed a linear value into a stackable container — linearity would be lost (value from line %d)", wn, at->source_line);
+            /* Only the words that actually retire the cell mark the binding.
+               `swap` and the tcp-* pair also declare `box own in`, but they hand
+               the box straight back out -- treating those as consumption fires
+               on correct code (euler/10's `lend ... swap free`). `clone` counts:
+               it returns the original alongside the copy, so the name is live
+               only until then. Identity rides along on sym_id, which the tvar
+               plumbing above already carries through `swap`. */
+            if (at->type == TC_BOX && at->sym_id &&
+                (strcmp(wn,"free")==0 || strcmp(wn,"tcp-close")==0 || strcmp(wn,"clone")==0)) {
+                TCBinding *bb = tc_lookup(tc, at->sym_id);
+                if (bb && bb->atype.type == TC_BOX) {
+                    if (bb->consumed_line > 0)
+                        tc_error_hard(tc, line, bb->consumed_line, "box '%s' was already consumed on line %d — a Box binding names one heap cell no matter how many times it is looked up, so consuming through it twice is a double free. 'lend' and 'mutate' hand the same box back, so freeing what they return consumes the binding too", sym_name(at->sym_id), bb->consumed_line);
+                    else bb->consumed_line = line;
+                }
+            }
             at->flags |= AT_CONSUMED;
         }
         sp2--;
@@ -1307,6 +1350,7 @@ apply_sig:;
            tuple was AT_LINEAR. Covers `compose`: merging two closures where
            one captures linear must yield a linear-capturing closure. */
         if (any_input_linear_tuple && s->constraint == TC_TUPLE) at->flags |= AT_LINEAR;
+        if (any_input_linear && s->constraint == TC_TAGGED) at->flags |= AT_LINEAR;
         if (s->type_var) { int tv = FIND_TVAR(s->type_var); if (tv > 0) {
             if (tc_is_container(s->constraint) && at->tvar_id > 0) { int ef = tvar_content(tc, at->tvar_id, s->constraint); if (ef > 0) tvar_unify(tc, ef, tv, line); }
             else if (!tc_is_container(s->constraint)) { TypeConstraint r = tvar_resolve(tc, tv); if (r != TC_NONE) at->type = r; at->tvar_id = tv; if (r == TC_BOX) at->flags |= AT_LINEAR; }
@@ -1876,7 +1920,11 @@ static void prim_case(Frame *env) {
         if (found) { SPUSH(payload_buf,payload_s); eval_body(&clauses_buf[br.base],br.slots,env); return; }
         SPUSH(def_buf,def_s); return;
     }
-    int scrut_s=val_slots(top); Value scrut_buf[scrut_s]; VCPY(scrut_buf,&stack[sp-scrut_s],scrut_s); sp-=scrut_s;
+    int scrut_s=val_slots(top);
+    /* The scrutinee is re-pushed for every predicate, so unlike `let` this one
+       really does need a copy -- but on the C stack, so it needs a bound. */
+    if(scrut_s>LOCAL_MAX) die("case: scrutinee too large (%d slots, max %d)", scrut_s, LOCAL_MAX);
+    Value scrut_buf[scrut_s]; VCPY(scrut_buf,&stack[sp-scrut_s],scrut_s); sp-=scrut_s;
     if(clauses_len%2!=0) die("case: need even number of clauses (pred/body pairs)");
     for(int i=0;i<clauses_len;i+=2){
         ElemRef pred_ref=compound_elem(clauses_buf,clauses_s,clauses_len,i);
@@ -1948,7 +1996,13 @@ static inline void eval_body_fast(Value *body, int slots, Frame *env) {
         else if(elem.tag==VAL_XT){
             if(elem.as.xt.fn) elem.as.xt.fn(ee);
             else { uint32_t sym=elem.as.xt.sym;
-                if(sym==S_LET){ uint32_t n=pop_sym(); int ds=val_slots(stack[sp-1]); Value db[ds]; VCPY(db,&stack[sp-ds],ds); sp-=ds; frame_bind(ee,n,db,ds,0); }
+                if(sym==S_LET){ uint32_t n=pop_sym(); int ds=val_slots(stack[sp-1]); if(sp-ds<0) die("let: stack underflow: need %d slots, have %d", ds, sp); sp-=ds;
+                    /* Bind straight off the stack. Staging through a `Value db[ds]`
+                       VLA first put a buffer the size of the bound value on the C
+                       stack, so `'x let` on a list of ~250k elements was a bare
+                       SIGSEGV. frame_bind only ever copies OUT of vals, and the
+                       frame arena is a different array, so there is no aliasing. */
+                    frame_bind(ee,n,&stack[sp],ds,0); }
                 else dispatch_word(sym,ee);
             }
         } else if(is_compound(elem.tag)){
@@ -2071,12 +2125,20 @@ static void prim_slice_n(int take) {
     const char *label=take?"take-n":"drop-n";
     if(top.tag!=VAL_LIST) die("%s: expected list, got %s", label, valtag_name(top.tag));
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
+    if(base<0) die("%s: stack underflow: need %d slots, have %d", label, s, sp);
     if(n<0) n=0; if(n>len) n=len;
-    Value tmp[LOCAL_MAX]; int tmp_sp=0;
     int start=take?0:(int)n, end_i=take?(int)n:len;
-    for(int i=start;i<end_i;i++){ElemRef r=compound_elem(&stack[base],s,len,i);VCPY(&tmp[tmp_sp],&stack[base+r.base],r.slots);tmp_sp+=r.slots;}
-    sp=base; SPUSH(tmp,tmp_sp);
-    spush(val_compound(VAL_LIST,end_i-start,tmp_sp+1));
+    /* A slice is always a contiguous run of the source, so move it in place.
+       Copying through a Value tmp[LOCAL_MAX] instead capped the result at 16384
+       slots and, past that, smashed the C stack with no bounds check at all --
+       a 220k-cell list died as a bare SIGSEGV. Every other list op guards its
+       LOCAL_MAX buffer; here the buffer just wasn't needed. */
+    int lo = start<len ? compound_elem(&stack[base],s,len,start).base : s-1;
+    int hi = end_i<len ? compound_elem(&stack[base],s,len,end_i).base : s-1;
+    int nslots = hi-lo;
+    if(lo>0&&nslots>0) memmove(&stack[base],&stack[base+lo],(size_t)nslots*sizeof(Value));
+    sp=base+nslots;
+    spush(val_compound(VAL_LIST,end_i-start,nslots+1));
 }
 static void prim_range(Frame *e){(void)e;int64_t end=pop_int(),start=pop_int();int count=0;for(int64_t i=start;i<end;i++){spush(val_int(i));count++;}spush(val_compound(VAL_LIST,count,count+1));}
 static void deep_copy_values(Value *dst, const Value *src, int slots);
@@ -2211,8 +2273,15 @@ static void prim_free(Frame *e){
 #define BOX_UNPACK(who) POP_BODY(fn,who); Value box_val=spop(); if(box_val.tag!=VAL_BOX) die(who ": expected box, got %s", valtag_name(box_val.tag)); BoxData *bd=(BoxData*)box_val.as.box; SPUSH(bd->data,bd->slots)
 static void prim_lend(Frame *env) {
     BOX_UNPACK("lend"); int sp_before=sp-bd->slots; eval_body(fn_buf,fn_s,env);
-    int rs=sp-sp_before; Value results[rs]; VCPY(results,&stack[sp_before],rs); sp=sp_before;
-    spush(box_val); SPUSH(results,rs);
+    int rs=sp-sp_before; if(rs<0) rs=0;
+    /* Slide the results up one slot and drop the box in underneath. Copying
+       them out through a `Value results[rs]` VLA put a buffer proportional to
+       the BOX's size on the C stack, so lending a list of ~250k elements blew
+       the 8 MB stack and died as a bare SIGSEGV -- which is what made euler/10
+       fail or pass depending on how much stack happened to be left. */
+    if(sp+1>STACK_MAX) die("lend: stack overflow: %d slots, max %d", sp+1, STACK_MAX);
+    memmove(&stack[sp_before+1],&stack[sp_before],(size_t)rs*sizeof(Value));
+    stack[sp_before]=box_val; sp=sp_before+1+rs;
 }
 static void prim_mutate(Frame *env) {
     BOX_UNPACK("mutate"); eval_body(fn_buf,fn_s,env);
@@ -2513,7 +2582,13 @@ static void eval_body(Value *body, int slots, Frame *env) {
         } else if(elem.tag==VAL_XT){
             if(elem.as.xt.fn) elem.as.xt.fn(ee);
             else { uint32_t sym=elem.as.xt.sym;
-                if(sym==S_LET){ uint32_t n=pop_sym(); int ds=val_slots(stack[sp-1]); Value db[ds]; VCPY(db,&stack[sp-ds],ds); sp-=ds; frame_bind(ee,n,db,ds,0); }
+                if(sym==S_LET){ uint32_t n=pop_sym(); int ds=val_slots(stack[sp-1]); if(sp-ds<0) die("let: stack underflow: need %d slots, have %d", ds, sp); sp-=ds;
+                    /* Bind straight off the stack. Staging through a `Value db[ds]`
+                       VLA first put a buffer the size of the bound value on the C
+                       stack, so `'x let` on a list of ~250k elements was a bare
+                       SIGSEGV. frame_bind only ever copies OUT of vals, and the
+                       frame arena is a different array, so there is no aliasing. */
+                    frame_bind(ee,n,&stack[sp],ds,0); }
                 else dispatch_word(sym,ee);
             }
         } else if(elem.tag==VAL_BOX||elem.tag==VAL_DICT) spush(elem);

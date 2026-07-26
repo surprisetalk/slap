@@ -147,8 +147,12 @@ dict "k" 1 insert list swap push 'l let
 
 -- EXPECT: CLEAN_RUN
 -- same bug in `of`, which unlike dict-values and dict_push_kv_tuple pushed the
--- entry's storage without copying while the dict lived on
-dict "k" 42 box 'x tag insert "k" of must swap drop 0 {'x (free)} case
+-- entry's storage without copying while the dict lived on. The payload has to
+-- own heap storage for a shallow push to be observable; this used to be a
+-- tag-wrapped box, which the checker now (correctly) refuses to insert, so a
+-- nested dict carries the test instead. Dropping the extracted copy must not
+-- free the outer dict's entry out from under the following read.
+dict "k" dict "a" 1 insert insert "k" of must drop dict-keys len 1 eq assert
 
 -- EXPECT: PANIC
 -- a box whose contents point at itself is constructible through mutate. Both
@@ -186,14 +190,57 @@ ob ('inner let ob (99 box) mutate free inner free 1) lend swap free drop
 -- discipline in a comment; now the checker enforces it.
 dict "a" "b" insert 'd let d drop d "a" of must drop
 
--- EXPECT: CLEAN_RUN
--- KNOWN-GAP: insert's linear guard tests the top-level AT_LINEAR flag only, so
---   wrapping a box in a tag launders it into a stackable dict.
--- GAP-TARGET: TYPECHECK_REJECT
+-- EXPECT: TYPECHECK_REJECT
+-- `tag` used to hand back a plain stackable whatever it wrapped, so a box
+-- inside a tag walked straight past insert's linear guard. A tagged output
+-- built from a linear input is now itself linear.
 dict "k" 42 box 'x tag insert drop
 
--- EXPECT: PANIC
--- KNOWN-GAP: bare Box bindings are treated as mutable references and are not
---   single-use checked; the double-consume is left to the runtime poison.
--- GAP-TARGET: TYPECHECK_REJECT
+-- EXPECT: TYPECHECK_REJECT
+-- the same laundering, one step earlier: dropping a tagged box leaked it
+42 box 'x tag drop
+
+-- EXPECT: TYPECHECK_REJECT
+-- and `dup` on one produced two references to a single BoxData
+42 box 'x tag dup drop drop
+
+-- EXPECT: TYPECHECK_REJECT
+-- a list is as stackable as a dict; push has to reject it for the same reason
+list 42 box 'x tag push drop
+
+-- EXPECT: CLEAN_RUN
+-- the legitimate shape still works: wrap, unwrap, consume exactly once. `ok` is
+-- `'ok tag`, so this is the same code path as the four rejections above.
+42 box ok must free
+
+-- EXPECT: TYPECHECK_REJECT
+-- A Box binding names one heap cell however many times it is looked up, so only
+-- one lookup may reach a word that retires the cell. This used to be left to the
+-- runtime poison ("double-free detected").
 42 box 'b let b free b free
+
+-- EXPECT: TYPECHECK_REJECT
+-- `lend` and `mutate` hand the same box back, so freeing what they return
+-- consumes the binding too -- the alternative reading frees one cell twice
+42 box 'b let b (drop 1) lend drop free b free
+
+-- EXPECT: TYPECHECK_REJECT
+-- `clone` returns the original alongside the copy, so it retires the name
+42 box 'b let b clone free free b free
+
+-- EXPECT: CLEAN_RUN
+-- but `swap` only moves the box, so this is one free of one cell. Marking every
+-- `box own in` slot as consumption broke exactly this shape in euler/10.
+42 box 'b let b (drop 1) lend swap free print
+
+-- EXPECT: CLEAN_RUN
+-- and repeated lookups that never consume stay free: mutate threads the box
+-- back each time, so only the final free retires it
+42 box 'b let b (1 plus) mutate (1 plus) mutate free
+
+-- EXPECT: CLEAN_RUN
+-- A slice whose result exceeds LOCAL_MAX (16384 slots). prim_slice_n used to
+-- copy through a fixed Value tmp[LOCAL_MAX] with no bounds check at all, so
+-- this smashed the C stack and died as a bare SIGSEGV with no message. The
+-- slice is a contiguous run of the source, so it now moves in place instead.
+list 20000 (1 push) repeat 1 drop-n len print

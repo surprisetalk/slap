@@ -117,6 +117,33 @@ dict "k" 1 insert list swap push 0 peek must dict-keys len 1 eq assert drop drop
 -- ===== Lists: take-n / drop-n =====
 [1 2 3 4 5] 3 take-n [1 2 3] eq assert
 [1 2 3 4 5] 2 drop-n [3 4 5] eq assert
+[1 2 3 4 5] 0 take-n [] eq assert
+[1 2 3 4 5] 5 drop-n [] eq assert
+[1 2 3 4 5] 5 take-n [1 2 3 4 5] eq assert
+[1 2 3 4 5] 0 drop-n [1 2 3 4 5] eq assert
+[1 2 3 4 5] 99 take-n [1 2 3 4 5] eq assert   -- clamps rather than panicking
+[1 2 3 4 5] -3 drop-n [1 2 3 4 5] eq assert
+[1 2 3 4 5] -3 take-n [] eq assert
+-- multi-slot elements: the slice is a contiguous run, so the header's slot
+-- count has to be recomputed from the element boundaries, not from the length
+[(1 2) (3 4) (5 6)] 1 drop-n 0 get must (3 4) eq assert
+[(1 2) (3 4) (5 6)] 2 take-n 1 get must (3 4) eq assert
+["ab" "cd" "ef"] 1 drop-n 0 get must "cd" eq assert
+-- past LOCAL_MAX: both used to copy through a Value tmp[16384] with no bounds
+-- check, so a result larger than that smashed the C stack (bare SIGSEGV)
+list 20000 (1 push) repeat 1 drop-n len 19999 eq assert
+list 20000 (1 push) repeat 20000 take-n len 20000 eq assert
+list 20000 (1 push) repeat 19000 drop-n 0 get must 1 eq assert
+
+-- ===== Lists: binding and lending past the old C-stack VLA limit =====
+-- `let` used to stage the bound value through a `Value db[ds]` VLA and `lend`
+-- copied its results through another, both sized by the DATA rather than by any
+-- constant. Past roughly 250k slots that overflowed the 8 MiB C stack and died
+-- as a bare SIGSEGV -- which is what made euler/10 pass or fail depending on how
+-- much stack happened to be left. Neither needs a buffer at all now.
+list 300000 (1 push) repeat 'vla1 let 'vla1 0 nth must 1 eq assert
+list 300000 (1 push) repeat 'vla2 let 'vla2 299999 nth must 1 eq assert
+list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq assert
 
 -- ===== Lists: range =====
 0 5 range [0 1 2 3 4] eq assert

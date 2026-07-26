@@ -669,6 +669,8 @@ The whole machine — 4 KB of memory, registers, call stack, keypad, and the 64�
 
 `uxn.slap` is the same idea at 16× the scale: a 220191-cell machine holding uxn's full 64 KB address space, both 256-byte stacks, the device page, and two 320×240 screen layers. All 32 base opcodes are written once each — keep, return and short modes are handled by six state cells set during decode, so one `ADD` body serves all eight encodings. Varvara pixels are already 2-bit palette indices, which is exactly the canvas depth, so nothing is lost but hue; the palette is mapped by *rank* rather than absolute luminance so that four shades of one colour stay distinguishable. Roughly 290k instructions/sec. Audio, File and Datetime are stubbed — the file header says why.
 
+It is checked against another implementation rather than only against itself. `./slap --headless game.rom [frames] < examples/uxn.slap` boots a ROM with no window and writes the composited canvas to stdout as one palette index per pixel, with the four palette entries on a `PAL` line. Run against the nine ROMs in [mkeeter/raven](https://github.com/mkeeter/raven)'s snapshot suite — each at its own resolution, since the canvas geometry is six constants — eight match raven's reference renders **pixel for pixel**, including `screen_blending` (every blend mode × depth × flip) and `mandelbrot` (108864 pixels of pure integer arithmetic). The ninth, `piano`, differs by 22 pixels: an audio level meter, which is the missing Audio device showing through.
+
 App demos (terminal build):
 
 | File | Description |
@@ -722,6 +724,8 @@ It catches the following at compile time:
 **Linear resources (boxes):**
 - A box must be consumed exactly once via `free`, `lend`, `mutate`, or `clone`.
 - Embedding a box into a stackable container (list, tuple, record, tagged) is rejected.
+- Tagging a box keeps it linear, so `42 box 'x tag` cannot then be dropped, duplicated, pushed or inserted. `42 box ok must free` is the legitimate shape and still works.
+- A Box *binding* is single-use across all its lookups: the name may be read as many times as you like, but only one read may reach a word that retires the cell. `lend` and `mutate` hand the same box back, so freeing what they return consumes the binding too; `swap` merely moves it and does not.
 - Duplicating a box with `dup` is rejected (boxes aren't copyable).
 - A closure that captures a linear outer binding is marked linear itself — applying it twice is rejected.
 - Higher-order ops (`each`, `fold`, `while`, `find`) reject bodies that capture linear outer bindings.

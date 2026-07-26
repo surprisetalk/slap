@@ -13,12 +13,26 @@
     lend guard fired on the four provably-safe content types and missed the two
     that alias; a let-bound dict aliased its heap object; sockets leaked a
     BoxData per send/recv/accept.
-  - still open, filed as KNOWN-GAP probes: `'x tag` launders a box past
-    `insert`'s linear guard; bare Box bindings aren't single-use checked.
+  - both remaining gaps are now closed, so `tests/adversarial/` carries no
+    KNOWN-GAP entries: a tagged output built from a linear input is itself
+    linear (so `'x tag` no longer launders a box past `insert`/`push`/`drop`/
+    `dup`), and a Box binding is single-use across all its lookups (`free`,
+    `tcp-close` and `clone` retire it; `swap` and the tcp-* pair, which hand the
+    box back out, do not).
+  - chasing the frame arena also turned up three `Value buf[n]` VLAs sized by
+    data rather than by a constant -- `take-n`/`drop-n`, `let`, and `lend`'s
+    result staging. Each overflowed the 8 MiB C stack past ~250k slots and died
+    as a bare SIGSEGV; that is what made euler/10 pass or fail run to run. None
+    of them needed a buffer at all.
   - revisit only with a concrete program that needs shared mutable cells.
 
 - [ ] replicate some big projects using only slap to confirm it works
   - done: `examples/wiki.slap` (HTTP wiki server), `examples/kv-server.slap`+`kv-client.slap` (TCP key/value store), `examples/chip8.slap` (CHIP-8 emulator), `examples/uxn.slap` (Uxn/Varvara emulator) — all wired into `make test`
+  - uxn is validated against another implementation, not just its own self-test:
+    `./slap --headless game.rom [frames]` dumps the canvas as palette indices,
+    and 8 of the 9 ROMs in mkeeter/raven's snapshot suite match its reference
+    renders pixel for pixel (the 9th differs by 22 pixels of audio VU meter).
+    That found three real Screen bugs the self-test had missed.
   - next: pico8/tic80 both need a Lua interpreter first — that's the real next project, not another emulator shell. decker or duskos are closer to reach.
 
 - [ ] convert my personal app library to slap (e.g. snews, snail)?

@@ -32,6 +32,8 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
 10. `python3 tests/run_kv.py` — boots `examples/kv-server.slap`, drives it through `examples/kv-client.slap` and raw sockets (roundtrip, spaced values, persistence across restart, corrupt-snapshot refusal, unwritable-save survival), kills it
 11. `./slap --check < examples/chip8.slap`, then `./slap --headless < examples/chip8.slap | grep -q chip8-selftest-ok` — the CHIP-8 emulator's in-language opcode self-test (SDL words type-check unconditionally; `halt` fires before any `on`/`show` dispatches, so no SDL build is needed)
 12. `./slap --check < examples/uxn.slap`, then `./slap --headless < examples/uxn.slap | grep -q uxn-selftest-ok` — the Uxn/Varvara emulator's self-test: every base opcode, each mode flag, the immediates, the System/Console/Screen devices, and an end-to-end boot of the embedded demo ROM. Same no-SDL-needed trick as chip8.
+
+    The self-test also pins the five Screen behaviours that real ROMs depend on and that nothing else here would catch: `Screen/auto`'s bits drive the *opposite* axis inside the draw loop (auto-Y lays tiles out along X) while the port writeback afterwards uses the normal axes and moves by a single 8; the blend table is irregular and cannot be derived arithmetically; a sprite whose x has wrapped past 0 shows its right half at the left edge; and a flipped fill is exclusive of x. Each assertion was checked to fail against the pre-fix behaviour — an assertion that cannot fail is not a regression test.
 13. `examples/lib/` load/typecheck combos, then `bash tests/adversarial/run.sh`
 
 Note that expect.slap is **not** run bare: it depends on `strings.slap` and `parse.slap`, which must be `cat`ed ahead of it.
@@ -53,6 +55,14 @@ Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.
 - **Primitives**: ~100 C functions registered via `prim_register`. Macros `ARITH2`, `FLOAT1`, `CMP2` generate families of math/comparison ops.
 - **Prelude**: ~70 derived definitions in Slap itself (embedded string in slap.c). Loaded at startup before user code. Non-core string helpers (`crlf`, `int-str`, `str-join`, `http-request`) live in `examples/lib/strings.slap` — cat alongside your program when needed.
 - **Self-reference**: A name bound via `let` is visible inside its own body when referenced textually, enabling recursion without a keyword.
+
+### Buffers and limits
+
+`LOCAL_MAX` (16384) bounds the C-stack scratch buffers that primitives use for a single value: `get`/`pop`/`peek`/`nth` element copies, `cat` results, `each`/`fold` inputs, `swap`, `dip`, and `case`'s scrutinee. All of them check it and die with a `value too large (N slots, max M)`-style message.
+
+**Any `Value buf[n]` whose `n` comes from data rather than from a constant is a latent bare SIGSEGV** — the C stack is 8 MiB and a `Value` is 32 bytes, so ~250k slots overflows it with no diagnostic. Three such buffers existed and are gone: `take-n`/`drop-n` (a slice is contiguous, so it moves in place), `let` (`frame_bind` only ever copies *out* of its argument, so it can read the operand stack directly), and `lend`'s result staging (a `memmove` on the operand stack inserts the box underneath instead). Adding a new one is a bug unless it is bounded by `LOCAL_MAX` first. This is what made `euler/10` pass or fail depending on how much C stack happened to be left.
+
+`FRAME_VALS_MAX` (2097152) is the frame value arena, and `vals` is inline in `Frame`, so it sets `sizeof(Frame)` — 64 MiB. Measured peak across the whole suite is 1,000,822 slots (`euler/37`, then `euler/10`), both binding a million-element sieve snapshot inside a `lend` body; `examples/uxn.slap`'s ROM dump peaks at 331,841 and ordinary programs sit under 4,000. At most 7 frames are live at once. `frame_new` reports allocation failure rather than dereferencing NULL.
 
 ### Tagged unions (sum types)
 
@@ -102,6 +112,8 @@ Pattern: `[] pop (1 plus ok) then -1 default` → `-1` (empty list, default). `[
 
 `take-n`/`drop-n` clamp to valid range instead of panicking. `random` clamps max to 1 minimum. `div`/`mod`/`divmod`/`wrap` still panic on zero (programmer errors).
 
+A slice is a contiguous run of its source, so `prim_slice_n` moves it in place rather than copying it out. Both ops used to stage through a `Value tmp[LOCAL_MAX]` with no bounds check, which capped a result at 16384 slots and, past that, smashed the C stack with no message at all. There is no size limit on either now.
+
 ### Type system
 
 Two categories of types:
@@ -118,6 +130,10 @@ Two categories of types:
 Only fires when the bound value carries the borrowed flag; binding a freshly-built tuple literal inside a lend body is fine. Use `k peek` for indexed reads without binding anything.
 
 `deep_free_values` recursively frees boxes inside compounds (poisoning `BoxData->data=NULL` so any stale reference hits `double-free detected` rather than use-after-free). This catches rare TC gaps where a linear value escapes into a stackable compound that's later dropped.
+
+**Tagging a linear value keeps it linear.** `apply_sig` marks a `TC_TAGGED` output `AT_LINEAR` when any consumed input was linear — `tag` is the only builtin shaped that way. Without it `42 box 'x tag` handed back a plain stackable, and `drop`, `dup`, `push` and `insert` all accepted it, laundering the box past every linear check. `42 box ok must free` still works: that is the same code path, consuming the box exactly once.
+
+**A Box binding is single-use across all its lookups.** Looking one up is free — `lend` and `mutate` hand the box straight back, so the same name is read many times in ordinary code — but every lookup names the *same* heap cell, so only one may reach a word that retires it. The pushed value carries the binding's symbol in `AbstractType.sym_id`; `free`, `tcp-close` and `clone` check and set the binding's `consumed_line`. `swap` and the `tcp-send`/`recv`/`accept` family also declare `box own in` but hand the box back out, so they must *not* count — treating every `own in` as consumption rejects correct code (`euler/10`'s `lend … swap free`). `clone` does count: it returns the original alongside the copy. Identity rides through `swap` on the existing `src_sym` plumbing; it is lost through the tcp-* pair, whose box output slot is a container, so those are a known false-negative rather than a false-positive.
 
 ### Protocols (built-in typeclasses)
 

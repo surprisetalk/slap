@@ -3,6 +3,18 @@
 --   ./slap-sdl game.rom < examples/uxn.slap    -- run a ROM (or no arg: demo)
 --   ./slap --headless   < examples/uxn.slap    -- run the opcode self-test, print ok, exit
 --   ./slap --check      < examples/uxn.slap    -- type-check only
+--   ./slap --headless game.rom [frames] < examples/uxn.slap
+--       boot a ROM with no window and write the composited canvas to stdout,
+--       one digit (palette index) per pixel after a `UXNDUMP` line, preceded by
+--       a `PAL` line holding the four palette entries as 12 hex nibbles. This is
+--       how the emulator gets checked against another implementation.
+--
+-- Verified against the nine ROMs in mkeeter/raven's snapshot suite -- screen,
+-- screen_auto, screen_blending, screen_bounds, screen_pixel, controller,
+-- mandelbrot, audio, piano -- each run at its own resolution (the canvas
+-- geometry below is six constants) and compared pixel for pixel with raven's
+-- reference renders. All nine match exactly except for 22 pixels of piano's
+-- audio level meter, which is the missing Audio device showing through.
 --
 -- Controls (Varvara Controller buttons): arrow keys, plus Z/X = A/B and
 -- Shift/Enter = select/start. Typed keys are also delivered to Controller/key.
@@ -98,11 +110,14 @@
 
 320 'SCR-W let  240 'SCR-H let  76800 'SCR-N let
 
--- uxn's 1bpp/2bpp blend table, flattened: BLEND[ch*16 + mode]
-[0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3
+-- uxn's 1bpp/2bpp blend table, flattened: BLEND[ch*16 + mode]. Transcribed from
+-- the C reference's `blending[4][16]` -- it is deliberately irregular, so it
+-- cannot be derived from ch and mode arithmetically (an earlier version here
+-- guessed a rotate pattern and got rows 0, 2 and 3 wrong).
+[0 0 0 0 1 0 1 1 2 2 0 2 3 3 3 0
  0 1 2 3 0 1 2 3 0 1 2 3 0 1 2 3
- 1 2 3 0 1 2 3 0 1 2 3 0 1 2 3 0
- 2 3 0 1 2 3 0 1 2 3 0 1 2 3 0 1] 'BLEND let
+ 1 2 3 1 1 2 3 1 1 2 3 1 1 2 3 1
+ 2 3 1 2 2 3 1 2 2 3 1 2 2 3 1 2] 'BLEND let
 
 -- ===== cell access (the machine is at TOS) =====
 ('a let a peek must) 'cell let                      -- machine addr -- machine value
@@ -166,10 +181,13 @@
  w 64 band 0 gt (FG-B) (BG-B) if 'lay let
  40 dev2 'x let  42 dev2 'y let
  w 128 band 0 gt
+   -- x1/y1 are inclusive, so a flipped fill (the reference's exclusive `0..x`)
+   -- stops at x-1. Filling through x instead put one extra pixel column and row
+   -- on every flipped quadrant.
  ( w 16 band 0 gt (0) (x) if 'x0 let
-   w 16 band 0 gt (x) (SCR-W 1 sub) if 'x1 let
+   w 16 band 0 gt (x 1 sub) (SCR-W 1 sub) if 'x1 let
    w 32 band 0 gt (0) (y) if 'y0 let
-   w 32 band 0 gt (y) (SCR-H 1 sub) if 'y1 let
+   w 32 band 0 gt (y 1 sub) (SCR-H 1 sub) if 'y1 let
    SY-I y0 cell!
    (SY-I cell y1 le) (
      SX-I x0 cell!
@@ -201,7 +219,10 @@
      two (c1 2 mul c0 plus) (c0) if 'ch let
      opaque ch 0 neq or
      ( 'BLEND ch 16 mul blend plus nth must 'col let
-       lay x h plus y v plus col spx ) () if
+       -- destination wraps at 16 bits: a sprite at x=0xfffc is four pixels off
+       -- the left edge, and its right half must appear at x=0..3 rather than
+       -- being clipped away as a large positive coordinate
+       lay x h plus 65535 band  y v plus 65535 band  col spx ) () if
      SX-I cell 1 plus 'nx let SX-I nx cell!) while
    SY-I cell 1 plus 'ny let SY-I ny cell!) while) 'blit let
 
@@ -215,15 +236,25 @@
  38 dev 'au let
  au 4 shr 15 band 'n let
  two (16) (8) if 'step-by let
+ 40 dev2 'x0 let  42 dev2 'y0 let
+ -- Inside the loop each auto bit drives the OPPOSITE axis: auto-y steps x and
+ -- auto-x steps y. That reads like a transposition bug, but it is what the C
+ -- reference does and it is what makes a length-N draw lay tiles out in a row.
+ -- A flip reverses the step. The ports are used as the running cursor here and
+ -- then corrected below, because the spec advances them by a single 8 -- not by
+ -- 8*N -- however many sprites the length nibble drew.
  RK-I 0 cell!
  (RK-I cell n le) (
    RK-I cell 'k let
    44 dev2 'addr let  40 dev2 'x let  42 dev2 'y let
    addr x y lay blend fx fy two blit
-   au 1 band 0 gt (40 x 8 plus 65535 band dev2!) () if
-   au 2 band 0 gt (42 y 8 plus 65535 band dev2!) () if
+   au 2 band 0 gt (40 fx (x 8 sub) (x 8 plus) if 65535 band dev2!) () if
+   au 1 band 0 gt (42 fy (y 8 sub) (y 8 plus) if 65535 band dev2!) () if
    au 4 band 0 gt (44 addr step-by plus 65535 band dev2!) () if
-   k 1 plus 'nk let RK-I nk cell!) while) 'screen-sprite let
+   k 1 plus 'nk let RK-I nk cell!) while
+ 40 x0 dev2!  42 y0 dev2!
+ au 1 band 0 gt (40 fx (x0 8 sub) (x0 8 plus) if 65535 band dev2!) () if
+ au 2 band 0 gt (42 fy (y0 8 sub) (y0 8 plus) if 65535 band dev2!) () if) 'screen-sprite let
 
 -- ===== palette: rank the four entries by luminance, spread over four greys =====
 ('i let 12 i 4 mul sub 'sh let
@@ -374,11 +405,14 @@
 
 -- Run from `addr` until BRK. The step cap keeps a runaway ROM from making the
 -- SDL window unkillable -- `show` only pumps events between frames.
+-- run-more resumes wherever the PC already is, so a vector that ran out of
+-- budget can be topped up rather than restarted; run-at is that plus a jump.
+('lim let BUDGET-I lim cell!
+ (RUN-I cell 0 neq 'r let BUDGET-I cell 0 gt 'b let r b and)
+ (BUDGET-I cell 1 sub 'n let BUDGET-I n cell! step) while) 'run-more let
+
 ('lim let 'a let
- a 0 eq () (
-   PC-I a cell!  RUN-I 1 cell!  BUDGET-I lim cell!
-   (RUN-I cell 0 neq 'r let BUDGET-I cell 0 gt 'b let r b and)
-   (BUDGET-I cell 1 sub 'n let BUDGET-I n cell! step) while) if) 'run-at let
+ a 0 eq () (PC-I a cell!  RUN-I 1 cell!  lim run-more) if) 'run-at let
 
 -- ===== machine construction =====
 (list STATE-N (0 push) repeat
@@ -470,7 +504,9 @@
 
 blank
 
-isheadless (
+-- With a ROM argument the self-test is skipped and the headless dump below runs
+-- instead, so one binary serves both `make test` and the reference comparison.
+isheadless args len 0 eq and (
 
   -- --- arithmetic and stack shuffling, byte mode ---
   [128 3 128 5 24 0] run          wn 1 eq assert  0 wat 8 eq assert
@@ -581,6 +617,54 @@ isheadless (
     BG-B 8 SCR-W mul plus 8 plus cell 1 eq assert                      -- low nibble flipped to the left
     BG-B 8 SCR-W mul plus 15 plus cell 0 eq assert
 
+  -- The next five cases pin behaviour that real ROMs depend on and that an
+  -- earlier version of this file got wrong in a way no assertion here caught.
+  -- Each is `Screen/x=..; Screen/y=..; Screen/addr=0x011d; Screen/auto=..;
+  -- Screen/sprite=..`, 29 bytes, with the sprite data appended at 0x011d.
+
+  -- auto's bits drive the OPPOSITE axis inside the draw loop: auto=0x12 is
+  -- length 1 + auto-Y, and lays its two tiles out along X. The port writeback
+  -- afterwards uses the normal axes and moves by a single 8, not by 8 per tile.
+  [160 0 0 128 40 55  160 0 0 128 42 55  160 1 29 128 44 55
+   128 18 128 38 23  128 1 128 47 23  0
+   255 255 255 255 255 255 255 255] run
+    BG-B 0 0 gpx 1 eq assert   BG-B 15 0 gpx 1 eq assert   -- two tiles, side by side
+    BG-B 0 8 gpx 0 eq assert                               -- and nothing below them
+    40 dev2 0 eq assert  42 dev2 8 eq assert               -- x untouched, y stepped once
+  -- auto=0x11 is length 1 + auto-X, so the tiles stack along Y instead
+  [160 0 0 128 40 55  160 0 0 128 42 55  160 1 29 128 44 55
+   128 17 128 38 23  128 1 128 47 23  0
+   255 255 255 255 255 255 255 255] run
+    BG-B 0 15 gpx 1 eq assert  BG-B 8 0 gpx 0 eq assert
+    40 dev2 8 eq assert  42 dev2 0 eq assert
+
+  -- the blend table is irregular; these two entries are the ones a plausible
+  -- rotate-by-ch guess gets wrong (it yields 0 for both)
+  [160 0 0 128 40 55  160 0 0 128 42 55  160 1 29 128 44 55
+   128 0 128 38 23  128 130 128 47 23  0
+   255 255 255 255 255 255 255 255  255 255 255 255 255 255 255 255] run
+    BG-B 0 0 gpx 1 eq assert                               -- 2bpp ch3, blend 2 -> 1
+  [160 0 0 128 40 55  160 0 0 128 42 55  160 1 29 128 44 55
+   128 0 128 38 23  128 131 128 47 23  0
+   0 0 0 0 0 0 0 0  255 255 255 255 255 255 255 255] run
+    BG-B 0 0 gpx 1 eq assert                               -- 2bpp ch2, blend 3 -> 1
+
+  -- a sprite whose x has wrapped past 0 shows its right half at the left edge;
+  -- clipping it away instead loses every partially-offscreen sprite
+  [160 255 252 128 40 55  160 0 0 128 42 55  160 1 29 128 44 55
+   128 0 128 38 23  128 1 128 47 23  0
+   255 255 255 255 255 255 255 255] run
+    BG-B 0 0 gpx 1 eq assert  BG-B 3 0 gpx 1 eq assert  BG-B 4 0 gpx 0 eq assert
+
+  -- a flipped fill is exclusive of x: 0x92 at x=10 paints columns 0..9 only
+  [160 0 10 128 40 55  160 0 5 128 42 55  128 146 128 46 23 0] run
+    BG-B 9 5 gpx 2 eq assert  BG-B 10 5 gpx 0 eq assert  BG-B 9 4 gpx 0 eq assert
+
+  -- Screen/width and /height are synthesised by `dei`, not stored in the device
+  -- page, so DEI2 has to reach the same values a ROM would lay out against.
+  [128 34 54 128 0 49 0] run  0 gm 1 eq assert  1 gm 64 eq assert       -- width  -> 0x0140 = 320
+  [128 36 54 128 0 49 0] run  0 gm 0 eq assert  1 gm 240 eq assert      -- height -> 0x00f0 = 240
+
   -- --- Console ---
   [128 104 128 24 23 128 105 128 24 23 128 10 128 24 23 0] run
     CON-N-I cell 0 eq assert                                           -- LF flushed the buffer
@@ -609,6 +693,64 @@ isheadless (
 args len 0 gt (args 0 get must read must) (DEMO-ROM) if 'ROM let
 ROM load-rom
 256 2000000 run-at
+
+-- ===== headless ROM dump =====
+--
+--   ./slap --headless game.rom [frames] < examples/uxn.slap
+--
+-- Boots the ROM, runs N screen-vector frames (default 4), then writes the
+-- composited canvas to stdout as one digit per pixel -- the palette index, not
+-- the grey, so the output is independent of the rank mapping. The `PAL` line
+-- carries the four palette entries as 12 hex nibbles (r g b per entry), which is
+-- what lets a reference implementation's RGB render be scored against this one.
+isheadless (
+  args len 1 gt (args 1 get must 0 ('c let 10 mul c 48 sub plus) fold) (60) if 'FRAMES let
+
+  -- A compute-heavy reset vector (mandelbrot draws the whole set before its
+  -- first BRK) blows through the interactive step cap. Top it up here, where
+  -- there is no window to keep responsive; each call after RUN-I clears is a
+  -- no-op, so this costs nothing for an ordinary ROM.
+  60 (2000000 run-more) repeat
+
+  -- Replay the input a reference implementation's snapshot harness feeds, so
+  -- the two renders are comparable: mouse to the centre with the left button
+  -- down, then Right and 'a' on the controller. Several test ROMs draw from the
+  -- Mouse or Controller vector and never install a Screen vector at all, so
+  -- without this they render blank and look like an emulator bug.
+  146 SCR-W 2 div dev2!  148 SCR-H 2 div dev2!  150 1 dev!
+  144 dev2 2000000 run-at
+  130 128 dev!  128 dev2 2000000 run-at
+  131 97 dev!   128 dev2 2000000 run-at  131 0 dev!
+
+  0 (dup FRAMES lt) ('i let
+     DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!
+     32 dev2 2000000 run-at
+     i 1 plus) while drop
+
+  ('n let n 10 lt (n 48 plus) (n 87 plus) if) 'hexd let
+  8 dev2 'PR let  10 dev2 'PG let  12 dev2 'PB let
+  "PAL " 0 (dup 4 lt) ('i let
+     12 i 4 mul sub 'sh let
+     PR sh shr 15 band hexd push
+     PG sh shr 15 band hexd push
+     PB sh shr 15 band hexd push
+     i 1 plus) while drop print
+  "UXNDUMP" print
+
+  -- Slice both layers off the machine instead of reading it in place: `peek`
+  -- needs the machine at TOS, and the row being built would sit on top of it.
+  dup dup BG-B drop-n SCR-N take-n 'BGL let
+          FG-B drop-n SCR-N take-n 'FGL let
+  0 (dup SCR-H lt) ('y let
+     list 0 (dup SCR-W lt) ('x let
+        y SCR-W mul x plus 'k let
+        'FGL k nth must 'f let
+        f 0 neq (f) ('BGL k nth must) if 48 plus push
+        x 1 plus) while drop
+     print
+     y 1 plus) while drop
+  halt
+) () if
 
 -- SDL keysym -> Varvara Controller button bit
 --   up down left right  z=A x=B lshift=select return=start
