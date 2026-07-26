@@ -673,6 +673,12 @@ It is checked against another implementation rather than only against itself. `.
 
 `make test-uxn-refs` runs that comparison. It is kept out of `make test` because it downloads the ROMs and reference renders from GitHub and the suite has to work offline; they are cached under `tests/.uxn-refs/`, so only the first run needs network. This is worth running after any change to the Screen path — uxn.slap's own ~110-assertion self-test passed while three real Screen bugs were live, and whole-frame comparison found all three in an afternoon.
 
+`make test-uxn-sweep` asks a question the comparison cannot: does each ROM's render move with the frame count the way it should? Rendering at 1, 60 and 120 separates a ROM that is right from one that is right *at exactly 60* because two errors cancelled there. Seven of the nine are byte-identical from 1 frame to 240 and must stay that way — a static ROM that starts drifting is state surviving between Screen-vector calls. `screen` and `audio` genuinely animate and must keep doing so; `screen` shows 0 diffs at 60, 16 at 59, and 610 at 61.
+
+`make bench-uxn` reports throughput. The dump prints an `INS` line counting instructions retired in the frame loop, and each ROM is timed twice — at 0 frames and at N — so the fixed boot cost drops out. `screen.rom` sustains roughly **83k uxn instructions/sec** (~26k per frame at 256×176) and `drool.rom` about **168k** (~21k per frame at 320×240); the gap is sprite blitting versus plain compute. `screen` is the headline because it is also pixel-exact, so its number is timing work that is known correct — drool has no reference render at all, and the harness keeps it out of the comparison and the sweep rather than pretending otherwise.
+
+bunnymark, the obvious choice, is not usable: its RNG is a self-modifying xorshift seeded from the Datetime device, which is deliberately unimplemented, and zero is xorshift's fixed point — so the RNG emits 0 forever, no bunny ever spawns, and the ROM idles at 425 instructions/frame drawing its own header.
+
 App demos (terminal build):
 
 | File | Description |

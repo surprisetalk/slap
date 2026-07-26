@@ -727,12 +727,25 @@ isheadless (
   130 128 dev!  128 dev2 2000000 run-at
   131 97 dev!   128 dev2 2000000 run-at  131 0 dev!
 
-  0 (dup FRAMES lt) ('i let
+  -- Count the instructions the frame loop retires, reported as `INS n` below.
+  -- run-at loads BUDGET-I with its cap and `step` decrements it once per
+  -- instruction, so cap-minus-remainder is the work the vector actually did.
+  -- Only the frame loop is counted: the reset vector and the input replay are
+  -- setup, and a throughput number wants the steady state. A ROM that draws
+  -- once and idles reports a near-zero rate, which is the honest reading --
+  -- it is not a benchmark of anything.
+  0 0 (dup FRAMES lt) ('i let 'fins let
      DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!
      32 dev2 2000000 run-at
-     i 1 plus) while drop
+     BUDGET-I cell 'rem let
+     fins 2000000 plus rem sub
+     i 1 plus) while drop 'INS-N let
 
   ('n let n 10 lt (n 48 plus) (n 87 plus) if) 'hexd let
+  ('n let n 0 eq (list 48 push)
+     (list n (dup 0 gt) ('m let m 10 mod 48 plus push m 10 div) while drop reverse)
+   if) 'dstr let
+  "INS " INS-N dstr cat print
   8 dev2 'PR let  10 dev2 'PG let  12 dev2 'PB let
   "PAL " 0 (dup 4 lt) ('i let
      12 i 4 mul sub 'sh let

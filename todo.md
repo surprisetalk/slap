@@ -50,6 +50,26 @@
     load-bearing and matches raven's 60 redraws -- at 2 frames `screen.rom`
     renders the reference image shifted two pixels, which reads as a Screen bug
     and is not one.
+  - `make test-uxn-sweep` pins whether each ROM's render moves with the frame
+    count. Seven are byte-identical from 1 frame to 240; only `screen` and
+    `audio` animate. That separates "renders correctly" from "renders correctly
+    at exactly 60 because two errors cancelled there", which the 60-frame-only
+    comparison cannot. mandelbrot is skipped and says so: 0 frame-loop
+    instructions at any count, ~5.5 min per render.
+  - `make bench-uxn` reports throughput off the dump's new `INS` line (frame-loop
+    instructions only, setup subtracted by running each ROM at 0 frames too).
+    `screen.rom` ~83k uxn instructions/sec (26k/frame, sprite-blit bound) and
+    `drool.rom` ~168k (21k/frame, compute bound). Those two are the only ROMs
+    here with real per-frame work -- everything else paints once and idles.
+    drool has no reference render in raven's suite, so it is marked
+    `allow=None` and excluded from the comparison and the sweep; its rate times
+    work that is NOT verified correct, which is why screen stays the headline.
+  - bunnymark is NOT a usable benchmark and should not be retried: its RNG is a
+    self-modifying xorshift seeded from `DEI2 0xc0` (Datetime), which uxn.slap
+    deliberately does not implement. Zero is xorshift's fixed point, so the RNG
+    emits 0 forever, every bunny lands at (0,0), the counter at 0x063f never
+    advances, and the ROM idles at 425 instructions/frame drawing its header.
+    A real Datetime device would be the prerequisite, not a harness change.
   - next: pico8/tic80 both need a Lua interpreter first — that's the real next project, not another emulator shell. decker or duskos are closer to reach.
 
 - [ ] convert my personal app library to slap (e.g. snews, snail)?

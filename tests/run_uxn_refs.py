@@ -6,6 +6,8 @@ GitHub, and the suite has to work offline. Run it by hand, or `make test-uxn-ref
 Downloads are cached under tests/.uxn-refs/, so only the first run needs network.
 
     python3 tests/run_uxn_refs.py [--offline] [--write-png] [--frames N] [rom ...]
+    python3 tests/run_uxn_refs.py --sweep    # pin static-vs-animated per ROM
+    python3 tests/run_uxn_refs.py --bench    # uxn instructions/sec
 
 An emulator's own self-test only covers the parts its author thought about.
 uxn.slap's ~110 assertions all passed while three real Screen bugs were live;
@@ -24,7 +26,7 @@ The input replay lives in uxn.slap's dump block, not here -- several of these
 ROMs install only a Mouse or Controller vector and render blank without it.
 """
 
-import argparse, os, re, struct, subprocess, sys, urllib.request, zlib
+import argparse, os, re, struct, subprocess, sys, time, urllib.request, zlib
 
 REPO = "mkeeter/raven"
 # Pinned, not HEAD: a moving reference turns an upstream change into a failure
@@ -41,21 +43,47 @@ TIMEOUT = 900
 # as a Screen bug and is not one.
 FRAMES = 60
 
-# name, width, height, pixels allowed to differ.
-# Every entry is 0 but piano, which draws an audio level meter -- uxn.slap has
-# no Audio device (slap has no audio primitive), so those 22 pixels sit at the
-# wrong level. Raise a number here only with an explanation of what is missing.
+# name, width, height, pixels allowed to differ, motion.
+# The pixel allowance is 0 everywhere but piano, which draws an audio level
+# meter -- uxn.slap has no Audio device (slap has no audio primitive), so those
+# 22 pixels sit at the wrong level. Raise a number here only with an explanation
+# of what is missing.
+#
+# `motion` is what --sweep pins. "static" means the ROM paints once and its
+# render is byte-identical at every frame count; "anim" means the render depends
+# on how many times the Screen vector ran. Measured, not assumed: six of these
+# are identical from 1 frame to 240, while screen and audio differ at both ends.
 ROMS = [
-    ("screen", 256, 176, 0),
-    ("screen_auto", 160, 32, 0),
-    ("screen_blending", 256, 268, 0),
-    ("screen_bounds", 512, 320, 0),
-    ("screen_pixel", 200, 200, 0),
-    ("controller", 512, 320, 0),
-    ("mandelbrot", 378, 288, 0),
-    ("audio", 512, 320, 0),
-    ("piano", 384, 224, 22),
+    ("screen", 256, 176, 0, "anim"),
+    ("screen_auto", 160, 32, 0, "static"),
+    ("screen_blending", 256, 268, 0, "static"),
+    ("screen_bounds", 512, 320, 0, "static"),
+    ("screen_pixel", 200, 200, 0, "static"),
+    ("controller", 512, 320, 0, "static"),
+    ("mandelbrot", 378, 288, 0, "static"),
+    ("audio", 512, 320, 0, "anim"),
+    ("piano", 384, 224, 22, "static"),
+    # Bench only: raven ships this ROM but not a reference render for it, so
+    # there is nothing to compare against and no measured motion class. It earns
+    # its place because it is the one ROM here besides screen with a real
+    # per-frame workload -- ~20.7k instructions/frame at uxn.slap's native
+    # 320x240. Timing it measures work that is NOT verified correct, which is
+    # exactly why screen.rom stays the headline number.
+    ("drool", 320, 240, None, None),
 ]
+
+# ROMs with allow=None have no reference PNG: skip the download and every mode
+# that needs something to compare against.
+BENCH_ONLY = {"drool"}
+
+# mandelbrot draws the whole set from its reset vector and installs no Screen
+# vector, so it costs ~5.5 minutes and retires 0 frame-loop instructions at any
+# count. Sweeping it is three identical renders for 16 minutes, so --sweep skips
+# it and says so rather than quietly implying it was covered.
+SWEEP_SKIP = {"mandelbrot"}
+# Two off-counts either side of the canonical 60. A static ROM must match both;
+# an animated one must differ from its own 60-frame render at one of them.
+SWEEP_FRAMES = (1, 120)
 
 
 def fetch(url, path, offline):
@@ -185,8 +213,18 @@ def one(src, pat, what):
 
 
 def load_dump(text, rom):
-    """uxn.slap prints `PAL <12 hex nibbles>`, then `UXNDUMP`, then one digit per pixel."""
+    """uxn.slap prints `INS <n>`, `PAL <12 hex nibbles>`, `UXNDUMP`, then one digit
+    per pixel. INS counts only the frame loop -- the reset vector and the input
+    replay are setup, so a ROM that paints once and idles reports near zero."""
     lines = [l.strip().strip('"') for l in text.splitlines()]
+    ins_line = next((l for l in lines if l.startswith("INS ")), None)
+    if ins_line is None:
+        die(
+            f"{rom}: the dump has no INS line.",
+            "  examples/uxn.slap's dump block prints it before PAL; if that was",
+            "  removed, --bench has nothing to measure.",
+        )
+    ins = int(ins_line[4:])
     pal_line = next((l for l in lines if l.startswith("PAL ")), None)
     if pal_line is None or "UXNDUMP" not in lines:
         tail = "\n".join(l for l in lines if l)[-600:]
@@ -205,7 +243,64 @@ def load_dump(text, rom):
     grid = [[int(c) for c in l] for l in lines[start:] if l and l[0] in "0123"]
     if not grid:
         die(f"{rom}: UXNDUMP header present but no pixel rows followed it.")
-    return pal, grid
+    return pal, grid, ins
+
+
+def render(name, w, h, frames, offline):
+    """Rebuild uxn.slap at w*h, boot the ROM, run `frames` Screen frames.
+    Returns (palette, grid, frame-loop instructions, wall seconds)."""
+    rom_path = f"{CACHE}/{name}.rom"
+    fetch(ROM_URL.format(name), rom_path, offline)
+    if name not in BENCH_ONLY:
+        fetch(PNG_URL.format(name), f"{CACHE}/{name}.png", offline)
+    # Written under a pid-unique name and renamed into place: the patched source
+    # is per-ROM, so two runs at once (make -j test-uxn-refs test-uxn-sweep)
+    # would otherwise have one process reading a file the other is half through
+    # writing, and a truncated emulator fails in a way that reads as a ROM bug.
+    patched = f"{CACHE}/uxn_{name}.slap"
+    tmp = f"{patched}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        f.write(patch_geometry(open("examples/uxn.slap").read(), w, h))
+    os.replace(tmp, patched)
+    t = time.perf_counter()
+    try:
+        r = subprocess.run(
+            ["./slap", "--headless", rom_path, str(frames)],
+            stdin=open(patched),
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        die(f"{name}: no output within {TIMEOUT}s at {frames} frames.")
+    secs = time.perf_counter() - t
+    if r.returncode != 0:
+        err = (r.stderr.strip() or r.stdout.strip()).splitlines()
+        die(
+            f"{name}: ./slap exited {r.returncode} at {frames} frames.",
+            "  " + (err[-1] if err else "(no output)"),
+        )
+    pal, grid, ins = load_dump(r.stdout, name)
+    return pal, grid, ins, secs
+
+
+def skip_bench_only(todo, verb):
+    """Drop ROMs that have no reference render. Says which, when asked by name --
+    silently dropping one the user typed would read as it having passed."""
+    keep = [r for r in todo if r[0] not in BENCH_ONLY]
+    dropped = [r[0] for r in todo if r[0] in BENCH_ONLY]
+    if dropped and verb:
+        print(
+            f"  (not {verb}: {', '.join(dropped)} -- raven ships no reference render for it; --bench only)"
+        )
+    # Reporting "0 ROMs match" and exiting 0 would be a pass that checked
+    # nothing, which is worse than an error.
+    if not keep and verb:
+        die(
+            f"nothing left to be {verb}: {', '.join(dropped)} has no reference render.",
+            "  Use --bench for it, or name a ROM from raven's snapshot suite.",
+        )
+    return keep
 
 
 def compare(rom, pal, mine, ref, rw, rh):
@@ -232,73 +327,13 @@ def compare(rom, pal, mine, ref, rw, rh):
     return diffs, unknown
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("roms", nargs="*", help="only these ROMs (default: all nine)")
-    ap.add_argument(
-        "--offline", action="store_true", help="use the cache; never touch the network"
-    )
-    ap.add_argument(
-        "--write-png", action="store_true", help="write tests/.uxn-refs/mine_<rom>.png"
-    )
-    ap.add_argument(
-        "--frames",
-        type=int,
-        default=FRAMES,
-        help=f"screen-vector frames to run (default {FRAMES})",
-    )
-    a = ap.parse_args()
-
-    if not os.access("./slap", os.X_OK):
-        die("no ./slap binary; run 'make slap' first.", f"  cwd: {os.getcwd()}")
-    if not os.path.exists("examples/uxn.slap"):
-        die(
-            "cannot find examples/uxn.slap.",
-            f"  cwd: {os.getcwd()}",
-            "  Run from the repo root.",
-        )
-    src = open("examples/uxn.slap").read()
-
-    want = {r.lower() for r in a.roms}
-    known = {n for n, _, _, _ in ROMS}
-    for r in want - known:
-        die(f"no such reference ROM: {r}", "  known: " + ", ".join(sorted(known)))
-    todo = [r for r in ROMS if not want or r[0] in want]
-
+def compare_mode(todo, a):
     failed = 0
-    for name, w, h, allow in todo:
-        rom_path, png_path = f"{CACHE}/{name}.rom", f"{CACHE}/{name}.png"
-        fetch(ROM_URL.format(name), rom_path, a.offline)
-        fetch(PNG_URL.format(name), png_path, a.offline)
-
-        patched = f"{CACHE}/uxn_{name}.slap"
-        with open(patched, "w") as f:
-            f.write(patch_geometry(src, w, h))
-
-        try:
-            r = subprocess.run(
-                ["./slap", "--headless", rom_path, str(a.frames)],
-                stdin=open(patched),
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            print(f"  {name:<17} TIMEOUT (>{TIMEOUT}s)")
-            failed += 1
-            continue
-        if r.returncode != 0:
-            err = (r.stderr.strip() or r.stdout.strip()).splitlines()
-            print(
-                f"  {name:<17} EXIT {r.returncode}: {err[-1] if err else '(no output)'}"
-            )
-            failed += 1
-            continue
-
-        pal, mine = load_dump(r.stdout, name)
+    for name, w, h, allow, _ in skip_bench_only(todo, "compared"):
+        pal, mine, ins, secs = render(name, w, h, a.frames, a.offline)
         if a.write_png:
             png_write(f"{CACHE}/mine_{name}.png", mine, pal)
-        rw, rh, ref = png_read(png_path)
+        rw, rh, ref = png_read(f"{CACHE}/{name}.png")
         diffs, unknown = compare(name, pal, mine, ref, rw, rh)
 
         total = rw * rh
@@ -326,10 +361,156 @@ def main():
                     "      that means the System palette was read wrong, not that a sprite is misplaced"
                 )
 
+    n = len(skip_bench_only(todo, None))
     if failed:
-        print(f"uxn-refs: {len(todo) - failed} matched, {failed} FAILED")
-        sys.exit(1)
-    print(f"uxn-refs: {len(todo)} ROMs match {REPO}@{SHA[:7]}")
+        print(f"uxn-refs: {n - failed} matched, {failed} FAILED")
+        return 1
+    print(f"uxn-refs: {n} ROM{'' if n == 1 else 's'} match {REPO}@{SHA[:7]}")
+    return 0
+
+
+def sweep_mode(todo, a):
+    """Render each ROM at 1, 60 and 120 frames and pin whether it moves.
+
+    The reference comparison only ever looks at 60 frames, so it cannot tell a
+    ROM that paints a correct image once from one that paints a correct image
+    because two errors cancelled at exactly that count. This can: a ROM declared
+    static must be byte-identical at every count, and one declared animated must
+    not be. A static ROM that starts drifting is state surviving across Screen
+    vector calls that should not -- an uncleared dirty box, a stack pointer that
+    creeps, a device page write that leaks. An animated ROM that goes flat is the
+    frame loop no longer advancing anything, which would make its 60-frame match
+    meaningless.
+    """
+    todo = skip_bench_only(todo, "swept")
+    skipped = [n for n, _, _, _, _ in todo if n in SWEEP_SKIP]
+    todo = [r for r in todo if r[0] not in SWEEP_SKIP]
+    failed = 0
+    for name, w, h, allow, motion in todo:
+        counts = (SWEEP_FRAMES[0], a.frames, SWEEP_FRAMES[1])
+        grids, note = {}, []
+        for f in counts:
+            pal, grid, ins, secs = render(name, w, h, f, a.offline)
+            grids[f] = [tuple(row) for row in grid]
+            note.append(f"{f}:{ins}")
+        same = {f: grids[f] == grids[a.frames] for f in counts}
+        moved = not all(same.values())
+        ok = moved == (motion == "anim")
+        flags = " ".join(("=" if same[f] else "~") + str(f) for f in counts)
+        if ok:
+            print(f"  {name:<17} {motion:<6} {flags:<16} ok    ins {' '.join(note)}")
+        else:
+            failed += 1
+            off = [f for f in counts if f != a.frames]
+            want = (
+                f"at least one of {off} frames must differ from the {a.frames}-frame render"
+                if motion == "anim"
+                else f"all of {list(counts)} must render identically"
+            )
+            print(f"  {name:<17} {motion:<6} {flags:<16} FAILED")
+            print(f"      declared {motion}, so {want}.")
+            print(
+                "      A static ROM that drifts means state is surviving between Screen"
+            )
+            print(
+                "      vector calls; an animated one that stops means the frame loop is"
+            )
+            print(
+                "      no longer advancing it, and its 60-frame match proves nothing."
+            )
+    if skipped:
+        print(
+            f"  (skipped {', '.join(skipped)}: paints from the reset vector, 0 frame-loop"
+        )
+        print("   instructions at any count, ~5.5 min per render)")
+    if failed:
+        print(f"uxn-refs: sweep {len(todo) - failed} ok, {failed} FAILED")
+        return 1
+    k = len(todo)
+    print(f"uxn-refs: sweep ok, {k} ROM{'' if k == 1 else 's'} hold the declared motion classification")
+    return 0
+
+
+def bench_mode(todo, a):
+    """Throughput, in uxn instructions per second of frame-loop time.
+
+    Wall time alone is not the rate: every ROM pays a fixed boot cost, and
+    mandelbrot's reset vector alone is ~5.5 minutes. So each ROM is run twice --
+    once at 0 frames for the setup baseline, once at N -- and the rate is the
+    frame-loop instructions over the difference.
+    """
+    print(f"  {'rom':<17} {'ins/frame':>10} {'frame s':>9} {'ins/sec':>10}")
+    for name, w, h, allow, _ in todo:
+        _, _, _, base = render(name, w, h, 0, a.offline)
+        _, _, ins, secs = render(name, w, h, a.frames, a.offline)
+        loop, per = max(secs - base, 0.0), ins / a.frames
+        # Under a second of frame-loop time the subtraction is mostly process
+        # noise, so a rate computed from it would be fiction -- these ROMs paint
+        # once and idle, and dividing their few hundred instructions by ~0
+        # seconds prints tens of millions of ips. Say nothing instead.
+        if per < 1000 or loop < 1.0:
+            print(
+                f"  {name:<17} {per:>10.0f} {loop:>9.2f} {'--':>10}   idle: paints once, no per-frame work"
+            )
+        else:
+            print(f"  {name:<17} {per:>10.0f} {loop:>9.2f} {ins / loop:>10.0f}")
+    print(
+        f"uxn-bench: {a.frames} frames per ROM, setup subtracted, {REPO}@{SHA[:7]} ROMs"
+    )
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("roms", nargs="*", help="only these ROMs (default: all nine)")
+    ap.add_argument(
+        "--offline", action="store_true", help="use the cache; never touch the network"
+    )
+    ap.add_argument(
+        "--write-png", action="store_true", help="write tests/.uxn-refs/mine_<rom>.png"
+    )
+    ap.add_argument(
+        "--frames",
+        type=int,
+        default=FRAMES,
+        help=f"screen-vector frames to run (default {FRAMES})",
+    )
+    ap.add_argument(
+        "--sweep",
+        action="store_true",
+        help="pin each ROM's static/animated classification across frame counts",
+    )
+    ap.add_argument(
+        "--bench",
+        action="store_true",
+        help="report uxn instructions/sec (default: screen, the only ROM here with a real per-frame workload)",
+    )
+    a = ap.parse_args()
+
+    if a.sweep and a.bench:
+        die("--sweep and --bench do different runs; pick one.")
+    if not os.access("./slap", os.X_OK):
+        die("no ./slap binary; run 'make slap' first.", f"  cwd: {os.getcwd()}")
+    if not os.path.exists("examples/uxn.slap"):
+        die(
+            "cannot find examples/uxn.slap.",
+            f"  cwd: {os.getcwd()}",
+            "  Run from the repo root.",
+        )
+
+    want = {r.lower() for r in a.roms}
+    known = {n for n, _, _, _, _ in ROMS}
+    for r in want - known:
+        die(f"no such reference ROM: {r}", "  known: " + ", ".join(sorted(known)))
+    if a.bench and not want:
+        # The only two ROMs here with a real per-frame workload. screen is the
+        # headline because it is also pixel-exact against raven, so its rate is
+        # timing verified-correct work; drool has no reference render at all.
+        want = {"screen", "drool"}
+    todo = [r for r in ROMS if not want or r[0] in want]
+
+    mode = sweep_mode if a.sweep else bench_mode if a.bench else compare_mode
+    sys.exit(mode(todo, a))
 
 
 if __name__ == "__main__":

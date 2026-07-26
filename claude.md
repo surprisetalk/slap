@@ -52,6 +52,30 @@ Three things it has to get right, each of which silently reads as an emulator bu
 
 Expected diffs are checked in per ROM: every one is 0 except piano's 22 pixels of audio level meter, which is the missing Audio device showing through. Raising a number there needs a stated reason.
 
+### `make test-uxn-sweep` — does the render move with the frame count?
+
+The comparison above only ever looks at 60 frames, so it cannot distinguish a ROM that renders correctly from one that renders correctly *at exactly that count* because two errors cancelled. `--sweep` renders each ROM at 1, 60 and 120 and pins the `motion` column of the `ROMS` table:
+
+- **static** (screen_auto, screen_blending, screen_bounds, screen_pixel, controller, piano, mandelbrot) — byte-identical at every count. Measured from 1 frame to 240. If one of these starts drifting, state is surviving between Screen-vector calls that should not: an uncleared dirty box, a stack pointer that creeps, a device-page write that leaks.
+- **anim** (screen, audio) — must *not* be identical across those counts. If an animated ROM goes flat, the frame loop has stopped advancing state and its 60-frame match no longer proves anything. `screen` is the sharpest: 0 diffs at 60, 16 at 59, 610 at 61.
+
+`mandelbrot` is skipped and the skip is printed. It paints from its reset vector, installs no Screen vector, and retires **0** frame-loop instructions at any count — three identical renders for 16 minutes.
+
+### `make bench-uxn` — throughput
+
+Prints uxn instructions/sec; never fails. uxn.slap's dump block emits an `INS n` line counting instructions retired *in the frame loop only* (`run-at` loads `BUDGET-I` with its cap and `step` decrements it once per instruction, so cap-minus-remainder is the work done). Each ROM is run twice — once at 0 frames for the setup baseline, once at N — because every ROM pays a fixed boot cost and mandelbrot's reset vector alone is ~5.5 minutes.
+
+Two ROMs have a real per-frame workload and are the default:
+
+| ROM | ins/frame | ins/sec | verified? |
+|-----|-----------|---------|-----------|
+| `screen` | 25,945 @ 256×176 | ~83k | pixel-exact vs raven |
+| `drool` | 20,680 @ 320×240 | ~168k | **no reference render exists** |
+
+`screen` is the headline precisely because it is also pixel-exact — the benchmark times *correct* work. `drool` is in raven's `roms/` but not its snapshot suite, so it is marked `allow=None` in the `ROMS` table (`BENCH_ONLY`), which skips its PNG download and excludes it from `--sweep` and the comparison. Naming only bench-only ROMs to a comparison mode is an error, not a vacuous pass. The two rates differ by 2× because screen.rom is sprite-blit bound and drool is compute bound; neither is "the" number.
+
+**bunnymark is not usable here**, despite being the obvious candidate — it retires 425 instructions/frame and draws nothing but its own header. Its RNG (`0x03f2`) is a self-modifying xorshift whose seed is EOR-ed from `DEI2 0xc0`, the **Datetime** device, which uxn.slap deliberately does not implement. Reads return 0, 0 is xorshift's fixed point, so the RNG emits 0 forever, every bunny is created at (0,0) with zero velocity, and the population counter at `0x063f` never advances. This is a documented omission surfacing, not a bug — but it means the ROM measures nothing, so don't reach for it.
+
 ## Architecture
 
 Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.

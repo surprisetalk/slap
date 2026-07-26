@@ -92,4 +92,16 @@ test: slap check-refs
 # three real Screen bugs were live, and this is what caught them.
 test-uxn-refs: slap
 	@python3 tests/run_uxn_refs.py
-.PHONY: clean test check-refs test-uxn-refs
+
+# Same network caveat, so also outside `test:`. The reference comparison only
+# looks at 60 frames; this checks that each ROM's render moves with the frame
+# count exactly as declared, which is what says the 60-frame match is the ROM
+# being emulated rather than two errors cancelling at one count.
+test-uxn-sweep: slap
+	@python3 tests/run_uxn_refs.py --sweep
+
+# A benchmark, not a test: it prints numbers and never fails. Only screen.rom
+# has a real per-frame workload (~26k uxn instructions), so it is the default.
+bench-uxn: slap
+	@python3 tests/run_uxn_refs.py --bench
+.PHONY: clean test check-refs test-uxn-refs test-uxn-sweep bench-uxn
