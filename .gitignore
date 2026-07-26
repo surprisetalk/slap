@@ -2,3 +2,5 @@ slap
 slap-sdl
 web/
 _test_fs.bin
+tests/.uxn-refs/
+__pycache__/

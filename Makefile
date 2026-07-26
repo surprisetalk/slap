@@ -45,6 +45,7 @@ LIBS := icn chr nmt tga gly ulz parse ufx strings json xml rss
 FIXTURES := tests/expect.slap tests/type.slap tests/panic.slap tests/type_errors.slap \
             tests/adversarial/probes.slap tests/adversarial/run.sh \
             tests/run_panic.py tests/run_type_errors.py tests/run_euler.py tests/run_wiki.py tests/run_kv.py \
+            tests/run_uxn_refs.py \
             examples/wiki.slap examples/wiki-pages/Home.txt examples/kv-server.slap examples/kv-client.slap \
             examples/chip8.slap examples/uxn.slap shell.html
 check-refs:
@@ -85,4 +86,10 @@ test: slap check-refs
 	@set -o pipefail; for combo in "icn ufx" "strings parse json" "strings parse xml" "strings parse xml rss"; do files=$$(echo $$combo | sed 's|[^ ]*|examples/lib/&.slap|g'); cat $$files | ./slap > /dev/null && cat $$files | ./slap --check || exit 1; done
 	@bash tests/adversarial/run.sh
 	@echo "All test suites passed."
-.PHONY: clean test check-refs
+# Deliberately outside `test:`. It downloads nine ROMs and nine reference renders
+# from GitHub, and `make test` has to work offline. Run it after touching
+# anything in uxn.slap's Screen path -- the in-language self-test passed while
+# three real Screen bugs were live, and this is what caught them.
+test-uxn-refs: slap
+	@python3 tests/run_uxn_refs.py
+.PHONY: clean test check-refs test-uxn-refs

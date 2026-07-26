@@ -145,6 +145,21 @@ list 300000 (1 push) repeat 'vla1 let 'vla1 0 nth must 1 eq assert
 list 300000 (1 push) repeat 'vla2 let 'vla2 299999 nth must 1 eq assert
 list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq assert
 
+-- ===== Frames: the save buffer grows, and gives back what it took =====
+-- Recursion is what fills it: each level rebinds a name the level above already
+-- put in the same frame, so the old value is staged until the call returns.
+-- Eight levels x a ~20000-slot list drives five reallocs (4096 -> 262144), well
+-- past anything a fixed array sized off this suite would have allowed.
+-- Each level hands DOWN a shorter list and reads its OWN back AFTER the
+-- recursive call returns, so the restore is what the length is measuring --
+-- reading sbl before recursing would pass no matter what came back.
+('sbn let 'sbl let
+   sbn 0 gt
+     (sbl 1 drop-n  sbn 1 sub sb-rec drop  sbl len)
+     (sbl len)
+   if) 'sb-rec let
+0 20000 range 8 sb-rec 20000 eq assert
+
 -- ===== Lists: range =====
 0 5 range [0 1 2 3 4] eq assert
 

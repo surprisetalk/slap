@@ -24,6 +24,16 @@
     result staging. Each overflowed the 8 MiB C stack past ~250k slots and died
     as a bare SIGSEGV; that is what made euler/10 pass or fail run to run. None
     of them needed a buffer at all.
+  - the frame save buffer is measured and now grows on demand instead of being a
+    fixed 4194304-Value BSS array (134 MB of address space). Peak across the
+    whole suite is 90,414 slots; typical programs use a few hundred.
+  - the frame value arena itself cannot be made growable the same way.
+    `dispatch_word` hands `&frame->vals[offset]` to `eval_tuple_scoped` and the
+    body it runs binds names in that same frame, so a realloc would free the
+    code mid-execution. Getting past it means either copying every dispatched
+    body (the hot path) or a chunked arena where `Binding.offset` is no longer
+    a plain index. Not worth it: the array is demand-zero, so max RSS is 5 MB
+    for chip8 and 100 MB for euler/10, which really does touch a million slots.
   - revisit only with a concrete program that needs shared mutable cells.
 
 - [ ] replicate some big projects using only slap to confirm it works
@@ -33,6 +43,13 @@
     and 8 of the 9 ROMs in mkeeter/raven's snapshot suite match its reference
     renders pixel for pixel (the 9th differs by 22 pixels of audio VU meter).
     That found three real Screen bugs the self-test had missed.
+  - that comparison is now checked in as `make test-uxn-refs`
+    (`tests/run_uxn_refs.py`), kept out of `make test` because it downloads the
+    ROMs and reference renders from GitHub at a pinned SHA; they cache under
+    `tests/.uxn-refs/` so only the first run needs network. The frame count is
+    load-bearing and matches raven's 60 redraws -- at 2 frames `screen.rom`
+    renders the reference image shifted two pixels, which reads as a Screen bug
+    and is not one.
   - next: pico8/tic80 both need a Lua interpreter first — that's the real next project, not another emulator shell. decker or duskos are closer to reach.
 
 - [ ] convert my personal app library to slap (e.g. snews, snail)?

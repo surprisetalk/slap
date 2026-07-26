@@ -222,9 +222,28 @@ struct Frame {
     Binding bindings[FRAME_MAX]; Value vals[FRAME_VALS_MAX];
     int16_t hash[FRAME_HASH_SIZE]; // maps sym hash -> binding index+1 (0=empty)
 };
-#define SAVE_BUF_MAX 4194304
-static Value save_buf[SAVE_BUF_MAX];
+/* Where a scoped tuple body stages the bindings it shadowed, so they can be put
+   back when it returns. It grows on demand rather than being sized up front: the
+   real bound is (nesting depth) x (size of the shadowed values), which a user
+   program sets and no constant here can know. Measured peak across the whole
+   suite is 90,414 slots and typical programs never exceed a few hundred, so the
+   fixed 4,194,304-Value array this replaces was 134 MB of address space for a
+   few kilobytes of use -- and still a ceiling. Nothing holds a Value* into it
+   across a grow: frame_bind writes at save_buf_sp right after reserving, and
+   eval_tuple_scoped's restore loop only reads. */
+static Value *save_buf=NULL;
+static int save_buf_cap=0;
 static int save_buf_sp=0;
+static void save_buf_grow(int need) {
+    int cap = save_buf_cap ? save_buf_cap : 4096;
+    while (cap < need) { if (cap > (1<<29)) { cap = need; break; } cap *= 2; }
+    Value *p = realloc(save_buf, (size_t)cap * sizeof(Value));
+    if (!p) die("out of memory: cannot grow the frame save buffer to %d values (%zu bytes). "
+                "It holds the bindings that scoped tuple bodies shadowed, so its size is "
+                "nesting depth times the size of the values being shadowed.",
+                cap, (size_t)cap * sizeof(Value));
+    save_buf = p; save_buf_cap = cap;
+}
 static int frame_save_active=0;
 static Frame *frame_save_target=NULL;
 static int frame_save_sbc=0;
@@ -249,7 +268,7 @@ static void frame_bind(Frame *f, uint32_t sym, Value *vals, int slots, int recur
             if (f->hash[s] == 0 || f->bindings[f->hash[s]-1].sym == sym) { f->hash[s] = (int16_t)(idx + 1); break; } }
     }
     if(frame_save_active&&f==frame_save_target&&(b-f->bindings)<frame_save_sbc){
-        if(save_buf_sp+5+b->slots>SAVE_BUF_MAX) die("frame save buffer overflow (%d slots)",save_buf_sp+5+b->slots);
+        if(save_buf_sp+5+b->slots>save_buf_cap) save_buf_grow(save_buf_sp+5+b->slots);
         save_buf[save_buf_sp++]=val_int((int)(b-f->bindings));
         save_buf[save_buf_sp++]=val_int(b->offset);
         save_buf[save_buf_sp++]=val_int(b->allocated);

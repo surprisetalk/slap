@@ -671,6 +671,8 @@ The whole machine — 4 KB of memory, registers, call stack, keypad, and the 64�
 
 It is checked against another implementation rather than only against itself. `./slap --headless game.rom [frames] < examples/uxn.slap` boots a ROM with no window and writes the composited canvas to stdout as one palette index per pixel, with the four palette entries on a `PAL` line. Run against the nine ROMs in [mkeeter/raven](https://github.com/mkeeter/raven)'s snapshot suite — each at its own resolution, since the canvas geometry is six constants — eight match raven's reference renders **pixel for pixel**, including `screen_blending` (every blend mode × depth × flip) and `mandelbrot` (108864 pixels of pure integer arithmetic). The ninth, `piano`, differs by 22 pixels: an audio level meter, which is the missing Audio device showing through.
 
+`make test-uxn-refs` runs that comparison. It is kept out of `make test` because it downloads the ROMs and reference renders from GitHub and the suite has to work offline; they are cached under `tests/.uxn-refs/`, so only the first run needs network. This is worth running after any change to the Screen path — uxn.slap's own ~110-assertion self-test passed while three real Screen bugs were live, and whole-frame comparison found all three in an afternoon.
+
 App demos (terminal build):
 
 | File | Description |

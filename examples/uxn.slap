@@ -698,11 +698,16 @@ ROM load-rom
 --
 --   ./slap --headless game.rom [frames] < examples/uxn.slap
 --
--- Boots the ROM, runs N screen-vector frames (default 4), then writes the
--- composited canvas to stdout as one digit per pixel -- the palette index, not
--- the grey, so the output is independent of the rank mapping. The `PAL` line
--- carries the four palette entries as 12 hex nibbles (r g b per entry), which is
--- what lets a reference implementation's RGB render be scored against this one.
+-- Boots the ROM, runs N screen-vector frames, then writes the composited canvas
+-- to stdout as one digit per pixel -- the palette index, not the grey, so the
+-- output is independent of the rank mapping. The `PAL` line carries the four
+-- palette entries as 12 hex nibbles (r g b per entry), which is what lets a
+-- reference implementation's RGB render be scored against this one.
+--
+-- N defaults to 60 to match raven's snapshot harness, which redraws 60 times
+-- after the input. These ROMs animate, so the count is part of the comparison,
+-- not a budget: at 2 frames screen.rom renders the reference image shifted two
+-- pixels, which looks exactly like an off-by-two in Screen/sprite.
 isheadless (
   args len 1 gt (args 1 get must 0 ('c let 10 mul c 48 sub plus) fold) (60) if 'FRAMES let
 

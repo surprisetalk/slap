@@ -40,6 +40,18 @@ Note that expect.slap is **not** run bare: it depends on `strings.slap` and `par
 
 Tests use `assert` (halts on first failure). Python scripts validate that specific inputs produce expected error messages. `tests/adversarial/run.sh` classifies probes as `TYPECHECK_REJECT` / `PANIC` / `CLEAN_RUN` and fails if a classification changes.
 
+### `make test-uxn-refs` (separate: needs network)
+
+`python3 tests/run_uxn_refs.py` checks `examples/uxn.slap` against [mkeeter/raven](https://github.com/mkeeter/raven)'s snapshot suite — nine ROMs, compared pixel for pixel with its reference renders. It is **not** part of `make test`, because it downloads those ROMs and PNGs from GitHub at a pinned SHA and the suite has to work offline; downloads are cached under `tests/.uxn-refs/` so only the first run needs network (`--offline` thereafter). Run it after touching anything in uxn.slap's Screen path: the in-language self-test passed while three real Screen bugs were live, and this is what found them.
+
+Three things it has to get right, each of which silently reads as an emulator bug when wrong:
+
+- **Frame count.** raven calls `dev.redraw()` exactly 60 times after the input, and these ROMs animate. At two frames `screen.rom` renders the reference image shifted two pixels, which looks exactly like an off-by-two in `Screen/sprite`.
+- **Geometry.** The harness rewrites `SCR-W`/`SCR-H`/`SCR-N`/`FG-B`/`STATE-N` so the emulator is rebuilt at each ROM's own resolution. Without that the comparison is "structurally similar at a different aspect ratio". It hard-errors if those declarations no longer match its patterns rather than comparing something meaningless.
+- **Input.** Several of these ROMs install only a Mouse or Controller vector and never a Screen vector, so they render blank without the replay. That lives in uxn.slap's dump block, not in the harness.
+
+Expected diffs are checked in per ROM: every one is 0 except piano's 22 pixels of audio level meter, which is the missing Audio device showing through. Raising a number there needs a stated reason.
+
 ## Architecture
 
 Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.
@@ -63,6 +75,8 @@ Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.
 **Any `Value buf[n]` whose `n` comes from data rather than from a constant is a latent bare SIGSEGV** — the C stack is 8 MiB and a `Value` is 32 bytes, so ~250k slots overflows it with no diagnostic. Three such buffers existed and are gone: `take-n`/`drop-n` (a slice is contiguous, so it moves in place), `let` (`frame_bind` only ever copies *out* of its argument, so it can read the operand stack directly), and `lend`'s result staging (a `memmove` on the operand stack inserts the box underneath instead). Adding a new one is a bug unless it is bounded by `LOCAL_MAX` first. This is what made `euler/10` pass or fail depending on how much C stack happened to be left.
 
 `FRAME_VALS_MAX` (2097152) is the frame value arena, and `vals` is inline in `Frame`, so it sets `sizeof(Frame)` — 64 MiB. Measured peak across the whole suite is 1,000,822 slots (`euler/37`, then `euler/10`), both binding a million-element sieve snapshot inside a `lend` body; `examples/uxn.slap`'s ROM dump peaks at 331,841 and ordinary programs sit under 4,000. At most 7 frames are live at once. `frame_new` reports allocation failure rather than dereferencing NULL.
+
+**`vals` cannot become a `realloc`-growable buffer**, which is the obvious way to stop `sizeof(Frame)` being 64 MiB. `dispatch_word` takes `Value *v = &lu.frame->vals[b->offset]` and hands it to `eval_tuple_scoped` for the whole duration of the call (slap.c:2578) — and that body binds names in the very frame the pointer points into. One growing rebind mid-body and the code being executed is freed memory. Every other `vals` pointer is fine (`quote`, `nth`, the restore loop, and `frame_bind` itself all read and are done), so this one site is the whole blocker. The two ways past it are copying the body out on every word dispatch — the hot path for chip8/uxn — or a chunked arena that never moves what it has already handed out, which means `Binding.offset` stops being a plain index. Neither is worth it: the array is demand-zero, so the cost is address space and not RSS. Measured max RSS is 5 MB for chip8 and 100 MB for `euler/10`, which genuinely touches a million slots.
 
 ### Tagged unions (sum types)
 
