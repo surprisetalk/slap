@@ -503,6 +503,33 @@ Additional keywords recognized in annotations: `functor` (required by `each`), `
 | `tau` | 6.28318530... |
 | `e` | 2.71828182... |
 
+### time
+
+Two clocks, because they answer different questions and neither substitutes for the other.
+
+| Word | Effect | Example |
+|------|--------|---------|
+| `millis` | → milliseconds | `millis` → `1837402` |
+| `datetime` | → 9-element list | `datetime` → `[2026 6 25 19 59 9 6 205 1]` |
+
+`millis` is monotonic and has no epoch — only differences between two reads mean anything. Use it for timing.
+
+`datetime` is local wall clock, already broken down, in this order:
+
+| # | field | range |
+|---|-------|-------|
+| 0 | year | full, e.g. `2026` |
+| 1 | month | `0`–`11` |
+| 2 | day | `1`–`31` |
+| 3 | hour | `0`–`23` |
+| 4 | minute | `0`–`59` |
+| 5 | second | `0`–`60` (60 is a leap second) |
+| 6 | day of week | `0`–`6`, `0` = Sunday |
+| 7 | day of year | `0`–`365` |
+| 8 | is DST | `0` or `1` |
+
+Fields are broken down in C because day-of-week and DST need the timezone database, which a Slap program cannot reach. The order is exactly Varvara's Datetime ports, which is what `examples/uxn.slap` indexes it as.
+
 ### strings
 
 String primitives plus library helpers. Strings are lists of Unicode codepoints; `utf8-encode`/`utf8-decode` convert to/from UTF-8 byte lists. Higher-level helpers (`int-str`, `str-join`, `crlf`, `http-request`) live in `examples/lib/strings.slap` — cat it with your program: `cat examples/lib/strings.slap myprog.slap | slap`.
@@ -667,7 +694,7 @@ make slap-sdl
 
 The whole machine — 4 KB of memory, registers, call stack, keypad, and the 64×32 display — is one flat int list threaded on the stack, with no boxes. `set` is an in-place O(1) store and `peek` an O(1) non-consuming read, so a `cycle` decodes and executes one instruction against the live state without ever copying it. That is what keeps the per-cycle cost independent of how big the machine is. The full opcode set (including the COSMAC shift/`FX55`/`FX65` quirks and `DXYN` sprite collision) is covered by an in-language self-test that runs on the plain terminal build.
 
-`uxn.slap` is the same idea at 16× the scale: a 220191-cell machine holding uxn's full 64 KB address space, both 256-byte stacks, the device page, and two 320×240 screen layers. All 32 base opcodes are written once each — keep, return and short modes are handled by six state cells set during decode, so one `ADD` body serves all eight encodings. Varvara pixels are already 2-bit palette indices, which is exactly the canvas depth, so nothing is lost but hue; the palette is mapped by *rank* rather than absolute luminance so that four shades of one colour stay distinguishable. Roughly 290k instructions/sec. Audio, File and Datetime are stubbed — the file header says why.
+`uxn.slap` is the same idea at 16× the scale: a 220191-cell machine holding uxn's full 64 KB address space, both 256-byte stacks, the device page, and two 320×240 screen layers. All 32 base opcodes are written once each — keep, return and short modes are handled by six state cells set during decode, so one `ADD` body serves all eight encodings. Varvara pixels are already 2-bit palette indices, which is exactly the canvas depth, so nothing is lost but hue; the palette is mapped by *rank* rather than absolute luminance so that four shades of one colour stay distinguishable. Roughly 290k instructions/sec. Audio and File are stubbed — the file header says why.
 
 It is checked against another implementation rather than only against itself. `./slap --headless game.rom [frames] < examples/uxn.slap` boots a ROM with no window and writes the composited canvas to stdout as one palette index per pixel, with the four palette entries on a `PAL` line. Run against the nine ROMs in [mkeeter/raven](https://github.com/mkeeter/raven)'s snapshot suite — each at its own resolution, since the canvas geometry is six constants — eight match raven's reference renders **pixel for pixel**, including `screen_blending` (every blend mode × depth × flip) and `mandelbrot` (108864 pixels of pure integer arithmetic). The ninth, `piano`, differs by 22 pixels: an audio level meter, which is the missing Audio device showing through.
 
@@ -675,9 +702,9 @@ It is checked against another implementation rather than only against itself. `.
 
 `make test-uxn-sweep` asks a question the comparison cannot: does each ROM's render move with the frame count the way it should? Rendering at 1, 60 and 120 separates a ROM that is right from one that is right *at exactly 60* because two errors cancelled there. Seven of the nine are byte-identical from 1 frame to 240 and must stay that way — a static ROM that starts drifting is state surviving between Screen-vector calls. `screen` and `audio` genuinely animate and must keep doing so; `screen` shows 0 diffs at 60, 16 at 59, and 610 at 61.
 
-`make bench-uxn` reports throughput. The dump prints an `INS` line counting instructions retired in the frame loop, and each ROM is timed twice — at 0 frames and at N — so the fixed boot cost drops out. `screen.rom` sustains roughly **83k uxn instructions/sec** (~26k per frame at 256×176) and `drool.rom` about **168k** (~21k per frame at 320×240); the gap is sprite blitting versus plain compute. `screen` is the headline because it is also pixel-exact, so its number is timing work that is known correct — drool has no reference render at all, and the harness keeps it out of the comparison and the sweep rather than pretending otherwise.
+`make bench-uxn` reports throughput. The dump prints an `INS` line counting instructions retired in the frame loop, and each ROM is timed twice — at 0 frames and at N — so the fixed boot cost drops out. `screen.rom` sustains roughly **83k uxn instructions/sec** (~26k per frame at 256×176) and `drool.rom` about **169k** (~21k per frame at 320×240); the gap is sprite blitting versus plain compute. `screen` is the headline because it is also pixel-exact, so its number is timing work that is known correct — drool has no reference render at all, and the harness keeps it out of the comparison and the sweep rather than pretending otherwise.
 
-bunnymark, the obvious choice, is not usable: its RNG is a self-modifying xorshift seeded from the Datetime device, which is deliberately unimplemented, and zero is xorshift's fixed point — so the RNG emits 0 forever, no bunny ever spawns, and the ROM idles at 425 instructions/frame drawing its own header.
+bunnymark, the obvious choice, is not usable. Its RNG is a self-modifying xorshift seeded from the Datetime device, and zero is xorshift's fixed point, so before Datetime existed the generator emitted 0 forever and no bunny ever spawned. Implementing Datetime fixed the RNG — the seed literal now boots nonzero and the render animates instead of sitting frozen — but the population still never exceeds one bunny and the ROM still idles, now at 441 instructions/frame instead of 425. It installs no Mouse vector, so the harness has no lever on the spawn path; the remaining blocker is unidentified.
 
 App demos (terminal build):
 

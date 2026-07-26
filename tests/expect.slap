@@ -1330,6 +1330,47 @@ rec 1 'a into  rec 2 'b into  tuck 'b at must 2 eq assert 'a at must 1 eq assert
 millis 0 lt not assert
 millis millis swap sub 0 lt not assert
 
+-- ===== datetime =====
+-- Nine fields: year month(0-11) day hour minute second dotw(0-6) doty(0-365) isdst.
+datetime 'dt let
+dt len 9 eq assert
+'dt 0 nth must 'y let   'dt 1 nth must 'mo let  'dt 2 nth must 'da let
+'dt 3 nth must 'hh let  'dt 4 nth must 'mi let  'dt 5 nth must 'se let
+'dt 6 nth must 'dw let  'dt 7 nth must 'dy let  'dt 8 nth must 'ds let
+
+y 2020 lt not assert   y 2200 lt assert
+mo 0 lt not assert     mo 12 lt assert
+da 1 lt not assert     da 32 lt assert
+hh 0 lt not assert     hh 24 lt assert
+mi 0 lt not assert     mi 60 lt assert
+se 0 lt not assert     se 61 lt assert          -- 60 is a leap second, and legal
+dw 0 lt not assert     dw 7 lt assert
+dy 0 lt not assert     dy 366 lt assert
+ds 0 eq ds 1 eq or assert
+
+-- Ranges alone would pass on a shuffled struct tm -- month, hour and minute are
+-- all small ints and each other's plausible values. dotw and doty are the two
+-- fields C derives rather than copies, so recomputing them here from year/month/
+-- day is a real cross-check: any field swap breaks at least one of the two.
+('yy let yy 4 mod 0 eq  yy 100 mod 0 neq  yy 400 mod 0 eq or  and) 'leap? let
+2024 leap? assert  1900 leap? not assert  2000 leap? assert  2026 leap? not assert
+
+-- Sakamoto's congruence: 0 = Sunday, the same convention as tm_wday.
+[0 3 2 5 0 3 5 1 4 6 2 4] 'sak let
+y mo 2 lt (1 sub) () if 'sy let
+sy  sy 4 div plus  sy 100 div sub  sy 400 div plus  'sak mo nth must plus  da plus
+7 mod dw eq assert
+
+-- doty from the cumulative month table, +1 from March onward in a leap year.
+[0 31 59 90 120 151 181 212 243 273 304 334] 'cum let
+'cum mo nth must da plus 1 sub  mo 1 gt y leap? and (1 plus) () if
+dy eq assert
+
+-- The list is a fresh value per call, not a view onto shared state: editing one
+-- read must not be visible in the next.
+datetime 0 1234 set must 0 get must 1234 eq assert
+datetime 0 get must y eq assert
+
 -- ===== Adversarial: str-split / str-find / int-str edge cases =====
 
 -- str-split: consecutive delimiters produce empty middle segment

@@ -31,7 +31,11 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
 9. `python3 tests/run_wiki.py` — boots `examples/wiki.slap` on a random port, drives it over real HTTP (GET/POST/404/traversal/oversize), kills it
 10. `python3 tests/run_kv.py` — boots `examples/kv-server.slap`, drives it through `examples/kv-client.slap` and raw sockets (roundtrip, spaced values, persistence across restart, corrupt-snapshot refusal, unwritable-save survival), kills it
 11. `./slap --check < examples/chip8.slap`, then `./slap --headless < examples/chip8.slap | grep -q chip8-selftest-ok` — the CHIP-8 emulator's in-language opcode self-test (SDL words type-check unconditionally; `halt` fires before any `on`/`show` dispatches, so no SDL build is needed)
-12. `./slap --check < examples/uxn.slap`, then `./slap --headless < examples/uxn.slap | grep -q uxn-selftest-ok` — the Uxn/Varvara emulator's self-test: every base opcode, each mode flag, the immediates, the System/Console/Screen devices, and an end-to-end boot of the embedded demo ROM. Same no-SDL-needed trick as chip8.
+12. `./slap --check < examples/uxn.slap`, then `./slap --headless < examples/uxn.slap | grep -q uxn-selftest-ok` — the Uxn/Varvara emulator's self-test: every base opcode, each mode flag, the immediates, the System/Console/Screen/Datetime devices, and an end-to-end boot of the embedded demo ROM. Same no-SDL-needed trick as chip8.
+
+    The Datetime block (ports 0xc0–0xca, read-only, computed per read from the `datetime` primitive) is checked through the real DEI path against `datetime` itself rather than against constants, so a wrong port index fails instead of returning a plausible number. Only the fields that cannot move during a run are compared — hour/minute/second are range-checked, because asserting on a value that ticks mid-test is a flaky test, not a device. Both range edges (0xbf and 0xcb must read the device page) are pinned: an off-by-one in the `q 191 gt q 203 lt` guard is the likely bug, and nothing else would catch it. Verified falsifiable — shifting the port index by one, or narrowing the guard by one, each fails the self-test.
+
+    None of raven's nine reference ROMs read Datetime at all (measured, not assumed: instrumenting the read path counts 0 for every one), so the pixel comparison cannot become clock-dependent. `drool` reads it 8 times and `bunnymark` 79.
 
     The self-test also pins the five Screen behaviours that real ROMs depend on and that nothing else here would catch: `Screen/auto`'s bits drive the *opposite* axis inside the draw loop (auto-Y lays tiles out along X) while the port writeback afterwards uses the normal axes and moves by a single 8; the blend table is irregular and cannot be derived arithmetically; a sprite whose x has wrapped past 0 shows its right half at the left edge; and a flipped fill is exclusive of x. Each assertion was checked to fail against the pre-fix behaviour — an assertion that cannot fail is not a regression test.
 13. `examples/lib/` load/typecheck combos, then `bash tests/adversarial/run.sh`
@@ -70,11 +74,23 @@ Two ROMs have a real per-frame workload and are the default:
 | ROM | ins/frame | ins/sec | verified? |
 |-----|-----------|---------|-----------|
 | `screen` | 25,945 @ 256×176 | ~83k | pixel-exact vs raven |
-| `drool` | 20,680 @ 320×240 | ~168k | **no reference render exists** |
+| `drool` | ~21,000 @ 320×240 | ~169k | **no reference render exists** |
+
+`screen`'s instruction count is exact and reproducible — it reads no clock, so `--sweep` pins it at 25,945 every run. `drool`'s is not: it reads Datetime 8 times and its count drifts about 0.2% run to run (1,258,796–1,261,434 over 60 frames measured a second apart), so it is quoted rounded. Don't treat a changed drool number under ~0.5% as a regression.
 
 `screen` is the headline precisely because it is also pixel-exact — the benchmark times *correct* work. `drool` is in raven's `roms/` but not its snapshot suite, so it is marked `allow=None` in the `ROMS` table (`BENCH_ONLY`), which skips its PNG download and excludes it from `--sweep` and the comparison. Naming only bench-only ROMs to a comparison mode is an error, not a vacuous pass. The two rates differ by 2× because screen.rom is sprite-blit bound and drool is compute bound; neither is "the" number.
 
-**bunnymark is not usable here**, despite being the obvious candidate — it retires 425 instructions/frame and draws nothing but its own header. Its RNG (`0x03f2`) is a self-modifying xorshift whose seed is EOR-ed from `DEI2 0xc0`, the **Datetime** device, which uxn.slap deliberately does not implement. Reads return 0, 0 is xorshift's fixed point, so the RNG emits 0 forever, every bunny is created at (0,0) with zero velocity, and the population counter at `0x063f` never advances. This is a documented omission surfacing, not a bug — but it means the ROM measures nothing, so don't reach for it.
+**bunnymark is still not usable here, and implementing Datetime did not change that.** The original diagnosis was half right: its RNG (`0x03f2`) is a self-modifying xorshift whose seed literal is EOR-ed from `DEI2 0xc0`, so with no Datetime device it was seeded with 0 — xorshift's fixed point — and emitted 0 forever. Adding the device fixed exactly that much and no more:
+
+| | before Datetime | after |
+|---|---|---|
+| seed literal at `0x03f3` | `0x0000` | `0x5759` |
+| bunny record at `0x0642` | all zeros | varies per frame |
+| render at 1 vs 240 frames | byte-identical | 12 lines differ |
+| instructions/frame | 425 | 441, flat to 240 frames |
+| population | 0 | **1, and it stays 1** |
+
+The workload still does not grow, so it still measures nothing. bunnymark installs *only* a Screen vector (`0x0163`) and no Mouse vector, so nothing the harness does to `Mouse/state` reaches an add-bunny path — verified both with the button held (the replay's default) and toggled every frame; the population is 1 either way. Whatever gates the spawn is a third thing, unidentified. Don't reach for this ROM, and don't assume the next missing device is the answer either. `drool.rom` remains the honest second number.
 
 ## Architecture
 

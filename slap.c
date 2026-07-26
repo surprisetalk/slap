@@ -2687,6 +2687,25 @@ static void prim_find_elem(Frame *env) {
 #ifndef SLAP_SDL
 static void prim_millis(Frame *e){(void)e;struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);spush(val_int((int64_t)(ts.tv_sec*1000+ts.tv_nsec/1000000)));}
 #endif
+/* Local wall clock, already broken down. `millis` is monotonic uptime, which no
+   amount of arithmetic turns into a calendar; and day-of-week and isdst need the
+   timezone database, which a Slap program has no way to reach. So this is the
+   whole of what only C can do here, and the nine fields are chosen to be exactly
+   Varvara's Datetime ports (examples/uxn.slap) with no reshaping needed:
+     year(full) month(0-11) day(1-31) hour minute second dotw(0-6) doty(0-365) isdst
+   tm_isdst is tri-state (negative = unknown); a Varvara port is one byte with no
+   room for that, so unknown reads as 0, same as "not in effect". */
+static void prim_datetime(Frame *e){
+    (void)e; time_t t=time(NULL); struct tm lt;
+    if(t==(time_t)-1) die("datetime: the system clock is unreadable -- time() returned -1.");
+    if(!localtime_r(&t,&lt))
+        die("datetime: localtime_r rejected the system clock (epoch %lld).\n"
+            "  The TZ environment variable may name a timezone that does not exist.",(long long)t);
+    int64_t f[9]={lt.tm_year+1900,lt.tm_mon,lt.tm_mday,lt.tm_hour,lt.tm_min,
+                  lt.tm_sec,lt.tm_wday,lt.tm_yday,lt.tm_isdst>0};
+    for(int i=0;i<9;i++) spush(val_int(f[i]));
+    spush(val_compound(VAL_LIST,9,10));
+}
 #define A2E " ['a num lent in  'a num lent in  'a num move out] effect\n"
 #define I2E " [int lent in  int lent in  int move out] effect\n"
 #define F1E " [float lent in  float move out] effect\n"
@@ -2704,6 +2723,7 @@ static const char *BUILTIN_TYPES =
     "'eq [lent in  lent in  int" MO "'lt ['a ord lent in  'a ord lent in  int" MO
     "'and" I2E "'or" I2E
     "'print [own in] effect\n'assert [int own in] effect\n'millis [int" MO
+    "'datetime [int list" MO
     "'itof [int lent in  float" MO "'ftoi [float lent in  int" MO
     "'fsqrt" F1E "'ffloor" F1E "'fceil" F1E "'fround" F1E "'fexp" F1E "'flog" F1E
     "'fpow" F2E "'fatan2" F2E
@@ -3119,7 +3139,7 @@ static void register_prims(void) {
         R(fold,fold),R(each,each),R(sort,sort),{"index-of",prim_indexof},
         R(at,at),R(rise,rise),R(fall,fall),R(shape,shape),
         R(rec,rec),R(into,into),R(edit,edit),R(find,find_elem),
-        R(millis,millis),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),R(clone,clone),
+        R(millis,millis),R(datetime,datetime),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),R(clone,clone),
         R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),
         {"dict-keys",prim_keys},{"dict-values",prim_values},
         R(tag,tag),R(union,union),R(must,must),R(pthen,pthen),

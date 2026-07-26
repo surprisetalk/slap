@@ -64,12 +64,22 @@
     drool has no reference render in raven's suite, so it is marked
     `allow=None` and excluded from the comparison and the sweep; its rate times
     work that is NOT verified correct, which is why screen stays the headline.
-  - bunnymark is NOT a usable benchmark and should not be retried: its RNG is a
-    self-modifying xorshift seeded from `DEI2 0xc0` (Datetime), which uxn.slap
-    deliberately does not implement. Zero is xorshift's fixed point, so the RNG
-    emits 0 forever, every bunny lands at (0,0), the counter at 0x063f never
-    advances, and the ROM idles at 425 instructions/frame drawing its header.
-    A real Datetime device would be the prerequisite, not a harness change.
+  - Datetime is implemented (ports 0xc0-0xca, read-only, computed per read from
+    a new `datetime` primitive: local wall clock broken into the nine fields in
+    port order, because day-of-week and DST need the timezone database). The
+    self-test checks it through the real DEI path against `datetime` itself, so
+    a port-map error fails rather than reading plausible garbage; the two range
+    edges (0xbf, 0xcb) are pinned because an off-by-one there is the likely bug.
+  - bunnymark is STILL not a usable benchmark, and Datetime was not the fix it
+    looked like. It did repair the RNG -- the self-modifying xorshift's seed
+    literal at 0x03f3 boots to 0x5759 instead of 0x0000, the bunny record varies
+    per frame instead of being all zeros, and the render animates where it was
+    byte-identical at 1 and 240 frames. But the population never exceeds one and
+    the workload is still flat (441 instructions/frame to 240 frames, was 425),
+    so it measures nothing. It installs only a Screen vector and no Mouse
+    vector; held and per-frame-toggled `Mouse/state` both leave it at one bunny.
+    The remaining blocker is unidentified. Don't retry it, and don't assume the
+    next missing device is the answer.
   - next: pico8/tic80 both need a Lua interpreter first — that's the real next project, not another emulator shell. decker or duskos are closer to reach.
 
 - [ ] convert my personal app library to slap (e.g. snews, snail)?

@@ -23,7 +23,14 @@
 --
 -- The complete uxn CPU: all 32 base opcodes with all eight mode combinations
 -- (short / return / keep), plus BRK, JCI, JMI, JSI and the four LIT forms.
--- Devices: System, Console, Screen, Controller, Mouse.
+-- Devices: System, Console, Screen, Controller, Mouse, Datetime.
+--
+-- Datetime is read-only and computed per read from slap's `datetime`, which is
+-- local wall clock broken into exactly these nine fields. It matters more than
+-- its size suggests: a ROM that seeds a PRNG from the clock gets zero from a
+-- missing Datetime, and zero is the fixed point of every xorshift, so the
+-- generator emits zero forever and the ROM runs but does nothing. That failure
+-- looks like a bug anywhere except where it is.
 --
 -- Deliberately absent, and why:
 --   Audio (0x30-0x60)  slap has no audio primitive of any kind. Ports read 0 and
@@ -32,7 +39,6 @@
 --   File (0xa0-0xb0)   needs per-file cursors and streaming semantics that don't
 --                      fit a flat int list, and would hand an arbitrary ROM
 --                      filesystem write access from inside `make test`.
---   Datetime (0xc0)    the terminal build has no clock (`millis` is SDL-only).
 --   Console/read       impossible: stdin is the slap program itself.
 -- Unimplemented ports read 0 and their writes land in the device page inertly,
 -- which is what a Varvara missing a device is supposed to look like.
@@ -298,6 +304,24 @@
    n 255 lt ( CON-B n plus w cell!  CON-N-I n 1 plus cell! ) () if ) if) 'con-put let
 
 -- ===== device i/o =====
+
+-- Datetime (0xc0-0xca). Computed on read rather than mirrored into the device
+-- page, so it cannot be clobbered by a ROM writing there and cannot go stale
+-- inside a long vector. `datetime` hands back the nine fields in port order, so
+-- the six single-byte ports are a straight index; only the two shorts (year at
+-- 0xc0, doty at 0xc8) need splitting.
+--
+-- The list is bound before anything else is pushed: this runs with the machine
+-- at TOS and `dt` is the only safe place to put it -- a bare list on the stack
+-- would sit between the machine and every subsequent `cell`.
+('q let datetime 'dt let
+ q 192 eq ('dt 0 nth must 8 shr) (
+ q 193 eq ('dt 0 nth must 255 band) (
+ q 200 eq ('dt 7 nth must 8 shr) (
+ q 201 eq ('dt 7 nth must 255 band) (
+ q 202 eq ('dt 8 nth must) (
+ 'dt q 193 sub nth must ) if) if) if) if) if) 'dt-port let
+
 ('p let p 255 band 'q let
  q 4 eq (WSP-I cell) (
  q 5 eq (RSP-I cell) (
@@ -305,7 +329,8 @@
  q 35 eq (SCR-W 255 band) (
  q 36 eq (SCR-H 8 shr) (
  q 37 eq (SCR-H 255 band) (
- DEV-B q plus cell ) if) if) if) if) if) if) 'dei let
+ q 191 gt q 203 lt and (q dt-port) (
+ DEV-B q plus cell ) if) if) if) if) if) if) if) 'dei let
 
 ('v let 'p let p 255 band 'q let v 255 band 'w let
  q w dev!
@@ -668,6 +693,33 @@ isheadless args len 0 eq and (
   -- --- Console ---
   [128 104 128 24 23 128 105 128 24 23 128 10 128 24 23 0] run
     CON-N-I cell 0 eq assert                                           -- LF flushed the buffer
+
+  -- --- Datetime ---
+  -- Checked against `datetime` itself: what a ROM reads through DEI has to be
+  -- what the host clock says, or the port map is off. Only the fields that
+  -- cannot move during a self-test run are compared -- asserting on seconds
+  -- would fail whenever the clock happens to tick mid-test, which is a flaky
+  -- test rather than a bug in the device.
+  datetime 'dtn let
+  [128 192 54 0] run  ws2 'dtn 0 nth must eq assert     -- 0xc0 year, a short
+  [128 194 22 0] run  0 wat 'dtn 1 nth must eq assert   -- 0xc2 month, 0-11
+  [128 195 22 0] run  0 wat 'dtn 2 nth must eq assert   -- 0xc3 day, 1-31
+  [128 199 22 0] run  0 wat 'dtn 6 nth must eq assert   -- 0xc7 day of week, 0=Sunday
+  [128 200 54 0] run  ws2 'dtn 7 nth must eq assert     -- 0xc8 day of year, a short
+  [128 202 22 0] run  0 wat 'dtn 8 nth must eq assert   -- 0xca isdst
+  -- The three that do move are range-checked instead.
+  [128 196 22 0] run  0 wat 24 lt assert                -- 0xc4 hour
+  [128 197 22 0] run  0 wat 60 lt assert                -- 0xc5 minute
+  [128 198 22 0] run  0 wat 61 lt assert                -- 0xc6 second, 60 is a leap second
+  -- Both edges of the range, which is the whole of what an off-by-one in the
+  -- `q 191 gt q 203 lt` guard would break: these two read the device page.
+  [128 191 22 0] run  0 wat 0 eq assert                 -- 0xbf, below the device
+  [128 203 22 0] run  0 wat 0 eq assert                 -- 0xcb, above it
+  -- Datetime is read-only. The write lands in the device page like any other,
+  -- but the read still comes from the clock and ignores it.
+  [128 99 128 194 23 128 194 22 0] run
+    0 wat 'dtn 1 nth must eq assert
+    194 gd 99 eq assert                                 -- the write did land
 
   -- --- the demo ROM actually boots ---
   reset DEMO-ROM load-rom 256 2000000 run-at
