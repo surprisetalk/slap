@@ -1,0 +1,11 @@
+{
+  "valid": true,
+  "errors": [],
+  "warnings": [],
+  "scanMetadata": {
+    "filesScanned": 0,
+    "filesFound": [],
+    "skipped": true,
+    "skipReason": "no .mcp.json"
+  }
+}

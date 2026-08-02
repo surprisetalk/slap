@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 make slap          # Terminal interpreter (C99, -O3 -flto, links -lm)
 make slap-sdl      # SDL graphics build (adds -DSLAP_SDL, links SDL2)
-make slap-wasm FILE=prog.slap  # Emscripten/WASM build (embeds .slap file, outputs .html/.js/.wasm)
+make slap-wasm FILE=prog.slap  # Emscripten/WASM build (embeds .slap file, outputs .html, .js, .wasm)
 make test           # Run all test suites
 make clean          # Remove binaries
 ```

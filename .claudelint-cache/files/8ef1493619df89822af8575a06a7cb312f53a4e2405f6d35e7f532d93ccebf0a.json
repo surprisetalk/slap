@@ -1,0 +1,12 @@
+{
+  "valid": true,
+  "errors": [],
+  "warnings": [],
+  "scanMetadata": {
+    "filesScanned": 1,
+    "filesFound": [
+      "/Users/taylor/Developer/slap/claude.md"
+    ],
+    "skipped": false
+  }
+}

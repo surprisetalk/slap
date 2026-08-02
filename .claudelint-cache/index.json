@@ -1,0 +1,69 @@
+{
+  "version": "0.7.1-1785683474710",
+  "entries": {
+    "Commands Validator": {
+      "hash": "b721310db049dd18bcc6f504e79a8b5adafc92be1e18bdd68a15e6026792f317",
+      "timestamp": 1785685680749,
+      "resultFile": "b721310db049dd18bcc6f504e79a8b5adafc92be1e18bdd68a15e6026792f317.json",
+      "fileFingerprints": {}
+    },
+    "Hooks Validator": {
+      "hash": "7cbcc24a28e25bbbcfc64ea12d433eee86a6ef3610d472f632755d8884473acc",
+      "timestamp": 1785685680752,
+      "resultFile": "7cbcc24a28e25bbbcfc64ea12d433eee86a6ef3610d472f632755d8884473acc.json",
+      "fileFingerprints": {}
+    },
+    "Agents Validator": {
+      "hash": "61dc6904125b0ccfbb89db7c739fb1e5cd8cfd197e210da2684314f6cf0af074",
+      "timestamp": 1785685680755,
+      "resultFile": "61dc6904125b0ccfbb89db7c739fb1e5cd8cfd197e210da2684314f6cf0af074.json",
+      "fileFingerprints": {}
+    },
+    "Output Styles Validator": {
+      "hash": "670bbad597bb7d7aa73c8d469820683cf6db23b8f248b4991683db40a70defa0",
+      "timestamp": 1785685680756,
+      "resultFile": "670bbad597bb7d7aa73c8d469820683cf6db23b8f248b4991683db40a70defa0.json",
+      "fileFingerprints": {}
+    },
+    "LSP Validator": {
+      "hash": "48aa6beeb7977616f227fc7254c9ca08f3367fdcda0c7b68be03c84268c7dcb7",
+      "timestamp": 1785685680757,
+      "resultFile": "48aa6beeb7977616f227fc7254c9ca08f3367fdcda0c7b68be03c84268c7dcb7.json",
+      "fileFingerprints": {}
+    },
+    "Plugin Validator": {
+      "hash": "2884e6ceea6a28029670fddb7b094676ba149f3cd8a9abe181c952931ffb13ca",
+      "timestamp": 1785685680758,
+      "resultFile": "2884e6ceea6a28029670fddb7b094676ba149f3cd8a9abe181c952931ffb13ca.json",
+      "fileFingerprints": {}
+    },
+    "MCP Validator": {
+      "hash": "ab6a51276e1697236e44b54406cedf432cc78ac5d751e402cf7b67c952eebc08",
+      "timestamp": 1785685680758,
+      "resultFile": "ab6a51276e1697236e44b54406cedf432cc78ac5d751e402cf7b67c952eebc08.json",
+      "fileFingerprints": {}
+    },
+    "Skills Validator": {
+      "hash": "b0d13601664231a0b31c62e8babcb37adf7573dfd523428a9ef45f13008818c3",
+      "timestamp": 1785685680759,
+      "resultFile": "b0d13601664231a0b31c62e8babcb37adf7573dfd523428a9ef45f13008818c3.json",
+      "fileFingerprints": {}
+    },
+    "Settings Validator": {
+      "hash": "7a6778775726e0de345e16afeaad7418b74d12389f28542969e402b2b5aa91cf",
+      "timestamp": 1785685680765,
+      "resultFile": "7a6778775726e0de345e16afeaad7418b74d12389f28542969e402b2b5aa91cf.json",
+      "fileFingerprints": {
+        "/Users/taylor/Developer/slap/.claude/settings.local.json": "2026-07-19T15:11:06.692Z"
+      }
+    },
+    "CLAUDE.md Validator": {
+      "hash": "8ef1493619df89822af8575a06a7cb312f53a4e2405f6d35e7f532d93ccebf0a",
+      "timestamp": 1785685680772,
+      "resultFile": "8ef1493619df89822af8575a06a7cb312f53a4e2405f6d35e7f532d93ccebf0a.json",
+      "fileFingerprints": {
+        "/Users/taylor/Developer/slap/claude.md": "2026-08-02T15:47:57.860Z"
+      }
+    }
+  }
+}
