@@ -1,0 +1,139 @@
+-- todo.slap: a todo list kept in a JSON file.
+--
+--   cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/json.slap \
+--       examples/todo.slap | ./slap FILE [COMMAND [ARGS...]]
+--
+--   list              show the list (the default)
+--   add TEXT...       append an item
+--   done N            mark item N done
+--   undone N          mark item N not done
+--   rm N              delete item N
+--
+-- The file is {"items":[{"text":"...","done":false}, ...]}. It is read with
+-- jd-* decoders and written with je-* encoders, so json.slap does both halves.
+--
+-- Items are held as two parallel lists rather than a list of records: every
+-- operation here is over one column or the other, and `set` on a flat int list
+-- is the O(1) store. Two decoders read the two columns in two passes, which
+-- costs a second parse of a file that is small by construction and keeps each
+-- decoder a single readable chain.
+--
+-- A missing file is the normal first-run case and starts an empty list. A file
+-- that exists and does not decode is refused and left untouched -- starting
+-- empty instead would silently overwrite the list on the next write.
+
+(list 10 push) 'LF let
+('st let "/dev/stdout" st LF cat write must drop) 'say let
+('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
+
+args len 0 eq (
+  "todo: usage: FILE [list | add TEXT... | done N | undone N | rm N]" die) () if
+args 0 get must 'FILE let
+args len 1 gt (args 1 get must) ("list") if 'CMD let
+args 2 drop-n 'REST let
+
+("items" ("text" jd-str  jd-field) jd-list jd-field) 'dec-texts let
+("items" ("done" jd-bool jd-field) jd-list jd-field) 'dec-dones let
+
+-- `case` stages its whole scrutinee through a LOCAL_MAX buffer, so branching
+-- straight on a jd-run result would cap the file size. `each` maps the ok
+-- payload without copying it, so shrinking the decoded list to one int first
+-- makes the branch below independent of how long the list is.
+('what let 'res let
+ res (drop 0) each () {'ok (drop "") 'no ()} case 'msg let
+ msg len 0 gt (
+   "todo: " FILE cat " is not a todo file" cat LF cat
+   "  " cat what cat ": " cat msg cat LF cat
+   "  expected {\"items\":[{\"text\":\"...\",\"done\":false}]}" cat die) () if
+ res must) 'or-die let
+
+FILE read 'RD let
+RD (drop 1) each 0 default (RD must) ("{\"items\":[]}") if 'RAW let
+
+-- json.slap returns a clean, path-annotated 'no when a document's *shape* is
+-- wrong, but a *syntax* error crashes inside its parser instead -- an empty
+-- file and a non-JSON file both die in parse-exact, and a truncated one dies in
+-- `get`. The two that actually reach a todo file are caught here so the message
+-- names it. A file that is valid JSON up to a truncation still surfaces
+-- json.slap's own error; closing that needs a fix in the library, not a second
+-- parse here. Either way the file is left untouched, which is the part that
+-- matters.
+('t let t (32 gt) filter) 'nonspace let
+RAW nonspace len 0 eq (
+  "todo: " FILE cat " is empty" cat LF cat
+  "  a todo file is {\"items\":[]} at minimum" cat die) () if
+RAW nonspace 0 get must 123 eq not (
+  "todo: " FILE cat " is not a todo file" cat LF cat
+  "  it does not start with a JSON object" cat die) () if
+
+RAW dec-texts jd-run "text"  or-die 'TEXTS let
+RAW dec-dones jd-run "done"  or-die 'DONES let
+TEXTS len DONES len eq assert
+
+-- A bare run of digits. "12x" and "-1" are rejected as input errors here rather
+-- than reaching parse-int, which would read them as 12 and -1 and leave the
+-- caller to notice the remainder.
+('s let s len 0 gt
+ s (48 lt) filter len 0 eq and
+ s (57 gt) filter len 0 eq and) 'isnum let
+
+('n let
+ REST len 1 eq not (
+   "todo: " n cat " needs exactly one item number -- try: " cat n cat " 1" cat die) () if
+ REST 0 get must 'a let
+ a isnum not (
+   "todo: " n cat ": \"" cat a cat "\" is not an item number" cat die) () if
+ a ok parse-int must len 0 eq assert 'i let
+ i 1 lt i TEXTS len gt or (
+   "todo: no item " i int-str cat "; the list holds " cat TEXTS len int-str cat
+   TEXTS len 1 eq (" item") (" items") if cat die) () if
+ i) 'one-idx let
+
+CMD "list" eq (TEXTS DONES) (
+CMD "add" eq (
+  REST len 0 eq ("todo: add needs some text -- try: add buy milk" die) () if
+  REST " " str-join 'new let
+  -- je-str escapes the quote, the backslash, \n, \r and \t, and emits every
+  -- other byte under 0x20 raw -- which is not valid JSON, so the file would not
+  -- read back. Refusing the whole range under 0x20 is wider than that gap and
+  -- costs nothing: a line in a todo list has no use for a control byte.
+  new (32 lt) filter len 0 gt (
+    "todo: item text must not contain control bytes" die) () if
+  TEXTS new push
+  DONES 0 push) (
+CMD "done" eq (
+  "done" one-idx 'i let
+  TEXTS DONES i 1 sub 1 set must) (
+CMD "undone" eq (
+  "undone" one-idx 'i let
+  TEXTS DONES i 1 sub 0 set must) (
+CMD "rm" eq (
+  "rm" one-idx 'i let
+  TEXTS i 1 sub take-n TEXTS i drop-n cat
+  DONES i 1 sub take-n DONES i drop-n cat) (
+  "todo: unknown command " CMD cat
+  "; try list, add, done, undone, rm" cat die
+  TEXTS DONES   -- die exits; these only balance the branch for the checker
+) if) if) if) if) if
+'DONES2 let 'TEXTS2 let
+
+-- je-obj takes [key fragment] couples and quotes the keys itself, so the values
+-- are already-encoded JSON text. That is what lets "true"/"false" go in
+-- literally: json.slap has je-int and je-str but no je-bool.
+CMD "list" eq not (
+  0 TEXTS2 len range ('i let
+    list "text" TEXTS2 i get must je-str couple push
+         "done" DONES2 i get must ("true") ("false") if couple push
+    je-obj) each je-list 'body let
+  FILE list "items" body couple push je-obj write must drop
+) () if
+
+TEXTS2 len 0 eq (
+  "todo: nothing to do -- try: add buy milk" say
+) (
+  0 TEXTS2 len range ('i let
+    i 1 plus int-str ". " cat
+    DONES2 i get must ("[x] ") ("[ ] ") if cat
+    TEXTS2 i get must cat say
+  i) each drop
+) if

@@ -1,0 +1,82 @@
+-- banner.slap: print text as ASCII art from a real bitmap font.
+--
+--   cat examples/lib/strings.slap examples/lib/icn.slap examples/banner.slap | ./slap [TEXT] [FONT]
+--
+-- Defaults: "SLAP" in fonts/atari8.uf1. Quote TEXT if it contains spaces.
+--
+-- A .uf1 file is 256 width bytes followed by 256 glyphs of 8 bytes each: one
+-- bit per pixel, MSB first, eight rows of eight. That is exactly icn.slap's
+-- tile format, so one glyph is one icn-decode of an 8-byte slice.
+--
+-- ufx.slap parses this same layout and is the obvious thing to reach for, but
+-- it decodes all 256 glyphs eagerly and 256 x 64 bits plus per-glyph headers is
+-- 16641 slots against a LOCAL_MAX of 16384. It dies on every real font and only
+-- works on a short synthetic one like the fixture in its own tests. Slicing the
+-- eight bytes for the one glyph being drawn keeps every intermediate small,
+-- which is why this reads the width table and the glyph bytes directly.
+--
+-- .uf2 and .uf3 are the same idea at 32 and 72 bytes per glyph. They are
+-- rejected by name below rather than decoded as garbage.
+
+(list 10 push) 'LF let
+('st let "/dev/stdout" st LF cat write must drop) 'say let
+('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
+
+args len 0 gt (args 0 get must) ("SLAP") if 'TEXT let
+args len 1 gt (args 1 get must) ("fonts/atari8.uf1") if 'FONT let
+35 'INK let
+32 'BG let
+
+-- Not `case` on the read: that stages the whole file through a LOCAL_MAX
+-- buffer, and a .uf3 is 18688 bytes, so the branch would die on the very files
+-- this is supposed to reject by name. `each` maps the ok payload without
+-- copying it, so shrinking to one int first makes the test independent of size.
+FONT read 'RD let
+RD (drop 1) each 0 default not (
+  "banner: cannot read " FONT cat die) () if
+RD must 'RAW let
+
+RAW len 256 le (
+  "banner: " FONT cat " is " cat RAW len int-str cat " bytes" cat LF cat
+  "  a bitmap font is 256 width bytes followed by the glyphs" cat die) () if
+RAW len 256 sub 256 mod 0 eq not (
+  "banner: " FONT cat " does not hold 256 equal-sized glyphs" cat LF cat
+  "  " cat RAW len int-str cat " bytes is not 256 + 256*n" cat die) () if
+
+RAW len 256 sub 256 div 'STRIDE let
+STRIDE 8 eq not (
+  "banner: " FONT cat " has " cat STRIDE int-str cat " bytes per glyph" cat LF cat
+  "  this reads .uf1 only, which is 8 (8x8). .uf2 is 32 and .uf3 is 72." cat die) () if
+
+RAW 256 take-n 'WIDTHS let
+
+-- One glyph as 64 bits, MSB first, without ever materializing the other 255.
+('c let RAW 256 c 8 mul plus drop-n 8 take-n icn-decode) 'glyph let
+
+-- Widths are advances and a few are 0 or wider than the cell; clamp so a font
+-- with a junk width table still prints something rectangular.
+('c let WIDTHS c get must 'w let w 1 lt (1) (w 8 gt (8) (w) if) if) 'cell-width let
+
+-- ===== self-tests =====
+
+"fonts/atari8.uf1" read must len 2304 eq assert          -- 256 + 256*8
+65 glyph len 64 eq assert
+65 glyph (1 eq) filter len 0 gt assert                   -- 'A' has ink
+32 glyph (1 eq) filter len 0 eq assert                   -- space has none
+-- MSB first: icn-decode's bit 0 is the high bit of byte 0. Reading the same
+-- byte back out of RAW and re-decoding it must agree, which is what catches a
+-- glyph offset that is off by one byte or one glyph.
+RAW 256 65 8 mul plus drop-n 8 take-n icn-decode 65 glyph eq assert
+0 cell-width 1 ge assert
+255 cell-width 8 le assert
+
+-- ===== render =====
+
+0 8 range ('row let
+  TEXT list ('ch let
+    ch glyph 'g let
+    ch cell-width 'cw let
+    0 cw range ('col let g row 8 mul col plus get must 1 eq (INK) (BG) if) each
+    cat) fold
+  say
+  row) each drop

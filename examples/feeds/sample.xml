@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Slap Notes</title>
+    <link>http://example.com/slap</link>
+    <description>Notes on a small concatenative language</description>
+    <item>
+      <title>peek beats dup</title>
+      <link>http://example.com/slap/peek</link>
+      <guid isPermaLink="true">http://example.com/slap/peek</guid>
+      <pubDate>Mon, 06 Jan 2025 09:00:00 GMT</pubDate>
+      <description>Reading element i with dup copies the whole list.
+        peek leaves it in place, so a machine threaded on the stack
+        stops paying for its own size on every read.</description>
+    </item>
+    <item>
+      <title>Boxes &amp; linear types</title>
+      <link>http://example.com/slap/boxes</link>
+      <guid isPermaLink="true">http://example.com/slap/boxes</guid>
+      <pubDate>Tue, 07 Jan 2025 09:00:00 GMT</pubDate>
+      <description>A box must be consumed exactly once. free, lend, mutate
+        and clone are the only four ways out, and the checker counts them.</description>
+    </item>
+    <item>
+      <title>A slice is a run, not a copy</title>
+      <link>http://example.com/slap/slices</link>
+      <guid isPermaLink="true">http://example.com/slap/slices</guid>
+      <pubDate>Wed, 08 Jan 2025 09:00:00 GMT</pubDate>
+      <description>take-n and drop-n move a contiguous run in place, so
+        neither one has a size limit any more.</description>
+    </item>
+    <item>
+      <title>Untitled draft</title>
+      <link>http://example.com/slap/draft</link>
+    </item>
+  </channel>
+</rss>

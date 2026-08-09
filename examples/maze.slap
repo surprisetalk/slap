@@ -1,0 +1,223 @@
+-- maze.slap: generate a perfect maze, then solve it.
+--
+--   ./slap-sdl < examples/maze.slap         -- draw one; any key builds another
+--   ./slap --headless < examples/maze.slap  -- run the self-test, print ok, exit
+--   ./slap --check    < examples/maze.slap  -- type-check only
+--
+-- Generation is Aldous-Broder: walk at random, and carve whenever the walk
+-- steps into a cell it has not seen. It is slower than a depth-first carve but
+-- needs no explicit stack -- only a position and a count -- which matters here,
+-- because a name cannot be `let` twice in one loop body, so an in-language
+-- stack would have to be threaded through every branch by hand. It also samples
+-- spanning trees uniformly, so no direction is favoured.
+--
+-- The whole machine is one flat int list threaded on the stack, read with
+-- `peek` and written with `set`, both O(1), so nothing here ever copies it.
+-- Three sections, back to back:
+--   [0, GN)          grid: 1 wall, 0 open, 2 on the solution path
+--   [GN, GN+CELLS)   BFS distance from the start cell, -1 for not yet reached
+--   TRASH            one scratch cell, explained below
+--
+-- The scratch cell is what makes this type-check. `peek` and `set` consume the
+-- state and hand it back, so a branch that reads the maze and a branch that
+-- does not have different stack effects, and `if` rejects the pair. Rather than
+-- branch around the access, every read and write happens unconditionally and
+-- the *index* is chosen: the real cell when the operation applies, TRASH when
+-- it does not. A write to TRASH is discarded and a read of it is masked off by
+-- the guard that would have skipped it. Every `peek`/`set` below is on the
+-- straight line for that reason.
+--
+-- `random` cannot be seeded, so the self-test checks properties rather than a
+-- golden maze: every cell is reachable, exactly CELLS-1 walls came down (which
+-- is what makes it a tree and not a cave), and the marked path is a chain of
+-- the length BFS says it should be.
+
+15 'CW let
+11 'CH let
+CW 2 mul 1 plus 'GW let
+CH 2 mul 1 plus 'GH let
+CW CH mul 'CELLS let
+GW GH mul 'GN let
+GN CELLS plus 'TRASH let
+TRASH 1 plus 'SLOTS let
+CELLS 1 sub 'TARGET let
+20 'S let
+640 GW S mul sub 2 div 'OX let
+480 GH S mul sub 2 div 'OY let
+
+('cy let 'cx let cy 2 mul 1 plus GW mul cx 2 mul 1 plus plus) 'cell-at let
+
+-- two cells two apart have their dividing wall at exactly their midpoint
+('by let 'bx let 'ay let 'ax let ax ay cell-at bx by cell-at plus 2 div) 'wall-at let
+
+('cy let 'cx let cx 0 ge cx CW lt and  cy 0 ge cy CH lt and  and) 'in-grid let
+
+-- the four neighbours of (cx, cy), by index 0..3
+('k let 'cy let 'cx let
+ k 0 eq (cx cy 1 sub) (
+ k 1 eq (cx cy 1 plus) (
+ k 2 eq (cx 1 plus cy) (
+         cx 1 sub cy) if) if) if) 'neighbour let
+
+-- ===== generation =====
+
+-- state -- state, grid carved
+(0 1
+ (dup CELLS lt) (
+   'nv let 'cur let
+   cur CW mod 'cx let cur CW div 'cy let
+   cx cy 4 random neighbour 'ny let 'nx let
+   nx ny in-grid 'okn let
+   okn (nx ny cell-at) (TRASH) if 'ni let
+   ni peek must 1 eq okn and 'fresh let
+   fresh (ni) (TRASH) if 'wc let
+   fresh (cx cy nx ny wall-at) (TRASH) if 'ww let
+   wc 0 set must
+   ww 0 set must
+   okn (ny CW mul nx plus) (cur) if 'nc let
+   nc fresh (nv 1 plus) (nv) if
+ ) while
+ drop drop) 'carve let
+
+-- ===== solving =====
+
+-- Relax one neighbour of a cell at distance d. `en` is the caller's "this cell
+-- is actually at distance d" test, folded in here so bfs-round needs no branch
+-- around a state-consuming call.
+-- state cx cy nx ny d en chg -- state chg
+('chg let 'en let 'd let 'ny let 'nx let 'cy let 'cx let
+ nx ny in-grid en and 'okn let
+ okn (cx cy nx ny wall-at) (TRASH) if 'wi let
+ wi peek must 0 eq okn and 'open0 let
+ open0 (GN ny CW mul nx plus plus) (TRASH) if 'di let
+ di peek must -1 eq open0 and 'fresh let
+ fresh (di) (TRASH) if 'wj let
+ wj d 1 plus set must
+ fresh (1) (chg) if) 'relax let
+
+-- One sweep: every cell at distance d pushes its open neighbours to d+1.
+-- state d -- state chg
+('d let 0 0
+ (over CELLS lt) (
+   'chg let 'c let
+   GN c plus peek must d eq 'atd let
+   c CW mod 'cx let c CW div 'cy let
+   cx cy cx cy 0 neighbour d atd chg  relax 'chg1 let
+   cx cy cx cy 1 neighbour d atd chg1 relax 'chg2 let
+   cx cy cx cy 2 neighbour d atd chg2 relax 'chg3 let
+   cx cy cx cy 3 neighbour d atd chg3 relax 'chg4 let
+   c 1 plus chg4
+ ) while
+ nip) 'bfs-round let
+
+-- state -- state, distance section filled
+(0 1
+ (dup 0 gt) (
+   drop 'd let
+   d bfs-round
+   d 1 plus swap
+ ) while
+ drop drop) 'solve let
+
+-- Is this neighbour the one step closer to the start? In a perfect maze exactly
+-- one of the four is, so threading `best` through all four picks it out.
+-- state cx cy nx ny d best -- state best
+('best let 'd let 'ny let 'nx let 'cy let 'cx let
+ nx ny in-grid 'okn let
+ okn (cx cy nx ny wall-at) (TRASH) if 'wi let
+ wi peek must 0 eq okn and 'open0 let
+ open0 (GN ny CW mul nx plus plus) (TRASH) if 'di let
+ di peek must d 1 sub eq open0 and
+   (ny CW mul nx plus) (best) if) 'probe let
+
+-- Walk back from the far corner along strictly decreasing distance, marking
+-- each cell and the wall it came through. In a perfect maze that neighbour is
+-- unique, so this cannot loop.
+-- state -- state, path marked 2
+(TARGET
+ ('cc let GN cc plus peek must 0 gt cc swap) (
+   'c let
+   c CW mod 'cx let c CW div 'cy let
+   GN c plus peek must 'd let
+   cx cy cell-at 2 set must
+   -- Unrolled rather than an `each` over the four directions: an `each` body
+   -- cannot reach the state underneath it, and probing needs a `peek`.
+   cx cy cx cy 0 neighbour d -1 probe 'b0 let
+   cx cy cx cy 1 neighbour d b0 probe 'b1 let
+   cx cy cx cy 2 neighbour d b1 probe 'b2 let
+   cx cy cx cy 3 neighbour d b2 probe 'prev let
+   cx cy prev CW mod prev CW div wall-at 2 set must
+   prev
+ ) while
+ 'lastc let
+ lastc CW mod lastc CW div cell-at 2 set must) 'mark-path let
+
+-- a fresh maze: carved, solved, and with the solution marked
+(0 GN range (drop 1) each
+ 0 CELLS range (drop -1) each cat
+ list 0 push cat
+ 0 0 cell-at 0 set must
+ carve
+ GN 0 set must
+ solve
+ mark-path) 'build let
+
+-- ===== self-test =====
+
+isheadless (
+
+  0 (dup 3 lt) (
+    build
+
+    dup len SLOTS eq assert
+
+    -- every cell was reached, so the carve left one connected component
+    0 (dup CELLS lt) ('c let GN c plus peek must -1 neq assert c 1 plus) while drop
+
+    -- A spanning tree on CELLS nodes has CELLS-1 edges, so exactly CELLS cell
+    -- centres plus CELLS-1 dividing walls are open. Carving one wall twice, or
+    -- carving into a cell already seen, breaks this and turns the maze into a
+    -- cave with loops -- which still looks like a maze on screen.
+    0 0 (dup GN lt) (
+      'i let 'acc let
+      i peek must 'v let
+      v 0 eq v 2 eq or (acc 1 plus) (acc) if
+      i 1 plus) while drop
+    CELLS 2 mul 1 sub eq assert
+
+    -- the border is never carved through
+    0 peek must 1 eq assert
+    GW 1 sub peek must 1 eq assert
+    GN 1 sub peek must 1 eq assert
+    GN GW sub peek must 1 eq assert
+
+    -- the exit is at least a Manhattan walk away, and the marked path holds
+    -- exactly the cells BFS counted -- so it is a simple chain, not a smear
+    GN TARGET plus peek must 'dt let
+    dt CW CH plus 2 sub ge assert
+    0 0 (dup CELLS lt) (
+      'c let 'acc let
+      c CW mod c CW div cell-at peek must 2 eq (acc 1 plus) (acc) if
+      c 1 plus) while drop
+    dt 1 plus eq assert
+
+    drop
+  1 plus) while drop
+
+  "maze-selftest-ok" print halt
+) () if
+
+-- ===== SDL =====
+
+build
+
+'keydown (drop drop build) on
+
+('st let 0 clear
+  0 (dup GN lt) (
+    'i let
+    'st i nth must 'v let
+    v 1 eq (0) (v 2 eq (3) (1) if) if 'col let
+    i GW mod S mul OX plus  i GW div S mul OY plus  S S col fill-rect
+    i 1 plus
+  ) while drop) show

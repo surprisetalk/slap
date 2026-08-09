@@ -1,0 +1,103 @@
+-- plasma.slap: render a plasma field and write it as a real 24-bit TGA. No SDL.
+--
+--   cat examples/lib/strings.slap examples/lib/tga.slap examples/plasma.slap | ./slap [OUT.tga] [SIZE]
+--
+-- Defaults: plasma.tga at 64x64. Open the result in any image viewer.
+--
+-- Two things about the format that tga.slap does not enforce and a writer has
+-- to get right: channels are stored B, G, R (not R, G, B), and with descriptor
+-- byte 17 set to 0 the origin is bottom-left, so the first row written is the
+-- bottom row of the picture. Get either wrong and the file is still a valid
+-- TGA -- just colour-swapped or upside down.
+--
+-- Size cap: tga-header ends in `px cat`, and `cat` dies above LOCAL_MAX (16384
+-- slots). With an 18-byte header and 3 bytes per pixel that is 5455 pixels, so
+-- 73x73 is the largest square this can write. Anything larger is refused up
+-- front, because the alternative is dying inside the codec with a message
+-- about concat rather than about the image.
+
+(list 10 push) 'LF let
+('st let "/dev/stdout" st LF cat write must drop) 'say let
+('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
+
+args len 0 gt (args 0 get must) ("plasma.tga") if 'OUT let
+args len 1 gt (args 1 get must ok parse-int must len 0 eq assert) (64) if 'N let
+
+N 1 lt (
+  "plasma: size must be at least 1" die) () if
+N N mul 3 mul 18 plus 16384 gt (
+  "plasma: " N int-str cat "x" cat N int-str cat " needs " cat
+  N N mul 3 mul 18 plus int-str cat " slots; tga-header's cat caps at 16384" cat LF cat
+  "  the largest square this can write is 73x73" cat die) () if
+
+-- ===== float helpers =====
+
+-- fsin: Bhaskara I's sine approximation, c. 1150. Maximum error about 0.0016
+-- over a full turn, which is under one step of a 256-level channel.
+--   sin t ~ 16 t (pi - t) / (5 pi^2 - 4 t (pi - t))    for 0 <= t <= pi
+-- Reduce to [0, tau) with ffloor, then mirror the upper half and negate.
+-- There is no sin primitive; this is the whole reason the float family exists
+-- on this page.
+('t0 let
+ t0 tau div ffloor tau mul t0 swap sub 'tr let
+ tr pi gt (tr pi sub) (tr) if 'tm let
+ tm pi tm sub mul 'q let
+ 16.0 q mul 5.0 pi pi mul mul 4.0 q mul sub div 'sv let
+ tr pi gt (sv fneg) (sv) if) 'fsin let
+
+(pi 2.0 div plus fsin) 'fcos let
+
+-- 0.0..1.0 float to a 0..255 byte, saturating rather than wrapping
+('cv let cv 0.0 1.0 clamp 255.0 mul fround ftoi) 'chan let
+
+-- ===== the field =====
+
+-- Plane waves in x, y and x+y, a radial ripple, and a logarithmic spiral
+-- (angle plus log radius is what makes the arms curl rather than radiate).
+-- Sums to roughly -5..5.
+('ny let 'nx let
+ 6.0 nx mul fsin
+ 6.0 ny mul fsin plus
+ 5.0 nx ny plus mul fsin plus
+ nx nx mul ny ny mul plus fsqrt 'rr let
+ 8.0 rr mul fsin plus
+ ny nx fatan2 3.0 mul  rr 1.0 plus flog 6.0 mul  plus fsin plus) 'field let
+
+-- exp(-r^2): a soft vignette, so the frame is dark and the eye lands centre
+('vr let vr vr mul fneg fexp) 'vignette let
+
+-- ===== render =====
+
+N itof 2.0 div 'HALF let
+
+-- y counts from the bottom, which is the order a descriptor-0 TGA stores rows,
+-- so no flip is needed anywhere.
+0 N range list ('py let
+  py itof HALF sub HALF div 'ny let
+  0 N range ('px let
+    px itof HALF sub HALF div 'nx let
+    nx nx mul ny ny mul plus fsqrt vignette 'vg let
+    nx ny field 5.0 div 'v let
+    list
+      0.5 0.5 pi v mul tau 2.0 mul 3.0 div plus fsin mul plus vg mul chan push   -- B
+      0.5 0.5 pi v mul tau 3.0 div plus fsin mul plus vg mul chan push           -- G
+      0.5 0.5 pi v mul fsin mul plus vg mul chan push                            -- R
+  ) each flatten
+  cat) fold
+'PIXELS let
+
+PIXELS len N N mul 3 mul eq assert
+
+OUT N N 24 PIXELS tga-header write must drop
+
+-- ===== self-test: read back what we just wrote =====
+
+OUT read must tga-decode 'IMG let
+IMG 'width  at must N eq assert
+IMG 'height at must N eq assert
+IMG 'depth  at must 24 eq assert
+IMG 'pixels at must len N N mul 3 mul eq assert
+-- a plasma that came out one flat colour means the field collapsed
+IMG 'pixels at must dedup len 1 gt assert
+
+"plasma: wrote " OUT cat " (" cat N int-str cat "x" cat N int-str cat ", 24-bit TGA)" cat say

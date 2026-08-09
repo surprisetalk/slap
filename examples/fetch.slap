@@ -1,0 +1,86 @@
+-- fetch.slap: an HTTP/1.0 client. A very small curl.
+--
+--   cat examples/lib/strings.slap examples/lib/parse.slap examples/fetch.slap | ./slap HOST PORT PATH [-i|-I]
+--
+--   (no flag)  print the body
+--   -i         print the status line and headers, then the body
+--   -I         print the status line and headers only
+--
+-- e.g.  ... | ./slap 127.0.0.1 8080 /index.html -i
+--
+-- This is what parse-http is for. It reads a *response*: the number after the
+-- first space of the first line is the status, and every "Key: value" line
+-- before the blank line becomes a record with 'key and 'value. Hand it a
+-- request instead and it reports status 0 and drops the method and the path
+-- entirely -- which is why wiki.slap and serve.slap parse requests by hand and
+-- only a client can use this primitive as designed.
+--
+-- HTTP/1.0 with no Connection: keep-alive, so the read ends when the peer
+-- closes. No redirects are followed: a 301 is reported, not chased.
+
+(list 10 push) 'LF let
+('st let "/dev/stdout" st write must drop) 'out let
+('st let "/dev/stdout" st LF cat write must drop) 'say let
+('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
+
+1048576 'RESP-CAP let
+
+args len 3 lt (
+  "fetch: usage: HOST PORT PATH [-i|-I]" LF cat
+  "  e.g. ... | ./slap 127.0.0.1 8080 /index.html -i" cat die) () if
+
+args 0 get must 'HOST let
+args 1 get must 'PORT-S let
+PORT-S ok parse-int must len 0 eq assert dup 0 gt over 65536 lt and assert 'PORT let
+args 2 get must 'PATH let
+args 3 drop-n 'FLAGS let
+
+FLAGS "-I" member 'HEAD-ONLY let
+FLAGS "-i" member HEAD-ONLY or 'SHOW-HEAD let
+FLAGS ("-i" eq) filter FLAGS ("-I" eq) filter cat len FLAGS len eq not (
+  "fetch: unknown flag; only -i and -I are understood" die) () if
+
+-- Host carries the port so a server on anything but 80 still sees the origin it
+-- was reached on. http-request adds Content-Length only when the body is
+-- non-empty, so an empty body sends none, which is correct for GET.
+"GET" HOST ":" cat PORT-S cat PATH "" "" http-request 'REQ let
+
+HOST PORT tcp-connect must
+REQ tcp-send must drop
+
+-- HTTP/1.0 connection-close: read until the peer hangs up. The cap is a
+-- backstop against a server that never closes, not a content limit.
+list
+(swap 65536 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+ swap ch cat
+ ch len 0 gt
+ over len RESP-CAP lt and) () while
+'RESP let
+tcp-close
+
+RESP len 0 eq ("fetch: " HOST cat " closed the connection without replying" cat die) () if
+
+-- parse-http's one failure is a missing header/body separator. Testing for it
+-- here rather than branching on the tagged result keeps the message specific
+-- about which host and path misbehaved, and leaves `must` unable to fire.
+-- str-find's own result is a bare int, so this `case` copies nothing large.
+RESP crlf crlf cat str-find () {'ok (drop 1) 'no (drop 0)} case not (
+  "fetch: " HOST cat ":" cat PORT-S cat PATH cat
+  " did not send an HTTP response (no header/body separator in "
+  cat RESP len int-str cat " bytes)" cat die) () if
+
+-- parse-http pushes three values -- status, headers, body -- but its declared
+-- effect names one output, so at the top level the checker sees a single value
+-- and the second and third `let` underflow. Inside a definition body it reads
+-- the body's net effect instead and all three bind. That is why tests/expect.slap
+-- wraps its parse-http call the same way; this is not a stylistic choice.
+(RESP parse-http must 'BODY let 'HEADERS let 'STATUS let
+
+ SHOW-HEAD (
+   "HTTP/1.0 " STATUS int-str cat say
+   HEADERS list ('h let h 'key at must ": " cat h 'value at must cat LF cat cat) fold out
+   HEAD-ONLY () (LF out) if
+ ) () if
+
+ HEAD-ONLY () (BODY out) if) 'report let
+report

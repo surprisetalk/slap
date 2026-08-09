@@ -38,6 +38,11 @@
 
 - [ ] replicate some big projects using only slap to confirm it works
   - done: `examples/wiki.slap` (HTTP wiki server), `examples/kv-server.slap`+`kv-client.slap` (TCP key/value store), `examples/chip8.slap` (CHIP-8 emulator), `examples/uxn.slap` (Uxn/Varvara emulator) — all wired into `make test`
+  - done 2026-08-08: `feed.slap` (RSS/Atom digest), `todo.slap` (JSON CLI), `serve.slap`+`fetch.slap` (static HTTP server and client), `banner.slap` (.uf1 font to ASCII), `plasma.slap` (float math to a TGA), `maze.slap` (Aldous-Broder + BFS), `raycast.slap` (DDA) — all wired into `make test`: +193 python checks and two headless self-tests, about 2.3s
+  - open: **parse.slap caps every xml/json/rss parse at 16384 bytes of source.** `parse-exact` and `parse-spaces` use the prelude's `then`, whose `case` stages the remaining input through LOCAL_MAX. Measured: 15979 bytes parses, 16714 dies. The other four combinators use `pthen`, which does not copy, but those two produce no value slot so `pthen` has nowhere to put its default. Needs a non-copying `then` or a reshape of those two. `tests/run_feed.py` pins the boundary from both sides, so a fix shows up as its `over-cap` check starting to pass.
+  - open: **`ufx-decode` cannot read a real font** — 256 glyphs x 64 bits plus headers is 16641 slots against the 16384 cap, so it only ever worked on the synthetic fixture in its own tests. `banner.slap` sidesteps it by slicing one glyph and calling `icn-decode`. Either bound it or document it as fixture-only.
+  - open: **json.slap returns a clean 'no for a wrong *shape* but crashes for wrong *syntax*** — an empty file and a non-JSON file die in `parse-exact`, a truncated one dies as `get: index 0 out of bounds`. `todo.slap` guards the two cheap cases (empty; first non-space byte is not `{`) so the file gets named; anything deeper still surfaces json.slap's own error.
+  - open: **`je-str` emits bytes under 0x20 other than \n \r \t raw**, which is invalid JSON — a file written with one cannot be read back. `todo.slap` refuses control bytes at the door rather than trusting the encoder.
   - uxn is validated against another implementation, not just its own self-test:
     `./slap --headless game.rom [frames]` dumps the canvas as palette indices,
     and 8 of the 9 ROMs in mkeeter/raven's snapshot suite match its reference

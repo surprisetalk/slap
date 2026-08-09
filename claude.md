@@ -19,7 +19,7 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
 
 ## Tests
 
-`make test` runs thirteen checks in order:
+`make test` runs nineteen checks in order:
 1. `make check-refs` — every file the build and docs reference exists on disk
 2. `cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap` — integration tests (assert-based, halts on failure)
 3. `./slap --check < tests/type.slap` — type system tests
@@ -38,7 +38,19 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
     None of raven's nine reference ROMs read Datetime at all (measured, not assumed: instrumenting the read path counts 0 for every one), so the pixel comparison cannot become clock-dependent. `drool` reads it 8 times and `bunnymark` 79.
 
     The self-test also pins the five Screen behaviours that real ROMs depend on and that nothing else here would catch: `Screen/auto`'s bits drive the *opposite* axis inside the draw loop (auto-Y lays tiles out along X) while the port writeback afterwards uses the normal axes and moves by a single 8; the blend table is irregular and cannot be derived arithmetically; a sprite whose x has wrapped past 0 shows its right half at the left edge; and a flipped fill is exclusive of x. Each assertion was checked to fail against the pre-fix behaviour — an assertion that cannot fail is not a regression test.
-13. `examples/lib/` load/typecheck combos, then `bash tests/adversarial/run.sh`
+13. `python3 tests/run_feed.py` — renders `examples/feed.slap` over both checked-in fixtures (RSS 2.0 and Atom), checks the failure paths report instead of printing an empty digest, and pins the 16384-byte parse ceiling from both sides
+14. `python3 tests/run_todo.py` — drives `examples/todo.slap` through a real JSON file: add/done/undone/rm, escaping, control-byte refusal, and six kinds of unreadable file that must be refused and left on disk
+15. `python3 tests/run_serve.py` — boots `examples/serve.slap` over a temp directory, drives it with raw sockets (traversal raw and percent-encoded, HEAD, 405, 413, malformed request lines), then fetches from it with `examples/fetch.slap`
+16. `python3 tests/run_codec.py` — renders a `.uf1` font to ASCII with `examples/banner.slap` and checks the bitmap against the font file, then writes a TGA with `examples/plasma.slap` and checks it against the format
+17. `./slap --check < examples/maze.slap`, then `./slap --headless < examples/maze.slap | grep -q maze-selftest-ok` — the maze generator's property self-test. Same no-SDL-needed trick as chip8
+18. `./slap --check < examples/raycast.slap`, then `./slap --headless < examples/raycast.slap | grep -q raycast-selftest-ok` — the raycaster's DDA self-test against hand-computed distances
+19. `examples/lib/` load/typecheck combos, then `bash tests/adversarial/run.sh`
+
+Checks 13-18 are the demos added on 2026-08-08 and together take about 2.3s. Three things they pin that nothing else does, each found by writing them:
+
+- **`case`, `then` and `default` stage the whole scrutinee through `LOCAL_MAX`; `must`, `each` and `pthen` do not.** Branching on `file read` therefore caps the file size at 16 KB. `X (drop 0) each () {'ok (...) 'no (...)} case` shrinks the ok payload to one int first and makes the branch size-independent. `feed.slap`, `todo.slap` and `banner.slap` are all written that way, and `banner.slap` needs it to reject an 18688-byte `.uf3` by name rather than dying in `case`.
+- **`parse.slap` caps every xml/json/rss parse at 16384 bytes of source.** `parse-exact` and `parse-spaces` are built on the prelude's `then`, and the value carried through it is the remaining input. Measured: 15979 bytes parses, 16714 dies. Not a one-line fix — those two produce no value slot, so `pthen` (which the other four combinators use, and which does not copy) has nowhere to put its default. `run_feed.py` pins both sides so a change either way is noticed.
+- **`ufx-decode` cannot read a real font.** 256 glyphs x 64 bits plus headers is 16641 slots against the 16384 cap, so it only ever worked on the short synthetic fixture in its own tests. `banner.slap` slices the eight bytes for one glyph and calls `icn-decode` on those instead.
 
 Note that expect.slap is **not** run bare: it depends on `strings.slap` and `parse.slap`, which must be `cat`ed ahead of it.
 

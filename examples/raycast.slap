@@ -1,0 +1,207 @@
+-- raycast.slap: a grid raycaster, the Wolfenstein 3D way.
+--
+--   ./slap-sdl < examples/raycast.slap         -- walk around: W/A/S/D, arrows turn
+--   ./slap --headless < examples/raycast.slap  -- run the self-test, print ok, exit
+--   ./slap --check    < examples/raycast.slap  -- type-check only
+--
+-- One ray per screen column, each stepped through the grid with DDA: jump
+-- straight from one cell boundary to the next instead of sampling along the
+-- ray, so the cost is the number of cells crossed and the hit is exact rather
+-- than within a step size. The wall slice is a 1-pixel-wide fill-rect, which is
+-- all the SDL layer here has -- there is no line primitive.
+--
+-- There is no sin or cos either, so fsin below is Bhaskara I's approximation
+-- (c. 1150), the same one examples/plasma.slap uses. Everything else is the
+-- float family: fsqrt, fabs, ffloor, itof, ftoi.
+--
+-- The distance used for the wall height is the *perpendicular* one. Using the
+-- true ray length instead bends flat walls into a fisheye bulge, and it is the
+-- classic bug here, so the self-test pins a straight-on wall rendering flat.
+
+16 'MW let
+16 'MH let
+
+"################"
+"#..............#"
+"#..............#"
+"#...##.........#"
+"#...##.........#"
+"#..............#"
+"#.........#....#"
+"#.........#....#"
+"#.........#....#"
+"#..............#"
+"#..............#"
+"#....######....#"
+"#..............#"
+"#..............#"
+"#..............#"
+"################"
+cat cat cat cat cat cat cat cat cat cat cat cat cat cat cat
+('mc let mc 35 eq (1) (0) if) each 'MAP let
+
+640 'SCRW let
+480 'SCRH let
+1.0472 'FOV let          -- 60 degrees
+0.0000001 'TINY let
+1000000.0 'FAR let
+
+-- ===== float helpers =====
+
+-- Bhaskara I: sin t ~ 16 t (pi - t) / (5 pi^2 - 4 t (pi - t)) on [0, pi],
+-- reduced to [0, tau) and mirrored. Error stays under 0.002 of a full turn.
+('t0 let
+ t0 tau div ffloor tau mul t0 swap sub 'tr let
+ tr pi gt (tr pi sub) (tr) if 'tm let
+ tm pi tm sub mul 'q let
+ 16.0 q mul 5.0 pi pi mul mul 4.0 q mul sub div 'sv let
+ tr pi gt (sv fneg) (sv) if) 'fsin let
+
+(pi 2.0 div plus fsin) 'fcos let
+
+-- x y off-map -- bool. The two axes are tested against their own bound; with
+-- a square map a swap here is invisible, which is exactly why it is written out.
+('yv let 'xv let xv 0 lt xv MW ge or  yv 0 lt yv MH ge or  or) 'off-map let
+
+-- ===== DDA =====
+
+-- Step from cell boundary to cell boundary until a wall is hit. Returns the
+-- perpendicular distance along the ray direction, or FAR if the ray leaves the
+-- map without hitting anything.
+-- px py angle -- dist
+('ang let 'py let 'px let
+ ang fcos 'rdx let
+ ang fsin 'rdy let
+ rdx fabs TINY lt (FAR) (1.0 rdx fabs div) if 'ddx let
+ rdy fabs TINY lt (FAR) (1.0 rdy fabs div) if 'ddy let
+ rdx 0.0 lt (-1) (1) if 'sx let
+ rdy 0.0 lt (-1) (1) if 'sy let
+ px ffloor ftoi 'mx0 let
+ py ffloor ftoi 'my0 let
+ rdx 0.0 lt (px mx0 itof sub) (mx0 itof 1.0 plus px sub) if ddx mul 'sdx0 let
+ rdy 0.0 lt (py my0 itof sub) (my0 itof 1.0 plus py sub) if ddy mul 'sdy0 let
+
+ -- DDA tests the cell it steps *into*, so it never looks at the one it starts
+ -- in. A player clipped into a wall would otherwise see straight through it.
+ mx0 my0 off-map (1) ('MAP my0 MW mul mx0 plus nth must 1 eq) if 'inside let
+
+ mx0 my0 sdx0 sdy0 0 0
+ (dup 0 eq) (
+   'hit0 let 'side0 let 'sdy let 'sdx let 'my let 'mx let
+   sdx sdy lt 'stepx let
+   stepx (mx sx plus) (mx) if 'nmx let
+   stepx (my) (my sy plus) if 'nmy let
+   stepx (sdx ddx plus) (sdx) if 'nsdx let
+   stepx (sdy) (sdy ddy plus) if 'nsdy let
+   stepx (0) (1) if 'nside let
+   nmx nmy off-map (2) ('MAP nmy MW mul nmx plus nth must 1 eq (1) (0) if) if 'nhit let
+   nmx nmy nsdx nsdy nside nhit
+ ) while
+ 'hitv let 'sidev let 'sdyv let 'sdxv let 'myv let 'mxv let
+ inside (0.0) (
+   hitv 2 eq (FAR) (sidev 0 eq (sdxv ddx sub) (sdyv ddy sub) if) if) if) 'cast let
+
+-- ===== player =====
+
+3.5 'PX0 let
+3.5 'PY0 let
+
+-- ===== self-test =====
+
+isheadless (
+
+  -- the map parsed into the grid it looks like
+  MAP len MW MH mul eq assert
+  'MAP 0 nth must 1 eq assert                       -- top-left is wall
+  'MAP 1 MW mul 1 plus nth must 0 eq assert         -- (1,1) is open
+  'MAP 3 MW mul 4 plus nth must 1 eq assert         -- the 2x2 block at (4,3)
+  'MAP 6 MW mul 10 plus nth must 1 eq assert        -- the pillar at (10,6)
+
+  -- Hand-computed distances from (1.5, 1.5). Row 1 is "#..............#", so
+  -- east hits the wall cell at x=15 (its near face is x=15.0) and west hits the
+  -- one at x=0 (its far face is x=1.0). Column 1 is open top to bottom, so
+  -- south hits y=15 and north hits y=1.0.
+  1.5 1.5 0.0      cast 13.5 sub fabs 0.01 lt assert   -- east
+  1.5 1.5 pi       cast 0.5  sub fabs 0.01 lt assert   -- west
+  1.5 1.5 pi 2.0 div      cast 13.5 sub fabs 0.01 lt assert   -- south (+y)
+  1.5 1.5 pi 1.5 mul      cast 0.5  sub fabs 0.01 lt assert   -- north (-y)
+
+  -- Straight at the 2x2 block: from (1.5, 3.5) facing east its near face is
+  -- x=4.0, so the distance is 2.5. One cell up at y=2.5 the block is not there
+  -- and the ray runs to the far wall instead -- which is what says the y index
+  -- is not being used as the x index.
+  1.5 3.5 0.0 cast 2.5  sub fabs 0.01 lt assert
+  1.5 2.5 0.0 cast 13.5 sub fabs 0.01 lt assert
+
+  -- Standing inside a wall returns 0 rather than reporting the next wall out.
+  4.5 3.5 0.0 cast fabs 0.01 lt assert
+
+  -- A ray that leaves the map cannot happen here (the border is solid), so the
+  -- FAR sentinel must never be the answer for a ray fired from open floor.
+  PX0 PY0 0.7 cast FAR lt assert
+
+  -- No fisheye: a wall square to the view renders flat. Sampling three columns
+  -- across the field and correcting by cos(offset) must give the same
+  -- perpendicular distance for all three. Without the cosine the edges read
+  -- further away than the centre and flat walls bow outward.
+  -- The west border spans the whole map height, so a +/-15 degree spread off
+  -- (3.5, 7.5) lands on it in all three cases and the perpendicular distance is
+  -- 3.5 - 1.0 = 2.5 every time. The 2x2 block is only two cells tall and the
+  -- spread walks off it, which is why the flat surface has to be the border.
+  3.5 7.5 'fy let 'fx let
+  fx fy pi cast 'd-mid let
+  d-mid 2.5 sub fabs 0.01 lt assert
+  fx fy pi FOV 4.0 div plus       cast FOV 4.0 div fcos mul 'd-right let
+  fx fy pi FOV 4.0 div fneg plus  cast FOV 4.0 div fneg fcos mul 'd-left let
+  d-right d-mid sub fabs 0.02 lt assert
+  d-left  d-mid sub fabs 0.02 lt assert
+
+  "raycast-selftest-ok" print halt
+) () if
+
+-- ===== SDL =====
+
+-- state: [px py angle fwd strafe turn] as one flat list, threaded on the stack
+-- All six slots are floats: a list is homogeneous, so the three input flags
+-- ride along as -1.0/0.0/1.0 rather than forcing an itof at every use.
+list PX0 push PY0 push 0.0 push 0.0 push 0.0 push 0.0 push
+
+-- 26 W, 22 S, 4 A, 7 D, 1073741903 right, 1073741904 left
+('k let 'st let
+ k 26 eq (1.0) (k 22 eq (-1.0) (0.0) if) if 'f let
+ k 4 eq (-1.0) (k 7 eq (1.0) (0.0) if) if 'sX let
+ k 1073741903 eq (1.0) (k 1073741904 eq (-1.0) (0.0) if) if 'tn let
+ st 3 f set must 4 sX set must 5 tn set must) 'apply-key let
+
+'keydown (apply-key) on
+'keyup (drop 3 0.0 set must 4 0.0 set must 5 0.0 set must) on
+
+'tick (drop
+  dup 0 peek must 'px let 1 peek must 'py let 2 peek must 'ang let
+  3 peek must 'f let 4 peek must 'sX let 5 peek must 'tn let
+  drop
+  ang tn 0.06 mul plus 'na let
+  px na fcos f 0.08 mul mul plus  na pi 2.0 div plus fcos sX 0.08 mul mul plus 'nx let
+  py na fsin f 0.08 mul mul plus  na pi 2.0 div plus fsin sX 0.08 mul mul plus 'ny let
+  'MAP ny ftoi MW mul nx ftoi plus nth must 0 eq 'clear0 let
+  clear0 (nx) (px) if 'fx2 let
+  clear0 (ny) (py) if 'fy2 let
+  0 fx2 set must 1 fy2 set must 2 na set must) on
+
+('st let 0 clear
+  'st 0 nth must 'px let
+  'st 1 nth must 'py let
+  'st 2 nth must 'ang let
+  0 SCRH 2 div SCRW SCRH 2 div 1 fill-rect
+  0 (dup SCRW lt) (
+    'col let
+    col itof SCRW itof div 0.5 sub FOV mul 'off let
+    px py ang off plus cast off fcos mul 'd let
+    d 0.05 lt (0.05) (d) if 'dd let
+    SCRH itof dd div ftoi 'h let
+    h SCRH gt (SCRH) (h) if 'hh let
+    SCRH hh sub 2 div 'top let
+    dd 3.0 lt (3) (dd 6.0 lt (2) (1) if) if 'shade let
+    col top 1 hh shade fill-rect
+    col 1 plus
+  ) while drop) show

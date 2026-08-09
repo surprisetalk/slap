@@ -1,0 +1,250 @@
+-- serve.slap: a static file HTTP server.
+--
+--   cat examples/lib/strings.slap examples/lib/parse.slap examples/serve.slap | ./slap [port] [root-dir]
+--
+-- Defaults: port 8080, files served from the current directory. A path ending
+-- in "/" lists that directory; anything else is read from disk and sent with a
+-- Content-Type guessed from its extension. GET and HEAD only.
+--
+-- One blocking connection at a time, HTTP/1.0, connection-close. Bodies are
+-- byte lists all the way from `read` to `tcp-send`, so binary files survive.
+--
+-- Needs strings.slap (crlf, int-str) and parse.slap (parse-int).
+
+args len 0 gt (args 0 get must ok parse-int must len 0 eq assert dup 0 gt over 65536 lt and assert) (8080) if 'PORT let
+args len 1 gt (args 1 get must) (".") if 'ROOT let
+8192 'REQ-CAP let
+
+-- ===== pure helpers =====
+
+('pfx let 'ss let ss pfx len take-n pfx eq) 'starts-with let
+('sfx let 'eh let eh eh len sfx len sub drop-n sfx eq) 'ends-with let
+(('lc let lc 65 ge lc 90 le and (lc 32 plus) (lc) if) each) 'lower let
+
+('es let es list ('ec let
+  ec 38 eq ("&amp;" cat) (
+  ec 60 eq ("&lt;" cat) (
+  ec 62 eq ("&gt;" cat) (
+  ec 34 eq ("&quot;" cat) (
+  ec push) if) if) if) if) fold) 'esc let
+
+('hx let hx 48 ge hx 57 le and hx 65 ge hx 70 le and or hx 97 ge hx 102 le and or) 'is-hex let
+('hv let hv 57 le (hv 48 sub) (hv 90 le (hv 55 sub) (hv 87 sub) if) if) 'hex-val let
+
+-- Percent-decoding. A malformed '%' is copied literally rather than dropped, so
+-- a bad escape cannot silently splice two path segments together.
+(list swap
+ (dup len 0 gt) (
+   dup 0 get must 'uc let
+   uc 37 eq (
+     dup len 3 ge (
+       dup 1 get must 'h1 let dup 2 get must 'h2 let
+       h1 is-hex h2 is-hex and (
+         3 drop-n swap h1 hex-val 16 mul h2 hex-val plus push swap
+       ) (1 drop-n swap uc push swap) if
+     ) (1 drop-n swap uc push swap) if
+   ) (1 drop-n swap uc push swap) if
+ ) while
+ drop) 'url-decode let
+
+-- The whole of the path safety rule. It runs AFTER percent-decoding, which is
+-- what makes %2e%2e and .. the same string by the time it is tested -- checking
+-- the raw target instead is the classic way to ship a traversal hole. A byte
+-- allowlist rather than a denylist, so a NUL, a backslash or a newline is out
+-- by construction and not by having remembered it.
+('pc let pc 65 ge pc 90 le and
+        pc 97 ge pc 122 le and or
+        pc 48 ge pc 57 le and or
+        pc 45 eq or pc 46 eq or pc 47 eq or pc 95 eq or) 'path-char let
+
+('p let p len 1 ge
+       p len 512 le and
+       p 0 get must 47 eq and
+       p (path-char) filter len p len eq and
+       p ".." str-find () {'ok (drop 0) 'no (drop 1)} case and) 'safe-path let
+
+('n let n lower 'ln let
+ ln ".html" ends-with ("text/html; charset=utf-8") (
+ ln ".htm"  ends-with ("text/html; charset=utf-8") (
+ ln ".css"  ends-with ("text/css; charset=utf-8") (
+ ln ".js"   ends-with ("text/javascript; charset=utf-8") (
+ ln ".json" ends-with ("application/json") (
+ ln ".xml"  ends-with ("application/xml") (
+ ln ".svg"  ends-with ("image/svg+xml") (
+ ln ".png"  ends-with ("image/png") (
+ ln ".gif"  ends-with ("image/gif") (
+ ln ".jpg"  ends-with ("image/jpeg") (
+ ln ".tga"  ends-with ("image/x-targa") (
+ ln ".txt"  ends-with ("text/plain; charset=utf-8") (
+ ln ".md"   ends-with ("text/plain; charset=utf-8") (
+ ln ".slap" ends-with ("text/plain; charset=utf-8") (
+ "application/octet-stream") if) if) if) if) if) if) if) if) if) if) if) if) if) if) 'mime let
+
+-- ===== html =====
+
+('lbody let 'ltitle let
+ "<!doctype html><meta charset=utf-8><title>" ltitle cat
+ "</title><style>body{font-family:sans-serif;max-width:40em;margin:2em auto;padding:0 1em}" cat
+ "a{text-decoration:none}li{margin:.2em 0}</style><h1>" cat ltitle cat "</h1>" cat
+ lbody cat) 'layout let
+
+-- Links are absolute, built from the directory's own path. Relative hrefs would
+-- resolve against /sub for a request to /sub and against /sub/ for /sub/, so
+-- half the links in a listing would be wrong depending on how it was reached.
+('ip let ip "/" ends-with (ip) (ip "/" cat) if 'base let
+ ROOT base cat ls () {
+   'no (drop 404 "text/html; charset=utf-8"
+        "<p>No such file or directory.</p>" "404" swap layout)
+   'ok ('entries let
+        200 "text/html; charset=utf-8"
+        -- `sort` is Ord, and Ord is int and float only, so a list of names
+        -- cannot be sorted here. Entries come out in whatever order ls gives.
+        -- `en`, not `e`: the prelude binds `e` to 2.718..., and a fold body
+        -- that shadows it hands `esc` a float somewhere down the call chain
+        -- instead of a name. It fails as "fold: expected list, got ?" inside
+        -- esc, nowhere near here.
+        "<ul>" entries
+          list ('en let "<li><a href=\"" cat base esc cat en esc cat "\">" cat
+                        en esc cat "</a></li>" cat) fold
+        cat "</ul>" cat
+        "index of " base cat swap layout)
+ } case) 'index-page let
+
+-- ===== http =====
+
+('rcode let
+ rcode 200 eq ("200 OK") (
+ rcode 400 eq ("400 Bad Request") (
+ rcode 403 eq ("403 Forbidden") (
+ rcode 404 eq ("404 Not Found") (
+ rcode 405 eq ("405 Method Not Allowed") (
+ rcode 413 eq ("413 Content Too Large") (
+ "500 Internal Server Error") if) if) if) if) if) if) 'status-line let
+
+-- HEAD must report the Content-Length the body would have had, so the length is
+-- computed from the real body and only the body itself is withheld.
+('rhead let 'rbody let 'rtype let 'rcode let
+ "HTTP/1.0 " rcode status-line cat crlf cat
+ "Content-Type: " cat rtype cat crlf cat
+ "Content-Length: " cat rbody len int-str cat crlf cat
+ "Connection: close" cat crlf cat crlf cat
+ rhead () (rbody cat) if
+ tcp-send () {'ok (drop) 'no (drop)} case) 'respond let
+
+-- Only GET and HEAD are served and neither carries a body, so a request is
+-- complete at the header terminator. A POST body is never read; the connection
+-- is closed after the 405 either way.
+('rr let rr crlf crlf cat str-find () {'ok (drop 1) 'no (drop 0)} case) 'req-complete let
+
+(list
+ (swap 4096 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+  swap ch cat
+  dup req-complete not
+  ch len 0 gt and
+  over len REQ-CAP lt and) () while) 'recv-http let
+
+-- (request -- [method path] ok | message no). The pair goes in a list because
+-- `ok` tags exactly one value; tagging them separately would leave the method
+-- loose under the tag. The query string is dropped.
+('pq let pq crlf str-find () {
+   'no (drop "bad request: no request line" no)
+   'ok ('plp let
+        pq plp take-n " " str-split 'parts let
+        parts len 2 lt (
+          "bad request: malformed request line" no
+        ) (
+          list parts 0 get must push
+               parts 1 get must dup "?" str-find () {'ok (take-n) 'no (drop)} case push
+          ok
+        ) if)
+ } case) 'parse-request let
+
+-- ===== routing =====
+
+('rhead let 'rp let
+ rp url-decode 'path let
+ path safe-path not (
+   403 "text/html; charset=utf-8"
+   "<p>Refused: a path may hold letters, digits, dot, dash, underscore and slash, and may not contain \"..\".</p>"
+   "403" swap layout rhead
+ ) (
+   -- A directory is whatever `read` will not open, so there is no need to know
+   -- which one it is up front: try the file, and fall through to the listing.
+   -- index-page answers 404 when `ls` will not open it either, which is the
+   -- genuinely-missing case.
+   ROOT path cat read () {
+     'ok ('bytes let 200 path mime bytes rhead)
+     'no (drop path index-page rhead)
+   } case
+ ) if) 'serve-path let
+
+-- ===== self-tests =====
+
+"/a/b" safe-path assert
+"/" safe-path assert
+"/a_b-c.d/e" safe-path assert
+"a/b" safe-path not assert                        -- must start at the root
+"/../etc/passwd" safe-path not assert
+"/a/../../etc" safe-path not assert
+"/a/..%2fb" url-decode safe-path not assert       -- decoded first, then tested
+"/%2e%2e/etc/passwd" url-decode safe-path not assert
+"/a b" safe-path not assert
+"/a\\b" safe-path not assert
+list 47 push 0 push safe-path not assert          -- an embedded NUL
+"/a?b" safe-path not assert
+0 600 range (drop 97) each "/" swap cat safe-path not assert   -- 512-byte cap
+
+"x.HTML" mime "text/html; charset=utf-8" eq assert
+"x.png" mime "image/png" eq assert
+"x" mime "application/octet-stream" eq assert
+"a<b" esc "a&lt;b" eq assert
+
+"GET /a?q=1 HTTP/1.1" crlf cat crlf cat parse-request must 'tr let
+tr 0 get must "GET" eq assert
+tr 1 get must "/a" eq assert          -- the query string is dropped
+"HEAD /x HTTP/1.0" crlf cat crlf cat parse-request must 'tr2 let
+tr2 0 get must "HEAD" eq assert
+tr2 1 get must "/x" eq assert
+"junk" crlf cat crlf cat parse-request () {'ok (drop 0) 'no (drop 1)} case assert
+"nolinebreak" parse-request () {'ok (drop 0) 'no (drop 1)} case assert
+"GET / HTTP/1.0" crlf cat crlf cat req-complete assert
+"GET / HTTP/1.0" crlf cat req-complete not assert
+
+-- ===== connection =====
+
+-- The client socket stays on the stack and is never `let`-bound. tcp-recv
+-- consumes its socket and hands back a fresh box, so a name bound before the
+-- read still refers to the box the read retired; closing that one leaks the
+-- live socket, and the next tcp-accept then consumes the wrong box and the
+-- server dies without printing anything. Every path below closes the socket it
+-- was actually handed.
+(recv-http 'rq let
+ rq len 0 eq (tcp-close) (
+   rq req-complete not (
+     rq len REQ-CAP ge (
+       413 "text/html; charset=utf-8"
+       "<p>Request too large: 8192 byte cap.</p>" "413" swap layout 0 respond tcp-close
+     ) (tcp-close) if
+   ) (
+     rq parse-request () {
+       'no ('bmsg let 400 "text/html; charset=utf-8"
+            "<p>" bmsg cat "</p>" cat "400" swap layout 0 respond tcp-close)
+       'ok ('pr let pr 0 get must 'rm let pr 1 get must 'rp let
+            rm " " cat rp cat print
+            rm "GET" eq rm "HEAD" eq or (
+              rp rm "HEAD" eq serve-path respond tcp-close
+            ) (
+              405 "text/html; charset=utf-8"
+              "<p>Only GET and HEAD are served.</p>" "405" swap layout 0 respond tcp-close
+            ) if)
+     } case
+   ) if
+ ) if) 'handle let
+
+-- ===== serve =====
+
+ROOT ls must drop  -- an unreadable root is a deployment bug: fail at boot, not per request
+PORT print
+PORT tcp-listen must
+(tcp-accept must handle 1) () while
+tcp-close

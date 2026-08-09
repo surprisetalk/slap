@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Slap Releases</title>
+  <link href="http://example.com/slap/releases" rel="alternate"/>
+  <subtitle>Tagged builds of the interpreter</subtitle>
+  <entry>
+    <title>uxn.slap goes pixel-exact</title>
+    <link href="http://example.com/slap/releases/uxn" rel="alternate"/>
+    <id>urn:uuid:0e5c1f22-4b9a-4d13-9a1e-000000000001</id>
+    <published>2025-02-01T12:00:00Z</published>
+    <summary>Eight of raven&apos;s nine reference ROMs now match pixel for
+      pixel. The ninth differs by 22 pixels of audio level meter.</summary>
+  </entry>
+  <entry>
+    <title>Datetime device lands</title>
+    <link href="http://example.com/slap/releases/datetime" rel="alternate"/>
+    <id>urn:uuid:0e5c1f22-4b9a-4d13-9a1e-000000000002</id>
+    <updated>2025-02-08T12:00:00Z</updated>
+    <content>Ports 0xc0 to 0xca are computed per read from the datetime
+      primitive, and the self-test checks them against it rather than
+      against constants.</content>
+  </entry>
+</feed>

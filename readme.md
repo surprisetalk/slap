@@ -683,6 +683,8 @@ Interactive SDL demos in `examples/`:
 | `snake.slap` | Snake game with arrow key controls |
 | `chip8.slap` | CHIP-8 emulator: runs real ROMs, 16-key hex keypad, sound-timer border flash |
 | `uxn.slap` | Uxn/Varvara emulator: full 32-opcode CPU with all mode flags, System/Console/Screen/Controller/Mouse |
+| `maze.slap` | Aldous-Broder maze generation and a BFS solve, both on one flat int list |
+| `raycast.slap` | Grid raycaster: DDA per screen column, wall slices drawn as 1-pixel `fill-rect`s |
 | `dots.slap`, `fish.slap`, `gradient.slap`, `zoom.slap` | More graphics demos |
 
 ```bash
@@ -712,6 +714,12 @@ App demos (terminal build):
 |------|-------------|
 | `wiki.slap` | HTTP wiki server: browse, edit, and link pages stored as flat text files |
 | `kv-server.slap` + `kv-client.slap` | Persistent key/value store over TCP with a one-shot CLI client |
+| `serve.slap` | Static file HTTP server: directory listings, MIME by extension, path-traversal refusal |
+| `fetch.slap` | A small curl. Builds the request with `http-request` and reads the reply with `parse-http` |
+| `feed.slap` | RSS 2.0 and Atom reader — the consumer for `xml.slap` and `rss.slap` |
+| `todo.slap` | Todo list in a JSON file, decoded with `jd-*` and written with `je-*` |
+| `banner.slap` | Text as ASCII art from a real `.uf1` bitmap font, via `icn.slap` |
+| `plasma.slap` | Writes a 24-bit TGA. Float-only: there is no `sin`, so it builds one |
 
 ```bash
 cat examples/lib/strings.slap examples/lib/parse.slap examples/wiki.slap | ./slap 8080 examples/wiki-pages
@@ -727,6 +735,27 @@ cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-server.slap | 
 cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-client.slap | ./slap 4321 set greeting hello world
 cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-client.slap | ./slap 4321 get greeting   # -> VALUE hello world
 ```
+
+```bash
+# a static file server, and the repo's own client fetching from it
+cat examples/lib/strings.slap examples/lib/parse.slap examples/serve.slap | ./slap 8080 .
+cat examples/lib/strings.slap examples/lib/parse.slap examples/fetch.slap | ./slap 127.0.0.1 8080 /readme.md -i
+
+# an RSS/Atom digest, and a todo list in JSON
+cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/xml.slap \
+    examples/lib/rss.slap examples/feed.slap | ./slap examples/feeds/sample.xml
+cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/json.slap \
+    examples/todo.slap | ./slap todo.json add buy milk
+
+# a bitmap font as ASCII art, and a plasma written out as a real TGA
+cat examples/lib/strings.slap examples/lib/icn.slap examples/banner.slap | ./slap SLAP
+cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/tga.slap \
+    examples/plasma.slap | ./slap plasma.tga 64
+```
+
+`serve.slap` decodes the request target before testing it, so `%2e%2e` and `..` are the same string by the time the rule sees them, and the rule is a byte allowlist rather than a denylist. `fetch.slap` is the one place `parse-http` is used as designed: it reads a *response*, where the number after the first space is the status — hand it a request line and it reports 0 and loses the method and path, which is why both servers here parse requests by hand.
+
+`feed.slap` and `todo.slap` are the first consumers of `xml.slap`/`rss.slap` and `json.slap`; until now those 1500 lines only ever ran their own self-tests. Both branch with `must` and `each` rather than `case`, `then` or `default`, because those three stage the whole scrutinee through a 16384-slot buffer and would cap the file size. The parse itself still caps at 16384 bytes of source — that limit lives in `parse.slap`, and `tests/run_feed.py` pins it from both sides.
 
 The store keeps its data in a dict threaded on the stack and persists to a flat `key<TAB>value` snapshot on `SAVE`/`SHUTDOWN`. The protocol is one LF-terminated command per connection (`SET`/`GET`/`DEL`/`KEYS`/`SAVE`/`PING`/`SHUTDOWN`); malformed input, dead peers, and an unwritable snapshot are all reported without taking the single-threaded server down, while a corrupt snapshot is refused loudly at boot rather than silently pruned.
 
@@ -804,8 +833,10 @@ Runs:
 5. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — expected error messages
 6. `args` handling, with and without positional arguments
 7. `python3 tests/run_euler.py` — 52 Project Euler solutions (strings.slap prepended)
-8. Loadable libraries under `examples/lib/` — each run and type-checked in the combos it's designed for
-9. `bash tests/adversarial/run.sh` — adversarial probes
+8. `python3 tests/run_wiki.py`, `run_kv.py`, `run_feed.py`, `run_todo.py`, `run_serve.py`, `run_codec.py` — the app demos, each really booted or really driven: servers over a socket on a random port, CLIs against a real file, the codecs checked from outside Slap against the font file and the TGA spec
+9. The headless self-tests for `chip8.slap`, `uxn.slap`, `maze.slap` and `raycast.slap` — SDL words type-check unconditionally and `halt` fires before any of them dispatch, so none of these need an SDL build
+10. Loadable libraries under `examples/lib/` — each run and type-checked in the combos it's designed for
+11. `bash tests/adversarial/run.sh` — adversarial probes
 
 Adversarial probes classify each probe as `TYPECHECK_REJECT` / `PANIC` / `CLEAN_RUN` and compare against a declared expectation. The point is that a classification never silently downgrades: a probe that slides from `TYPECHECK_REJECT` to `CLEAN_RUN` means the checker went blind. Probes marked `-- KNOWN-GAP:` are cases the docs claim are caught statically but currently are not; they print on every run.
 

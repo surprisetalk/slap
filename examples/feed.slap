@@ -1,0 +1,91 @@
+-- feed.slap: RSS 2.0 and Atom feed reader. Prints a plain-text digest.
+--
+--   cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/xml.slap \
+--       examples/lib/rss.slap examples/feed.slap | ./slap [feed.xml]
+--
+-- Default source is examples/feeds/sample.xml. rss-parse normalizes both
+-- formats to one record shape, so nothing below this line knows which it read.
+--
+-- Size is the thing to get right here. `case`, `then` and `default` all stage
+-- the whole scrutinee through a LOCAL_MAX (16384 slot) buffer, so branching on
+-- a tagged value whose payload is a feed -- or the file it was read from --
+-- dies on anything but a small feed. `must` and `each` do not copy, and every
+-- branch below is written in terms of those two.
+--
+-- That only buys what this file controls. The parse itself has a hard ceiling
+-- of 16384 bytes of source, because parse.slap's `parse-exact` and
+-- `parse-spaces` are built on the prelude's `then`, and the value they carry
+-- through it is the *remaining input*. Measured: 15979 bytes parses, 16714
+-- dies in `then`. It is not a one-line fix -- those two combinators produce no
+-- value slot, so `pthen` (which the other four combinators use, and which does
+-- not copy) has nowhere to put its default. Every xd-* and jd-* decoder
+-- inherits the same cap. tests/run_feed.py pins the boundary so a change that
+-- lowers it is caught.
+
+(list 10 push) 'LF let
+('st let "/dev/stdout" st LF cat write must drop) 'say let
+('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
+
+args len 0 gt (args 0 get must) ("examples/feeds/sample.xml") if 'SRC let
+64 'SUM-CAP let
+512 'TEXT-CAP let
+
+-- Feed text carries the source document's newlines and indentation. Collapse
+-- every run of whitespace to one space, then trim both ends. Pairing the string
+-- with itself shifted by one is how each byte gets to see its predecessor.
+--
+-- `fold` also reads its input through the LOCAL_MAX buffer, so the cut to
+-- TEXT-CAP comes first. Collapsing runs can only shorten a string, so cutting
+-- before is the same as cutting after for anything that reaches the screen.
+('sq-in let
+ sq-in len TEXT-CAP gt (sq-in TEXT-CAP take-n) (sq-in) if
+ list ('c let c 33 lt (32) (c) if push) fold 'norm let
+ norm list 32 push norm cat zip
+   (dup 0 get must 32 eq swap 1 get must 32 eq and not) filter
+   (0 get must) each
+ dup len 0 gt (dup 0 get must 32 eq (1 drop-n) () if) () if
+ dup len 0 gt (dup dup len 1 sub get must 32 eq (dup len 1 sub take-n) () if) () if
+) 'squeeze let
+
+('cl let cl squeeze 'cs let
+ cs len SUM-CAP gt (cs SUM-CAP take-n "..." cat) (cs) if) 'clip let
+
+('n let n int-str dup len 2 lt (" " swap cat) () if) 'num2 let
+
+-- An empty field prints nothing rather than an empty indented line: a feed that
+-- omits <pubDate> should look omitted, not blank. rss-parse reports a missing
+-- element as "", so this is the only thing standing between the digest and a
+-- run of stray blank lines.
+('iv let iv len 0 gt ("    " iv squeeze cat say) () if) 'field let
+
+-- A read that fails is fatal: a digest of a file we could not open would be an
+-- empty digest, which reads as an empty feed. `must` prints the path it failed
+-- on, so nothing here has to restate it.
+SRC read must 'RAW let
+
+RAW rss-parse 'PARSED let
+
+-- `each` maps the ok payload and passes a 'no straight through, so this shrinks
+-- the feed record to one int without copying it. Both sides are small after
+-- that, which is what makes the `case` below safe on a feed of any size.
+PARSED (drop 0) each () {'ok (drop "") 'no ()} case 'PERR let
+PERR len 0 gt ("feed: " SRC cat " is not a feed -- " cat PERR cat die) () if
+
+PARSED must 'FEED let
+
+FEED rss-title squeeze " (" cat FEED rss-kind cat ")" cat "== " swap cat say
+FEED rss-link field
+FEED rss-description field
+
+FEED rss-items 'ITEMS let
+0 ITEMS len range ('i let
+  "" say
+  ITEMS i get must 'it let
+  i 1 plus num2 ". " cat it rss-item-title squeeze cat say
+  it rss-item-published field
+  it rss-item-link      field
+  it rss-item-summary clip field
+  i) each drop
+
+"" say
+ITEMS len int-str " item" cat ITEMS len 1 eq ("") ("s") if cat say
