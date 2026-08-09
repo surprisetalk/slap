@@ -27,10 +27,10 @@ args len 1 gt (args 1 get must) ("fonts/atari8.uf1") if 'FONT let
 35 'INK let
 32 'BG let
 
--- Not `case` on the read: that stages the whole file through a LOCAL_MAX
--- buffer, and a .uf3 is 18688 bytes, so the branch would die on the very files
--- this is supposed to reject by name. `each` maps the ok payload without
--- copying it, so shrinking to one int first makes the test independent of size.
+-- `case` on the read used to stage the whole file through a LOCAL_MAX buffer,
+-- and a .uf3 is 18688 bytes, so the branch died on the very files this is
+-- supposed to reject by name. `case` unwraps in place now, but `each` never
+-- copied at all, so this is left as the form that was always safe.
 FONT read 'RD let
 RD (drop 1) each 0 default not (
   "banner: cannot read " FONT cat die) () if

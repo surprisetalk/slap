@@ -144,9 +144,6 @@ nonexistent_word_xyz
 -- EXPECT: concat: result too large
 0 10000 range 0 10000 range cat
 
--- EXPECT: swap: value too large
-0 10000 range 0 10000 range swap
-
 -- EXPECT: stack underflow
 1 over
 

@@ -1682,5 +1682,48 @@ outer-val 99 eq assert
   snap-v1 100 eq assert
   snap-v2 200 eq assert
 
+-- ===== Tagged payloads larger than LOCAL_MAX =====
+-- `case` used to stage the matched payload through a LOCAL_MAX-sized C buffer,
+-- so branching on a tagged value capped it at 16384 slots. The payload sits
+-- directly under the header, so unwrapping only has to drop the header -- the
+-- same thing `must` and `pthen` already did. These sizes are deliberately over
+-- that old cap; under it they prove nothing.
+(
+  0 20000 range ok () {'ok (len) 'no (drop -1)} case 20000 eq assert
+) 'test-case-big-ok let test-case-big-ok
+
+(
+  0 20000 range no () {'ok (len) 'no (len neg)} case -20000 eq assert
+) 'test-case-big-no let test-case-big-no
+
+-- an unmatched tag still falls through to the default, and the big payload goes
+(
+  0 20000 range 'other tag 7 {'ok (len)} case 7 eq assert
+) 'test-case-big-default let test-case-big-default
+
+-- the prelude words built on `case` inherit the fix
+(
+  0 20000 range ok (len ok) then must 20000 eq assert
+) 'test-then-big let test-then-big
+
+(
+  0 20000 range ok list default len 20000 eq assert
+  0 20000 range no list default len 0 eq assert
+) 'test-default-big let test-default-big
+
+-- `swap` used to stage the lower block through a LOCAL_MAX temporary. It is an
+-- in-place block rotation now (reverse the region, then reverse each block
+-- where it lands), so it has no size limit. parse.slap's parse-while-acc ends
+-- in `acc swap`, stepping the accumulator over the whole remaining input, so
+-- this was the ceiling on every parse once `case` stopped copying.
+(
+  -- swap leaves the lower value on top, so the list is what gets checked first
+  0 20000 range 42 swap len 20000 eq assert 42 eq assert
+  0 20000 range 0 30000 range swap len 20000 eq assert len 30000 eq assert
+  -- each block keeps its own internal order, which a single reversal would lose
+  [1 2 3] "ab" swap [1 2 3] eq assert "ab" eq assert
+  0 20000 range dup 'big let 7 swap big eq assert 7 eq assert
+) 'test-swap-past-local-max let test-swap-past-local-max
+
 -- ===== Done =====
 "All tests passed!" print

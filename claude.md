@@ -48,8 +48,7 @@ CLI: `./slap [--check] [--headless] [args...] < file.slap`
 
 Checks 13-18 are the demos added on 2026-08-08 and together take about 2.3s. Three things they pin that nothing else does, each found by writing them:
 
-- **`case`, `then` and `default` stage the whole scrutinee through `LOCAL_MAX`; `must`, `each` and `pthen` do not.** Branching on `file read` therefore caps the file size at 16 KB. `X (drop 0) each () {'ok (...) 'no (...)} case` shrinks the ok payload to one int first and makes the branch size-independent. `feed.slap`, `todo.slap` and `banner.slap` are all written that way, and `banner.slap` needs it to reject an 18688-byte `.uf3` by name rather than dying in `case`.
-- **`parse.slap` caps every xml/json/rss parse at 16384 bytes of source.** `parse-exact` and `parse-spaces` are built on the prelude's `then`, and the value carried through it is the remaining input. Measured: 15979 bytes parses, 16714 dies. Not a one-line fix — those two produce no value slot, so `pthen` (which the other four combinators use, and which does not copy) has nowhere to put its default. `run_feed.py` pins both sides so a change either way is noticed.
+- **`case`, `then` and `default` used to stage the whole scrutinee through `LOCAL_MAX`; `must`, `each` and `pthen` never did.** Writing these demos is what surfaced it, and it is fixed (see **Buffers and limits**). The demos still use `each` to shrink a large success payload before branching, because that form was always safe and costs nothing.
 - **`ufx-decode` cannot read a real font.** 256 glyphs x 64 bits plus headers is 16641 slots against the 16384 cap, so it only ever worked on the short synthetic fixture in its own tests. `banner.slap` slices the eight bytes for one glyph and calls `icn-decode` on those instead.
 
 Note that expect.slap is **not** run bare: it depends on `strings.slap` and `parse.slap`, which must be `cat`ed ahead of it.
@@ -122,7 +121,16 @@ Single-file C interpreter (`slap.c`). Pipeline: **lex → typecheck → eval**.
 
 ### Buffers and limits
 
-`LOCAL_MAX` (16384) bounds the C-stack scratch buffers that primitives use for a single value: `get`/`pop`/`peek`/`nth` element copies, `cat` results, `each`/`fold` inputs, `swap`, `dip`, and `case`'s scrutinee. All of them check it and die with a `value too large (N slots, max M)`-style message.
+`LOCAL_MAX` (16384) bounds the C-stack scratch buffers that primitives use for a single value: `get`/`pop`/`peek`/`nth` element copies, `cat` results, `each`/`fold` inputs, `into`, `dip`, and `case`'s *predicate-mode* scrutinee. All of them check it and die with a `value too large (N slots, max M)`-style message.
+
+Two that used to be on that list are not any more, and the reason is the same both times — the copy was never needed:
+
+- **`case` on a tagged scrutinee unwraps in place.** The payload lies directly under the header, so a match only has to drop the header (`sp--`), exactly as `must` and `pthen` already did. Predicate mode still copies, and must: the scrutinee is re-pushed for every predicate. This lifted the cap on `then` and `default` too, since both are prelude words over tagged `case`.
+- **`swap` is an in-place block rotation.** Reverse the whole two-block region, then reverse each block where it lands; that exchanges their positions while restoring each one's internal order, with no temporary. `tests/expect.slap` pins both the size behaviour and the order behaviour — a single reversal would swap the blocks and scramble their contents, and only the order test catches that.
+
+These two were the ceiling on every `xd-*`/`jd-*` parse: `parse-exact` and `parse-spaces` carry the *remaining input* through `then`, and `parse-while-acc` ends in `acc swap` stepping the accumulator over it. A feed capped at 16384 bytes of source before, and parses past 16714 now. **It is not uncapped** — the next buffer in the chain is `into` building the element record (around 17k bytes of source), and past that the frame arena fills. `tests/run_feed.py` brackets both ends.
+
+**A separate, deeper limit sits under all of this: parse.slap's combinators recurse once per character.** `parse-spaces-core` **segfaults** at about 3000 consecutive spaces — well under the old 16384 cap, so this predates and is independent of the changes above; `parse-while`/`parse-int` fill the frame arena at about 5000 with a clean error. `EVAL_DEPTH_MAX` is 10000, which is too high to catch the C-stack exhaustion first. Long *documents* are fine; a single long *token run* is not. Making those five words iterative is the remaining work, and it is a redesign rather than an edit: the "remaining input on the stack" convention wants `swap`/`dip` to step over the input, and an index-based scan wants the string `let`-bound, which is an O(n) frame copy per call.
 
 **Any `Value buf[n]` whose `n` comes from data rather than from a constant is a latent bare SIGSEGV** — the C stack is 8 MiB and a `Value` is 32 bytes, so ~250k slots overflows it with no diagnostic. Three such buffers existed and are gone: `take-n`/`drop-n` (a slice is contiguous, so it moves in place), `let` (`frame_bind` only ever copies *out* of its argument, so it can read the operand stack directly), and `lend`'s result staging (a `memmove` on the operand stack inserts the box underneath instead). Adding a new one is a bug unless it is bounded by `LOCAL_MAX` first. This is what made `euler/10` pass or fail depending on how much C stack happened to be left.
 

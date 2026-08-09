@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Integration test for examples/feed.slap: type-check it, render both checked-in
 fixtures, confirm the failure paths report rather than print an empty digest, and
-pin the 16384-byte parse ceiling that parse.slap's `then` imposes on every xd-*
-decoder."""
+bracket the parse size ceiling from both sides."""
 
 import os, subprocess, sys, tempfile
 
@@ -121,33 +120,40 @@ with tempfile.TemporaryDirectory() as d:
     check("notfeed-no-digest", "==" not in r.stdout)
 
     # ---- the parse ceiling, from both sides ----
-    # parse.slap carries the remaining input through the prelude's `then`, whose
-    # `case` stages the scrutinee through LOCAL_MAX (16384). Under it a feed
-    # renders; over it the parse dies. Both directions are pinned: if the under
-    # case starts failing the ceiling has dropped, and if the over case starts
-    # passing someone has fixed it and this test should be retired.
+    # The old ceiling was exactly LOCAL_MAX bytes of source: `case` staged the
+    # matched tagged payload through a 16384-slot C buffer, and parse.slap
+    # carries the *remaining input* through `then`. `case` unwraps in place now
+    # and `swap` is an in-place block rotation, so 16714 bytes parses where it
+    # used to die. The ceiling did not disappear -- it moved to the next
+    # LOCAL_MAX buffer in the chain (`into`, building the element record) and
+    # then to the frame arena. Both ends are pinned so either direction of
+    # change is noticed.
     under = os.path.join(d, "under.xml")
     with open(under, "w") as f:
-        f.write(big_feed(110))
-    assert 15000 < os.path.getsize(under) < 16384, os.path.getsize(under)
+        f.write(big_feed(115))
+    assert os.path.getsize(under) > 16384, os.path.getsize(under)
     r = run(under)
     check(
-        "under-cap-renders",
-        r.returncode == 0 and r.stdout.rstrip().endswith("110 items"),
+        "past-old-16384-cap-renders",
+        r.returncode == 0 and r.stdout.rstrip().endswith("115 items"),
         f"{os.path.getsize(under)} bytes: {r.stderr[:200]}",
     )
 
     over = os.path.join(d, "over.xml")
     with open(over, "w") as f:
         f.write(big_feed(130))
-    assert os.path.getsize(over) > 16384, os.path.getsize(over)
     r = run(over)
     check(
-        "over-cap-is-still-the-known-ceiling",
-        r.returncode != 0 and "too large" in r.stderr,
-        f"{os.path.getsize(over)} bytes -- if this now PASSES, parse.slap's "
-        f"`then` was fixed; retire this check and the note in feed.slap. "
-        f"stderr: {r.stderr[:200]}",
+        "over-the-remaining-ceiling",
+        r.returncode != 0,
+        f"{os.path.getsize(over)} bytes -- if this now PASSES, the rest of the "
+        f"LOCAL_MAX chain was fixed too; raise the number or retire the check "
+        f"and the note in feed.slap. stderr: {r.stderr[:200]}",
+    )
+    check(
+        "over-ceiling-reports-cleanly",
+        r.returncode < 128,
+        f"a size limit must report, never segfault. code {r.returncode}",
     )
 
 print(f"feed: {passed} checks passed")

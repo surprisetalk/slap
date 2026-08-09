@@ -6,21 +6,22 @@
 -- Default source is examples/feeds/sample.xml. rss-parse normalizes both
 -- formats to one record shape, so nothing below this line knows which it read.
 --
--- Size is the thing to get right here. `case`, `then` and `default` all stage
--- the whole scrutinee through a LOCAL_MAX (16384 slot) buffer, so branching on
--- a tagged value whose payload is a feed -- or the file it was read from --
--- dies on anything but a small feed. `must` and `each` do not copy, and every
--- branch below is written in terms of those two.
+-- Size used to be the thing to get right here, and the notes are kept because
+-- the shape of the code still reflects it. `case` staged its whole matched
+-- payload through a LOCAL_MAX (16384 slot) C buffer, so branching on a tagged
+-- value whose payload was a feed -- or the file it was read from -- died on
+-- anything but a small feed, and `then` and `default` are built on `case`.
+-- `case` unwraps in place now (the payload already sits under the header), so
+-- that cap is gone and this file could be written with plain `case` throughout.
+-- It is still written with `must` and `each`, which never copied: the habit
+-- costs nothing and the two are the only branch forms with no size story at all.
 --
--- That only buys what this file controls. The parse itself has a hard ceiling
--- of 16384 bytes of source, because parse.slap's `parse-exact` and
--- `parse-spaces` are built on the prelude's `then`, and the value they carry
--- through it is the *remaining input*. Measured: 15979 bytes parses, 16714
--- dies in `then`. It is not a one-line fix -- those two combinators produce no
--- value slot, so `pthen` (which the other four combinators use, and which does
--- not copy) has nowhere to put its default. Every xd-* and jd-* decoder
--- inherits the same cap. tests/run_feed.py pins the boundary so a change that
--- lowers it is caught.
+-- The parse is no longer capped at 16384 bytes either -- `swap` became an
+-- in-place block rotation, and parse.slap's parse-while-acc ends in `acc swap`
+-- over the whole remaining input. It is still capped, just further out and by
+-- different buffers: around 17k bytes of source the record built by `into`
+-- exceeds LOCAL_MAX, and past that the frame arena fills. tests/run_feed.py
+-- brackets both ends, so a change in either direction is caught.
 
 (list 10 push) 'LF let
 ('st let "/dev/stdout" st LF cat write must drop) 'say let
@@ -65,9 +66,10 @@ SRC read must 'RAW let
 
 RAW rss-parse 'PARSED let
 
--- `each` maps the ok payload and passes a 'no straight through, so this shrinks
--- the feed record to one int without copying it. Both sides are small after
--- that, which is what makes the `case` below safe on a feed of any size.
+-- `each` maps the ok payload and passes a 'no straight through. Shrinking the
+-- feed record to one int before the `case` was required when `case` copied its
+-- payload; it is merely tidy now, and left in place because it is the shape to
+-- reach for whenever a branch's success payload is large.
 PARSED (drop 0) each () {'ok (drop "") 'no ()} case 'PERR let
 PERR len 0 gt ("feed: " SRC cat " is not a feed -- " cat PERR cat die) () if
 

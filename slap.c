@@ -1848,14 +1848,24 @@ static void deep_copy_values(Value *dst, const Value *src, int slots);
 static void deep_free_values(Value *vals, int slots);
 static void prim_dup(Frame *e) { (void)e; if (sp<=0) die("dup: stack underflow"); Value top=stack[sp-1]; if(top.tag<=VAL_XT){stack[sp++]=top;return;} int s=val_slots(top); if(sp+s>STACK_MAX) die("dup: stack overflow"); deep_copy_values(&stack[sp],&stack[sp-s],s); sp+=s; }
 static void prim_drop(Frame *e) { (void)e; if (sp<=0) die("drop: stack underflow"); Value top=stack[sp-1]; if(top.tag<=VAL_XT){sp--;return;} int s=val_slots(top); deep_free_values(&stack[sp-s],s); sp-=s; }
+static void slot_reverse(Value *a,int n){for(int i=0,j=n-1;i<j;i++,j--){Value t=a[i];a[i]=a[j];a[j]=t;}}
 static void prim_swap(Frame *e) {
     (void)e; if(sp<2)die("swap: stack underflow");
     Value top=stack[sp-1],below=stack[sp-2];
     if(top.tag<=VAL_XT&&below.tag<=VAL_XT){stack[sp-1]=below;stack[sp-2]=top;return;}
     int ts=val_slots(top),bp=sp-ts-1; if(bp<0)die("swap: stack underflow");
     int bs=val_slots(stack[bp]),total=ts+bs,base=sp-total;
-    if(total>LOCAL_MAX)die("swap: value too large"); Value tmp[total];
-    VCPY(tmp,&stack[base],bs); memmove(&stack[base],&stack[base+bs],ts*sizeof(Value)); VCPY(&stack[base+ts],tmp,bs);
+    if(base<0)die("swap: stack underflow");
+    /* Rotate the two blocks in place: reverse the whole region, then reverse
+       each block where it now sits. That restores each block's internal order
+       while exchanging their positions, with no temporary at all -- so `swap`
+       has no size limit, and neither does anything built on it. parse.slap's
+       parse-while-acc ends in `acc swap`, where the value being stepped over is
+       the whole remaining input, so the old LOCAL_MAX temporary here was the
+       ceiling on every xd- and jd- parse once `case` stopped copying. */
+    slot_reverse(&stack[base],total);
+    slot_reverse(&stack[base],ts);
+    slot_reverse(&stack[base+ts],bs);
 }
 static void prim_dip(Frame *env) {
     if(sp<2)die("dip: need body and value"); POP_BODY(body,"dip");
@@ -1920,10 +1930,14 @@ static void prim_case(Frame *env) {
     Value top = stack[sp-1];
     if (top.tag == VAL_TAGGED) {
         ElemRef br = {0};
-        int tagged_s=val_slots(top), payload_s=tagged_s-1;
-        if(payload_s>LOCAL_MAX) die("case: payload too large (%d slots, max %d)",payload_s,LOCAL_MAX);
-        Value payload_buf[payload_s]; VCPY(payload_buf,&stack[sp-tagged_s],payload_s);
-        uint32_t tag_sym=top.as.compound.len; sp-=tagged_s;
+        /* The payload lies directly under the header, so a match only has to
+           drop the header -- the payload is then already in place, which is the
+           same move `must` and `pthen` make. Staging it through a C buffer is
+           what used to cap a tagged payload at LOCAL_MAX, and with it every
+           parser built on `then` (parse-exact, parse-spaces carry the remaining
+           input through it) at 16384 bytes of source. */
+        int tagged_s=val_slots(top);
+        uint32_t tag_sym=top.as.compound.len;
         int found = 0;
         if (clauses_top.tag == VAL_RECORD) {
             br = record_field(clauses_buf,clauses_s,clauses_len,tag_sym,&found);
@@ -1936,7 +1950,8 @@ static void prim_case(Frame *env) {
                 }
             }
         }
-        if (found) { SPUSH(payload_buf,payload_s); eval_body(&clauses_buf[br.base],br.slots,env); return; }
+        if (found) { sp--; eval_body(&clauses_buf[br.base],br.slots,env); return; }
+        sp-=tagged_s;
         SPUSH(def_buf,def_s); return;
     }
     int scrut_s=val_slots(top);

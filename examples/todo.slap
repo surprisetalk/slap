@@ -35,10 +35,10 @@ args 2 drop-n 'REST let
 ("items" ("text" jd-str  jd-field) jd-list jd-field) 'dec-texts let
 ("items" ("done" jd-bool jd-field) jd-list jd-field) 'dec-dones let
 
--- `case` stages its whole scrutinee through a LOCAL_MAX buffer, so branching
--- straight on a jd-run result would cap the file size. `each` maps the ok
--- payload without copying it, so shrinking the decoded list to one int first
--- makes the branch below independent of how long the list is.
+-- `case` used to stage its whole matched payload through a LOCAL_MAX buffer,
+-- which capped the file size; it unwraps in place now. `each`, which never
+-- copied, still shrinks the decoded list to one int before the branch -- the
+-- form to reach for whenever a branch's success payload is large.
 ('what let 'res let
  res (drop 0) each () {'ok (drop "") 'no ()} case 'msg let
  msg len 0 gt (
