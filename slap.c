@@ -119,7 +119,16 @@ static void spush(Value v) { if (sp >= STACK_MAX) die("stack overflow"); stack[s
 static Value spop(void) { if (sp <= 0) die("stack underflow"); return stack[--sp]; }
 static Value speek(void) { if (sp <= 0) die("stack underflow on peek"); return stack[sp - 1]; }
 #define VCPY(d,s,n) memcpy(d,s,(n)*sizeof(Value))
-#define SPUSH(src,n) do{VCPY(&stack[sp],src,n);sp+=(n);}while(0)
+/* `spush` checks the ceiling and this one did not, so every bulk push wrote past
+   the end of `stack` without a word. It is a global array, so the overrun lands
+   in whatever BSS follows -- `box_walk_depth` in practice, which then reported
+   "box nesting deeper than 512" from a program with no box in it. Proved with
+   `-fsanitize=address`: `0 2097150 range ((1 2 3 4 5 6 7 8) drop) apply`
+   writes 352 bytes past `stack` and still exits 0. */
+#define SPUSH(src,n) do{ if(sp+(int)(n)>STACK_MAX) die("stack overflow: %d of %d value slots are in use and this pushes %d more.\n" \
+    "  The operand stack is a fixed array. A list being built one element at a time sits on it,\n" \
+    "  so a single value near this size is enough to fill it.", sp, STACK_MAX, (int)(n)); \
+    VCPY(&stack[sp],src,n);sp+=(n);}while(0)
 #define MKVAL(t) Value v={0};v.tag=t
 static Value val_int(int64_t i){MKVAL(VAL_INT);v.as.i=i;return v;}
 static Value val_float(double f){MKVAL(VAL_FLOAT);v.as.f=f;return v;}
@@ -429,6 +438,31 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
 }
 static int eval_depth = 0;
 #define EVAL_DEPTH_MAX 10000
+/* The C stack is the real limit, not the level count. A level costs a different
+   number of C frames depending on the recursion shape: `(inf) 'inf let inf`
+   reaches 10000 levels in 4 MB, a word that recurses inside `each` costs 44 KB a
+   level and dies at 169, and one that recurses inside `edit` costs 512 KB and
+   dies at 14. Counting levels cannot catch all three. Measure the distance from
+   main()'s frame instead. The stack grows down on every platform slap builds
+   for, but the absolute difference is correct either way.
+
+   7 MiB of the 8176 KB the main thread gets. The two numbers that set it, both
+   measured, both worth re-measuring if this ever segfaults again:
+
+   - The suite's own deepest program is euler/27, which nests outer-loop inside
+     inner-loop inside is-prime and reaches 6508 KB. The trip point has to sit
+     above that or `make test` fails. 7168 KB leaves it 660 KB of slack.
+   - The probe runs at eval_body entry, but a level goes deeper than that before
+     the next check: rec_set_field's frame is 704 KB and prim_*_impl's
+     `Value buf[LOCAL_MAX]` is 512 KB. die() itself needs about 390 KB, mostly
+     val_print's 192 KB. 7168 KB leaves 1002 KB below the trip point -- enough
+     for die(), and enough for one big primitive frame but not for a
+     set-then-rec_set_field chain, which is 1216 KB. That chain calls no
+     eval_body, so no guard sees it. euler/27 leaves only 1662 KB to divide
+     between the two, so it cannot be covered as well; the guard makes the common
+     case diagnosable and does not make the rare one worse. */
+static char *c_stack_base = NULL;
+#define C_STACK_MAX (7*1024*1024)
 static uint32_t S_LET, S_IF, S_EFFECT, S_CHECK, S_UNION, S_OK, S_NO, S_CASE, S_MUST, S_QUOTE;
 static uint32_t S_GET, S_PEEK, S_POP, S_AT, S_NTH, S_SET, S_EDIT, S_INDEXOF, S_STRFIND;
 static void syms_init(void);
@@ -1809,7 +1843,14 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
     }
 }
 static int typecheck_tokens(Token *toks, int count, int user_start) {
-    TypeChecker tc; memset(&tc, 0, sizeof(tc)); tc.tvar_count = 1; tc.user_start = user_start;
+    /* static, not a local. sizeof(TypeChecker) is about 1.5 MB, and -flto inlines
+       this whole function into main(), so an automatic `tc` made main()'s frame
+       1552 KB -- measured with `objdump -d --disassemble-symbols=_main slap`.
+       That frame is live for the entire run, so the evaluator started 1552 KB
+       down an 8176 KB stack and euler/27 came within 110 KB of a bare SIGSEGV.
+       Moving it to BSS gives the evaluator the whole stack back. Called once,
+       from main, so there is nothing to re-enter. */
+    static TypeChecker tc; memset(&tc, 0, sizeof(tc)); tc.tvar_count = 1; tc.user_start = user_start;
     tc_process_range(&tc, toks, 0, count, count);
     for (int i = 0; i < tc.sp; i++) {
         if ((tc.data[i].flags & AT_LINEAR) && !(tc.data[i].flags & AT_CONSUMED))
@@ -1860,8 +1901,8 @@ static void prim_swap(Frame *e) {
        each block where it now sits. That restores each block's internal order
        while exchanging their positions, with no temporary at all -- so `swap`
        has no size limit, and neither does anything built on it. parse.slap's
-       parse-while-acc ends in `acc swap`, where the value being stepped over is
-       the whole remaining input, so the old LOCAL_MAX temporary here was the
+       parse-while-core ends in a `swap` that steps the parsed prefix over the
+       whole remaining input, so the old LOCAL_MAX temporary here was the
        ceiling on every xd- and jd- parse once `case` stopped copying. */
     slot_reverse(&stack[base],total);
     slot_reverse(&stack[base],ts);
@@ -2023,6 +2064,10 @@ static void prim_loop(Frame *env) {
 static inline void eval_body_fast(Value *body, int slots, Frame *env) {
     Value hdr=body[slots-1]; Frame *ee=hdr.as.compound.env?hdr.as.compound.env:env;
     int len=(int)hdr.as.compound.len, sbc=ee->bind_count, svu=ee->vals_used;
+    /* A literal element goes on the stack with a bare `stack[sp++]`, so the
+       ceiling has to be checked somewhere. Once per body, not once per element:
+       the body's own slot count bounds what its literals can add. */
+    if(sp+len>STACK_MAX) die("stack overflow: %d of %d value slots are in use and this body pushes up to %d more.", sp, STACK_MAX, len);
     eval_depth++;
     for(int k=0;k<len;k++){
         Value elem=body[k];
@@ -2264,25 +2309,73 @@ static inline void prim_at_impl(Frame *env, int tagged) {
     int s=val_slots(next),len=(int)next.as.compound.len,base=sp-s;
     int found; ElemRef ref=record_field(&stack[base],s,len,key,&found);
     if(!found) { sp-=s; if(tagged) push_none(); else die("at: key '%s' not found in record",sym_name(key)); return; }
-    Value vb[LOCAL_MAX]; VCPY(vb,&stack[base+ref.base],ref.slots);
-    sp-=s; SPUSH(vb,ref.slots); if(tagged) push_ok();
+    /* The field is a contiguous run inside the record, so it moves down in place
+       and nothing is copied out -- the same reasoning as `case`, `swap` and
+       `into`. This used to stage through a `Value vb[LOCAL_MAX]` whose length
+       was never checked against LOCAL_MAX, so a field longer than 16384 slots
+       overflowed a fixed 512 KB stack buffer. `into` capped field size until
+       today, which is the only reason that was unreachable. */
+    memmove(&stack[base],&stack[base+ref.base],ref.slots*sizeof(Value));
+    sp=base+ref.slots; if(tagged) push_ok();
 }
 MUST_PAIR(at)
-static void rec_set_field(int rb, int rs, int rl, uint32_t key, Value *nv, int ns, int add) {
-    Value tmp[LOCAL_MAX]; int ts=0, replaced=0;
+static void rec_set_field(int rb, int rs, int rl, uint32_t key, Value *nv, int ns) {
+    Value tmp[LOCAL_MAX]; int ts=0;
+    /* tmp is a fixed 512 KB buffer and the loop below writes rl keys plus every
+       field value into it. Bound the result first: `into` no longer caps field
+       size, so a record that fits on the operand stack can be larger than this
+       buffer, and an unchecked write here corrupts the C stack. */
+    if(rs-1+ns>LOCAL_MAX) die("record too large (%d slots, max %d)",rs-1+ns,LOCAL_MAX);
     int kp[LOCAL_MAX],vo[LOCAL_MAX],vs[LOCAL_MAX]; record_offsets(&stack[rb],rs,rl,kp,vo,vs);
     for(int i=0;i<rl;i++){uint32_t k=stack[rb+kp[i]].as.sym;tmp[ts++]=val_sym(k);
-        if(k==key){VCPY(&tmp[ts],nv,ns);ts+=ns;replaced=1;}
+        if(k==key){VCPY(&tmp[ts],nv,ns);ts+=ns;}
         else{VCPY(&tmp[ts],&stack[rb+vo[i]],vs[i]);ts+=vs[i];}}
-    if(add&&!replaced){tmp[ts++]=val_sym(key);VCPY(&tmp[ts],nv,ns);ts+=ns;}
-    sp=rb; SPUSH(tmp,ts); spush(val_compound(VAL_RECORD,rl+(add&&!replaced),ts+1));
+    sp=rb; SPUSH(tmp,ts); spush(val_compound(VAL_RECORD,rl,ts+1));
 }
 #define REC_PREAMBLE(who) Value rec_top=stack[sp-1];if(rec_top.tag!=VAL_RECORD)die(who ": expected record, got %s",valtag_name(rec_top.tag));int rec_s=val_slots(rec_top),rec_len=(int)rec_top.as.compound.len,rec_base=sp-rec_s
+/* `into` copies nothing, at any size. The caller leaves the new value directly
+   above the record, which is where an appended field's value already belongs:
+   a record is `k v k v ... header`, so appending is overwriting the old header
+   slot with the key and pushing a new header over the value that is already
+   there. Replacing an existing key of the same width is one memmove into the
+   old field, and of a different width is the same three-reversal rotation
+   `swap` uses -- move the new value down over the old one and slide the fields
+   after it, with no temporary.
+
+   The old code staged the value through POP_VAL's LOCAL_MAX buffer and rebuilt
+   the whole record in rec_set_field's, which capped a single field at 16384
+   slots. xml.slap builds one record per element and puts the entire child list
+   in it, so that was the ceiling on the whole document: a feed died at about
+   17k bytes of source with "value too large" pointing at `into`. */
 static void prim_into(Frame *e) {
-    (void)e; uint32_t key=pop_sym(); POP_VAL(v); REC_PREAMBLE("into");
-    int found; ElemRef existing=record_field(&stack[rec_base],rec_s,rec_len,key,&found);
-    if(found&&existing.slots==v_s) VCPY(&stack[rec_base+existing.base],v_buf,v_s);
-    else rec_set_field(rec_base,rec_s,rec_len,key,v_buf,v_s,1);
+    (void)e; uint32_t key=pop_sym();
+    if(sp<=0) die("into: stack underflow");
+    int v_s=val_slots(stack[sp-1]),v_base=sp-v_s;
+    if(v_base<1) die("into: stack underflow: value needs %d slots, have %d",v_s,sp);
+    Value rec_top=stack[v_base-1];
+    if(rec_top.tag!=VAL_RECORD) die("into: expected record, got %s",valtag_name(rec_top.tag));
+    int rec_s=val_slots(rec_top),rec_len=(int)rec_top.as.compound.len,rec_base=v_base-rec_s;
+    if(rec_base<0) die("into: stack underflow: record needs %d slots, have %d",rec_s,v_base);
+    int found; ElemRef ex=record_field(&stack[rec_base],rec_s,rec_len,key,&found);
+    /* The header is reused rather than rebuilt, so clear its source location:
+       a rebuilt one carried none, and eval_body reads `loc` off the values it
+       walks to say where an error happened. */
+    if(!found) {
+        stack[v_base-1]=val_sym(key); rec_top.loc=0;
+        rec_top.as.compound.len=(uint32_t)(rec_len+1); rec_top.as.compound.slots=(uint32_t)(rec_s+v_s+1);
+        spush(rec_top); return;
+    }
+    int old_base=rec_base+ex.base,os=ex.slots;
+    if(os==v_s) { memmove(&stack[old_base],&stack[v_base],(size_t)v_s*sizeof(Value)); sp=v_base; return; }
+    /* [old][rest][new] -> [new][rest]. Rotate the region so the new value leads,
+       which leaves the old value stranded in the middle, then close the gap. */
+    int rest=rec_s-ex.base-os;
+    slot_reverse(&stack[old_base],sp-old_base);
+    slot_reverse(&stack[old_base],v_s);
+    slot_reverse(&stack[old_base+v_s],os+rest);
+    memmove(&stack[old_base+v_s],&stack[old_base+v_s+os],(size_t)rest*sizeof(Value));
+    sp-=os;
+    stack[sp-1].loc=0; stack[sp-1].as.compound.slots=(uint32_t)(rec_s-os+v_s);
 }
 static inline void prim_edit_impl(Frame *env, int tagged) {
     POP_BODY(fn,"edit"); uint32_t key=pop_sym(); REC_PREAMBLE("edit");
@@ -2292,7 +2385,7 @@ static inline void prim_edit_impl(Frame *env, int tagged) {
     eval_body(fn_buf,fn_s,env);
     int ns=val_slots(stack[sp-1]);
     if(ns==ref.slots){VCPY(&stack[rec_base+ref.base],&stack[sp-ns],ns);sp-=ns;}
-    else{Value nv[LOCAL_MAX];VCPY(nv,&stack[sp-ns],ns);sp-=ns;rec_set_field(rec_base,rec_s,rec_len,key,nv,ns,0);}
+    else{Value nv[LOCAL_MAX];VCPY(nv,&stack[sp-ns],ns);sp-=ns;rec_set_field(rec_base,rec_s,rec_len,key,nv,ns);}
     if(tagged) push_ok();
 }
 MUST_PAIR(edit)
@@ -2600,8 +2693,17 @@ static void dispatch_word(uint32_t sym, Frame *env) {
 }
 static void eval_body(Value *body, int slots, Frame *env) {
     if(++eval_depth > EVAL_DEPTH_MAX) die("recursion depth exceeded (%d levels)", EVAL_DEPTH_MAX);
+    { char probe; long used = !c_stack_base ? 0 : &probe > c_stack_base ? &probe - c_stack_base : c_stack_base - &probe;
+      if(used > C_STACK_MAX)
+          die("C stack exhausted at recursion depth %d -- %ld KB used, limit %ld KB.\n"
+              "  Deep recursion is the cause. Every nested word call keeps a C frame alive, so a word\n"
+              "  that calls itself once per input element runs out of C stack long before the %d-level\n"
+              "  counter fires. Rewrite the recursion as a `while` or `loop`, or cut the input into\n"
+              "  smaller pieces and join the results.",
+              eval_depth, used/1024, (long)(C_STACK_MAX/1024), EVAL_DEPTH_MAX); }
     Value hdr=body[slots-1]; if(hdr.tag!=VAL_TUPLE) die("eval_body: expected tuple, got %s (internal: evaluator received non-tuple header)", valtag_name(hdr.tag));
     int len=(int)hdr.as.compound.len; if(len>LOCAL_MAX) die("tuple body too large");
+    if(sp+slots>STACK_MAX) die("stack overflow: %d of %d value slots are in use and this body pushes up to %d more.", sp, STACK_MAX, slots);
     Frame *ee=hdr.as.compound.env?hdr.as.compound.env:env;
     int sbc=ee->bind_count,svu=ee->vals_used;
     int ob[len>0?len:1], sb[len>0?len:1];
@@ -3175,6 +3277,7 @@ static void register_prims(void) {
 #undef R
 
 int main(int argc, char **argv) {
+    char stack_anchor; c_stack_base = &stack_anchor;
     srand((unsigned)time(NULL));
     int check_only=0;
     cli_args=malloc(argc*sizeof(char*)); cli_argc=0;

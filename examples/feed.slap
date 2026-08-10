@@ -17,11 +17,16 @@
 -- costs nothing and the two are the only branch forms with no size story at all.
 --
 -- The parse is no longer capped at 16384 bytes either -- `swap` became an
--- in-place block rotation, and parse.slap's parse-while-acc ends in `acc swap`
--- over the whole remaining input. It is still capped, just further out and by
--- different buffers: around 17k bytes of source the record built by `into`
--- exceeds LOCAL_MAX, and past that the frame arena fills. tests/run_feed.py
--- brackets both ends, so a change in either direction is caught.
+-- in-place block rotation, and parse.slap's parse-while-core ends in a `swap`
+-- over the whole remaining input. `into` then stopped copying as well, so an
+-- element record can hold a whole document's children -- but that bought no
+-- extra items here, because the next buffer is only 13 slots further out:
+-- `push` reads the finished element record through LOCAL_MAX when adding it to
+-- its parent's child list. The measured boundary was 116 items before `into`
+-- changed and is 116 after; only the primitive named in the error moved. Past
+-- that the frame arena fills. 116 items of the shape tests/run_feed.py builds
+-- is 16861 bytes and renders; 117 is 17008 and fails. That test brackets both
+-- ends, so a change in either direction is caught.
 
 (list 10 push) 'LF let
 ('st let "/dev/stdout" st LF cat write must drop) 'say let

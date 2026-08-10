@@ -1,18 +1,43 @@
 -- parse.slap: byte-list parser combinators returning tagged ok/no results.
 
-('acc let dup len 0 gt (dup 0 get must 'ch let ch 48 ge ch 57 le and (1 drop-n acc 10 mul ch 48 sub plus parse-int-acc) (acc swap) if) (acc swap) if) 'parse-int-acc let
+-- Loop state is [input, accumulator, index]: the input never moves, so the only
+-- work per digit is a peek and two integer ops. The old recursion re-bound the
+-- accumulator and did a `drop-n` at every digit, which is O(n) per character.
+('acc let acc 0
+ ('pii let 'pia let pii peek 0 {'ok ('pic let pic 48 ge pic 57 le and) 'no (drop 0)} case pia swap pii swap)
+ ('pji let 'pja let pji peek must 48 sub 'pjd let pja 10 mul pjd plus pji 1 plus) while
+ 'pin let swap pin drop-n) 'parse-int-acc let
 (dup len 0 eq (drop 0 "parse-int: empty input" no) (dup 0 get must 'head let head 45 eq (1 drop-n dup len 0 eq (drop 0 "parse-int: expected digit after '-'" no) (dup 0 get must dup 48 ge swap 57 le and not (drop 0 "parse-int: expected digit after '-'" no) (0 parse-int-acc swap neg swap ok) if) if) (head 48 ge head 57 le and not (drop 0 "parse-int: expected digit" no) (0 parse-int-acc ok) if) if) if) 'parse-int-core let
 (0 (parse-int-core) pthen) 'parse-int let
 ('lit let 'input let input len lit len lt ("parse-exact: input too short" no) (input lit len take-n lit eq not ("parse-exact: mismatch" no) (input lit len drop-n ok) if) if) 'parse-exact-core let
 ('lit let (lit parse-exact-core) then) 'parse-exact let
-(dup len 0 gt (dup 0 get must 'ch let ch 32 eq ch 9 eq or ch 10 eq or ch 13 eq or (1 drop-n parse-spaces-core) () if) () if) 'parse-spaces-core let
+-- Scan with an index and cut once, instead of recursing per character. `peek` is
+-- O(1) and leaves the input alone, and reading past the end returns 'no, so the
+-- index alone is the loop state and no length is needed. The old shape recursed
+-- once per space and did a `drop-n` at each level, so it cost one C frame per
+-- character and died at 3331 spaces with "recursion depth exceeded".
+(0 ('psi let psi peek 0 {'ok ('psc let psc 32 eq psc 9 eq or psc 10 eq or psc 13 eq or) 'no (drop 0)} case psi swap) (1 plus) while drop-n) 'parse-spaces-core let
 ((parse-spaces-core ok) then) 'parse-spaces let
-('pred let 'acc let dup len 0 gt (dup 0 get must 'ch let ch pred (1 drop-n acc ch push 'pred quote parse-while-acc) (acc swap) if) (acc swap) if) 'parse-while-acc let
-('pred let list 'pred quote parse-while-acc) 'parse-while-core let
+-- Same scan, then one cut into prefix and rest. The predicate still only ever
+-- sees a real character: the 'no clause stops the loop, so nothing invents a
+-- sentinel byte for it to judge. parse-while-acc is gone -- it recursed per
+-- character AND `let`-bound the accumulator at every level, so it filled the
+-- frame arena at 2045 characters.
+('pred let 0 ('pwi let pwi peek 0 {'ok (pred) 'no (drop 0)} case pwi swap) (1 plus) while
+ 'pwn let dup pwn take-n swap pwn drop-n) 'parse-while-core let
 ('pred let list ('pred quote parse-while-core ok) pthen) 'parse-while let
 ('delim let dup delim str-find () {'ok ('pos let dup pos take-n swap pos delim len plus drop-n ok) 'no (drop drop "parse-until: delimiter not found" no)} case) 'parse-until-core let
 ('delim let list (delim parse-until-core) pthen) 'parse-until let
-('pfv let dup len 0 gt (dup 0 get must 'pfd let pfd 48 ge pfd 57 le and (1 drop-n pfv 10.0 mul pfd 48 sub itof plus parse-float-int) (pfv swap) if) (pfv swap) if) 'parse-float-int let
-('pff let 'pfv let dup len 0 gt (dup 0 get must 'pfd let pfd 48 ge pfd 57 le and (1 drop-n pfv pfd 48 sub itof pff div plus pff 10.0 mul parse-float-frac) (pfv swap) if) (pfv swap) if) 'parse-float-frac let
+-- The integer part: same loop as parse-int-acc, with a float accumulator.
+('pfv let pfv 0
+ ('pfi let 'pfa let pfi peek 0 {'ok ('pfc let pfc 48 ge pfc 57 le and) 'no (drop 0)} case pfa swap pfi swap)
+ ('pgi let 'pga let pgi peek must 48 sub itof 'pgd let pga 10.0 mul pgd plus pgi 1 plus) while
+ 'pfn let swap pfn drop-n) 'parse-float-int let
+-- The fraction: the divisor is a fourth item of loop state and is dropped at the
+-- end, the same way the recursive version let it fall off the last frame.
+('pff let 'pfv let pfv pff 0
+ ('pki let 'pkf let 'pkv let pki peek 0 {'ok ('pkc let pkc 48 ge pkc 57 le and) 'no (drop 0)} case pkv swap pkf swap pki swap)
+ ('pli let 'plf let 'plv let pli peek must 48 sub itof 'pld let plv pld plf div plus plf 10.0 mul pli 1 plus) while
+ 'pkn let drop swap pkn drop-n) 'parse-float-frac let
 (dup len 0 eq (drop 0.0 "parse-float: empty input" no) (dup 0 get must 45 eq (1 drop-n 1) (0) if 'pfneg let 0.0 parse-float-int dup len 0 gt (dup 0 get must 46 eq) (0) if (1 drop-n 0.0 10.0 parse-float-frac (swap plus) dip) () if pfneg (swap fneg swap) () if ok) if) 'parse-float-core let
 (0.0 (parse-float-core) pthen) 'parse-float let

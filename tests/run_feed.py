@@ -122,33 +122,35 @@ with tempfile.TemporaryDirectory() as d:
     # ---- the parse ceiling, from both sides ----
     # The old ceiling was exactly LOCAL_MAX bytes of source: `case` staged the
     # matched tagged payload through a 16384-slot C buffer, and parse.slap
-    # carries the *remaining input* through `then`. `case` unwraps in place now
-    # and `swap` is an in-place block rotation, so 16714 bytes parses where it
-    # used to die. The ceiling did not disappear -- it moved to the next
-    # LOCAL_MAX buffer in the chain (`into`, building the element record) and
-    # then to the frame arena. Both ends are pinned so either direction of
-    # change is noticed.
+    # carries the *remaining input* through `then`. `case` unwraps in place now,
+    # `swap` is an in-place block rotation, and `into` neither stages the new
+    # field nor rebuilds the record. The ceiling did not disappear -- it moved to
+    # the next LOCAL_MAX buffer in the chain, `push` adding the finished element
+    # record to its parent's child list, and past that the frame arena fills.
+    # The bracket is exact and measured: 116 items renders, 117 does not. Both
+    # ends are pinned so either direction of change is noticed.
     under = os.path.join(d, "under.xml")
     with open(under, "w") as f:
-        f.write(big_feed(115))
+        f.write(big_feed(116))
     assert os.path.getsize(under) > 16384, os.path.getsize(under)
     r = run(under)
     check(
         "past-old-16384-cap-renders",
-        r.returncode == 0 and r.stdout.rstrip().endswith("115 items"),
+        r.returncode == 0 and r.stdout.rstrip().endswith("116 items"),
         f"{os.path.getsize(under)} bytes: {r.stderr[:200]}",
     )
 
     over = os.path.join(d, "over.xml")
     with open(over, "w") as f:
-        f.write(big_feed(130))
+        f.write(big_feed(117))
     r = run(over)
     check(
         "over-the-remaining-ceiling",
         r.returncode != 0,
-        f"{os.path.getsize(over)} bytes -- if this now PASSES, the rest of the "
-        f"LOCAL_MAX chain was fixed too; raise the number or retire the check "
-        f"and the note in feed.slap. stderr: {r.stderr[:200]}",
+        f"{os.path.getsize(over)} bytes -- if this now PASSES, the next link in "
+        f"the LOCAL_MAX chain was fixed too; raise both numbers to the new "
+        f"measured boundary and update the note in feed.slap. "
+        f"stderr: {r.stderr[:200]}",
     )
     check(
         "over-ceiling-reports-cleanly",

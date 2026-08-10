@@ -2,7 +2,7 @@
 -- Parser produces records:
 --   Element: {'name "tag" 'attrs [[name val]...] 'children [...]}
 --   Text:    {'text "raw string"}
--- Parser helpers follow parse-while-acc convention: (result-value remaining-string)
+-- Parser helpers follow parse-while-core convention: (result-value remaining-string)
 -- with remaining on TOP of stack.
 -- Decoders (xd-*) are first-class composable values. Run with xd-run or xd-eval.
 -- Errors are XPath-ish strings: "/rss/channel/item[2]/title: missing".
@@ -57,7 +57,7 @@
 -- ========== Name reader ==========
 
 -- _x-name-char-pred: check helper (can't pass inline when TC strict)
--- _x-read-name: (s -- name s').  name on bottom, s' on top (parse-while-acc style).
+-- _x-read-name: (s -- name s').  name on bottom, s' on top (parse-while-core style).
 (
   dup len 0 eq ("xml: expected name" no must) () if
   dup 0 get must _x-name-start? not ("xml: invalid name start" no must) () if

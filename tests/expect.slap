@@ -205,6 +205,36 @@ list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq
 -- ===== Records: into =====
 {'x 10 'y 20} 30 'x into 'x at must 30 eq assert
 
+-- into replaces a key in place and appends an unknown one, so field order never
+-- moves. A replacement of a different width has to slide the fields after it,
+-- which is the case a same-width overwrite above cannot catch: every position in
+-- the record is exercised, because the first and last field are the two that a
+-- wrong offset gets right by accident.
+{'x 1 'y 2 'z 3} [7 8 9] 'x into {'x [7 8 9] 'y 2 'z 3} eq assert
+{'x 1 'y 2 'z 3} [7 8 9] 'y into {'x 1 'y [7 8 9] 'z 3} eq assert
+{'x 1 'y 2 'z 3} [7 8 9] 'z into {'x 1 'y 2 'z [7 8 9]} eq assert
+{'x [1 2 3] 'y 2 'z 3} 9 'x into {'x 9 'y 2 'z 3} eq assert
+{'x 1 'y [1 2 3] 'z 3} 9 'y into {'x 1 'y 9 'z 3} eq assert
+{'x 1 'y 2 'z [1 2 3]} 9 'z into {'x 1 'y 2 'z 9} eq assert
+
+-- A record field bigger than LOCAL_MAX. `into` staged the value through a
+-- 16384-slot C buffer and rebuilt the whole record in a second one, so a field
+-- of 20001 slots died with "value too large". That was the ceiling on
+-- examples/lib/xml.slap, which puts a whole document's child list in one
+-- element record. 'n is read back after each write: `at` walks the fields from
+-- the header backwards, so it only finds 'n if the big field's slot count is
+-- right. Append, then a wider replacement, then a narrower one.
+rec 1 'n into 0 20000 range 'big into
+  dup len 2 eq assert
+  dup 'n at must 1 eq assert
+  0 30000 range 'big into
+  dup len 2 eq assert
+  dup 'n at must 1 eq assert
+  5 'big into
+  dup len 2 eq assert
+  dup 'big at must 5 eq assert
+  'n at must 1 eq assert
+
 -- ===== Box =====
 42 box free
 42 box (21 mul) lend 882 eq assert free
@@ -1542,6 +1572,18 @@ none () no eq assert
 "abc123" ok (dup 97 ge swap 122 le and) parse-while must "123" eq assert "abc" eq assert
 "" ok (dup 97 ge swap 122 le and) parse-while must "" eq assert "" eq assert
 
+-- The scan stops on `peek` returning 'no, so a run that reaches the end of the
+-- input with no character after it is the edge worth pinning: an index scan that
+-- reads one past the run is exactly what a `-1 default` sentinel would hide.
+"    " ok parse-spaces must "" eq assert
+"abc" ok (dup 97 ge swap 122 le and) parse-while must "" eq assert "abc" eq assert
+"123" ok parse-int must "" eq assert 123 eq assert
+"1.5" ok parse-float must "" eq assert 1.5 eq assert
+-- and the predicate must never be handed a byte that is not in the input. The
+-- run has to reach the END of the input for this to bite: that is the only place
+-- the scan asks for a character there is none of.
+"ab" ok (dup 0 ge assert dup 255 le assert 97 ge) parse-while must "" eq assert "ab" eq assert
+
 -- parse-until (tagged API)
 "hello=world" ok "=" parse-until must "world" eq assert "hello" eq assert
 "a::b::c" ok "::" parse-until must "b::c" eq assert "a" eq assert
@@ -1713,8 +1755,8 @@ outer-val 99 eq assert
 
 -- `swap` used to stage the lower block through a LOCAL_MAX temporary. It is an
 -- in-place block rotation now (reverse the region, then reverse each block
--- where it lands), so it has no size limit. parse.slap's parse-while-acc ends
--- in `acc swap`, stepping the accumulator over the whole remaining input, so
+-- where it lands), so it has no size limit. parse.slap's parse-while-core ends
+-- in a `swap` stepping the parsed prefix over the whole remaining input, so
 -- this was the ceiling on every parse once `case` stopped copying.
 (
   -- swap leaves the lower value on top, so the list is what gets checked first
@@ -1724,6 +1766,35 @@ outer-val 99 eq assert
   [1 2 3] "ab" swap [1 2 3] eq assert "ab" eq assert
   0 20000 range dup 'big let 7 swap big eq assert 7 eq assert
 ) 'test-swap-past-local-max let test-swap-past-local-max
+
+-- A record field larger than LOCAL_MAX. `into` capped field size until the copy
+-- came out of it, and `at` staged the field through a fixed `Value vb[LOCAL_MAX]`
+-- with no length check -- so the first record that could hold a big field
+-- overflowed that buffer and trapped. `at` moves the run down in place now.
+(
+  rec 0 20000 range 'big into 'big at must len 20000 eq assert
+  rec 0 20000 range 'big into 1 'n into 'big at must len 20000 eq assert
+  rec 0 20000 range 'big into 1 'n into 'n at must 1 eq assert
+) 'test-record-field-past-local-max let test-record-field-past-local-max
+
+-- A long token run. parse.slap's combinators used to recurse once per character,
+-- so the limit was the C stack and it was low: measured on the recursive version,
+-- parse-spaces died at 3331 spaces, parse-int at 2933, parse-float at 2864 and
+-- parse-while at 2045 (that one filled the frame arena, because it also re-bound
+-- the accumulator at every level). They scan with an index and cut once now, so
+-- the limit is the operand stack instead -- over a million characters. 100000
+-- clears every one of the old ceilings and the whole block runs in about 0.2s.
+--
+-- The digits are all '0' on purpose. A 100000-digit number overflows int64, and
+-- signed overflow in C is undefined, so the test would be measuring the compiler.
+('app-n let 'app-b let 0 (dup app-n lt) ('app-i let app-b push app-i 1 plus) while drop) 'app-bytes let
+(
+  list 32 100000 app-bytes 120 push ok parse-spaces must len 1 eq assert
+  list 97 100000 app-bytes 48 push ok (97 eq) parse-while must len 1 eq assert len 100000 eq assert
+  list 48 100000 app-bytes 120 push ok parse-int must len 1 eq assert 0 eq assert
+  list 48 100000 app-bytes 120 push ok parse-float must len 1 eq assert 0.0 eq assert
+  list 48 push 46 push 48 100000 app-bytes 120 push ok parse-float must len 1 eq assert 0.0 eq assert
+) 'test-long-token-run let test-long-token-run
 
 -- ===== Done =====
 "All tests passed!" print

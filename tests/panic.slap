@@ -177,6 +177,14 @@ tuck
 -- EXPECT: recursion depth exceeded
 (inf) 'inf let inf
 
+-- A recursion inside `each` costs 43 KB of C stack per level, so it exhausts the
+-- stack after 169 eval_body levels -- far short of the 10000-level counter above,
+-- which is why counting levels is not enough. That is 56 calls of the word below,
+-- so 5000 is 89x the trip point and frame sizes can move a long way before this
+-- stops panicking. Without the C stack guard it is a bare SIGSEGV.
+-- EXPECT: C stack exhausted
+('n let n 0 gt ([1] (drop n 1 sub deep 0) each drop) () if) 'deep let 5000 deep
+
 -- EXPECT: MUST FAILED
 "garbage" parse-http must
 
@@ -350,3 +358,33 @@ tuck
 
 -- EXPECT: concat: cannot concat tagged values
 5 ok 'x let [] 'x quote cat drop
+
+-- `edit` rebuilds the record through a fixed LOCAL_MAX buffer, and `into` no
+-- longer caps field size, so a record can be larger than that buffer. It must
+-- report rather than write past the end of it.
+-- EXPECT: record too large
+rec 0 20000 range 'big into 'big (drop 1) edit must drop
+
+-- Both writes into the operand stack used to be unchecked. `SPUSH` had no
+-- ceiling test at all, and `eval_body` put a literal on with a bare
+-- `stack[sp++]`. `stack` is a global array, so the overrun landed in the BSS
+-- behind it and the program kept going -- ASan showed this exact line writing
+-- 352 bytes past the end and still exiting 0.
+-- EXPECT: stack overflow
+0 2097150 range ((1 2 3 4 5 6 7 8) drop) apply len drop
+
+-- The same ceiling reached through the per-body check in `eval_body` rather than
+-- through SPUSH. An inline `(...) apply` cannot reach it: the tuple literal is
+-- SPUSHed onto the operand stack before `apply` pops it, so SPUSH fires first.
+-- A body reached through a *binding* is never on the operand stack, so the
+-- per-body check is the only thing between its literals and the end of `stack`.
+-- Verified falsifiable: delete the check and this line succeeds.
+-- EXPECT: stack overflow
+(1 2 3 4 5 6 7 8 drop drop drop drop drop drop drop drop) 'many let 0 2097140 range many len drop
+
+-- Only the SPUSH check catches this one. The per-body check bounds what a body's
+-- own literals can add, and a bound name is not a literal: `dispatch_word`
+-- SPUSHes the whole binding, so two lookups of a one-million-slot list overrun a
+-- stack that the body guard measured as almost empty.
+-- EXPECT: stack overflow
+0 1048600 range 'big let big big len drop len drop
