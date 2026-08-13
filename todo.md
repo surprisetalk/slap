@@ -1,3 +1,5 @@
+- [ ] implement suckless utils (great for testing and benchmarking)
+
 - [ ] borrow checking plus reference counting: https://verdagon.dev/blog/ante-blending-borrowing-rc
   - investigated and deferred. RC fixes none of the defects that were actually
     there, and costs 3 of the 6 linear-discipline probes (`42 box dup` and
