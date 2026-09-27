@@ -69,18 +69,15 @@ RESP crlf crlf cat str-find () {'ok (drop 1) 'no (drop 0)} case not (
   " did not send an HTTP response (no header/body separator in "
   cat RESP len int-str cat " bytes)" cat die) () if
 
--- parse-http pushes three values -- status, headers, body -- but its declared
--- effect names one output, so at the top level the checker sees a single value
--- and the second and third `let` underflow. Inside a definition body it reads
--- the body's net effect instead and all three bind. That is why tests/expect.slap
--- wraps its parse-http call the same way; this is not a stylistic choice.
-(RESP parse-http must 'BODY let 'HEADERS let 'STATUS let
+RESP parse-http must 'R let
+R 'status at must 'STATUS let
+R 'headers at must 'HEADERS let
+R 'body at must 'BODY let
 
- SHOW-HEAD (
-   "HTTP/1.0 " STATUS int-str cat say
-   HEADERS list ('h let h 'key at must ": " cat h 'value at must cat LF cat cat) fold out
-   HEAD-ONLY () (LF out) if
- ) () if
+SHOW-HEAD (
+  "HTTP/1.0 " STATUS int-str cat say
+  HEADERS list ('h let h 'key at must ": " cat h 'value at must cat LF cat cat) fold out
+  HEAD-ONLY () (LF out) if
+) () if
 
- HEAD-ONLY () (BODY out) if) 'report let
-report
+HEAD-ONLY () (BODY out) if

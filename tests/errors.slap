@@ -1,0 +1,937 @@
+-- Error cases. Each case is `-- EXPECT: <text>` followed by code up to the next
+-- EXPECT. It passes when ./slap exits 1 within 5 s and stderr contains <text>.
+-- `-- EXPECT-LINE: N` and `-- EXPECT-COL: N` pin the reported location.
+-- Code that mentions a parse-* word gets examples/lib/parse.slap prepended.
+-- Run: python3 tests/run_errors.py
+
+-- ===== Runtime panics =====
+
+-- EXPECT: 'drop' needs 1 input(s), stack has 0
+drop
+
+-- EXPECT: 'swap' needs 2 input(s), stack has 0
+swap
+
+-- EXPECT: 'plus' needs 2 input(s), stack has 0
+plus
+
+-- EXPECT: division by zero
+-- EXPECT-LINE: 1
+-- EXPECT-COL: 5
+1 0 div
+
+-- EXPECT: division by zero
+-- EXPECT: mod: division by zero
+-- EXPECT-LINE: 1
+-- EXPECT-COL: 5
+1 0 mod
+
+-- EXPECT: divmod: division by zero
+1 0 divmod
+
+-- EXPECT: wrap: modulus must be non-zero
+1 0 wrap
+
+-- EXPECT: assertion failed
+0 assert
+
+-- EXPECT: assertion failed
+false assert
+
+-- EXPECT: expected tuple
+1 apply
+
+-- EXPECT: expected tuple
+1 2 3 if
+
+-- EXPECT: type variable
+-- EXPECT: got int
+-- EXPECT: type error
+-- EXPECT: 'plus' type variable 'a' mismatch: expected float, got int
+1 2.0 plus
+
+-- EXPECT: index 5 out of bounds
+[1 2 3] 5 get must
+
+-- EXPECT: index -1 out of bounds
+[1 2 3] -1 get must
+
+-- EXPECT: peek: index 5 out of bounds
+[1 2 3] 5 peek must
+
+-- EXPECT: expected sized
+1 len
+
+-- EXPECT: expected seq
+1 2 push
+
+-- EXPECT: expected box
+1 free
+
+-- EXPECT: pop: empty list
+[] pop must
+
+-- EXPECT: unknown word
+nonexistent_word_xyz
+
+-- EXPECT: index 5 out of bounds
+[1 2 3] 5 99 set must
+
+-- EXPECT: needs 2 input
+1 mutate
+
+-- EXPECT: needs 2 input
+1 lend
+
+-- EXPECT: expected seq
+() pop
+
+-- EXPECT: expected list or tagged
+42 (1 plus) each
+
+-- EXPECT: expected list
+42 (1 eq) filter
+
+-- EXPECT: check: expected preceding type word
+(check)
+
+-- EXPECT: expected ord
+[[1 2] [3 4]] sort
+
+-- EXPECT: condition must be int
+'x (1 plus) (2 plus) if
+
+-- EXPECT: expected rec
+-- EXPECT: got list
+[1 2 3] 'x at
+
+-- EXPECT: must: expected 'ok tagged
+"_nonexistent_file_abc123.txt" read must
+
+-- EXPECT: write: byte element
+"foo.txt" ['x] write
+
+-- EXPECT: write: byte 0 out of range
+"foo.txt" [256] write
+
+-- EXPECT: write: byte 0 out of range
+"foo.txt" [-1] write
+
+-- EXPECT: must: expected 'ok tagged
+"_nonexistent_dir_abc123" ls must
+
+-- EXPECT: expected tagged
+123 (1 plus) then
+
+-- EXPECT: expected tagged
+123 -1 default
+
+-- EXPECT: expected sized
+1 'ok tag len
+
+-- EXPECT: 'over' needs 2 input(s)
+1 over
+
+-- EXPECT: 'over' needs 2 input(s)
+over
+
+-- EXPECT: 'rot' needs 3 input(s)
+1 2 rot
+
+-- EXPECT: 'rot' needs 3 input(s)
+rot
+
+-- EXPECT: stack underflow
+1 nip
+
+-- EXPECT: stack underflow
+nip
+
+-- EXPECT: edit: expected record
+1 'x (1 plus) edit
+
+-- EXPECT: key
+{'a 1} 'b (1 plus) edit must
+
+-- EXPECT: recursion depth exceeded
+(inf) 'inf let inf
+
+-- EXPECT: recursion depth exceeded
+('n let n 0 gt ([1] (drop n 1 sub deep 0) each drop) () if) 'deep let 5000 deep
+
+-- EXPECT: must: expected 'ok tagged
+"garbage" parse-http must
+
+-- EXPECT: got sym
+'x 1 sub
+
+-- EXPECT: got list
+[1 2] 3 mul
+
+-- EXPECT: got sym
+'x (1) (2) if
+
+-- EXPECT: got int
+42 1 'x into
+
+-- EXPECT: got list
+[1 2 3] 'x (1 plus) edit
+
+-- EXPECT: got int
+-- EXPECT: type error
+42 free
+
+-- EXPECT: got int
+42 () lend
+
+-- EXPECT: got int
+42 () mutate
+
+-- EXPECT: got int
+42 () then
+
+-- EXPECT: got int
+42 0 default
+
+-- EXPECT: got int
+-- EXPECT: type error
+42 sort
+
+-- EXPECT: got int
+-- EXPECT: expected list
+42 dedup
+
+-- EXPECT: got int
+1 42 while
+
+-- EXPECT: index 0 out of bounds
+[] 0 get must
+
+-- EXPECT: index 5 out of bounds
+[10 20 30] 5 get must
+
+-- ===== Uncovered die() sites =====
+-- EXPECT: out of bounds
+[] first
+
+-- EXPECT: out of bounds
+[] last
+
+-- EXPECT: needs 2 input
+1 dip
+
+-- EXPECT: case: expected tuple or record
+1 1 1 case
+
+-- EXPECT: needs 3 input
+1 'ok tag 1 case
+
+-- EXPECT: case: need even number of clauses
+1 'ok tag () {'ok} case
+
+-- EXPECT: key
+{'a 1} 'b at must
+
+-- ===== Parser panics (via must on no result) =====
+-- EXPECT: must: expected 'ok tagged
+"" ok parse-int must
+
+-- EXPECT: must: expected 'ok tagged
+"abc" ok parse-int must
+
+-- EXPECT: must: expected 'ok tagged
+"-" ok parse-int must
+
+-- EXPECT: must: expected 'ok tagged
+"a" ok "abc" parse-exact must
+
+-- EXPECT: must: expected 'ok tagged
+"xyz" ok "abc" parse-exact must
+
+-- EXPECT: must: expected 'ok tagged
+"hello" ok "=" parse-until must
+
+-- EXPECT: must: expected 'ok tagged
+"" ok parse-float must
+
+-- Compound-guard messages. These runtime checks are typecheck-shadowed for
+-- ordinary code; `quote` outputs an unconstrained 'a, so a quoted scalar or
+-- tagged binding slips the checker and must die with the exact guard text.
+-- EXPECT: len: expected compound, got int
+5 'x let 'x quote len
+
+-- EXPECT: len: tagged values have no length (case-match first)
+5 ok 'x let 'x quote len
+
+-- EXPECT: push: expected list or tuple, got int
+5 'x let 'x quote 1 push
+
+-- EXPECT: push: expected list or tuple, got tagged
+5 ok 'x let 'x quote 1 push
+
+-- EXPECT: pop: expected list or tuple, got int
+5 'x let 'x quote pop drop
+
+-- EXPECT: pop: expected list or tuple, got tagged
+5 ok 'x let 'x quote pop drop
+
+-- EXPECT: get: expected list or tuple, got int
+5 'x let 'x quote 0 get drop
+
+-- EXPECT: get: expected list or tuple, got tagged
+5 ok 'x let 'x quote 0 get drop
+
+-- EXPECT: set: expected list or tuple, got int
+5 'x let 'x quote 0 1 set drop
+
+-- EXPECT: set: expected list or tuple, got tagged
+5 ok 'x let 'x quote 0 1 set drop
+
+-- EXPECT: cat: expected compound, got int
+5 'x let [] 'x quote cat drop
+
+-- EXPECT: cat: cannot cat tagged values
+5 ok 'x let [] 'x quote cat drop
+
+-- a body that pushes literals onto a nearly full operand stack
+-- EXPECT: stack overflow
+0 2097150 range ((1 2 3 4 5 6 7 8) drop) apply len drop
+
+-- The same ceiling reached through the per-body check in `eval_body` rather than
+-- through SPUSH. An inline `(...) apply` cannot reach it: the tuple literal is
+-- SPUSHed onto the operand stack before `apply` pops it, so SPUSH fires first.
+-- A body reached through a *binding* is never on the operand stack, so the
+-- per-body check is the only thing between its literals and the end of `stack`.
+-- Verified falsifiable: delete the check and this line succeeds.
+-- EXPECT: stack overflow
+(1 2 3 4 5 6 7 8 drop drop drop drop drop drop drop drop) 'many let 0 2097146 range many len drop
+
+-- Only the SPUSH check catches this one. The per-body check bounds what a body's
+-- own literals can add, and a bound name is not a literal: `dispatch_word`
+-- SPUSHes the whole binding, so two lookups of a one-million-slot list overrun a
+-- stack that the body guard measured as almost empty.
+-- EXPECT: stack overflow
+0 1048600 range 'big let big big len drop len drop
+
+-- ===== Type errors =====
+
+-- EXPECT: type error
+-- EXPECT: 'dup' requires copyable value, got linear type
+-- dup on box (not copyable)
+42 box dup
+
+-- EXPECT: 'mod' expected int, got float
+-- mod on float (int-only)
+2.0 3.0 mod
+
+-- EXPECT: 'not' expected int, got float
+-- not on float (int-only)
+2.0 not
+
+-- EXPECT: 'assert' expected int, got float
+-- assert on float (int-only)
+1.0 assert
+
+-- EXPECT: 'fsqrt' expected float, got int
+-- fsqrt on int (float-only)
+42 fsqrt
+
+-- EXPECT: 'ftoi' expected float, got int
+-- ftoi on int (float-only)
+42 ftoi
+
+-- EXPECT: 'itof' expected int, got float
+-- itof on float (int-only)
+3.14 itof
+
+-- EXPECT: 'plus' needs 2 input(s), stack has 1
+-- plus needs 2 args, stack has 1
+42 plus
+
+-- EXPECT: copyable
+-- EXPECT: 'drop' requires copyable value, got linear type
+-- can't drop a box (not copyable, must free)
+42 box drop
+
+-- EXPECT: type variable
+-- int + float (type var 'a must be same for both args)
+1 2.0 mul
+
+-- EXPECT: type variable
+-- sub with mismatched types
+3 1.0 sub
+
+-- EXPECT: type error
+-- EXPECT: expected seq, got int
+-- push to non-list
+42 99 push
+
+-- EXPECT: 'range' expected int, got float
+-- range with float args
+1.0 5.0 range
+
+-- EXPECT: 'get' expected seq, got int
+-- get on int (not a list)
+42 0 get
+
+-- EXPECT: copyable
+-- EXPECT: 'dup' requires copyable value, got linear type
+-- dup a box (linear)
+42 box dup free free
+
+-- EXPECT: function body consumes
+-- body consumes wrong number of inputs
+(drop drop) [int lent in  int move out] effect 'bad let
+
+-- EXPECT: function body produces
+-- body produces wrong number of outputs
+(dup) [int lent in  int move out] effect 'bad2 let
+
+-- EXPECT: 'plus' type variable 'a' mismatch: expected float, got int
+-- plus on int result (eq returns int, plus expects num)
+1 2 eq 3.0 plus
+
+-- EXPECT: 'plus' expected num, got box
+-- plus on box
+42 box 1 plus
+
+-- EXPECT: 'and' expected int, got float
+-- and on float (int-only)
+1.0 2.0 and
+
+-- EXPECT: 'or' expected int, got float
+-- or on float (int-only)
+1.0 2.0 or
+
+-- EXPECT: 'swap' needs 2 input(s), stack has 1
+-- swap with only 1 value (box)
+42 box swap
+
+-- EXPECT: function body consumes
+-- body declares 2 inputs but only consumes 1
+(drop) [int lent in  int lent in  int move out] effect 'foo let
+
+-- EXPECT: already defined
+-- duplicate def
+(1) 'aaa let
+(2) 'aaa let
+
+-- EXPECT: already defined
+-- def shadows outer def
+1 'bbb let
+(2 'bbb let) 'ccc let
+
+-- EXPECT: already defined
+-- let shadows prior tuple let
+(1) 'ddd let
+1 'ddd let
+
+-- EXPECT: already defined
+-- let shadows let
+1 'eee let
+2 'eee let
+
+-- EXPECT: already defined
+-- let inside closure shadows outer tuple let
+(1) 'fff let
+(2 'fff let fff) 'ggg let
+
+-- EXPECT: already defined
+-- let inside closure shadows outer let
+3 'hhh let
+(4 'hhh let hhh) 'iii let
+
+-- EXPECT: already defined
+-- let shadows tuple let in wide-effect closure (>8 args)
+(1) 'jjj let
+('a1 let 'a2 let 'a3 let 'a4 let 'a5 let 'a6 let 'a7 let 'a8 let 'a9 let 'jjj let jjj) 'kkk let
+
+-- EXPECT: expected num
+-- plus on list inside non-simple tuple (soundness: nested structure)
+(1 [2 3] plus) 'bad3 let
+
+-- EXPECT: expected num
+-- plus on tuple inside non-simple tuple
+(1 (2 3) plus) 'bad4 let
+
+-- EXPECT: expected int
+-- and on float inside non-simple tuple with nested list
+(1.0 [1 2] drop and) 'bad5 let
+
+-- EXPECT: expected num
+-- plus on list inside recursive non-simple tuple
+(dup 0 eq (drop 1) (1 sub [2 3] plus) if) 'bad6 let
+
+-- EXPECT: 'read' expected list, got int
+-- read expects list, not int
+42 read
+
+-- EXPECT: 'write' expected list, got int
+-- write expects list for path, not int
+42 [1 2 3] write
+
+-- EXPECT: 'ls' expected list, got int
+-- ls expects list, not int
+42 ls
+
+-- EXPECT: 'tag' needs 2 input(s), stack has 1
+-- tag needs value and symbol, not just symbol
+'foo tag
+
+-- EXPECT: expected tagged
+-- default on plain int
+42 -1 default
+
+-- EXPECT: expected tagged
+-- default on list
+[1 2 3] -1 default
+
+-- EXPECT: produce different types
+-- case clause bodies disagree (int vs list)
+42 ok () {'ok (1 plus) 'no (list)} case
+
+-- EXPECT: expected seq, got tagged
+-- push onto tagged
+1 'x tag 99 push
+
+-- EXPECT: expected seq, got tagged
+-- pop from tagged
+1 'x tag pop
+
+-- EXPECT: expected seq, got tagged
+-- get on tagged
+1 'x tag 0 get
+
+-- EXPECT: expected seq, got tagged
+-- peek on tagged
+1 'x tag 0 peek
+
+-- EXPECT: expected seq, got tuple
+-- peek on tuple (seq is list-only)
+(1 2 3) 0 peek
+
+-- EXPECT: they must agree
+-- peek's either output binds the payload tvar, so default must match
+[1 2 3] 0 peek 'sym default
+
+-- EXPECT: expected semigroup, got tagged
+-- cat on tagged
+[1] 1 'x tag cat
+
+-- EXPECT: expected num, got tagged
+-- arithmetic on tagged
+42 ok 1 plus
+
+-- EXPECT: expected num, got tagged
+-- tagged value in mul
+42 ok 2 mul
+
+-- EXPECT: expected list
+-- reverse of non-list
+42 reverse
+
+-- ===== Protocol constraint errors =====
+-- EXPECT: expected seq, got tuple
+-- push onto tuple (seq is list-only)
+(1 2 3) 4 push
+
+-- EXPECT: expected seq, got tuple
+-- pop from tuple
+(1 2 3) pop
+
+-- EXPECT: expected seq, got tuple
+-- get on tuple (seq is list-only)
+(1 2 3) 0 get
+
+-- EXPECT: expected seq, got tuple
+-- set on tuple
+(1 2 3) 0 99 set
+
+-- EXPECT: expected ord
+-- sort list of lists (lists aren't Ord)
+[[1] [2]] sort
+
+-- EXPECT: 'lt' expected ord, got sym
+-- lt on symbols (symbols aren't Ord)
+'foo 'bar lt
+
+-- EXPECT: 'lt' type variable 'a' mismatch: expected float, got int
+-- lt on mismatched int/float
+1 2.0 lt
+
+-- EXPECT: 'sort' type variable 'a' mismatch: expected ord, got sym
+-- sort list of symbols (symbols aren't Ord)
+['foo 'bar 'baz] sort
+
+-- EXPECT: type variable 'a' mismatch
+-- heterogeneous dict values (no need for free now that dicts are stackable)
+dict "k" 1 insert "j" "two" insert
+
+-- EXPECT: expected dict
+-- insert expects dict
+42 "k" 1 insert
+
+-- EXPECT: type variable 'a' mismatch
+-- heterogeneous dict values
+dict "a" 1 insert "b" "two" insert free
+
+-- EXPECT: body must be 1->1
+-- each body on dict must be 1->1 (receives (k v) tuple)
+dict (drop) each free
+
+-- EXPECT: discard linear payload
+-- case on tagged box (branches can leak)
+42 box ok () {'ok (drop)} case
+
+-- EXPECT: linear payload
+-- tagging a box without consuming the tagged
+42 box ok
+
+-- EXPECT: stack effects
+-- if branches produce different arity
+1 1 lt (99 99) (0) if drop drop
+
+-- EXPECT: never referenced
+-- linear value let-bound inside quotation, never used → captured and leaked
+(42 box 'b let) 'leak let leak
+
+-- EXPECT: still refers to it
+-- let-bind a box-typed snapshot inside a lend body. Only box/dict
+-- content is aliased -- BOX_UNPACK copies list/rec/tuple/tagged content bitwise,
+-- so binding those is safe and is deliberately allowed (see expect.slap).
+42 box box 'ob let ob ('inner let ob (99 box) mutate free inner free 1) lend swap free drop
+
+-- EXPECT: requires copyable
+-- closure capturing linear binding cannot be duplicated
+42 box 'b let (b free) dup apply apply
+
+-- EXPECT: linear values produced by 'box'
+-- list literal cannot contain box
+[42 box]
+
+-- EXPECT: linear values produced by 'box'
+-- record literal cannot contain box
+{'k box}
+
+-- EXPECT: already been consumed
+-- linear-capturing closure applied twice via let binding
+42 box 'b let (b free) 'f let f apply f apply
+
+-- EXPECT: needs 3 input
+-- case without default arg (would stack-underflow at runtime)
+123 'foo tag {'foo (1 plus)} case
+
+-- EXPECT: already been consumed
+-- linear-capturing closure returned from def, applied twice
+(42 box 'b let (b free)) 'make-freer let
+make-freer 'f let
+f apply
+f apply
+
+-- EXPECT: already been consumed
+-- linear-capturing closure via def chain, applied twice
+(42 box 'b let (b free)) 'inner-maker let
+(inner-maker) 'outer-maker let
+outer-maker 'f let
+f apply
+f apply
+
+-- EXPECT: already been consumed
+-- linear-capturing closure from apply, applied twice
+(42 box 'b let (b free)) apply 'f let
+f apply
+f apply
+
+-- EXPECT: clause body may not produce a linear value
+-- case clause producing a linear closure
+(1 0 {(1 eq) (42 box 'b let (b free))} case) 'bad-case let
+
+-- EXPECT: already been consumed
+-- if-branch returning linear closure, applied twice
+(1 (42 box 'b let (b free)) (99 box 'c let (c free)) if) 'maker let
+maker 'f let
+f apply
+f apply
+
+-- EXPECT: body may not produce a linear-capturing closure
+-- each body producing linear closure (would alias into list)
+[1] (drop 42 box 'b let (b free)) each
+
+-- EXPECT: cannot embed a linear value into a stackable container
+-- push a box into a list (would be cloned by deep_copy_values on dup)
+list 42 box push drop
+
+-- EXPECT: cannot embed a linear value into a stackable container
+-- into record would smuggle box past linearity
+rec 42 box 'b into drop
+
+-- EXPECT: cannot embed a linear value into a stackable container
+-- set would place box into list slot
+[1 2 3] 0 42 box set drop
+
+-- EXPECT: 'let'-bind the snapshot
+-- lend body binds a dict-typed snapshot as a word-accessible name
+dict "k" 1 insert box ('x let x) lend print free
+
+-- EXPECT: missing clause
+-- case on an either-typed result missing a variant
+[1 2 3] pop 0 {'ok (1 plus)} case drop
+
+-- EXPECT: missing clause
+-- case on a 3-variant either missing two
+(1 'alpha tag) [{'alpha int 'beta int 'gamma int} either move out] effect 'f let f 0 {'alpha (1 plus)} case drop
+
+-- EXPECT: branches produce different types
+-- if inside a recursive body with type-mismatched branches
+'bad (dup 0 eq ("hi") (99) if) let
+5 bad drop
+
+-- EXPECT: inconsistent stack effects
+-- A5 — case predicate-mode with mixed empty/non-empty bodies
+"y" -99 {("x" eq) (42) ("y" eq) ()} case 1 plus print
+
+-- EXPECT: unknown type
+-- A6 — either schema with typo'd variant type
+'badsig [list own in  {'ok 'typoedtype 'no ()} either move out] effect (pop) let
+
+-- EXPECT: unknown word
+-- unknown word inside a wide-effect tuple body must still be reported
+('a let 'b let 'c let 'd let 'e let 'f let 'g let 'h let 'i let
+  a undefined-word-xyz) 'wide-tup let
+
+-- EXPECT: they must agree
+-- EXPECT: 'default' type variable 'a is tuple, but the 'ok variant carries int — they must agree
+-- default's tuple fallback does not match the int 'ok payload
+[1 2 3] pop () default
+
+-- EXPECT: they must agree
+-- default's string fallback does not match the int 'ok payload
+[1 2 3] pop "str" default drop
+
+-- EXPECT: they must agree
+-- an either input slot binds its payload tvar even through `get`
+[1 2 3] 0 get 'sym default drop
+
+-- ===== Adversarial probes =====
+
+-- EXPECT: linear value created here was never consumed (must free, lend, mutate, or clone)
+-- box is linear: must be consumed, not abandoned
+42 box
+
+-- EXPECT: 'free' expected box, got dict
+-- free rejects dicts at type time
+dict free
+
+-- ===== protocol constraints =====
+-- EXPECT: 'lt' expected ord, got sym
+-- symbols are Eq-only, never Ord
+'a 'b lt
+
+-- EXPECT: 'sort' type variable 'a' mismatch: expected ord, got sym
+-- sort needs Ord; symbols are not
+['a 'b] sort
+
+-- EXPECT: 'mod' expected int, got float
+-- mod is Integral: floats are not
+1.0 2.0 mod
+
+-- EXPECT: 'default' type variable 'a is list, but the 'ok variant carries int — they must agree
+-- ...and a string fallback cannot stand in for an int payload either
+[1 2 3] pop "str" default len drop
+
+-- ===== runtime panics: programmer errors that types cannot see =====
+-- EXPECT: div: division by zero
+-- division by zero
+1 0 div drop
+
+-- EXPECT: mod: division by zero
+-- modulo by zero
+1 0 mod drop
+
+-- EXPECT: expected 'ok tagged, got 'no tagged
+-- must on a 'no value
+none must drop
+
+-- EXPECT: get: index 99 out of bounds (len 3)
+-- index out of bounds, unwrapped
+[1 2 3] 99 get must drop
+
+-- EXPECT: peek: index 99 out of bounds (len 3)
+-- ...but peek must still panics
+[1 2 3] 99 peek must drop drop
+
+-- EXPECT: box nesting deeper than 512
+-- a box that contains itself is constructible through mutate; the walk is depth-bounded
+42 box box 'b let b (drop b) mutate (drop) lend free
+
+-- EXPECT: 'lend' body may not 'let'-bind the snapshot when the box contains a box — the snapshot copies the pointer, not the contents, so a later 'mutate' would free it while the binding still refers to it. Read it out with `k peek` instead of binding it.
+-- box-in-box: the snapshot shares the inner box by pointer
+42 box box 'ob let
+ob ('inner let ob (99 box) mutate free inner free 1) lend swap free drop
+
+-- ===== aliasing and linearity =====
+-- EXPECT: cannot 'let'-bind a dict as 'd' — a dict is a heap object and the binding would alias it, so dropping either copy leaves the other reading freed memory. Thread the dict on the stack instead (see examples/kv-server.slap), or use a record if you want a value you can bind.
+-- a let-bound dict would alias the one on the stack
+-- rather than failing. kv-server.slap:14 documented the stack-threading
+-- discipline in a comment; now the checker enforces it.
+dict "a" "b" insert 'd let d drop d "a" of must drop
+
+-- EXPECT: 'insert' cannot embed a linear value into a stackable container — linearity would be lost
+-- a tagged box stays linear, so insert's guard still sees it
+dict "k" 42 box 'x tag insert drop
+
+-- EXPECT: 'drop' requires copyable value, got linear type
+-- the same laundering, one step earlier: dropping a tagged box leaked it
+42 box 'x tag drop
+
+-- EXPECT: 'dup' requires copyable value, got linear type
+-- and `dup` on one produced two references to a single BoxData
+42 box 'x tag dup drop drop
+
+-- EXPECT: 'push' cannot embed a linear value into a stackable container — linearity would be lost
+-- a list is as stackable as a dict; push has to reject it for the same reason
+list 42 box 'x tag push drop
+
+-- EXPECT: box 'b' was already consumed on line 1 — a Box binding names one heap cell no matter how many times it is looked up, so consuming through it twice is a double free. 'lend' and 'mutate' hand the same box back, so freeing what they return consumes the binding too
+-- a Box binding names one heap cell, so only one lookup may retire it
+42 box 'b let b free b free
+
+-- EXPECT: box 'b' was already consumed on line 1 — a Box binding names one heap cell no matter how many times it is looked up, so consuming through it twice is a double free. 'lend' and 'mutate' hand the same box back, so freeing what they return consumes the binding too
+-- `lend` and `mutate` hand the same box back, so freeing what they return
+-- consumes the binding too -- the alternative reading frees one cell twice
+42 box 'b let b (drop 1) lend drop free b free
+
+-- EXPECT: stack overflow
+-- a literal pushed onto a full operand stack
+0 2097151 range 7 print
+
+-- EXPECT: C stack exhausted
+-- print recurses once per nesting level
+0 1000000 (ok) repeat print
+
+-- EXPECT: never closes
+"abc
+
+-- EXPECT: unknown escape
+"a\qb" drop
+
+-- EXPECT: does not fit in 64 bits
+99999999999999999999 drop
+
+-- EXPECT: outside 0-255
+dict [256] 1 insert drop
+
+-- EXPECT: random: max must be at least 1
+0 random drop
+
+-- EXPECT: shl: shift count 64 is outside 0-63
+1 64 shl drop
+
+-- EXPECT: shr: shift count -1 is outside 0-63
+1 -1 shr drop
+
+-- EXPECT: div: -9223372036854775808 / -1 overflows
+-9223372036854775808 -1 div drop
+
+-- EXPECT: mod: -9223372036854775808 / -1 overflows
+-9223372036854775808 -1 mod drop
+
+-- EXPECT: ftoi: inf does not fit in an int
+1.0 0.0 div ftoi drop
+
+-- EXPECT: str-split: empty delimiter
+"abc" "" str-split drop
+
+-- EXPECT: tcp-listen: port 70000 is outside 0-65535
+70000 tcp-listen must tcp-close
+
+-- EXPECT: contains a NUL byte
+"a\0b" read drop
+
+-- EXPECT: expected num, got list
+-- a case clause body is checked
+1 ok 0 {'ok ("a" 1 plus) 'no (drop 0)} case drop
+
+-- EXPECT: unknown word 'nosuchword'
+-- an unknown word inside a case clause
+1 ok 0 {'ok (nosuchword) 'no (drop 0)} case drop
+
+-- EXPECT: expected num, got list
+-- a predicate-mode case body is checked
+3 0 {(3 gt) ("x" 1 plus)} case drop
+
+-- EXPECT: unknown word 'nosuchword2'
+-- list literal contents are checked
+[1 2 nosuchword2] drop
+
+-- EXPECT: expected num, got list
+-- a tuple wider than 8 is still checked
+(1 2 3 4 5 6 7 8 9 "a" 1 plus) drop
+
+-- EXPECT: type annotation
+-- a number inside a type annotation
+'foo [int 300000000 in] effect
+
+-- EXPECT: unknown type word 'lsit'
+-- a misspelt type in an annotation
+'foo [lsit own in] effect
+
+-- EXPECT: let: expected
+-- let with no name
+1 2 let
+
+-- EXPECT: then: the body must produce a tagged value
+-- then's body must return ok or no
+42 ok (3 mul) then drop
+
+-- EXPECT: 'plus' expected num, got list
+-- an error after many values on the stack is still caught
+1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 "x" 1 plus
+
+-- EXPECT: 'plus' expected num, got list
+-- a scheme with more than 64 type variables keeps its output type
+(drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop [9]) 'f let 0 f 1 plus
+
+-- EXPECT: 'drop' needs 1 input
+-- on takes an event name and a handler
+'tick () on drop
+
+-- EXPECT: `(` is never closed
+(1 2
+
+-- EXPECT: `)` closes nothing
+1 2)
+
+-- EXPECT: `]` closes the `(` opened at line 1
+(1 ]
+
+-- EXPECT: fold: the body must turn the accumulator and one element into one value
+-- a fold body that eats values below its inputs
+('f let [1 2 3] 0 (f) fold) 'red let 10 20 30 40 (drop drop) red print print
+
+-- EXPECT: mutate: the body must turn the contents into one value
+-- a mutate body that eats values below the box
+('f let 42 box (f) mutate free) 'mu let 7 (drop drop 1) mu
+
+-- EXPECT: tcp-close: 1 is not a socket
+-- a boxed int that is not a socket
+1 box tcp-close 42 print
+
+-- EXPECT: type annotation: a slot needs in or out after its type
+-- a slot with no direction
+(drop) [int in  {'ok int 'no ()} either] effect 'f1 let
+
+-- EXPECT: type annotation: unknown type word 'strng'
+-- a misspelt type inside an either
+(drop) [int own in  {'ok strng 'no ()} either move out] effect 'f2 let
+
+-- EXPECT: type annotation: either variants are 'symbols
+-- unquoted either variants
+(drop) [int own in  {ok int no ()} either move out] effect 'f3 let
+
+-- EXPECT: take-n: count -5 is negative
+-- a negative slice count
+[1 2 3] -5 take-n drop
+
+-- EXPECT: drop-n: count -3 is negative
+[1 2 3 4 5] -3 drop-n drop

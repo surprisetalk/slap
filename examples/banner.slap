@@ -6,14 +6,8 @@
 --
 -- A .uf1 file is 256 width bytes followed by 256 glyphs of 8 bytes each: one
 -- bit per pixel, MSB first, eight rows of eight. That is exactly icn.slap's
--- tile format, so one glyph is one icn-decode of an 8-byte slice.
---
--- ufx.slap parses this same layout and is the obvious thing to reach for, but
--- it decodes all 256 glyphs eagerly and 256 x 64 bits plus per-glyph headers is
--- 16641 slots against a LOCAL_MAX of 16384. It dies on every real font and only
--- works on a short synthetic one like the fixture in its own tests. Slicing the
--- eight bytes for the one glyph being drawn keeps every intermediate small,
--- which is why this reads the width table and the glyph bytes directly.
+-- tile format, so one glyph is one icn-decode of an 8-byte slice. Slicing
+-- decodes only the glyphs drawn; ufx.slap decodes all 256.
 --
 -- .uf2 and .uf3 are the same idea at 32 and 72 bytes per glyph. They are
 -- rejected by name below rather than decoded as garbage.
@@ -27,10 +21,6 @@ args len 1 gt (args 1 get must) ("fonts/atari8.uf1") if 'FONT let
 35 'INK let
 32 'BG let
 
--- `case` on the read used to stage the whole file through a LOCAL_MAX buffer,
--- and a .uf3 is 18688 bytes, so the branch died on the very files this is
--- supposed to reject by name. `case` unwraps in place now, but `each` never
--- copied at all, so this is left as the form that was always safe.
 FONT read 'RD let
 RD (drop 1) each 0 default not (
   "banner: cannot read " FONT cat die) () if

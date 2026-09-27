@@ -1,8 +1,5 @@
 CC = cc
 CFLAGS = -std=c99 -Wall -Wextra -O3 -flto -D_POSIX_C_SOURCE=200809L
-# `cat a b c | ./slap` reports only ./slap's status, so a missing input file
-# would let the suite pass having tested nothing. pipefail closes that hole.
-SHELL := /bin/bash
 slap: slap.c
 	$(CC) $(CFLAGS) -o slap slap.c -lm
 UNAME_S := $(shell uname -s)
@@ -39,82 +36,22 @@ slap-wasm: slap.c shell.html
 clean:
 	rm -f slap slap-sdl *.wasm *.js
 	@find . -maxdepth 1 -name '*.html' ! -name 'shell.html' -delete
-LIBS := icn chr nmt tga gly ulz parse ufx strings json xml rss
-# Inputs the suite would otherwise skip silently: a missing expect.slap just
-# means `cat` prints nothing and ./slap happily type-checks the rest.
-FIXTURES := tests/expect.slap tests/type.slap tests/panic.slap tests/type_errors.slap \
-            tests/adversarial/probes.slap tests/adversarial/run.sh \
-            tests/run_panic.py tests/run_type_errors.py tests/run_euler.py tests/run_wiki.py tests/run_kv.py \
-            tests/run_uxn_refs.py \
-            tests/run_feed.py tests/run_todo.py tests/run_serve.py tests/run_codec.py \
-            examples/wiki.slap examples/wiki-pages/Home.txt examples/kv-server.slap examples/kv-client.slap \
-            examples/chip8.slap examples/uxn.slap shell.html \
-            examples/feed.slap examples/feeds/sample.xml examples/feeds/sample-atom.xml \
-            examples/todo.slap examples/serve.slap examples/fetch.slap \
-            examples/banner.slap examples/plasma.slap examples/maze.slap examples/raycast.slap \
-            fonts/atari8.uf1 fonts/orca8.uf1 fonts/chicago12.uf2 fonts/times24.uf3
-check-refs:
-	@{ for n in $(LIBS); do echo examples/lib/$$n.slap; done; \
-	   for f in $(FIXTURES); do echo $$f; done; \
-	   grep -ohE 'examples/lib/[a-z0-9_-]+\.slap' Makefile readme.md claude.md tests/*.py 2>/dev/null; \
-	 } | sort -u | while read -r f; do \
-	    [ -f "$$f" ] || echo "  referenced by the build or docs, but does not exist: $$f"; \
-	done > .check-refs.out 2>&1; \
-	if [ -s .check-refs.out ]; then \
-	    cat .check-refs.out >&2; rm -f .check-refs.out; \
-	    echo "" >&2; \
-	    echo "check-refs: the build or docs name a file that is not on disk." >&2; \
-	    echo "  Either create it, or stop referencing it. A documented file that was" >&2; \
-	    echo "  never committed breaks 'make test' for everyone but its author." >&2; \
-	    exit 1; \
-	fi; \
-	rm -f .check-refs.out; \
-	echo "check-refs: every referenced file is present."
-test: slap check-refs
-	@set -o pipefail; cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap
-	@./slap --check < tests/type.slap
-	@./slap < tests/type.slap > /dev/null
-	@set -o pipefail; cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap --check
-	@python3 tests/run_panic.py
-	@python3 tests/run_type_errors.py
-	@echo 'args len 2 eq assert  args 0 get must "hello" eq assert  args 1 get must "world" eq assert' | ./slap hello world
-	@echo 'args len 0 eq assert' | ./slap
-	@rm -f _test_fs.bin
-	@python3 tests/run_euler.py
-	@python3 tests/run_wiki.py
-	@python3 tests/run_kv.py
-	@./slap --check < examples/chip8.slap > /dev/null
-	@set -o pipefail; ./slap --headless < examples/chip8.slap | grep -q chip8-selftest-ok && echo "chip8: opcode self-test passed"
-	@./slap --check < examples/uxn.slap > /dev/null
-	@set -o pipefail; ./slap --headless < examples/uxn.slap | grep -q uxn-selftest-ok && echo "uxn: opcode self-test passed"
-	@python3 tests/run_feed.py
-	@python3 tests/run_todo.py
-	@python3 tests/run_serve.py
-	@python3 tests/run_codec.py
-	@./slap --check < examples/maze.slap > /dev/null
-	@set -o pipefail; ./slap --headless < examples/maze.slap | grep -q maze-selftest-ok && echo "maze: property self-test passed"
-	@./slap --check < examples/raycast.slap > /dev/null
-	@set -o pipefail; ./slap --headless < examples/raycast.slap | grep -q raycast-selftest-ok && echo "raycast: DDA self-test passed"
-	@for f in icn chr nmt tga gly ulz parse; do ./slap < examples/lib/$$f.slap > /dev/null && ./slap --check < examples/lib/$$f.slap || exit 1; done
-	@set -o pipefail; for combo in "icn ufx" "strings parse json" "strings parse xml" "strings parse xml rss"; do files=$$(echo $$combo | sed 's|[^ ]*|examples/lib/&.slap|g'); cat $$files | ./slap > /dev/null && cat $$files | ./slap --check || exit 1; done
-	@bash tests/adversarial/run.sh
-	@echo "All test suites passed."
-# Deliberately outside `test:`. It downloads nine ROMs and nine reference renders
-# from GitHub, and `make test` has to work offline. Run it after touching
-# anything in uxn.slap's Screen path -- the in-language self-test passed while
-# three real Screen bugs were live, and this is what caught them.
+test: slap
+	@python3 tests/suite.py
+# Euler problems that take seconds each; the list is SLOW_EULER in tests/suite.py.
+test-slow: slap
+	@python3 tests/suite.py slow
+# Every likely failure mode, scored so that 1.0 is the minimum pass.
+status: slap
+	@python3 tests/suite.py status
+# Outside `test`: the first run downloads ROMs and reference renders from GitHub.
 test-uxn-refs: slap
 	@python3 tests/run_uxn_refs.py
 
-# Same network caveat, so also outside `test:`. The reference comparison only
-# looks at 60 frames; this checks that each ROM's render moves with the frame
-# count exactly as declared, which is what says the 60-frame match is the ROM
-# being emulated rather than two errors cancelling at one count.
 test-uxn-sweep: slap
 	@python3 tests/run_uxn_refs.py --sweep
 
-# A benchmark, not a test: it prints numbers and never fails. Only screen.rom
-# has a real per-frame workload (~26k uxn instructions), so it is the default.
+# Prints uxn instructions/sec; never fails.
 bench-uxn: slap
 	@python3 tests/run_uxn_refs.py --bench
-.PHONY: clean test check-refs test-uxn-refs test-uxn-sweep bench-uxn
+.PHONY: clean test test-slow status test-uxn-refs test-uxn-sweep bench-uxn

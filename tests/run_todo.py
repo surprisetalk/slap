@@ -6,6 +6,9 @@ with an empty list."""
 
 import json, os, subprocess, sys, tempfile
 
+sys.path.insert(0, os.path.dirname(__file__))
+import harness
+
 LIBS = [
     "examples/lib/strings.slap",
     "examples/lib/parse.slap",
@@ -13,26 +16,7 @@ LIBS = [
 ]
 TODO = "examples/todo.slap"
 
-passed = 0
-
-
-def die(msg):
-    print(f"todo: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-def check(name, cond, detail=""):
-    global passed
-    if not cond:
-        die(f"{name} FAILED {detail}")
-    passed += 1
-
-
-if not os.access("./slap", os.X_OK):
-    die("no ./slap binary; run 'make slap' first")
-for f in LIBS + [TODO]:
-    if not os.path.exists(f):
-        die(f"cannot find {f}; run from the repo root")
+check, count = harness.make_check("todo")
 
 SRC = "".join(open(f).read() for f in LIBS + [TODO])
 
@@ -43,18 +27,13 @@ def run(*argv):
     )
 
 
-r = run("--check")
-if r.returncode != 0:
-    die(f"--check failed:\n{r.stderr}")
-passed += 1
-
 with tempfile.TemporaryDirectory() as d:
     f = os.path.join(d, "todo.json")
 
     def todo(*argv):
         r = run(f, *argv)
         if r.returncode != 0:
-            die(f"todo {argv} crashed:\n{r.stdout}\n{r.stderr}")
+            harness.die("todo", f"todo {argv} crashed:\n{r.stdout}\n{r.stderr}")
         return r.stdout
 
     def fails(*argv):
@@ -183,4 +162,4 @@ with tempfile.TemporaryDirectory() as d:
     check("error-names-the-path", "$.items[1].text" in err, repr(err[:200]))
     check("error-names-the-types", "expected string, got int" in err, repr(err[:200]))
 
-print(f"todo: {passed} checks passed")
+print(f"todo: {count[0]} checks passed")

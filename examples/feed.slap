@@ -6,28 +6,6 @@
 -- Default source is examples/feeds/sample.xml. rss-parse normalizes both
 -- formats to one record shape, so nothing below this line knows which it read.
 --
--- Size used to be the thing to get right here, and the notes are kept because
--- the shape of the code still reflects it. `case` staged its whole matched
--- payload through a LOCAL_MAX (16384 slot) C buffer, so branching on a tagged
--- value whose payload was a feed -- or the file it was read from -- died on
--- anything but a small feed, and `then` and `default` are built on `case`.
--- `case` unwraps in place now (the payload already sits under the header), so
--- that cap is gone and this file could be written with plain `case` throughout.
--- It is still written with `must` and `each`, which never copied: the habit
--- costs nothing and the two are the only branch forms with no size story at all.
---
--- The parse is no longer capped at 16384 bytes either -- `swap` became an
--- in-place block rotation, and parse.slap's parse-while-core ends in a `swap`
--- over the whole remaining input. `into` then stopped copying as well, so an
--- element record can hold a whole document's children -- but that bought no
--- extra items here, because the next buffer is only 13 slots further out:
--- `push` reads the finished element record through LOCAL_MAX when adding it to
--- its parent's child list. The measured boundary was 116 items before `into`
--- changed and is 116 after; only the primitive named in the error moved. Past
--- that the frame arena fills. 116 items of the shape tests/run_feed.py builds
--- is 16861 bytes and renders; 117 is 17008 and fails. That test brackets both
--- ends, so a change in either direction is caught.
-
 (list 10 push) 'LF let
 ('st let "/dev/stdout" st LF cat write must drop) 'say let
 ('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
@@ -40,8 +18,7 @@ args len 0 gt (args 0 get must) ("examples/feeds/sample.xml") if 'SRC let
 -- every run of whitespace to one space, then trim both ends. Pairing the string
 -- with itself shifted by one is how each byte gets to see its predecessor.
 --
--- `fold` also reads its input through the LOCAL_MAX buffer, so the cut to
--- TEXT-CAP comes first. Collapsing runs can only shorten a string, so cutting
+-- Cut to TEXT-CAP first: collapsing runs only shortens a string, so cutting
 -- before is the same as cutting after for anything that reaches the screen.
 ('sq-in let
  sq-in len TEXT-CAP gt (sq-in TEXT-CAP take-n) (sq-in) if

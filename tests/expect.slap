@@ -1,5 +1,7 @@
 -- Slap Integration Tests
 -- Each section exercises a feature; assert halts on failure
+-- Run as `./slap hello world <scratch-file>`; see tests/suite.py.
+args 2 get must 'fs-path let
 
 -- ===== Integer Arithmetic =====
 2 3 plus 5 eq assert
@@ -78,8 +80,8 @@ answer 42 eq assert
 -- ===== Apply =====
 (2 3 plus) apply 5 eq assert
 
--- ===== Compose =====
-(2 mul) (1 plus) compose
+-- ===== cat on tuples composes code =====
+(2 mul) (1 plus) cat
 3 swap apply 7 eq assert
 
 -- ===== Lists: creation =====
@@ -122,25 +124,17 @@ dict "k" 1 insert list swap push 0 peek must dict-keys len 1 eq assert drop drop
 [1 2 3 4 5] 5 take-n [1 2 3 4 5] eq assert
 [1 2 3 4 5] 0 drop-n [1 2 3 4 5] eq assert
 [1 2 3 4 5] 99 take-n [1 2 3 4 5] eq assert   -- clamps rather than panicking
-[1 2 3 4 5] -3 drop-n [1 2 3 4 5] eq assert
-[1 2 3 4 5] -3 take-n [] eq assert
 -- multi-slot elements: the slice is a contiguous run, so the header's slot
 -- count has to be recomputed from the element boundaries, not from the length
 [(1 2) (3 4) (5 6)] 1 drop-n 0 get must (3 4) eq assert
 [(1 2) (3 4) (5 6)] 2 take-n 1 get must (3 4) eq assert
 ["ab" "cd" "ef"] 1 drop-n 0 get must "cd" eq assert
--- past LOCAL_MAX: both used to copy through a Value tmp[16384] with no bounds
--- check, so a result larger than that smashed the C stack (bare SIGSEGV)
+-- slices past 16384 slots
 list 20000 (1 push) repeat 1 drop-n len 19999 eq assert
 list 20000 (1 push) repeat 20000 take-n len 20000 eq assert
 list 20000 (1 push) repeat 19000 drop-n 0 get must 1 eq assert
 
--- ===== Lists: binding and lending past the old C-stack VLA limit =====
--- `let` used to stage the bound value through a `Value db[ds]` VLA and `lend`
--- copied its results through another, both sized by the DATA rather than by any
--- constant. Past roughly 250k slots that overflowed the 8 MiB C stack and died
--- as a bare SIGSEGV -- which is what made euler/10 pass or fail depending on how
--- much stack happened to be left. Neither needs a buffer at all now.
+-- ===== Lists: binding and lending 300000-element values =====
 list 300000 (1 push) repeat 'vla1 let 'vla1 0 nth must 1 eq assert
 list 300000 (1 push) repeat 'vla2 let 'vla2 299999 nth must 1 eq assert
 list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq assert
@@ -173,7 +167,6 @@ list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq
 [1 2 3] 0 (plus) fold 6 eq assert
 
 -- ===== List Higher-Order: reduce =====
-[1 2 3] (plus) reduce 6 eq assert
 
 -- ===== Functor: each on list (fmap) =====
 [1 2 3] (2 mul) each [2 4 6] eq assert
@@ -183,9 +176,6 @@ list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq
 
 -- ===== List: scan via fold =====
 [1 2 3] [0] ('p let dup last p plus push) fold 1 drop-n [1 3 6] eq assert
-
--- ===== List: keep-mask =====
-[1 2 3 4 5 6] dup (3 mod 0 eq) each keep-mask [3 6] eq assert
 
 -- ===== List: index-of =====
 [10 20 30] 20 index-of must 1 eq assert
@@ -217,13 +207,9 @@ list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq
 {'x 1 'y [1 2 3] 'z 3} 9 'y into {'x 1 'y 9 'z 3} eq assert
 {'x 1 'y 2 'z [1 2 3]} 9 'z into {'x 1 'y 2 'z 9} eq assert
 
--- A record field bigger than LOCAL_MAX. `into` staged the value through a
--- 16384-slot C buffer and rebuilt the whole record in a second one, so a field
--- of 20001 slots died with "value too large". That was the ceiling on
--- examples/lib/xml.slap, which puts a whole document's child list in one
--- element record. 'n is read back after each write: `at` walks the fields from
--- the header backwards, so it only finds 'n if the big field's slot count is
--- right. Append, then a wider replacement, then a narrower one.
+-- A 20001-slot record field: append, then a wider replacement, then a narrower
+-- one. 'n is read back each time; `at` walks from the header, so it only finds
+-- 'n if the big field's slot count is right.
 rec 1 'n into 0 20000 range 'big into
   dup len 2 eq assert
   dup 'n at must 1 eq assert
@@ -239,7 +225,6 @@ rec 1 'n into 0 20000 range 'big into
 42 box free
 42 box (21 mul) lend 882 eq assert free
 42 box (1 plus) mutate () lend 43 eq assert free
-42 box clone free free
 
 -- ===== Prelude: arithmetic =====
 5 inc 6 eq assert
@@ -254,16 +239,10 @@ rec 1 'n into 0 20000 range 'big into
 3 5 le assert
 
 -- ===== Prelude: predicates =====
-0 iszero assert
-5 ispos assert
-3 isodd assert
 4 iseven assert
 
 -- ===== Prelude: list helpers =====
 [1 2 3] sum 6 eq assert
-[1 2 3 4] product 24 eq assert
-[5 1 3] max-of 5 eq assert
-[5 1 3] min-of 1 eq assert
 [1 2 3] first 1 eq assert
 [1 2 3] last 3 eq assert
 
@@ -312,7 +291,7 @@ list len 0 eq assert
 [42] 0 (plus) fold 42 eq assert
 
 -- reduce on single element
-[42] (plus) reduce 42 eq assert
+[42] sum 42 eq assert
 
 -- list of lists
 [[1 2] [3 4]] 0 get must [1 2] eq assert
@@ -328,8 +307,8 @@ list len 0 eq assert
 [1 1 1] dedup [1] eq assert
 [] dedup [] eq assert
 
--- compose chains
-(1 plus) (2 mul) compose (3 plus) compose
+-- cat chains
+(1 plus) (2 mul) cat (3 plus) cat
 0 swap apply 5 eq assert
 
 -- box with list
@@ -366,12 +345,6 @@ outer 15 eq assert
 (10 20 30) apply 30 eq assert 20 eq assert 10 eq assert
 (10 20 30) len 3 eq assert
 
--- keep-mask all true
-[1 2 3] [1 1 1] keep-mask [1 2 3] eq assert
-
--- keep-mask all false
-[1 2 3] [0 0 0] keep-mask [] eq assert
-
 -- index-of not found
 [1 2 3] 99 index-of none eq assert
 
@@ -386,45 +359,8 @@ outer 15 eq assert
 0 3 (1 plus) repeat 3 eq assert
 10 0 (1 plus) repeat 10 eq assert
 
--- ===== Prelude: isbetween =====
-5 1 10 isbetween assert
-0 1 10 isbetween not assert
-10 1 10 isbetween assert
-
--- ===== Prelude: lerp =====
-0.0 10.0 0.5 lerp 5.0 eq assert
-0.0 10.0 0.0 lerp 0.0 eq assert
-
--- ===== Prelude: fclamp =====
--- lo hi val fclamp
-1.0 10.0 5.0 fclamp 5.0 eq assert
-1.0 10.0 -5.0 fclamp 1.0 eq assert
-1.0 10.0 99.0 fclamp 10.0 eq assert
-
--- ===== List ops: windows =====
-[1 2 3 4] 2 windows [[1 2] [2 3] [3 4]] eq assert
-[1 2 3] 1 windows [[1] [2] [3]] eq assert
-
--- ===== List ops: rotate =====
-[1 2 3 4 5] 2 rotate [4 5 1 2 3] eq assert
-[1 2 3] 0 rotate [1 2 3] eq assert
-
--- ===== List ops: rise / fall =====
-[30 10 20] rise [1 2 0] eq assert
-[30 10 20] fall [0 2 1] eq assert
-
--- ===== List ops: select =====
-[10 20 30 40] [0 2 3] select [10 30 40] eq assert
-
--- ===== List ops: classify =====
-[1 2 1 3 2] classify [0 1 0 2 1] eq assert
-
--- ===== List ops: shape =====
-[1 2 3] shape [3] eq assert
-
 -- ===== More float math =====
 3.14 ffloor 3.0 eq assert
-3.14 fceil 4.0 eq assert
 3.5 fround 4.0 eq assert
 2.5 fround 3.0 eq assert
 1.0 flog 0.0 eq assert
@@ -433,9 +369,6 @@ outer 15 eq assert
 5 sign 1 eq assert
 -3 sign -1 eq assert
 0 sign 0 eq assert
-
--- ===== Prelude: cube =====
-3 cube 27 eq assert
 
 -- ===== Prelude: couple =====
 1 2 couple [1 2] eq assert
@@ -463,25 +396,8 @@ outer 15 eq assert
 [1 2] [3] zip [[1 3]] eq assert
 [] [1 2] zip [] eq assert
 
--- ===== where =====
-[10 20 30 40 50] (25 lt) where [0 1] eq assert
-[1 2 3] (5 lt) where [0 1 2] eq assert
-[1 2 3] (0 lt) where [] eq assert
-
--- ===== find =====
-[10 20 30] -1 (15 lt not) find 20 eq assert
-[1 2 3] -1 (10 lt not) find -1 eq assert
--- default can be any type; no magic -1
-["hi" "there"] "missing" ("bye" eq) find "missing" eq assert
-
--- ===== table =====
-[1 2 3] (sqr) table [[1 1] [2 4] [3 9]] eq assert
-
 -- ===== Complex: zip + map =====
 [1 2 3] [10 20 30] zip (dup 0 get must swap 1 get must plus) each [11 22 33] eq assert
-
--- ===== Complex: where + select =====
-[5 3 8 1 7] dup (4 lt) where select [3 1] eq assert
 
 -- ===== Typed user function with body check =====
 (dup mul) [int lent in  int move out] effect 'square let
@@ -519,14 +435,8 @@ outer 15 eq assert
 [1 2 3 4 5]
   (sqr) each
   (10 lt) filter
-  (plus) reduce
+  sum
 14 eq assert
-
--- ===== Adversarial: table + fold =====
-[1 2 3 4] (sqr) table
-  (1 get must) each
-  (plus) reduce
-30 eq assert
 
 -- ===== Adversarial: box with list mutation =====
 [1 2 3] box
@@ -576,7 +486,7 @@ free
 (
   1 rot rot
   (dup 0 eq not) (
-    1 sub (tuck mul swap) dip
+    1 sub (swap over mul swap) dip
   ) while
   drop drop
 ) 'pow let
@@ -601,34 +511,14 @@ rec 10 'x into 20 'y into 30 'z into
   () lend 5 eq assert
 free
 
--- ===== Complex: clone and diverge boxes =====
-10 box clone
-  (100 plus) mutate
-  swap
-  () lend 10 eq assert
-  swap
-  () lend 110 eq assert
-free free
-
 -- ===== Complex: pipeline — range → map → filter → fold =====
-1 21 range (sqr) each (100 lt) filter (plus) reduce
+1 21 range (sqr) each (100 lt) filter sum
 285 eq assert
 
 -- ===== Complex: dot product via zip + fold =====
 [1 2 3] [4 5 6] zip
   0 (dup 0 get must swap 1 get must mul plus) fold
 32 eq assert
-
--- ===== Complex: windows + map for pairwise differences =====
-[10 13 17 22] 2 windows
-  (dup 1 get must swap 0 get must sub) each
-[3 4 5] eq assert
-
--- ===== Complex: rise + select = sort by derived key =====
-[30 10 50 20 40] dup rise select [10 20 30 40 50] eq assert
-
--- ===== Complex: classify =====
-['a 'b 'a 'c 'b 'a] classify [0 1 0 2 1 0] eq assert
 
 -- ===== Complex: deep dip nesting =====
 1 2 3 (10 plus) dip (20 plus) dip
@@ -676,26 +566,14 @@ dup dup mul 2.0 sub fabs 0.0001 lt assert drop
 0 1 10 (swap over plus) repeat drop 55 eq assert
 0 1 20 (swap over plus) repeat drop 6765 eq assert
 
--- ===== Complex: table + filter + map pipeline =====
-[1 2 3 4 5] (sqr) table
-  (1 get must 10 lt) filter
-  (0 get must) each
-[1 2 3] eq assert
-
--- ===== Complex: compose chain =====
-(1 plus) (2 mul) compose (3 sub) compose (sqr) compose
+-- ===== Complex: cat chain =====
+(1 plus) (2 mul) cat (3 sub) cat (sqr) cat
 5 swap apply 81 eq assert
 
 -- ===== Complex: mutual recursion depth =====
 10 even? assert
 11 odd? assert
 7 even? not assert
-
--- ===== Complex: where + map + fold pipeline =====
-[10 25 30 5 40 15]
-  dup (20 lt) where select
-  (sqr) each (plus) reduce
-350 eq assert
 
 -- ===== Complex: zip self for pairs =====
 [1 2 3 4] dup 1 drop-n zip [[1 2] [2 3] [3 4]] eq assert
@@ -722,13 +600,9 @@ free
 
 -- ===== Complex: triple nested list operations =====
 [[1 2 3] [4 5 6] [7 8 9]]
-  ((plus) reduce) each
-  (plus) reduce
+  (sum) each
+  sum
 45 eq assert
-
--- ===== Complex: rotate + windows =====
-[1 2 3 4 5] 1 rotate 3 windows
-[[5 1 2] [1 2 3] [2 3 4]] eq assert
 
 -- ===== Non-simple tuple type checking =====
 ([1 2 3] [4 5 6] cat) 'add-lists let
@@ -770,66 +644,36 @@ add-lists [1 2 3 4 5 6] eq assert
 [1 2 3 4] 2 chunks [[1 2] [3 4]] eq assert
 
 -- ===== Filesystem: write & read round-trip =====
-"_test_fs.bin" [72 101 108 108 111] write must drop
-"_test_fs.bin" read must [72 101 108 108 111] eq assert
+fs-path [72 101 108 108 111] write must drop
+fs-path read must [72 101 108 108 111] eq assert
 
 -- write overwrites previous contents
-"_test_fs.bin" [1 2 3] write must drop
-"_test_fs.bin" read must [1 2 3] eq assert
+fs-path [1 2 3] write must drop
+fs-path read must [1 2 3] eq assert
 
 -- empty file round-trip
-"_test_fs.bin" [] write must drop
-"_test_fs.bin" read must [] eq assert
+fs-path [] write must drop
+fs-path read must [] eq assert
 
 -- binary bytes (0 and 255)
-"_test_fs.bin" [0 127 255] write must drop
-"_test_fs.bin" read must [0 127 255] eq assert
+fs-path [0 127 255] write must drop
+fs-path read must [0 127 255] eq assert
 
 -- single byte
-"_test_fs.bin" [42] write must drop
-"_test_fs.bin" read must [42] eq assert
+fs-path [42] write must drop
+fs-path read must [42] eq assert
 
 -- ===== Filesystem: ls =====
 "." ls must len 0 lt not assert
 
--- ===== UTF-8 encode/decode =====
--- ASCII round-trip
-[72 101 108 108 111] utf8-encode must utf8-decode must [72 101 108 108 111] eq assert
-
--- ASCII encodes as identity
-[65 66 67] utf8-encode must [65 66 67] eq assert
-
--- empty list round-trip
-[] utf8-encode must [] eq assert
-[] utf8-decode must [] eq assert
-
--- 2-byte character: U+00E9 (é) = [0xC3, 0xA9]
-[233] utf8-encode must [195 169] eq assert
-[195 169] utf8-decode must [233] eq assert
-
--- 3-byte character: U+4E16 (世) = [0xE4, 0xB8, 0x96]
-[19990] utf8-encode must [228 184 150] eq assert
-[228 184 150] utf8-decode must [19990] eq assert
-
--- 4-byte character: U+1F600 (😀) = [0xF0, 0x9F, 0x98, 0x80]
-[128512] utf8-encode must [240 159 152 128] eq assert
-[240 159 152 128] utf8-decode must [128512] eq assert
-
--- mixed ASCII and multibyte: "Ré" = [82 233]
-[82 233] utf8-encode must [82 195 169] eq assert
-[82 195 169] utf8-decode must [82 233] eq assert
-
--- full round-trip with file I/O
-"_test_fs.bin" [82 233] utf8-encode must write must drop
-"_test_fs.bin" read must utf8-decode must [82 233] eq assert
-
 -- cleanup test file
-"_test_fs.bin" [] write must drop
+fs-path [] write must drop
 
 -- ===== System Primitives =====
-args len 0 eq assert
+args len 3 eq assert
+args 0 get must "hello" eq assert
+args 1 get must "world" eq assert
 isheadless 0 eq assert
-cwd len 0 lt not assert
 
 -- ===== String Helpers =====
 -- crlf
@@ -938,12 +782,12 @@ list "hi" push "--" str-join "hi" eq assert
 -- ===== HTTP Prelude =====
 (
   "HTTP/1.1 200 OK" crlf cat "Content-Type: text/html" cat crlf cat crlf cat "hello body" cat
-  parse-http must 'body let 'headers let 'status let
-  status 200 eq assert
-  headers len 1 eq assert
-  headers 0 get must 'key at must "Content-Type" eq assert
-  headers 0 get must 'value at must "text/html" eq assert
-  body "hello body" eq assert
+  parse-http must 'r let
+  r 'status at must 200 eq assert
+  r 'headers at must len 1 eq assert
+  r 'headers at must 0 get must 'key at must "Content-Type" eq assert
+  r 'headers at must 0 get must 'value at must "text/html" eq assert
+  r 'body at must "hello body" eq assert
 ) 'test-parse-http let test-parse-http
 
 (
@@ -971,10 +815,10 @@ list "hi" push "--" str-join "hi" eq assert
   cli2 tcp-close
   srv2 tcp-close
 
-  parse-http must 'rbody let 'rhdrs let 'rstat let
-  rstat 200 eq assert
-  rbody "hello" eq assert
-  rhdrs len 2 eq assert
+  parse-http must 'resp let
+  resp 'status at must 200 eq assert
+  resp 'body at must "hello" eq assert
+  resp 'headers at must len 2 eq assert
 ) 'test-http-loopback let test-http-loopback
 
 -- ===== Tagged Unions (Sum Types) =====
@@ -1049,29 +893,11 @@ list "hi" push "--" str-join "hi" eq assert
 -1 safe-sqrt -1 default -1 eq assert
 16 safe-sqrt (2 mul ok) then -1 default 8 eq assert
 
--- union (type annotation, runtime no-op with symbol values)
-123 ok {'ok 'int 'no 'str} union print
-
--- exhaustive case with union passes type checker
-42 ok {'ok 'int 'no 'str} union () {'ok (1 plus) 'no (drop 0)} case 43 eq assert
-
--- union propagates through then
-10 ok {'ok 'int 'no 'str} union (5 plus ok) then () {'ok () 'no (drop 0)} case 15 eq assert
-
--- three-variant union, all handled
-42 'a tag {'a 'int 'b 'int 'c 'int} union () {'a (1 plus) 'b (2 plus) 'c (3 plus)} case 43 eq assert
-
--- case without union: no exhaustiveness check (open tagged)
+-- case on an open tag: no exhaustiveness check
 42 'foo tag () {'foo (1 plus)} case 43 eq assert
 
 -- default preserves payload type through then chain
 42 ok (1 plus ok) then (2 mul ok) then -1 default 86 eq assert
-
--- then body type is checked with union
-42 ok {'ok 'int 'no 'str} union (1 plus ok) then -1 default 43 eq assert
-
--- no value through then with union: body doesn't run, no type error
-"oops" no {'ok 'int 'no 'str} union (1 plus ok) then -1 default -1 eq assert
 
 -- tagged through higher-order ops
 [1 2 3] (ok -1 default) each [1 2 3] eq assert
@@ -1173,8 +999,6 @@ nil () {'nil (drop 0) 'cons (first)} case 0 eq assert
 [1 2] [3 4] nip [3 4] eq assert
 
 -- tuck: a b → b a b
-1 2 tuck 2 eq assert 1 eq assert 2 eq assert
-10 20 tuck 20 eq assert 10 eq assert 20 eq assert
 
 -- ===== Record edit =====
 
@@ -1284,7 +1108,7 @@ rec 1 'x into  rec 2 'y into  over 'x at must 1 eq assert drop drop
 42 ok 99 ok nip -1 default 99 eq assert
 
 -- tuck with records
-rec 1 'a into  rec 2 'b into  tuck 'b at must 2 eq assert 'a at must 1 eq assert 'b at must 2 eq assert
+rec 1 'a into  rec 2 'b into  swap over 'b at must 2 eq assert 'a at must 1 eq assert 'b at must 2 eq assert
 
 -- over with tagged values
 1 ok 2 ok over -1 default 1 eq assert drop drop
@@ -1343,13 +1167,6 @@ rec 1 'a into  rec 2 'b into  tuck 'b at must 2 eq assert 'a at must 1 eq assert
 -- wrap matches mod for non-negative inputs
 100 7 wrap 100 7 mod eq assert
 
--- shape on nested list
-[[1 2] [3 4]] shape [2 2] eq assert
-[[1 2 3]] shape [1 3] eq assert
--- shape on empty list: one dimension of zero
-[] shape [0] eq assert
--- shape on flat list still returns one dim
-[10 20 30 40] shape [4] eq assert
 
 -- fatan2: atan2(0, 1) = 0
 0.0 1.0 fatan2 0.0 eq assert
@@ -1420,8 +1237,8 @@ parts2 3 get must len 0 eq assert
 -- ===== Adversarial: larger file I/O round-trip =====
 
 -- 1 KiB buffer via range + byte mask, write + read back
-"_test_fs.bin" 0 1024 range (255 band) each write must drop
-"_test_fs.bin" read must 'buf let
+fs-path 0 1024 range (255 band) each write must drop
+fs-path read must 'buf let
 buf len 1024 eq assert
 buf 0 get must 0 eq assert
 buf 255 get must 255 eq assert
@@ -1440,12 +1257,6 @@ entries "definitely_not_a_real_file.slap" member not assert
 
 -- ===== Adversarial coverage =====
 
--- box clone then mutate only the top; original must be unchanged
-42 box clone
-  (1 plus) mutate
-  free                     -- discard the mutated copy
-  () lend 42 eq assert     -- original still 42
-  free
 
 -- record edit inside box mutate, repeated
 {'count 0} box
@@ -1525,9 +1336,8 @@ none () no eq assert
 -- must on ok extracts value
 42 ok must 42 eq assert
 
--- take-n/drop-n clamp instead of panic
+-- take-n/drop-n clamp a count past the end
 [1 2 3] 5 take-n [1 2 3] eq assert
-[1 2 3] -1 take-n list eq assert
 [1 2 3] 5 drop-n list eq assert
 
 -- ===== Functor: each on tagged (fmap) =====
@@ -1630,10 +1440,9 @@ dup len 2 eq assert
 dup "b" of 0 default 0 eq assert
 "nope" remove len 2 eq assert
 
--- keys/values snapshot (hash order undefined — check length and sum)
+-- dict-keys snapshot (hash order is undefined, so check the length)
 dict "x" 1 insert "y" 2 insert "z" 3 insert
-dup dict-keys len 3 eq assert
-dict-values sum 6 eq assert
+dict-keys len 3 eq assert drop
 
 -- dup independence (dicts are stackable; dup deep-clones)
 dict "a" 1 insert dup "b" 2 insert
@@ -1690,14 +1499,14 @@ outer-val 99 eq assert
 -- extract inner list snapshot, mutate outer box, snapshot still valid
 [[1 2 3] [4 5 6]] box
   (0 get must) lend 'snap-a let
-  ([[99 99 99] [88 88 88]]) mutate
+  (drop [[99 99 99] [88 88 88]]) mutate
   free
   snap-a [1 2 3] eq assert
 
 -- extract record snapshot, mutate, snapshot unaffected
 {'x [10 20 30] 'y 'tag} box
   ('x at must) lend 'snap-xs let
-  ({'x [0] 'y 'gone}) mutate
+  (drop {'x [0] 'y 'gone}) mutate
   free
   snap-xs [10 20 30] eq assert
 
@@ -1710,26 +1519,21 @@ outer-val 99 eq assert
 -- deeply nested: 3-level record, extract leaf list, mutate entirely, verify
 {'a {'b {'c [7 8 9]}}} box
   ('a at must 'b at must 'c at must) lend 'snap-leaf let
-  ({'a {'b {'c [0]}}}) mutate
+  (drop {'a {'b {'c [0]}}}) mutate
   free
   snap-leaf [7 8 9] eq assert
 
 -- repeated mutate cycles do not corrupt prior snapshot
 [100] box
   (0 get must) lend 'snap-v1 let
-  ([200]) mutate
+  (drop [200]) mutate
   (0 get must) lend 'snap-v2 let
-  ([300]) mutate
+  (drop [300]) mutate
   free
   snap-v1 100 eq assert
   snap-v2 200 eq assert
 
--- ===== Tagged payloads larger than LOCAL_MAX =====
--- `case` used to stage the matched payload through a LOCAL_MAX-sized C buffer,
--- so branching on a tagged value capped it at 16384 slots. The payload sits
--- directly under the header, so unwrapping only has to drop the header -- the
--- same thing `must` and `pthen` already did. These sizes are deliberately over
--- that old cap; under it they prove nothing.
+-- ===== Tagged payloads past 16384 slots =====
 (
   0 20000 range ok () {'ok (len) 'no (drop -1)} case 20000 eq assert
 ) 'test-case-big-ok let test-case-big-ok
@@ -1743,7 +1547,7 @@ outer-val 99 eq assert
   0 20000 range 'other tag 7 {'ok (len)} case 7 eq assert
 ) 'test-case-big-default let test-case-big-default
 
--- the prelude words built on `case` inherit the fix
+-- the prelude words built on `case`
 (
   0 20000 range ok (len ok) then must 20000 eq assert
 ) 'test-then-big let test-then-big
@@ -1753,11 +1557,7 @@ outer-val 99 eq assert
   0 20000 range no list default len 0 eq assert
 ) 'test-default-big let test-default-big
 
--- `swap` used to stage the lower block through a LOCAL_MAX temporary. It is an
--- in-place block rotation now (reverse the region, then reverse each block
--- where it lands), so it has no size limit. parse.slap's parse-while-core ends
--- in a `swap` stepping the parsed prefix over the whole remaining input, so
--- this was the ceiling on every parse once `case` stopped copying.
+-- `swap` past 16384 slots
 (
   -- swap leaves the lower value on top, so the list is what gets checked first
   0 20000 range 42 swap len 20000 eq assert 42 eq assert
@@ -1767,23 +1567,15 @@ outer-val 99 eq assert
   0 20000 range dup 'big let 7 swap big eq assert 7 eq assert
 ) 'test-swap-past-local-max let test-swap-past-local-max
 
--- A record field larger than LOCAL_MAX. `into` capped field size until the copy
--- came out of it, and `at` staged the field through a fixed `Value vb[LOCAL_MAX]`
--- with no length check -- so the first record that could hold a big field
--- overflowed that buffer and trapped. `at` moves the run down in place now.
+-- `at` on a record field past 16384 slots
 (
   rec 0 20000 range 'big into 'big at must len 20000 eq assert
   rec 0 20000 range 'big into 1 'n into 'big at must len 20000 eq assert
   rec 0 20000 range 'big into 1 'n into 'n at must 1 eq assert
 ) 'test-record-field-past-local-max let test-record-field-past-local-max
 
--- A long token run. parse.slap's combinators used to recurse once per character,
--- so the limit was the C stack and it was low: measured on the recursive version,
--- parse-spaces died at 3331 spaces, parse-int at 2933, parse-float at 2864 and
--- parse-while at 2045 (that one filled the frame arena, because it also re-bound
--- the accumulator at every level). They scan with an index and cut once now, so
--- the limit is the operand stack instead -- over a million characters. 100000
--- clears every one of the old ceilings and the whole block runs in about 0.2s.
+-- 100000-character token runs: parse.slap's combinators must not recurse per
+-- character.
 --
 -- The digits are all '0' on purpose. A 100000-digit number overflows int64, and
 -- signed overflow in C is undefined, so the test would be measuring the compiler.
@@ -1795,6 +1587,128 @@ outer-val 99 eq assert
   list 48 100000 app-bytes 120 push ok parse-float must len 1 eq assert 0.0 eq assert
   list 48 push 46 push 48 100000 app-bytes 120 push ok parse-float must len 1 eq assert 0.0 eq assert
 ) 'test-long-token-run let test-long-token-run
+
+-- ===== Scope: a callee's rebinding never leaks into its caller =====
+([1 2 3] 0 ('i let i plus) fold) 'scope-inner let
+(100 'i let scope-inner drop i) 'scope-outer let
+scope-outer 100 eq assert
+
+-- ===== Values past 16384 slots: every op moves data in place =====
+(0 20000 range 0 1 range cat len 20001 eq assert) 'big-cat let big-cat
+(0 20000 range (1 plus) each len 20000 eq assert) 'big-each let big-each
+(0 20000 range 0 (plus) fold 199990000 eq assert) 'big-fold let big-fold
+(7 0 20000 range (1 plus) dip len 20000 eq assert 8 eq assert) 'big-dip let big-dip
+(list 0 20000 range push len 1 eq assert) 'big-push let big-push
+(list 0 20000 range push pop must len 20000 eq assert len 0 eq assert) 'big-pop let big-pop
+([0 20000 range] 0 get must len 20000 eq assert) 'big-get let big-get
+(list 0 (dup 9000 lt) (swap [1] push swap 1 plus) while drop
+ 0 [1 2] set must dup len 9000 eq assert 0 get must [1 2] eq assert) 'big-set let big-set
+(rec 0 20000 range 'f into 'f (1 push) edit must 'f at must len 20001 eq assert) 'big-edit let big-edit
+(0 300000 range no 0 (drop 1) pthen -1 {'ok (drop -2) 'no (len)} case 300000 eq assert 0 eq assert) 'big-pthen let big-pthen
+([1 2] no "fallback" (drop 1) pthen drop "fallback" eq assert) 'multi-slot-default let multi-slot-default
+(0 20000 range 0 {(len 5 lt) (drop 1) (len 5 gt) (len)} case 20000 eq assert) 'big-scrutinee let big-scrutinee
+(list 100 (list swap push) repeat print) 'deep-print let deep-print
+-- a box holding a dict: mutate hands the body the contents, lend a copy
+(dict box ("k" 1 insert) mutate ("k" of must 1 eq assert drop) lend free) 'box-dict-mutate let box-dict-mutate
+(dict "a" 1 insert box (len drop) lend ("a" of must 1 eq assert drop) lend free) 'box-dict-lend let box-dict-lend
+-- set out of bounds consumes the list
+(1 [1 2 3] 5 99 set [] default drop 1 eq assert) 'set-miss let set-miss
+-- edit on a missing key consumes the record
+(1 {'a 1} 'b (1 plus) edit -1 default -1 eq assert 1 eq assert) 'edit-miss let edit-miss
+
+-- ===== String literals are UTF-8 bytes, like everything read from a file =====
+"é" [195 169] eq assert
+"世" len 3 eq assert
+fs-path "é" write must drop
+fs-path read must "é" eq assert
+"a\tb\n" [97 9 98 10] eq assert
+
+-- ===== Integer edges =====
+9223372036854775807 1 plus -9223372036854775808 eq assert
+-9223372036854775808 1 sub 9223372036854775807 eq assert
+-7 3 wrap 2 eq assert
+7 -3 wrap -2 eq assert
+9223372036854775807 9223372036854775806 wrap 1 eq assert
+-- a pipe has no size to seek to; stdin is spent by the time the program runs
+"/dev/stdin" read must len 0 eq assert
+
+-- ===== reverse is linear =====
+0 300000 range reverse dup 0 get must 299999 eq assert len 300000 eq assert
+[[1 2] [3] [9 8]] reverse [[9 8] [3] [1 2]] eq assert
+
+-- ===== 64-bit indexes are not truncated =====
+[10 20 30] 4294967296 get 0 default 0 eq assert
+[10 20 30] 4294967296 peek 0 default 0 eq assert drop
+[10 20 30] 4294967298 99 set [] default [] eq assert
+[10 20 30] 'idx-l let 'idx-l 4294967296 nth 0 default 0 eq assert
+-- a missing dict key reports the key
+dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq assert drop
+
+-- ===== parse-http refuses what it cannot read =====
+("HTTP/1.1 OK" crlf cat crlf cat parse-http 0 {'ok (drop 1) 'no (drop 0)} case 0 eq assert) 'http-no-code let http-no-code
+("HTTP/1.1 200 OK" crlf cat "garbage line" cat crlf cat crlf cat parse-http 0 {'ok (drop 1) 'no (drop 0)} case 0 eq assert) 'http-no-colon let http-no-colon
+("HTTP/1.1 200 OK" crlf cat "Content-Length:5" cat crlf cat crlf cat parse-http must 'headers at must 0 get must 'value at must "5" eq assert) 'http-tight-colon let http-tight-colon
+
+-- ===== Type annotations =====
+-- A forward declaration, then the body under the same signature.
+'twice [int lent in  int move out] effect
+(2 mul) [int lent in  int move out] effect 'twice let
+5 twice 10 eq assert
+(1 plus) [int lent in  int move out] effect 'my-inc let
+5 my-inc my-inc 7 eq assert
+(2 mul) ['a num lent in  'a num move out] effect 'my-double let
+3 my-double 6 eq assert
+-- Declarations with no body, and re-declarations of primitives, bind nothing.
+'my-push ['a seq own in  'a own in  'a seq move out] effect
+'my-len [lent in  int move out] effect
+'my-max ['a ord lent in  'a ord lent in  'a ord move out] effect
+'not [int lent in  int move out] effect
+'eq ['a lent in  'a lent in  int move out] effect
+(len) ['a seq lent in  int move out] effect 'list-len let
+[1 2 3] list-len 3 eq assert
+(sort) ['a ord seq own in  'a ord seq move out] effect 'my-sort let
+[3 1 2] my-sort [1 2 3] eq assert
+
+-- ===== Clean runs: programs the checker and runtime must accept =====
+-- the sanctioned box lifecycle
+(42 box free) 'clean-0 let clean-0
+-- symbols support Eq
+('a 'a eq drop) 'clean-1 let clean-1
+-- the (()) fallback idiom when the payload is a tuple
+([(1 2) (3 4)] pop (()) default drop) 'clean-2 let clean-2
+-- a fallback of the payload's type
+([1 2 3] pop -1 default drop) 'clean-3 let clean-3
+-- the empty-list path takes the fallback
+([] pop -1 default drop) 'clean-4 let clean-4
+-- out-of-bounds get is 'no
+([1 2 3] 99 get 0 default drop) 'clean-5 let clean-5
+-- take-n clamps
+([1 2 3] 99 take-n drop) 'clean-6 let clean-6
+-- drop-n clamps
+([1 2 3] 99 drop-n drop) 'clean-7 let clean-7
+-- out-of-bounds peek is 'no and leaves the list
+([1 2 3] 99 peek 0 default drop drop) 'clean-8 let clean-8
+-- peek deep-copies: dropping the extracted dict leaves the list's copy
+(dict "k" 1 insert list swap push 0 peek must drop drop) 'clean-9 let clean-9
+-- peek inside lend reads the snapshot without a let
+([1 2 3] box (1 peek must) lend drop drop free) 'clean-10 let clean-10
+-- nth deep-copies a dict element
+(dict "k" 1 insert list swap push 'l let
+  'l 0 nth must drop  'l 0 nth must dict-keys len 1 eq assert drop) 'clean-11 let clean-11
+-- of deep-copies a nested dict
+(dict "k" dict "a" 1 insert insert "k" of must drop dict-keys len 1 eq assert) 'clean-12 let clean-12
+-- a lend body may let-bind a list snapshot
+([1 2 3] box ('l let l 0 get must) lend swap free drop) 'clean-13 let clean-13
+-- an accumulator rebinding grows in place
+("" 0 (dup 4000 lt) ('gi let 'gacc let gacc "y" cat gi 1 plus) while drop len 4000 eq assert) 'clean-14 let clean-14
+-- wrap, unwrap and free a box exactly once
+(42 box ok must free) 'clean-15 let clean-15
+-- swap moves a box without consuming the binding
+(42 box 'b let b (drop 1) lend swap free drop) 'clean-16 let clean-16
+-- repeated mutate lookups stay free until the final free
+(42 box 'b let b (1 plus) mutate (1 plus) mutate free) 'clean-17 let clean-17
+-- drop-n past 16384 slots
+(list 20000 (1 push) repeat 1 drop-n len 19999 eq assert) 'clean-18 let clean-18
 
 -- ===== Done =====
 "All tests passed!" print

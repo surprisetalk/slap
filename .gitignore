@@ -1,7 +1,11 @@
+.DS_Store
 slap
 slap-sdl
-web/
-_test_fs.bin
+/*.html
+!/shell.html
+/*.js
+/*.wasm
+.shell_*.html
 tests/.uxn-refs/
 __pycache__/
 plasma.tga

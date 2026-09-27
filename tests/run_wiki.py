@@ -2,15 +2,13 @@
 """Integration test for examples/wiki.slap: start the server on a random port,
 drive it with real HTTP requests, verify pages persist and hostile input fails safely."""
 
-import os, random, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import os, random, sys, tempfile, urllib.error, urllib.request
+
+sys.path.insert(0, os.path.dirname(__file__))
+import harness
 
 LIBS = ["examples/lib/strings.slap", "examples/lib/parse.slap"]
 WIKI = "examples/wiki.slap"
-
-
-def die(msg):
-    print(f"wiki: {msg}", file=sys.stderr)
-    sys.exit(1)
 
 
 def fetch(url, data=None, timeout=5):
@@ -21,83 +19,19 @@ def fetch(url, data=None, timeout=5):
         return e.code, e.read().decode()
 
 
-def raw(port, payload, timeout=5):
-    # The server may close mid-conversation (oversize requests), which the
-    # kernel surfaces as RST; report whatever arrived before the reset.
-    s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
-    chunks = b""
-    try:
-        s.sendall(payload)
-        while True:
-            c = s.recv(4096)
-            if not c:
-                break
-            chunks += c
-    except (ConnectionResetError, BrokenPipeError):
-        pass
-    finally:
-        s.close()
-    return chunks.decode(errors="replace")
-
-
 def main():
-    if not os.access("./slap", os.X_OK):
-        die("no ./slap binary; run 'make slap' first")
-    for f in LIBS + [WIKI]:
-        if not os.path.exists(f):
-            die(f"cannot find {f}; run from the repo root")
-
     src = "".join(open(f).read() for f in LIBS + [WIKI])
 
-    r = subprocess.run(
-        ["./slap", "--check"], input=src, capture_output=True, text=True, timeout=30
-    )
-    if r.returncode != 0:
-        die(f"--check failed:\n{r.stderr}")
-
-    passed = 0
     with tempfile.TemporaryDirectory() as pages:
         with open(os.path.join(pages, "Home.txt"), "w") as f:
             f.write("seed home page with a [Linked] page\n")
 
         port = random.randint(20000, 40000)
-        proc = subprocess.Popen(
-            ["./slap", str(port), pages],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        proc.stdin.write(src)
-        proc.stdin.close()
+        proc = harness.boot("wiki", [str(port), pages], src, port)
+        check, count = harness.server_check("wiki", lambda: proc)
+
         try:
-            for _ in range(50):
-                if proc.poll() is not None:
-                    die(f"server exited early:\n{proc.stderr.read()}")
-                try:
-                    socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-                    break
-                except OSError:
-                    time.sleep(0.1)
-            else:
-                die("server never started listening")
-
             base = f"http://127.0.0.1:{port}"
-
-            def check(name, cond, detail=""):
-                nonlocal passed
-                if not cond:
-                    # a mid-test server panic surfaces as connection errors;
-                    # the panic message on stderr is the actual diagnostic
-                    proc.terminate()
-                    try:
-                        proc.wait(5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    err = proc.stderr.read()
-                    tail = f"\n  server stderr:\n{err}" if err.strip() else ""
-                    die(f"{name} FAILED {detail}{tail}")
-                passed += 1
 
             code, body = fetch(base + "/")
             check(
@@ -142,7 +76,9 @@ def main():
 
             check(
                 "traversal-raw",
-                raw(port, b"GET /../pwn HTTP/1.0\r\n\r\n").startswith("HTTP/1.0 400"),
+                harness.raw(port, b"GET /../pwn HTTP/1.0\r\n\r\n").startswith(
+                    "HTTP/1.0 400"
+                ),
             )
             code, body = fetch(base + "/edit/..%2Fpwn", data=b"content=owned")
             check("traversal-encoded", code == 400, f"(code {code})")
@@ -152,26 +88,32 @@ def main():
                 and not os.path.exists("pwn.txt"),
             )
 
-            check("garbage-400", raw(port, b"XYZ\r\n\r\n").startswith("HTTP/1.0 400"))
-            check("bare-crlf-400", raw(port, b"\r\n\r\n").startswith("HTTP/1.0 400"))
+            check(
+                "garbage-400",
+                harness.raw(port, b"XYZ\r\n\r\n").startswith("HTTP/1.0 400"),
+            )
+            check(
+                "bare-crlf-400",
+                harness.raw(port, b"\r\n\r\n").startswith("HTTP/1.0 400"),
+            )
 
             # regression: "content-length:" in the target or another header
             # name must not be read as the body length (used to stall forever)
             check(
                 "cl-in-path-prompt-400",
-                raw(port, b"GET /content-length:99 HTTP/1.0\r\n\r\n").startswith(
-                    "HTTP/1.0 400"
-                ),
+                harness.raw(
+                    port, b"GET /content-length:99 HTTP/1.0\r\n\r\n"
+                ).startswith("HTTP/1.0 400"),
             )
             check(
                 "cl-lookalike-header",
-                raw(port, b"GET / HTTP/1.0\r\nX-Content-Length: 50\r\n\r\n").startswith(
-                    "HTTP/1.0 200"
-                ),
+                harness.raw(
+                    port, b"GET / HTTP/1.0\r\nX-Content-Length: 50\r\n\r\n"
+                ).startswith("HTTP/1.0 200"),
             )
             check(
                 "cl-malformed-400",
-                raw(
+                harness.raw(
                     port, b"POST /edit/A HTTP/1.0\r\nContent-Length: abc\r\n\r\n"
                 ).startswith("HTTP/1.0 400"),
             )
@@ -182,7 +124,9 @@ def main():
             check("name-65-rejected", code == 400, f"(code {code})")
             check(
                 "method-405",
-                raw(port, b"DELETE /Home HTTP/1.0\r\n\r\n").startswith("HTTP/1.0 405"),
+                harness.raw(port, b"DELETE /Home HTTP/1.0\r\n\r\n").startswith(
+                    "HTTP/1.0 405"
+                ),
             )
             big = (
                 b"POST /edit/Big HTTP/1.0\r\nContent-Length: 50000\r\n\r\n"
@@ -190,7 +134,7 @@ def main():
             )
             # 413 if the response outran the RST from closing on unread bytes;
             # an empty reply (pure reset) also proves the server refused it.
-            big_reply = raw(port, big)
+            big_reply = harness.raw(port, big)
             check(
                 "oversize-defended",
                 big_reply == "" or "413" in big_reply.splitlines()[0],
@@ -204,13 +148,9 @@ def main():
             check("still-alive", code == 200, f"(code {code})")
             check("server-running", proc.poll() is None)
         finally:
-            proc.terminate()
-            try:
-                proc.wait(5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            harness.kill(proc)
 
-    print(f"wiki: {passed} checks passed")
+    print(f"wiki: {count[0]} checks passed")
 
 
 if __name__ == "__main__":

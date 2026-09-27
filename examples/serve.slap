@@ -18,7 +18,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
 -- ===== pure helpers =====
 
 ('pfx let 'ss let ss pfx len take-n pfx eq) 'starts-with let
-('sfx let 'eh let eh eh len sfx len sub drop-n sfx eq) 'ends-with let
+('sfx let 'eh let eh len sfx len lt (0) (eh eh len sfx len sub drop-n sfx eq) if) 'ends-with let
 (('lc let lc 65 ge lc 90 le and (lc 32 plus) (lc) if) each) 'lower let
 
 ('es let es list ('ec let

@@ -14,3 +14,4 @@ ufx-data ufx-decode
   dup 'widths at must 0 get must 4 eq assert
   'glyphs at must len 1 eq assert
 ufx-data ufx-decode ufx-encode ufx-data eq assert
+"fonts/atari8.uf1" read must dup ufx-decode ufx-encode eq assert

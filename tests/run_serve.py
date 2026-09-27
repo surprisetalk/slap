@@ -4,36 +4,17 @@ server over a temp directory, drive it with raw sockets for the cases a polite
 client cannot produce, then fetch from it with the repo's own client and compare
 bytes. The client half is the only place parse-http is used as designed."""
 
-import os, random, socket, subprocess, sys, tempfile, time
+import os, random, subprocess, sys, tempfile
+
+sys.path.insert(0, os.path.dirname(__file__))
+import harness
 
 LIBS = ["examples/lib/strings.slap", "examples/lib/parse.slap"]
 SERVE = "examples/serve.slap"
 FETCH = "examples/fetch.slap"
 
-passed = 0
-
-
-def die(msg):
-    print(f"serve: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-if not os.access("./slap", os.X_OK):
-    die("no ./slap binary; run 'make slap' first")
-for f in LIBS + [SERVE, FETCH]:
-    if not os.path.exists(f):
-        die(f"cannot find {f}; run from the repo root")
-
 SERVE_SRC = "".join(open(f).read() for f in LIBS + [SERVE])
 FETCH_SRC = "".join(open(f).read() for f in LIBS + [FETCH])
-
-for label, src in (("serve", SERVE_SRC), ("fetch", FETCH_SRC)):
-    r = subprocess.run(
-        ["./slap", "--check"], input=src, capture_output=True, text=True, timeout=30
-    )
-    if r.returncode != 0:
-        die(f"{label} --check failed:\n{r.stderr}")
-    passed += 1
 
 port = random.randint(20000, 40000)
 
@@ -54,52 +35,8 @@ with tempfile.TemporaryDirectory() as d:
     with open(os.path.join(d, "secret.txt"), "w") as f:
         f.write("SECRET")
 
-    def boot():
-        p = subprocess.Popen(
-            ["./slap", str(port), root],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        p.stdin.write(SERVE_SRC)
-        p.stdin.close()
-        for _ in range(50):
-            if p.poll() is not None:
-                die(f"server exited early:\n{p.stderr.read()}")
-            try:
-                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-                return p
-            except OSError:
-                time.sleep(0.1)
-        die("server never started listening")
-
-    def kill(p):
-        p.terminate()
-        try:
-            p.wait(5)
-        except subprocess.TimeoutExpired:
-            p.kill()
-
     def raw(payload, half_close=False):
-        """Send bytes verbatim and read until close. The server may close
-        mid-write, so a reset is a normal end of stream here."""
-        s = socket.create_connection(("127.0.0.1", port), timeout=5)
-        out = b""
-        try:
-            s.sendall(payload)
-            if half_close:
-                s.shutdown(socket.SHUT_WR)
-            while True:
-                c = s.recv(65536)
-                if not c:
-                    break
-                out += c
-        except (ConnectionResetError, BrokenPipeError):
-            pass
-        finally:
-            s.close()
-        return out
+        return harness.raw(port, payload, half_close=half_close, decode=False)
 
     def get(path, method=b"GET"):
         return raw(method + b" " + path + b" HTTP/1.0\r\n\r\n")
@@ -112,19 +49,13 @@ with tempfile.TemporaryDirectory() as d:
             timeout=20,
         )
         if want_ok and r.returncode != 0:
-            die(f"fetch {argv} crashed:\n{r.stderr.decode(errors='replace')}")
+            harness.die(
+                "serve", f"fetch {argv} crashed:\n{r.stderr.decode(errors='replace')}"
+            )
         return r
 
-    proc = boot()
-
-    def check(name, cond, detail=""):
-        global passed
-        if not cond:
-            err = proc.stderr.read() if proc.poll() is not None else ""
-            tail = f"\n  server stderr:\n{err}" if err.strip() else ""
-            kill(proc)
-            die(f"{name} FAILED {detail}{tail}")
-        passed += 1
+    proc = harness.boot("serve", [str(port), root], SERVE_SRC, port)
+    check, count = harness.server_check("serve", lambda: proc)
 
     try:
         # ---- ordinary GETs ----
@@ -268,6 +199,6 @@ with tempfile.TemporaryDirectory() as d:
         )
         check("fetch-refused", r.returncode != 0, "a dead port must fail, not hang")
     finally:
-        kill(proc)
+        harness.kill(proc)
 
-print(f"serve: {passed} checks passed")
+print(f"serve: {count[0]} checks passed")

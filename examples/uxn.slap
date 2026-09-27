@@ -70,14 +70,13 @@
 --   * every read is `let`-bound before the next address is pushed
 --   * LOOP COUNTERS LIVE IN STATE CELLS, never on the stack, so that nested
 --     loops still see the machine at TOS
---   * never `swap`, `dip` over, or `let`-bind the machine -- `swap` and `dip`
---     both die above LOCAL_MAX (16384 slots) and this machine is 220191
+--   * never `swap`, `dip` over, or `let`-bind the machine: each touches all
+--     220191 cells, every instruction
 --
 -- `--check` catches most violations for free: `peek` demands a seq, so a stray
 -- value in the way is a type error rather than a silent wrong answer.
 --
--- Speed is about 290k uxn instructions/sec, roughly 4800 per 60Hz frame. Enough
--- for sprites and input; not enough for full-screen per-frame effects.
+-- `make bench-uxn` prints the current speed.
 
 -- ===== state map (indices into the machine list) =====
 0      'RAM-B let     -- main memory 0x0000..0xffff

@@ -9,12 +9,6 @@
 -- byte 17 set to 0 the origin is bottom-left, so the first row written is the
 -- bottom row of the picture. Get either wrong and the file is still a valid
 -- TGA -- just colour-swapped or upside down.
---
--- Size cap: tga-header ends in `px cat`, and `cat` dies above LOCAL_MAX (16384
--- slots). With an 18-byte header and 3 bytes per pixel that is 5455 pixels, so
--- 73x73 is the largest square this can write. Anything larger is refused up
--- front, because the alternative is dying inside the codec with a message
--- about concat rather than about the image.
 
 (list 10 push) 'LF let
 ('st let "/dev/stdout" st LF cat write must drop) 'say let
@@ -25,10 +19,6 @@ args len 1 gt (args 1 get must ok parse-int must len 0 eq assert) (64) if 'N let
 
 N 1 lt (
   "plasma: size must be at least 1" die) () if
-N N mul 3 mul 18 plus 16384 gt (
-  "plasma: " N int-str cat "x" cat N int-str cat " needs " cat
-  N N mul 3 mul 18 plus int-str cat " slots; tga-header's cat caps at 16384" cat LF cat
-  "  the largest square this can write is 73x73" cat die) () if
 
 -- ===== float helpers =====
 

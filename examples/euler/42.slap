@@ -3,7 +3,8 @@
 -- A "triangle word" has a value equal to some t_n = n*(n+1)/2.
 -- Count the triangle words in a list.
 --
--- This demo uses a 15-word inline list (answer: 8).
+-- This demo uses a 15-word inline list.
+-- Answer: 8
 -- The original problem uses words.txt (1786 words); the full-list answer is 162.
 
 (0 (64 sub plus) fold) 'word-value let

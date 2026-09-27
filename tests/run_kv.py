@@ -3,67 +3,24 @@
 server, drive it through the Slap client, verify persistence survives a
 restart, and confirm hostile input fails safely rather than crashing the loop."""
 
-import os, random, socket, subprocess, sys, tempfile, time
+import os, random, subprocess, sys, tempfile
+
+sys.path.insert(0, os.path.dirname(__file__))
+import harness
 
 LIBS = ["examples/lib/strings.slap", "examples/lib/parse.slap"]
 SERVER = "examples/kv-server.slap"
 CLIENT = "examples/kv-client.slap"
 
 
-def die(msg):
-    print(f"kv: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
 def main():
-    if not os.access("./slap", os.X_OK):
-        die("no ./slap binary; run 'make slap' first")
-    for f in LIBS + [SERVER, CLIENT]:
-        if not os.path.exists(f):
-            die(f"cannot find {f}; run from the repo root")
-
     server_src = "".join(open(f).read() for f in LIBS + [SERVER])
     client_src = "".join(open(f).read() for f in LIBS + [CLIENT])
 
-    for label, src in (("server", server_src), ("client", client_src)):
-        r = subprocess.run(
-            ["./slap", "--check"], input=src, capture_output=True, text=True, timeout=30
-        )
-        if r.returncode != 0:
-            die(f"{label} --check failed:\n{r.stderr}")
-
     port = random.randint(20000, 40000)
-    passed = 0
 
     with tempfile.TemporaryDirectory() as d:
         snap = os.path.join(d, "kv.snap")
-
-        def boot():
-            p = subprocess.Popen(
-                ["./slap", str(port), snap],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            p.stdin.write(server_src)
-            p.stdin.close()
-            for _ in range(50):
-                if p.poll() is not None:
-                    die(f"server exited early:\n{p.stderr.read()}")
-                try:
-                    socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-                    return p
-                except OSError:
-                    time.sleep(0.1)
-            die("server never started listening")
-
-        def kill(p):
-            p.terminate()
-            try:
-                p.wait(5)
-            except subprocess.TimeoutExpired:
-                p.kill()
 
         def client(*words):
             r = subprocess.run(
@@ -74,40 +31,17 @@ def main():
                 timeout=10,
             )
             if r.returncode != 0:
-                die(f"client {words} crashed:\n{r.stderr}")
+                harness.die("kv", f"client {words} crashed:\n{r.stderr}")
             return r.stdout
 
         def raw(payload, half_close=False):
             # exercise paths the well-behaved client can't produce (no newline,
             # oversize, embedded control bytes, mid-line disconnect). The server
             # may close mid-write -> tolerate RST.
-            s = socket.create_connection(("127.0.0.1", port), timeout=5)
-            out = b""
-            try:
-                s.sendall(payload)
-                if half_close:
-                    s.shutdown(socket.SHUT_WR)
-                while True:
-                    c = s.recv(4096)
-                    if not c:
-                        break
-                    out += c
-            except (ConnectionResetError, BrokenPipeError):
-                pass
-            finally:
-                s.close()
-            return out.decode(errors="replace")
+            return harness.raw(port, payload, half_close=half_close)
 
-        proc = boot()
-
-        def check(name, cond, detail=""):
-            nonlocal passed
-            if not cond:
-                err = proc.stderr.read() if proc.poll() is not None else ""
-                tail = f"\n  server stderr:\n{err}" if err.strip() else ""
-                kill(proc)
-                die(f"{name} FAILED {detail}{tail}")
-            passed += 1
+        proc = harness.boot("kv", [str(port), snap], server_src, port)
+        check, count = harness.server_check("kv", lambda: proc)
 
         try:
             check("ping", client("ping") == "PONG\n")
@@ -191,7 +125,7 @@ def main():
             proc.wait(5)
             check("shutdown-exit-0", proc.returncode == 0, f"(code {proc.returncode})")
 
-            proc = boot()
+            proc = harness.boot("kv", [str(port), snap], server_src, port)
             check("reload-survives", client("get", "greeting") == "VALUE hi\n")
             check(
                 "reload-spaced-survives",
@@ -216,7 +150,7 @@ def main():
                 )
                 check("survives-failed-save", client("ping") == "PONG\n")
                 os.chmod(snap, 0o644)
-            kill(proc)
+            harness.kill(proc)
 
             # a corrupt snapshot (a line with no TAB, e.g. a torn prior write) must
             # be refused loudly and left ON DISK, never silently pruned + re-saved
@@ -240,9 +174,9 @@ def main():
                 open(snap).read() == "good\tvalue here\nbadline-with-no-tab\n",
             )
         finally:
-            kill(proc)
+            harness.kill(proc)
 
-    print(f"kv: {passed} checks passed")
+    print(f"kv: {count[0]} checks passed")
 
 
 if __name__ == "__main__":

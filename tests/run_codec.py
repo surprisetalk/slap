@@ -6,6 +6,9 @@ TGA spec."""
 
 import os, subprocess, sys, tempfile
 
+sys.path.insert(0, os.path.dirname(__file__))
+import harness
+
 STRINGS = "examples/lib/strings.slap"
 PARSE = "examples/lib/parse.slap"
 BANNER_LIBS = [STRINGS, "examples/lib/icn.slap"]
@@ -14,26 +17,7 @@ BANNER = "examples/banner.slap"
 PLASMA = "examples/plasma.slap"
 FONT = "fonts/atari8.uf1"
 
-passed = 0
-
-
-def die(msg):
-    print(f"codec: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-def check(name, cond, detail=""):
-    global passed
-    if not cond:
-        die(f"{name} FAILED {detail}")
-    passed += 1
-
-
-if not os.access("./slap", os.X_OK):
-    die("no ./slap binary; run 'make slap' first")
-for f in BANNER_LIBS + PLASMA_LIBS + [BANNER, PLASMA, FONT]:
-    if not os.path.exists(f):
-        die(f"cannot find {f}; run from the repo root")
+check, count = harness.make_check("codec")
 
 BANNER_SRC = "".join(open(f).read() for f in BANNER_LIBS + [BANNER])
 PLASMA_SRC = "".join(open(f).read() for f in PLASMA_LIBS + [PLASMA])
@@ -48,12 +32,6 @@ def run(src, *argv, binary=False):
         timeout=60,
     )
 
-
-for label, src in (("banner", BANNER_SRC), ("plasma", PLASMA_SRC)):
-    r = run(src, "--check")
-    if r.returncode != 0:
-        die(f"{label} --check failed:\n{r.stderr}")
-    passed += 1
 
 # ===== banner.slap =====
 
@@ -164,23 +142,15 @@ with tempfile.TemporaryDirectory() as d:
     run(PLASMA_SRC, out2, "48")
     check("plasma-deterministic", open(out2, "rb").read() == raw)
 
-    # the documented maximum square
-    r = run(PLASMA_SRC, os.path.join(d, "max.tga"), "73")
-    check("plasma-73-ok", r.returncode == 0, r.stderr[:300])
+    # past the old 73x73 limit that cat's 16384-slot cap imposed
+    r = run(PLASMA_SRC, os.path.join(d, "big.tga"), "100")
+    check("plasma-100-ok", r.returncode == 0, r.stderr[:300])
     check(
-        "plasma-73-size",
-        os.path.getsize(os.path.join(d, "max.tga")) == 18 + 73 * 73 * 3,
+        "plasma-100-size",
+        os.path.getsize(os.path.join(d, "big.tga")) == 18 + 100 * 100 * 3,
     )
-
-    # over the cap: refused up front, naming the real limit, rather than dying
-    # inside tga-header with a message about concat
-    r = run(PLASMA_SRC, os.path.join(d, "too.tga"), "74")
-    check("plasma-74-refused", r.returncode != 0)
-    check("plasma-74-explains", "caps at 16384" in r.stderr, repr(r.stderr[:250]))
-    check("plasma-74-suggests", "73x73" in r.stderr, repr(r.stderr[:250]))
-    check("plasma-74-no-file", not os.path.exists(os.path.join(d, "too.tga")))
 
     r = run(PLASMA_SRC, os.path.join(d, "zero.tga"), "0")
     check("plasma-zero-refused", r.returncode != 0 and "at least 1" in r.stderr)
 
-print(f"codec: {passed} checks passed")
+print(f"codec: {count[0]} checks passed")

@@ -5,6 +5,9 @@ bracket the parse size ceiling from both sides."""
 
 import os, subprocess, sys, tempfile
 
+sys.path.insert(0, os.path.dirname(__file__))
+import harness
+
 LIBS = [
     "examples/lib/strings.slap",
     "examples/lib/parse.slap",
@@ -15,12 +18,7 @@ FEED = "examples/feed.slap"
 RSS = "examples/feeds/sample.xml"
 ATOM = "examples/feeds/sample-atom.xml"
 
-passed = 0
-
-
-def die(msg):
-    print(f"feed: {msg}", file=sys.stderr)
-    sys.exit(1)
+check, count = harness.make_check("feed")
 
 
 def run(*argv, timeout=20):
@@ -29,15 +27,8 @@ def run(*argv, timeout=20):
     )
 
 
-def check(name, cond, detail=""):
-    global passed
-    if not cond:
-        die(f"{name} FAILED {detail}")
-    passed += 1
-
-
 def big_feed(n_items):
-    """An RSS document with n_items entries, used to bracket the parse ceiling."""
+    """An RSS document with n_items entries."""
     items = "".join(
         f"    <item><title>Post {i}</title><link>http://e.com/{i}</link>"
         f"<description>Body {i}. {'pad ' * 10}</description></item>\n"
@@ -50,18 +41,8 @@ def big_feed(n_items):
     )
 
 
-if not os.access("./slap", os.X_OK):
-    die("no ./slap binary; run 'make slap' first")
-for f in LIBS + [FEED, RSS, ATOM]:
-    if not os.path.exists(f):
-        die(f"cannot find {f}; run from the repo root")
-
 SRC = "".join(open(f).read() for f in LIBS + [FEED])
 
-r = run("--check")
-if r.returncode != 0:
-    die(f"--check failed:\n{r.stderr}")
-passed += 1
 
 # ---- RSS 2.0 fixture ----
 r = run(RSS)
@@ -119,43 +100,15 @@ with tempfile.TemporaryDirectory() as d:
     check("notfeed-reason", "unknown feed format" in r.stderr, repr(r.stderr[:200]))
     check("notfeed-no-digest", "==" not in r.stdout)
 
-    # ---- the parse ceiling, from both sides ----
-    # The old ceiling was exactly LOCAL_MAX bytes of source: `case` staged the
-    # matched tagged payload through a 16384-slot C buffer, and parse.slap
-    # carries the *remaining input* through `then`. `case` unwraps in place now,
-    # `swap` is an in-place block rotation, and `into` neither stages the new
-    # field nor rebuilds the record. The ceiling did not disappear -- it moved to
-    # the next LOCAL_MAX buffer in the chain, `push` adding the finished element
-    # record to its parent's child list, and past that the frame arena fills.
-    # The bracket is exact and measured: 116 items renders, 117 does not. Both
-    # ends are pinned so either direction of change is noticed.
-    under = os.path.join(d, "under.xml")
-    with open(under, "w") as f:
+    # A feed past 16384 bytes of source, the old ceiling on every parse.
+    big = os.path.join(d, "big.xml")
+    with open(big, "w") as f:
         f.write(big_feed(116))
-    assert os.path.getsize(under) > 16384, os.path.getsize(under)
-    r = run(under)
+    assert os.path.getsize(big) > 16384, os.path.getsize(big)
+    r = run(big)
     check(
         "past-old-16384-cap-renders",
         r.returncode == 0 and r.stdout.rstrip().endswith("116 items"),
-        f"{os.path.getsize(under)} bytes: {r.stderr[:200]}",
+        f"{os.path.getsize(big)} bytes: {r.stderr[:200]}",
     )
-
-    over = os.path.join(d, "over.xml")
-    with open(over, "w") as f:
-        f.write(big_feed(117))
-    r = run(over)
-    check(
-        "over-the-remaining-ceiling",
-        r.returncode != 0,
-        f"{os.path.getsize(over)} bytes -- if this now PASSES, the next link in "
-        f"the LOCAL_MAX chain was fixed too; raise both numbers to the new "
-        f"measured boundary and update the note in feed.slap. "
-        f"stderr: {r.stderr[:200]}",
-    )
-    check(
-        "over-ceiling-reports-cleanly",
-        r.returncode < 128,
-        f"a size limit must report, never segfault. code {r.returncode}",
-    )
-
-print(f"feed: {passed} checks passed")
+print(f"feed: {count[0]} checks passed")

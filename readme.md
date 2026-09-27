@@ -8,7 +8,7 @@
 
 # slap
 
-A stack-based programming language with static type inference and linear types. Single-file C99 interpreter (~3000 lines).
+A stack-based programming language with static type inference and linear types. Single-file C99 interpreter.
 
 ## install
 
@@ -45,7 +45,6 @@ slap [--check] [--headless] [args...] < file.slap
 System primitives:
 - `args` — pushes list of CLI positional args (strings)
 - `isheadless` — pushes 1 if `--headless`, else 0
-- `cwd` — pushes current working directory as string
 
 ## language tour
 
@@ -129,7 +128,8 @@ foo                   -- (1 2 3) on stack
 To thread a bound closure through a nested call without auto-executing it, use `quote`:
 
 ```slap
-'foo quote            -- pushes foo's raw value (no auto-exec)
+(1 plus) 'inc1 let
+'inc1 quote           -- (1 plus), pushed without running it
 ```
 
 `quote` is mainly used when passing a closure parameter into a recursive call — see [closures](#closures).
@@ -189,12 +189,13 @@ When a closure is passed as a parameter and needs to be handed down to a recursi
 
 ### composition
 
+`cat` joins two tuples into one body:
+
 ```slap
-(2 mul) (1 plus) compose
+(2 mul) (1 plus) cat
 3 swap apply              -- 7
 
--- chain multiple
-(1 plus) (2 mul) compose (3 sub) compose (sqr) compose
+(1 plus) (2 mul) cat (3 sub) cat (sqr) cat
 5 swap apply              -- 81
 ```
 
@@ -224,27 +225,16 @@ list 10 push 20 push            -- [10 20]
 [1 2 3] (2 mul) each            -- [2 4 6] (map is spelled `each`)
 [1 2 3 4 5] (2 mod 1 eq) filter -- [1 3 5]
 [1 2 3] 0 (plus) fold           -- 6
-[1 2 3] (plus) reduce           -- 6
 
 -- sorting and searching
 [3 1 2] sort                    -- [1 2 3]
 [1 2 3] reverse                 -- [3 2 1]
 [1 2 2 3 3] dedup               -- [1 2 3]
 [10 20 30] 20 index-of must     -- 1
-[10 20 30] -1 (15 lt not) find  -- 20 (default -1 if no match)
 
 -- structural
 [1 2 3] [4 5 6] zip         -- [[1 4] [2 5] [3 6]]
-[1 2 3 4] 2 windows         -- [[1 2] [2 3] [3 4]]
-[1 2 3 4 5] 2 rotate        -- [4 5 1 2 3]
 [[1 2] [3 4]] flatten        -- [1 2 3 4]
-
--- analysis
-[30 10 20] rise              -- [1 2 0] (ascending rank)
-[30 10 20] fall              -- [0 2 1] (descending rank)
-[1 2 1 3 2] classify         -- [0 1 0 2 1]
-[5 3 8 1 7] (4 lt) where    -- [1 3] (indices)
-[10 20 30 40] [0 2 3] select -- [10 30 40]
 ```
 
 ### tuples
@@ -269,17 +259,14 @@ rec 10 'x into 20 'y into    -- {'x 10 'y 20}
 
 ### strings
 
-Strings are lists of Unicode codepoints. String literals are UTF-8 decoded at lex time — `len` counts characters, not bytes.
+Strings are lists of bytes. A literal holds its UTF-8 bytes, which is what `read` and `tcp-recv` return, so a literal equals the same text read from a file. Escapes: `\n \t \\ \" \0`.
 
 ```slap
 "hello" len                  -- 5
-"hello" 0 get                -- 104
-"héllo" len                  -- 5 (not 6)
-"héllo" 1 get must           -- 233 (U+00E9)
+"hello" 0 get must           -- 104
+"é" len                      -- 2 (two UTF-8 bytes)
 "ab" "cd" cat                -- "abcd"
 ```
-
-For byte-oriented I/O (file reads, TCP, binary formats) use `utf8-encode` / `utf8-decode` to convert between codepoints and UTF-8 bytes explicitly.
 
 ### tagged unions (sum types)
 
@@ -300,15 +287,15 @@ Tag a value with a symbol to create a sum type. Use `ok`/`no` for result types, 
   d 0 eq ("division by zero" no) (n d div ok) if
 ) 'safe-div let
 
-10 2 safe-div (3 mul) then -1 default   -- 15
-10 0 safe-div (3 mul) then -1 default   -- -1
+10 2 safe-div (3 mul ok) then -1 default   -- 15
+10 0 safe-div (3 mul ok) then -1 default   -- -1
 ```
 
-`then` chains operations on `'ok` values — non-ok values pass through unchanged:
+`then` runs its body on an `'ok` payload and passes anything else through; the body returns the next tagged value:
 
 ```slap
-123 ok (1 plus) then (2 mul) then -1 default  -- 248
-"fail" no (1 plus) then (2 mul) then -1 default  -- -1
+123 ok (1 plus ok) then (2 mul ok) then -1 default  -- 248
+"fail" no (1 plus ok) then (2 mul ok) then -1 default  -- -1
 ```
 
 ### boxes (linear types)
@@ -316,29 +303,26 @@ Tag a value with a symbol to create a sum type. Use `ok`/`no` for result types, 
 Boxes wrap a value in a linear container that must be consumed exactly once.
 
 ```slap
-42 box free                   -- box then immediately free
+42 box free                   -- box, then free it
 
-42 box (21 mul) lend          -- 882 (borrow a snapshot)
-free                          -- must free when done
+42 box (21 mul) lend          -- the box, then 882: the body reads a copy
+drop free
 
-42 box (1 plus) mutate        -- modify in place
-() lend 43 eq assert          -- verify
+42 box (1 plus) mutate        -- the body replaces the contents
+() lend 43 eq assert
 free
-
-42 box clone                  -- two independent boxes
-free free                     -- each must be freed
 ```
 
 Realistic example — a mutable counter:
 
 ```slap
 {'count 0 'total 0} box
-  ('count (1 plus) edit) mutate
-  ('count (1 plus) edit) mutate
-  ('total (100 plus) edit) mutate
+  ('count (1 plus) edit must) mutate
+  ('count (1 plus) edit must) mutate
+  ('total (100 plus) edit must) mutate
   () lend
-  dup 'count at 2 eq assert
-  'total at 100 eq assert
+  dup 'count at must 2 eq assert
+  'total at must 100 eq assert
 free
 ```
 
@@ -353,7 +337,7 @@ All code is type-checked before execution. Types are inferred — no annotations
 | Stackable  | Int, Float, Symbol, Tuple, Record, List, String, Tagged, Dict | Freely `dup` and `drop`      |
 | Linear     | Box                                                          | Must consume exactly once    |
 
-Boxes must be consumed via `free`, `lend`, `mutate`, or `clone`. `lend` borrows a stackable snapshot from a box. Dicts are stackable: use `dup` to branch and `drop` to discard. `free`/`clone` reject dicts at type time — boxes only.
+Boxes must be consumed via `free`, `lend`, or `mutate`. `lend` gives its body a copy of the contents. Dicts are stackable: use `dup` to branch and `drop` to discard. `free` rejects dicts at type time.
 
 A dict is the one stackable type that cannot be `let`-bound. It is a heap object, and a binding would alias it rather than copy it, so dropping either copy would leave the other reading freed memory. Thread it on the stack (see `examples/kv-server.slap`) or use a record if you need something bindable.
 
@@ -366,15 +350,14 @@ Optional type annotations declare stack effects:
 (dup mul) [int lent in  int move out] effect 'square let
 ```
 
-Forward declarations register a signature against a name defined later (used when a function needs to reference itself through a mutually-recursive helper):
+A signature can also come first, as `'name [sig] effect`; the body later bound to that name is checked against it:
 
 ```slap
-'xml-render-pretty [int lent in  rec own in  list move out] effect
--- ...later...
-(... xml-render-pretty ...) 'xml-render-pretty let
+'triple [int lent in  int move out] effect
+(3 mul) 'triple let
 ```
 
-Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ownership).
+Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ownership). A word in a signature that is not a type or mode is an error; type variables are symbols (`'a`).
 
 ### protocol constraints
 
@@ -392,14 +375,13 @@ Built-in protocols group types by capability. Use in effect annotations:
 | Eq | `eq` | all stackable | `eq` |
 | Ord | `ord` | int, float | `lt`, `sort` |
 | Num | `num` | int, float | `plus`, `sub`, `mul`, `div` |
-| Integral | `integral` | int | `mod`, `divmod`, `wrap`, bitwise |
 | Semigroup | `semigroup` | list, tuple, record | `cat` |
 
-Additional keywords recognized in annotations: `functor` (required by `each`), `monad` (required by `then`), `dict` (for the dict type), `linear` (alias for Box). Symbols are comparable with `eq` but not orderable.
+Also recognized: `functor` (the input of `each`) and `dict`. Symbols are comparable with `eq` but not orderable.
 
 ## prelude
 
-~70 definitions in slap itself, loaded at startup.
+Definitions written in slap itself, loaded at startup.
 
 ### stack
 
@@ -408,7 +390,6 @@ Additional keywords recognized in annotations: `functor` (required by `each`), `
 | `over` | a b → a b a | `1 2 over` → `1 2 1` |
 | `nip` | a b → b | `1 2 nip` → `2` |
 | `rot` | a b c → b c a | `1 2 3 rot` → `2 3 1` |
-| `tuck` | a b → b a b | `1 2 tuck` → `2 1 2` |
 | `not` | n → n==0 | `1 not` → `0` |
 | `repeat` | x n f → f^n(x) | `1 10 (2 mul) repeat` → `1024` |
 
@@ -421,11 +402,10 @@ Additional keywords recognized in annotations: `functor` (required by `each`), `
 | `neg` | n → -n | `5 neg` → `-5` |
 | `abs` | n → \|n\| | `-3 abs` → `3` |
 | `sqr` | n → n\*n | `5 sqr` → `25` |
-| `cube` | n → n\*n\*n | `3 cube` → `27` |
 | `max` | a b → max | `3 5 max` → `5` |
 | `min` | a b → min | `3 5 min` → `3` |
 | `sign` | n → -1/0/1 | `-3 sign` → `-1` |
-| `clamp` | lo hi n → clamped | `1 10 5 clamp` → `5` |
+| `clamp` | n lo hi → clamped | `15 1 10 clamp` → `10` |
 
 ### comparison
 
@@ -440,39 +420,25 @@ Additional keywords recognized in annotations: `functor` (required by `each`), `
 
 | Word | Effect | Example |
 |------|--------|---------|
-| `iszero` | n → n==0 | `0 iszero` → `1` |
-| `ispos` | n → n>0 | `5 ispos` → `1` |
 | `iseven` | n → even? | `4 iseven` → `1` |
-| `isodd` | n → odd? | `3 isodd` → `1` |
-| `divides` | a b → b%a==0 | `3 9 divides` → `1` |
-| `isbetween` | n lo hi → in range? | `5 1 10 isbetween` → `1` |
 
 ### list utilities
 
 | Word | Effect | Example |
 |------|--------|---------|
 | `sum` | list → total | `[1 2 3] sum` → `6` |
-| `product` | list → product | `[1 2 3 4] product` → `24` |
-| `max-of` | list → max | `[5 1 3] max-of` → `5` |
-| `min-of` | list → min | `[5 1 3] min-of` → `1` |
 | `first` | list → elem | `[1 2 3] first` → `1` |
 | `last` | list → elem | `[1 2 3] last` → `3` |
 | `member` | list val → bool | `[1 2 3] 2 member` → `1` |
 | `couple` | a b → [a b] | `1 2 couple` → `[1 2]` |
 | `flatten` | nested → flat | `[[1 2] [3 4]] flatten` → `[1 2 3 4]` |
-| `table` | list f → [[x f(x)]...] | `[1 2 3] (sqr) table` → `[[1 1] [2 4] [3 9]]` |
-| `select` | list indices → sublist | `[10 20 30] [0 2] select` → `[10 30]` |
-| `reduce` | list f → result | `[1 2 3] (plus) reduce` → `6` |
-| `keep-mask` | list mask → filtered | `[10 20 30] [1 0 1] keep-mask` → `[10 30]` |
+| `reverse` | list → reversed | `[1 2 3] reverse` → `[3 2 1]` |
 
 ### structural utilities
 
 | Word | Effect | Example |
 |------|--------|---------|
-| `rotate` | list n → rotated | `[1 2 3 4 5] 2 rotate` → `[4 5 1 2 3]` |
 | `zip` | a b → pairs | `[1 2 3] [4 5 6] zip` → `[[1 4] [2 5] [3 6]]` |
-| `windows` | list n → sublists | `[1 2 3 4] 2 windows` → `[[1 2] [2 3] [3 4]]` |
-| `classify` | list → indices | `[1 2 1 3 2] classify` → `[0 1 0 2 1]` |
 
 ### tagged unions
 
@@ -481,7 +447,7 @@ Additional keywords recognized in annotations: `functor` (required by `each`), `
 | `ok` | x → x 'ok tagged | `42 ok` → `42 'ok tagged` |
 | `no` | x → x 'no tagged | `"err" no` → `"err" 'no tagged` |
 | `tag` | x 'sym → tagged | `1 'foo tag` → `1 'foo tagged` |
-| `then` | tagged body → tagged | `42 ok (inc) then` → `43 'ok tagged` |
+| `then` | tagged body → tagged | `42 ok (inc ok) then` → `43 'ok tagged` |
 | `default` | tagged fallback → value | `42 ok -1 default` → `42` |
 
 ### float math
@@ -490,10 +456,6 @@ Additional keywords recognized in annotations: `functor` (required by `each`), `
 |------|--------|---------|
 | `fneg` | f → -f | `3.0 fneg` → `-3.0` |
 | `fabs` | f → \|f\| | `-2.5 fabs` → `2.5` |
-| `frecip` | f → 1/f | `4.0 frecip` → `0.25` |
-| `fsign` | f → -1.0/0.0/1.0 | `-3.0 fsign` → `-1.0` |
-| `fclamp` | lo hi f → clamped | `1.0 10.0 5.0 fclamp` → `5.0` |
-| `lerp` | a b t → interpolated | `0.0 10.0 0.5 lerp` → `5.0` |
 
 ### constants
 
@@ -501,7 +463,6 @@ Additional keywords recognized in annotations: `functor` (required by `each`), `
 |------|-------|
 | `pi` | 3.14159265... |
 | `tau` | 6.28318530... |
-| `e` | 2.71828182... |
 
 ### time
 
@@ -532,14 +493,12 @@ Fields are broken down in C because day-of-week and DST need the timezone databa
 
 ### strings
 
-String primitives plus library helpers. Strings are lists of Unicode codepoints; `utf8-encode`/`utf8-decode` convert to/from UTF-8 byte lists. Higher-level helpers (`int-str`, `str-join`, `crlf`, `http-request`) live in `examples/lib/strings.slap` — cat it with your program: `cat examples/lib/strings.slap myprog.slap | slap`.
+String primitives plus library helpers. Strings are byte lists. Higher-level helpers (`int-str`, `str-join`, `crlf`, `http-request`) live in `examples/lib/strings.slap` — cat it with your program: `cat examples/lib/strings.slap myprog.slap | slap`.
 
 | Word | Effect | Example |
 |------|--------|---------|
 | `str-find` | haystack needle → `index ok` or `none` | `"hello world" "world" str-find must` → `6` |
 | `str-split` | str delim → list of substrings | `"a,b,c" "," str-split` → `["a" "b" "c"]` |
-| `utf8-encode` | codepoints → bytes | |
-| `utf8-decode` | bytes → codepoints | |
 
 From `examples/lib/strings.slap`:
 
@@ -576,7 +535,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/xml.slap` | Elm-style XML decoder |
 | `examples/lib/rss.slap` | RSS/Atom feed parser (requires `xml.slap`) |
 | `examples/lib/json.slap` | Elm-style JSON decoder (requires `parse.slap` and `strings.slap` for `int-str`) |
-| `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request` (formerly prelude) |
+| `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request` |
 
 ### networking / http
 
@@ -584,7 +543,7 @@ Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-
 
 | Word | Effect |
 |------|--------|
-| `parse-http` | raw bytes → `status headers body` |
+| `parse-http` | raw response bytes → `{'status 'headers 'body} ok` |
 | `http-request` | `method host path headers body → request-bytes` (from `strings.slap`) |
 
 ## SDL graphics
@@ -655,7 +614,7 @@ list N (2 random push) repeat
 
 ## examples
 
-52 [Project Euler](https://projecteuler.net/) solutions in `examples/euler/`:
+[Project Euler](https://projecteuler.net/) solutions in `examples/euler/`:
 
 ```slap
 -- Euler #1: sum of multiples of 3 or 5 below 1000
@@ -668,7 +627,7 @@ print  -- 233168
 ```slap
 -- Euler #6: sum-square difference for 1-100
 1 101 range dup
-(sqr) map sum 'sum-of-sq let
+(sqr) each sum 'sum-of-sq let
 sum sqr 'sq-of-sum let
 sq-of-sum sum-of-sq sub print  -- 25164150
 ```
@@ -696,17 +655,15 @@ make slap-sdl
 
 The whole machine — 4 KB of memory, registers, call stack, keypad, and the 64×32 display — is one flat int list threaded on the stack, with no boxes. `set` is an in-place O(1) store and `peek` an O(1) non-consuming read, so a `cycle` decodes and executes one instruction against the live state without ever copying it. That is what keeps the per-cycle cost independent of how big the machine is. The full opcode set (including the COSMAC shift/`FX55`/`FX65` quirks and `DXYN` sprite collision) is covered by an in-language self-test that runs on the plain terminal build.
 
-`uxn.slap` is the same idea at 16× the scale: a 220191-cell machine holding uxn's full 64 KB address space, both 256-byte stacks, the device page, and two 320×240 screen layers. All 32 base opcodes are written once each — keep, return and short modes are handled by six state cells set during decode, so one `ADD` body serves all eight encodings. Varvara pixels are already 2-bit palette indices, which is exactly the canvas depth, so nothing is lost but hue; the palette is mapped by *rank* rather than absolute luminance so that four shades of one colour stay distinguishable. Roughly 290k instructions/sec. Audio and File are stubbed — the file header says why.
+`uxn.slap` is the same idea at 16× the scale: a 220191-cell machine holding uxn's full 64 KB address space, both 256-byte stacks, the device page, and two 320×240 screen layers. All 32 base opcodes are written once each — keep, return and short modes are handled by six state cells set during decode, so one `ADD` body serves all eight encodings. Varvara pixels are already 2-bit palette indices, which is exactly the canvas depth, so nothing is lost but hue; the palette is mapped by *rank* rather than absolute luminance so that four shades of one colour stay distinguishable. Audio and File are stubbed — the file header says why.
 
 It is checked against another implementation rather than only against itself. `./slap --headless game.rom [frames] < examples/uxn.slap` boots a ROM with no window and writes the composited canvas to stdout as one palette index per pixel, with the four palette entries on a `PAL` line. Run against the nine ROMs in [mkeeter/raven](https://github.com/mkeeter/raven)'s snapshot suite — each at its own resolution, since the canvas geometry is six constants — eight match raven's reference renders **pixel for pixel**, including `screen_blending` (every blend mode × depth × flip) and `mandelbrot` (108864 pixels of pure integer arithmetic). The ninth, `piano`, differs by 22 pixels: an audio level meter, which is the missing Audio device showing through.
 
-`make test-uxn-refs` runs that comparison. It is kept out of `make test` because it downloads the ROMs and reference renders from GitHub and the suite has to work offline; they are cached under `tests/.uxn-refs/`, so only the first run needs network. This is worth running after any change to the Screen path — uxn.slap's own ~110-assertion self-test passed while three real Screen bugs were live, and whole-frame comparison found all three in an afternoon.
+`make test-uxn-refs` runs that comparison. It is kept out of `make test` because it downloads the ROMs and reference renders from GitHub and the suite has to work offline; they are cached under `tests/.uxn-refs/`, so only the first run needs network. Run it after any change to the Screen path: uxn.slap's own self-test once passed while three real Screen bugs were live.
 
-`make test-uxn-sweep` asks a question the comparison cannot: does each ROM's render move with the frame count the way it should? Rendering at 1, 60 and 120 separates a ROM that is right from one that is right *at exactly 60* because two errors cancelled there. Seven of the nine are byte-identical from 1 frame to 240 and must stay that way — a static ROM that starts drifting is state surviving between Screen-vector calls. `screen` and `audio` genuinely animate and must keep doing so; `screen` shows 0 diffs at 60, 16 at 59, and 610 at 61.
+`make test-uxn-sweep` renders each ROM at 1, 60 and 120 frames and checks that static ROMs stay byte-identical and animated ones keep moving. That separates a ROM that is right from one that is right *at exactly 60* because two errors cancelled there.
 
-`make bench-uxn` reports throughput. The dump prints an `INS` line counting instructions retired in the frame loop, and each ROM is timed twice — at 0 frames and at N — so the fixed boot cost drops out. `screen.rom` sustains roughly **83k uxn instructions/sec** (~26k per frame at 256×176) and `drool.rom` about **169k** (~21k per frame at 320×240); the gap is sprite blitting versus plain compute. `screen` is the headline because it is also pixel-exact, so its number is timing work that is known correct — drool has no reference render at all, and the harness keeps it out of the comparison and the sweep rather than pretending otherwise.
-
-bunnymark, the obvious choice, is not usable. Its RNG is a self-modifying xorshift seeded from the Datetime device, and zero is xorshift's fixed point, so before Datetime existed the generator emitted 0 forever and no bunny ever spawned. Implementing Datetime fixed the RNG — the seed literal now boots nonzero and the render animates instead of sitting frozen — but the population still never exceeds one bunny and the ROM still idles, now at 441 instructions/frame instead of 425. It installs no Mouse vector, so the harness has no lever on the spawn path; the remaining blocker is unidentified.
+`make bench-uxn` reports uxn instructions per second on `screen.rom` (pixel-exact, so it times correct work) and `drool.rom` (no reference render).
 
 App demos (terminal build):
 
@@ -755,8 +712,6 @@ cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/tga.slap \
 
 `serve.slap` decodes the request target before testing it, so `%2e%2e` and `..` are the same string by the time the rule sees them, and the rule is a byte allowlist rather than a denylist. `fetch.slap` is the one place `parse-http` is used as designed: it reads a *response*, where the number after the first space is the status — hand it a request line and it reports 0 and loses the method and path, which is why both servers here parse requests by hand.
 
-`feed.slap` and `todo.slap` are the first consumers of `xml.slap`/`rss.slap` and `json.slap`; until now those 1500 lines only ever ran their own self-tests. Both branch with `must` and `each` rather than `case`, `then` or `default`, which is a habit from when those three staged the whole scrutinee through a 16384-slot buffer and would have capped the file size; `case` unwraps in place now, so the habit costs nothing and buys nothing. The parse is still capped, but further out: 16861 bytes of the shape `tests/run_feed.py` builds parses and 17008 does not, and that test pins the boundary from both sides.
-
 The store keeps its data in a dict threaded on the stack and persists to a flat `key<TAB>value` snapshot on `SAVE`/`SHUTDOWN`. The protocol is one LF-terminated command per connection (`SET`/`GET`/`DEL`/`KEYS`/`SAVE`/`PING`/`SHUTDOWN`); malformed input, dead peers, and an unwritable snapshot are all reported without taking the single-threaded server down, while a corrupt snapshot is refused loudly at boot rather than silently pruned.
 
 ## libraries
@@ -786,28 +741,29 @@ The type checker runs on all code (builtins, prelude, user) before execution.
 It catches the following at compile time:
 
 **Linear resources (boxes):**
-- A box must be consumed exactly once via `free`, `lend`, `mutate`, or `clone`.
+- A box must be consumed exactly once via `free`, `lend`, or `mutate`.
 - Embedding a box into a stackable container (list, tuple, record, tagged) is rejected.
 - Tagging a box keeps it linear, so `42 box 'x tag` cannot then be dropped, duplicated, pushed or inserted. `42 box ok must free` is the legitimate shape and still works.
 - A Box *binding* is single-use across all its lookups: the name may be read as many times as you like, but only one read may reach a word that retires the cell. `lend` and `mutate` hand the same box back, so freeing what they return consumes the binding too; `swap` merely moves it and does not.
 - Duplicating a box with `dup` is rejected (boxes aren't copyable).
 - A closure that captures a linear outer binding is marked linear itself — applying it twice is rejected.
-- Higher-order ops (`each`, `fold`, `while`, `find`) reject bodies that capture linear outer bindings.
-- `compose` propagates linear-capture: merging a linear-capturing closure with a pure one yields a linear-capturing result.
+- Higher-order ops (`each`, `fold`, `while`) reject bodies that capture linear outer bindings.
+- `cat` propagates linear-capture: joining a linear-capturing closure with a pure one yields a linear-capturing result.
 - A linear-capturing closure cannot recurse on itself — each recursive call would re-consume the capture.
 
 **Aliasing through `lend`/`mutate`:**
-- `lend`'s body may not `let`-bind the snapshot when the box contains a **box or a dict** — those are copied by pointer, so a later `mutate` frees the contents while the binding still points at them. Boxed lists, records, tuples and tagged values are copied bitwise and are safe to bind.
+- `lend`'s body may not `let`-bind the snapshot when the box contains a **box or a dict**. Boxed lists, records, tuples and tagged values are safe to bind.
 - Indexed read access via `'name k nth` or `k peek` is exempt — neither pulls the list to the stack as a binding.
 
 **Tagged unions:**
 - Tags are open by default; `case` on an untyped tagged value accepts any variant with a default clause.
-- Declaring a closed schema via `{'sym 'type ...} union` enables exhaustiveness: `case` must cover every variant (hard-errored when any variant carries a linear payload, soft-warned otherwise).
+- A value whose variants a signature declares (`{'ok 'a 'no ()} either`, as `pop`, `get` and `read` do) is closed: `case` must cover every variant.
 - `either` in effect annotations (`{'ok int 'no str} either`) validates `tag` emission sites: the body may only emit variants named in the schema.
 
 **Protocols (typeclasses):**
 - `ord` (`lt`, `sort`) accepts int and float only. Symbols are Eq but not Ord — ordering symbols by intern id is an implementation accident, not a semantic.
-- `num`, `integral`, `seq`, `semigroup`, `sized`, `functor`, `monad` gate other ops.
+- `num`, `seq`, `semigroup`, `sized` and `functor` gate other ops.
+- Code inside `{...}` case clauses and `[...]` list literals is checked like any other body, and `then`'s body must return a tagged value.
 
 **Effect annotations:**
 - `(body) [sig] effect 'name let` validates the body's stack shape against the declared signature.
@@ -815,30 +771,19 @@ It catches the following at compile time:
 
 **What the type system does *not* catch:**
 - Division by zero, modulo by zero, out-of-bounds `set`, `nth`, or `peek` (runtime panics).
-- Non-exhaustive `case` on a tagged value with no `union` declaration — the default clause silently fires on any unmatched variant (this is by design; declare a union to opt into exhaustiveness).
+- Non-exhaustive `case` on a tagged value whose variants no signature declares: the default fires on any unmatched tag. That is by design.
 - Correctness of effect-annotation schemas (the user is trusted when they write `[sig] effect`; only the body's *shape* is validated, not its meaning).
 - Recursion depth, memory limits, or other runtime resource exhaustion.
 
 ## testing
 
 ```bash
-make test
+make test        # everything, in parallel, in a few seconds
+make test-slow   # the slowest Euler problems
+make status      # every likely failure mode, scored; 1.0 is the minimum pass
 ```
 
-Runs:
-1. `make check-refs` — every file the build and docs reference actually exists
-2. `cat examples/lib/strings.slap examples/lib/parse.slap tests/expect.slap | ./slap` — 640+ integration assertions
-3. `./slap --check < tests/type.slap` + `./slap < tests/type.slap` — type system validation
-4. Same expect.slap stream re-run under `--check`
-5. `python3 tests/run_panic.py` + `python3 tests/run_type_errors.py` — expected error messages
-6. `args` handling, with and without positional arguments
-7. `python3 tests/run_euler.py` — 52 Project Euler solutions (strings.slap prepended)
-8. `python3 tests/run_wiki.py`, `run_kv.py`, `run_feed.py`, `run_todo.py`, `run_serve.py`, `run_codec.py` — the app demos, each really booted or really driven: servers over a socket on a random port, CLIs against a real file, the codecs checked from outside Slap against the font file and the TGA spec
-9. The headless self-tests for `chip8.slap`, `uxn.slap`, `maze.slap` and `raycast.slap` — SDL words type-check unconditionally and `halt` fires before any of them dispatch, so none of these need an SDL build
-10. Loadable libraries under `examples/lib/` — each run and type-checked in the combos it's designed for
-11. `bash tests/adversarial/run.sh` — adversarial probes
-
-Adversarial probes classify each probe as `TYPECHECK_REJECT` / `PANIC` / `CLEAN_RUN` and compare against a declared expectation. The point is that a classification never silently downgrades: a probe that slides from `TYPECHECK_REJECT` to `CLEAN_RUN` means the checker went blind. Probes marked `-- KNOWN-GAP:` are cases the docs claim are caught statically but currently are not; they print on every run.
+`tests/expect.slap` holds the assertions, `tests/errors.slap` every error a program can hit (each case names the message it must print), and `tests/run_*.py` drive the apps from outside: servers over real sockets, CLIs against real files, codecs against their file formats. `tests/suite.py` runs them all.
 
 ## building
 

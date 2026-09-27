@@ -252,7 +252,7 @@
   _x-skip-prolog
   _x-read-elem                               -- (record remaining)
   _x-skip-trivia                             -- trim trailing (operates on top remaining)
-  dup len 0 gt ("xml: trailing input after root element" no must) () if
+  dup len 0 gt ("xml: trailing input after root element" no must drop) () if
   drop) [list lent in  rec move out] effect '_xml-parse let
 
 -- ========== Helpers for decoders ==========
