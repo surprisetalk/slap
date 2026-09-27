@@ -24,6 +24,7 @@ make status      # every likely failure mode, scored; 1.0 is the minimum pass
 - New behaviour gets an assertion in `tests/expect.slap`. expect.slap needs `examples/lib/strings.slap` and `parse.slap` prepended and runs as `./slap hello world <scratch-file>`; suite.py does both.
 - A new error gets a case in `tests/errors.slap`: one or more `-- EXPECT: <text>` lines, optional `-- EXPECT-LINE:`/`-- EXPECT-COL:`, then code up to the next EXPECT. A case fails on exit 0, on a signal, or on a timeout.
 - A bug gets a failing test first. Check it fails against the old binary; a test that cannot fail is not a regression test.
+- `tests/scale.slap` holds library inputs too large to run on every load (past the interpreter's recursion limit); suite.py runs it once.
 - `make test-uxn-refs` compares `examples/uxn.slap` pixel for pixel with mkeeter/raven's reference renders (network on first run, cached in `tests/.uxn-refs/`). Run it after touching uxn.slap's Screen path. The 60-frame count matches raven's harness and is load-bearing. `make test-uxn-sweep` checks each ROM's render moves with the frame count as declared. bunnymark is not a benchmark: its population never grows.
 
 ## Architecture
@@ -31,9 +32,9 @@ make status      # every likely failure mode, scored; 1.0 is the minimum pass
 One file, `slap.c`: lex → type-check → eval.
 
 - **Lexer** turns source into tokens. Each bracket token records the offset to its partner (`span`), so nothing scans for matches. String literals are UTF-8 bytes.
-- **Checker** (`typecheck_tokens`) runs over builtins, prelude and program before anything executes. Type variables are union-find. Every `(...)` body gets a `TupleEffect` (inputs, outputs, scheme). A pre-scan estimates the effect for recursive references, and the real check then sets the counts. A declared signature must match the real check. Linear values are tracked per binding. `BUILTIN_TYPES` holds the primitive signatures and `PRELUDE` the words written in slap.
-- **Evaluator**: `build_tuple` turns tokens into a tuple body; `eval_body` runs it. A word resolves at build time to its primitive (`prim_fns`, indexed by symbol) or, for `X must`, to the fused variant (`prim_must_fns`). Other words look up a frame binding when they run.
-- **Frames** chain lexical scopes. Each binding owns a heap block of its values. `eval_tuple_scoped` trims the bindings a word makes and puts back caller bindings it rebinds; bindings that returned closures refer to move into a child frame.
+- **Checker** (`typecheck_tokens`) runs over builtins, prelude and program before anything executes. Type variables are union-find. Every `(...)` body gets a `TupleEffect` (inputs, outputs, scheme). A pre-scan estimates the effect. Inside its own body a recursive word is code of unknown effect, so `if` takes its effect from a branch that returns with a known effect; `x no must`, `none must` and `halt` never return. `case` takes its effect from its clauses. Branches and clauses must agree; the checker infers the tags a value can carry (`UnionDef.inferred`) to know when a `case` default can run. A word used before its definition must be declared first. The real check then sets the counts. A declared signature must match the real check. Linear values are tracked per binding. `BUILTIN_TYPES` holds the primitive signatures and `PRELUDE` the words written in slap.
+- **Evaluator**: `build_tuple` turns tokens into a tuple body; `eval_body` runs it. A word resolves at build time to its primitive (`prim_fns`, indexed by symbol) or, for `X must`, to the fused variant (`prim_must_fns`). Other words look up a frame binding when they run. `(then) (else) if` with both branches written in place runs the chosen branch from the body itself instead of copying both; `make status` times a 600 KB feed, which depends on it.
+- **Frames** chain lexical scopes. A frame is `captured` once a tuple made in it may refer to it; after that, bindings a body makes outlive the body. Each binding owns a heap block of its values. `eval_tuple_scoped` trims the bindings a word makes and puts back caller bindings it rebinds; bindings that returned closures refer to move into a child frame.
 
 ## Invariants
 
@@ -47,6 +48,8 @@ One file, `slap.c`: lex → type-check → eval.
 - The `TypeChecker` is `static`: it is megabytes, and `-flto` inlines `typecheck_tokens` into `main`, whose frame lives for the whole run.
 - Integer `plus`/`sub`/`mul` wrap at 64 bits. Division by zero, `INT64_MIN -1 div`, and shift counts outside 0-63 are errors.
 - Every runtime failure exits nonzero with a message naming what was expected and what arrived. Never clamp, default, or skip to keep running.
+- A library returns `'no` for input it cannot read. `must` stays only after a check of the same condition, or on a structure the program built.
+- Reading element `i` of a list whose elements span several slots walks the list, so a loop of `nth`/`get` over records or tagged values is O(n²). Use `each`, `filter`, `fold` or `index-of`.
 
 ## Fallible operations
 

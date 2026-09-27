@@ -682,7 +682,7 @@ dict "k" 1 insert box ('x let x) lend print free
 'bad (dup 0 eq ("hi") (99) if) let
 5 bad drop
 
--- EXPECT: inconsistent stack effects
+-- EXPECT: 'case' clauses leave different counts: net +1 vs net +0
 -- A5 — case predicate-mode with mixed empty/non-empty bodies
 "y" -99 {("x" eq) (42) ("y" eq) ()} case 1 plus print
 
@@ -955,3 +955,19 @@ dict [256] 1 insert drop
 -- EXPECT: 'outer' leaves 3 value(s) but its type declares 1 output(s)
 -- a declared word defined inside a body does not hide the body's own count
 ((apply) [tuple lent in  int move out] effect 'inner let (4) inner 1 2) [int move out] effect 'outer let
+
+-- EXPECT: 'later' is used on line 1 before it is defined on line 1
+-- a word used before its definition: its effect is unknown where it is used
+(later 1 plus) 'early let (2) 'later let
+
+-- EXPECT: 'if' branches have different stack effects: net +0 vs net -1
+-- a word's branches must leave the same count
+(dup 0 gt (1 sub down2 drop) () if) [int lent in  int move out] effect 'down2 let
+
+-- EXPECT: 'case' clauses leave different counts: net +0 vs net +1
+-- a word's case clauses must leave the same count
+(0 {'ok () 'no (drop 1 2)} case) 'cc let
+
+-- EXPECT: 'case' clauses leave net -1, but it pushes its default when a tag it has no clause for arrives, and the checker cannot see which tags arrive
+-- tags the checker cannot see may reach the default, which leaves the scrutinee's place filled
+(5 swap 0 {'ok (plus)} case) [tagged lent in  int move out] effect 'cd let

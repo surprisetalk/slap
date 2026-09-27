@@ -1,28 +1,20 @@
 - [ ] `--check` rejects exactly the type errors a word body can make.
   1. `(2 mul)` under `['a num lent in 'a num move out]` accepts a float and dies at runtime: literal types inside a body do not unify with the signature's variables.
-  2. An undeclared recursive word can have two self-consistent effects, and the checker takes the pre-scan's. xml.slap's `_x-read-children-loop` checks as 3→3 but is 3→2, so `_xml-parse` failed its own signature until the loop declared one. Seed the recursion placeholder from the real effect of the branch that does not recurse, not from the pre-scan.
-  3. A body that consumes what a `tuple` input leaves fails its own check: `(apply plus) [int lent in  tuple lent in  int move out] effect` reports `'plus' needs 2 input(s)`. The checker runs code of unknown effect as 0→0, so the values it leaves are missing. After a body's first opaque run (`tc->opaque_runs`), a take below its floor must yield untyped placeholders, not an error or an underflow.
-  4. `apply`, `if` and named calls apply a tuple's effect three different ways. Routing all three through the scheme path gives a false positive on `(push) dip` in the prelude's `chunks`: the scheme's input positions ignore the value `dip` sets aside. Fix that before unifying.
-  5. A bare forward declaration `'name [sig] effect` leaves `'name` on the runtime stack.
-  6. A brace literal that starts like a record but has an odd count (`{'a 1 'b}`) becomes a tuple; the error surfaces later as "expected record, got tuple". Refuse it where it is written.
+  2. `apply`, `if` and named calls apply a tuple's effect three different ways. Routing all three through the scheme path gives a false positive on `(push) dip` in the prelude's `chunks`: the scheme's input positions ignore the value `dip` sets aside. Fix that before unifying.
+  3. A bare forward declaration `'name [sig] effect` leaves `'name` on the runtime stack.
+  4. A brace literal that starts like a record but has an odd count (`{'a 1 'b}`) becomes a tuple; the error surfaces later as "expected record, got tuple". Refuse it where it is written.
+  5. A `case` whose clauses are plain values (`{'ok 1 'no 2}`) is rejected as "rec vs int", but runs: a matching value clause leaves the payload under the value. Refuse value clauses where they are written, since a clause body `(drop 1)` says the same thing.
+
+- [ ] You read a record field the checker knows exists without `must`.
+  1. The checker tracks record keys: a `{...}` literal and `into` add them.
+  2. Decide the word: a total accessor the checker accepts only on a record known to have the key. `at` stays fallible for records of unknown shape.
+  3. Replace `'key at must` in examples and libs (about 300 sites).
 
 - [ ] You profile a slap program as a flame graph.
   1. Count and time each word in `dispatch_word` behind a `--profile` flag; print folded stacks to stderr at exit.
 
 - [ ] A long-running server that makes closures per request holds steady memory.
   1. Frames made for escaping closures are never freed (about 0.5 KB each). Freeing them needs lifetime tracking for tuple envs: count references on copy, drop and trim.
-
-- [ ] You parse a 600 KB feed in under a second.
-  1. parse.slap's `parse-while-core`/`parse-int-core` `dup` the remaining input, and `drop-n`/`swap` move it, so each token costs O(input) and a feed costs O(n²). Time a 500-item feed from tests/run_feed.py's `big_feed` before and after.
-  2. Thread an index over the input instead of the input itself; cut once at the end.
-
-- [ ] Malformed JSON returns `'no "json: ..."` instead of crashing.
-  1. In json.slap, replace `no must` and `parse-* must` with `then` chains; `jd-run` passes `'no` through.
-  2. Tests for `""`, `"hello"`, `"[1,"`; drop todo.slap's pre-guards.
-
-- [ ] Any string written by `je-str` reads back through `jd-str`.
-  1. Emit `\u00XX` below 0x20; make `_je-escape-str-loop` iterative.
-  2. Drop todo.slap's control-byte refusal.
 
 - [ ] You run coreutils written in slap (cat, wc, head, grep -F, sort, uniq).
   1. Put them in examples/utils/; one runner diffs them against the system tools; reuse them as benchmarks.

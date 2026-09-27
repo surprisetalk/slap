@@ -47,22 +47,6 @@ args 2 drop-n 'REST let
 FILE read 'RD let
 RD (drop 1) each 0 default (RD must) ("{\"items\":[]}") if 'RAW let
 
--- json.slap returns a clean, path-annotated 'no when a document's *shape* is
--- wrong, but a *syntax* error crashes inside its parser instead -- an empty
--- file and a non-JSON file both die in parse-exact, and a truncated one dies in
--- `get`. The two that actually reach a todo file are caught here so the message
--- names it. A file that is valid JSON up to a truncation still surfaces
--- json.slap's own error; closing that needs a fix in the library, not a second
--- parse here. Either way the file is left untouched, which is the part that
--- matters.
-('t let t (32 gt) filter) 'nonspace let
-RAW nonspace len 0 eq (
-  "todo: " FILE cat " is empty" cat LF cat
-  "  a todo file is {\"items\":[]} at minimum" cat die) () if
-RAW nonspace 0 get must 123 eq not (
-  "todo: " FILE cat " is not a todo file" cat LF cat
-  "  it does not start with a JSON object" cat die) () if
-
 RAW dec-texts jd-run "text"  or-die 'TEXTS let
 RAW dec-dones jd-run "done"  or-die 'DONES let
 TEXTS len DONES len eq assert
@@ -90,12 +74,6 @@ CMD "list" eq (TEXTS DONES) (
 CMD "add" eq (
   REST len 0 eq ("todo: add needs some text -- try: add buy milk" die) () if
   REST " " str-join 'new let
-  -- je-str escapes the quote, the backslash, \n, \r and \t, and emits every
-  -- other byte under 0x20 raw -- which is not valid JSON, so the file would not
-  -- read back. Refusing the whole range under 0x20 is wider than that gap and
-  -- costs nothing: a line in a todo list has no use for a control byte.
-  new (32 lt) filter len 0 gt (
-    "todo: item text must not contain control bytes" die) () if
   TEXTS new push
   DONES 0 push) (
 CMD "done" eq (

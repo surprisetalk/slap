@@ -105,7 +105,7 @@ argv len 0 gt (
       1 sub
     ) while
     drop
-    fpath swap write
+    fpath swap write () {'ok (drop) 'no ("scratch: cannot save " swap cat print)} case
   ) () if
 ) 'do-save let
 

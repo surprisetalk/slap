@@ -1,14 +1,24 @@
 -- gly.slap: ASCII-inline 1-bit glyph codec. Each char encodes 4 vertical pixels.
 
-('input let 'cur let 'rows let 'maxw let input len 0 eq (cur len 0 eq not (cur len maxw max rows cur push) (maxw rows) if) (input first 'ch let input 1 drop-n 'rest let ch 10 eq (cur len maxw max rows cur push list rest gly-parse-rows) (ch 32 eq (cur 0 push) (cur ch 63 sub push) if 'ncur let maxw rows ncur rest gly-parse-rows) if) if) 'gly-parse-rows let
-('input let 0 list list input gly-parse-rows 'rows let 'maxw let rows len 'nrows let maxw 'w let nrows 4 mul 'h let 0 h range ('y let 0 w range ('c let y 4 div 'r let y 4 mod 'bit let rows len r gt (rows r get must dup len c gt (c get must bit shr 1 band) (drop 0) if) (0) if) each) each flatten 'pixels let rec w 'width into h 'height into pixels 'pixels into) 'gly-decode let
+-- gly-decode: (text -- image ok | msg no).  Rows are separated by newlines; a byte
+-- from ? up holds four vertical pixels in its low bits above 63, and space is blank.
+('gin let
+ gin ('gc let gc 10 eq gc 32 eq or gc 63 ge gc 126 le and or not) each 1 index-of
+ () {'ok (drop "gly: a byte outside ? to ~, space and newline" no) 'no (drop
+   gin "\n" str-split dup len 0 gt (dup dup len 1 sub get must len 0 eq (pop drop) () if) () if
+   (('gv let gv 32 eq (0) (gv 63 sub) if) each) each 'rows let
+   rows 0 (len max) fold 'w let rows len 'nrows let nrows 4 mul 'h let
+   0 h range ('y let 0 w range ('c let y 4 div 'r let y 4 mod 'bit let
+     rows len r gt (rows r get must dup len c gt (c get must bit shr 1 band) (drop 0) if) (0) if) each) each flatten 'pixels let
+   rec w 'width into h 'height into pixels 'pixels into ok)} case) 'gly-decode let
 (dup 'width at must 'w let dup 'height at must 'h let 'pixels at must 'px let h 4 div 'nrows let 0 nrows range ('r let 0 w range ('c let 0 4 range 0 ('bit let px r 4 mul bit plus w mul c plus get must bit shl bor) fold 63 plus) each r nrows 1 sub lt (10 push) () if) each flatten) 'gly-encode let
 
 -- ===== tests =====
-[68 63] gly-decode
+[68 63] gly-decode must
   dup 'width at must 2 eq assert
   dup 'height at must 4 eq assert
   drop
-[68 63] gly-decode gly-encode [68 63] eq assert
-[72] gly-decode gly-encode [72] eq assert
-[68 10 72] gly-decode gly-encode [68 10 72] eq assert
+[68 63] gly-decode must gly-encode [68 63] eq assert
+[72] gly-decode must gly-encode [72] eq assert
+[68 10 72] gly-decode must gly-encode [68 10 72] eq assert
+[68 1 63] gly-decode () {'ok (drop "") 'no ()} case "gly: a byte outside ? to ~, space and newline" eq assert

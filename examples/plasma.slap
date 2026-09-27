@@ -82,7 +82,7 @@ OUT N N 24 PIXELS tga-header write must drop
 
 -- ===== self-test: read back what we just wrote =====
 
-OUT read must tga-decode 'IMG let
+OUT read must tga-decode must 'IMG let
 IMG 'width  at must N eq assert
 IMG 'height at must N eq assert
 IMG 'depth  at must 24 eq assert

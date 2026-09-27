@@ -1,6 +1,15 @@
 -- tga.slap: uncompressed true-color TGA image codec (18-byte header + pixel data).
 
-('data let data 12 get must data 13 get must 8 shl bor 'w let data 14 get must data 15 get must 8 shl bor 'h let data 16 get must 'd let data 18 drop-n 'pixels let rec w 'width into h 'height into d 'depth into pixels 'pixels into) 'tga-decode let
+-- tga-decode: (bytes -- image ok | msg no).  Byte 0 is the length of an ID field
+-- that sits between the header and the pixels.
+('data let
+ data len 18 lt ("tga: shorter than the 18-byte header" no) (
+ data 1 get must 0 eq data 2 get must 2 eq and not ("tga: only uncompressed true-colour (type 2) is supported" no) (
+   data 12 get must data 13 get must 8 shl bor 'w let data 14 get must data 15 get must 8 shl bor 'h let
+   data 16 get must 'd let 18 data 0 get must plus 'p0 let w h mul d 8 div mul 'pn let
+   d 24 eq d 32 eq or not ("tga: pixel depth must be 24 or 32" no) (
+   data len p0 pn plus lt ("tga: pixel data is shorter than width x height x depth" no) (
+     rec w 'width into h 'height into d 'depth into data p0 drop-n pn take-n 'pixels into ok) if) if) if) if) 'tga-decode let
 ('px let 'd let 'h let 'w let list 0 push 0 push 2 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push w byte-mask push w 8 shr byte-mask push h byte-mask push h 8 shr byte-mask push d push 0 push px cat) 'tga-header let
 (dup 'width at must swap dup 'height at must swap dup 'depth at must swap 'pixels at must tga-header) 'tga-encode let
 
@@ -9,9 +18,12 @@ list 0 push 0 push 2 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 pus
 2 push 0 push 2 push 0 push 24 push 0 push
 255 push 0 push 0 push  0 push 255 push 0 push  0 push 0 push 255 push  128 push 128 push 128 push
 'tga-data let
-tga-data tga-decode
+tga-data tga-decode must
   dup 'width at must 2 eq assert
   dup 'height at must 2 eq assert
   dup 'depth at must 24 eq assert
   'pixels at must len 12 eq assert
-tga-data tga-decode tga-encode tga-data eq assert
+tga-data tga-decode must tga-encode tga-data eq assert
+[0 0 2] tga-decode () {'ok (drop "") 'no ()} case "tga: shorter than the 18-byte header" eq assert
+tga-data 2 take-n 99 push tga-data 3 drop-n cat tga-decode () {'ok (drop "") 'no ()} case "tga: only uncompressed true-colour (type 2) is supported" eq assert
+tga-data 20 take-n tga-decode () {'ok (drop "") 'no ()} case "tga: pixel data is shorter than width x height x depth" eq assert

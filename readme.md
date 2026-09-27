@@ -520,7 +520,7 @@ From `examples/lib/strings.slap`:
 
 ### binary format codecs
 
-Decoders/encoders for compact binary formats. These live in `examples/lib/` as loadable libraries (not prelude) — cat the file with your program: `cat examples/lib/icn.slap myprog.slap | ./slap`. Each pairs a `*-decode`/`*-encode` that round-trip with the corresponding byte layout. Useful for tile graphics, tilemaps, fonts, and lightweight compression.
+Decoders/encoders for compact binary formats. These live in `examples/lib/` as loadable libraries (not prelude) — cat the file with your program: `cat examples/lib/icn.slap myprog.slap | ./slap`. Each pairs a `*-decode`/`*-encode` that round-trip with the corresponding byte layout. A decoder returns `value ok`, or `msg no` for input it cannot read, since its input comes from outside the program. Useful for tile graphics, tilemaps, fonts, and lightweight compression.
 
 | File | Format |
 |------|--------|
@@ -532,10 +532,12 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/ufx.slap` | Proportional bitmap fonts (requires `icn.slap`) |
 | `examples/lib/ulz.slap` | LZ-compressed byte stream (decode only) |
 | `examples/lib/parse.slap` | `parse-int`/`parse-float`/`parse-exact`/`parse-spaces`/`parse-while`/`parse-until` |
-| `examples/lib/xml.slap` | Elm-style XML decoder |
+| `examples/lib/xml.slap` | Elm-style XML decoder (requires `strings.slap` for `int-str`) |
 | `examples/lib/rss.slap` | RSS/Atom feed parser (requires `xml.slap`) |
-| `examples/lib/json.slap` | Elm-style JSON decoder (requires `parse.slap` and `strings.slap` for `int-str`) |
+| `examples/lib/json.slap` | Elm-style JSON decoder (requires `strings.slap` for `int-str`) |
 | `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request` |
+
+`jd-run` and `xd-run` return `value ok`, or `msg no` for a syntax error as well as a shape error. Neither library recurses per byte or per element, so input size is bounded by memory; nesting deeper than 256 is refused. `jd-str` decodes `\u` escapes, surrogate pairs included, to UTF-8 and refuses a raw control byte; `je-str` escapes every byte under 0x20, so anything it writes reads back.
 
 ### networking / http
 
@@ -768,7 +770,11 @@ It catches the following at compile time:
 **Effect annotations:**
 - `(body) [sig] effect 'name let` runs the body on exactly the declared inputs. The body must not reach below them, and it must leave exactly the declared outputs, each of the declared type.
 - A body that runs a `tuple` input leaves whatever that tuple leaves, so its outputs are not checked.
-- A recursive word with no signature can get the wrong effect, and its caller then fails its own check. Declare the recursive word's signature.
+- A recursive word takes its effect from the branch that does not recurse.
+- `if` branches and `case` clauses must leave the same count. A branch that never returns (`x no must`, `none must`, `halt`) agrees with any other branch.
+- `case` pushes its default when no clause matches, so its clauses must leave one value in place of the scrutinee, unless every tag the scrutinee can carry has a clause. The checker infers those tags from `ok`, `no`, `'x tag`, `then`, `pthen` and a declared `either`.
+- A word used before its definition, as in mutual recursion, needs `'name [sig] effect` before its first use.
+- `case` takes its effect from its clauses. A clause runs with the payload on top and may consume values below it.
 - Forward declarations `'name [sig] effect` reconcile with the body when `name` is later defined.
 
 **What the type system does *not* catch:**

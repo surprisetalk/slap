@@ -1,7 +1,32 @@
 -- ulz.slap: LZ-compressed byte stream decoder (decode-only).
 
-('src let list 0 (dup src len lt) (dup src swap get must 'op let 1 plus op 128 band 0 eq (op 127 band 1 plus 'cnt let cnt (dup src swap get must swap (push) dip 1 plus) repeat) (op 64 band 0 eq (op 63 band 4 plus 'lng let dup src swap get must 1 plus 'off let 1 plus lng (swap dup dup len off sub get must push swap) repeat) (op 63 band 8 shl (dup src swap get must) dip swap bor 4 plus 'lng let 1 plus dup src swap get must 1 plus 'off let 1 plus lng (swap dup dup len off sub get must push swap) repeat) if) if) while drop) 'ulz-decode let
+-- ulz-decode: (bytes -- bytes ok | msg no).  An op byte with the high bit clear starts
+-- a literal run of (op&127)+1 bytes. Otherwise it copies from the output: (op&63)+4
+-- bytes if bit 6 is clear, else ((op&63)<<8 | next byte)+4, from the offset byte+1
+-- back. Loop state: output, index, and 1 to go on, 0 when done, 2-4 on a failure.
+('src let src len 'sn let
+ list 0 sn 0 gt
+ (dup 1 eq) (drop 'ui let 'src ui nth must 'op let
+   op 128 band 0 eq (
+     op 127 band 1 plus 'cnt let
+     ui 1 plus cnt plus sn gt (ui 2) (
+       ui 1 plus cnt (dup 'src swap nth must swap (push) dip 1 plus) repeat dup sn lt (1) (0) if) if
+   ) (
+     op 64 band 0 eq (op 63 band 4 plus ui 1 plus) (
+       ui 1 plus sn lt (op 63 band 8 shl 'src ui 1 plus nth must bor 4 plus ui 2 plus) (0 sn) if) if
+     'uo let 'lng let
+     uo sn lt not (ui 3) (
+       'src uo nth must 1 plus 'off let
+       dup len off lt (ui 4) (
+         lng (dup len off sub peek must push) repeat uo 1 plus dup sn lt (1) (0) if) if) if
+   ) if) while
+ 'uf let drop
+ uf 0 eq (ok) (drop uf 2 eq ("ulz: a literal run goes past the end" no) (
+   uf 3 eq ("ulz: a copy is missing its offset" no) ("ulz: a copy reaches back before the start" no) if) if) if) 'ulz-decode let
 
 -- ===== tests =====
-[2 65 66 67] ulz-decode [65 66 67] eq assert
-[2 65 66 67  128 2] ulz-decode [65 66 67  65 66 67 65] eq assert
+[2 65 66 67] ulz-decode must [65 66 67] eq assert
+[2 65 66 67  128 2] ulz-decode must [65 66 67  65 66 67 65] eq assert
+[5 65] ulz-decode () {'ok (drop "") 'no ()} case "ulz: a literal run goes past the end" eq assert
+[128] ulz-decode () {'ok (drop "") 'no ()} case "ulz: a copy is missing its offset" eq assert
+[0 65 128 5] ulz-decode () {'ok (drop "") 'no ()} case "ulz: a copy reaches back before the start" eq assert

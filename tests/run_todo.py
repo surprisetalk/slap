@@ -96,14 +96,11 @@ with tempfile.TemporaryDirectory() as d:
         repr(json.load(open(f))["items"][0]["text"]),
     )
     check("escapes-render", '[ ] a "quoted" and a \\ backslash' in todo())
-    # je-str emits bytes under 0x20 other than \n \r \t raw, which is invalid
-    # JSON. todo.slap refuses the whole range rather than write a file it cannot
-    # read back, so tab is refused too even though je-str would escape it.
-    for label, text in [("bell", "bell\x07here"), ("tab", "tab\there")]:
-        bad, err = fails("add", text)
-        check(f"control-byte-{label}-refused", bad, "must not reach the file")
-        check(f"control-byte-{label}-explains", "control bytes" in err, repr(err[:200]))
-    check("control-byte-untouched", len(json.load(open(f))["items"]) == 1)
+    for text in ["bell\x07here", "tab\there"]:
+        todo("add", text)
+    items = [i["text"] for i in json.load(open(f))["items"]]
+    check("control-bytes-roundtrip", items[-2:] == ["bell\x07here", "tab\there"], repr(items))
+    check("control-bytes-read-back", "bell\x07here" in todo())
 
     # ---- bad input ----
     for argv, want in [
@@ -125,35 +122,22 @@ with tempfile.TemporaryDirectory() as d:
 
     # ---- a file that does not decode is refused, not replaced ----
     for label, text, want in [
-        ("wrong-type", '{"items":[{"text":1,"done":false}]}', "is not a todo file"),
-        ("missing-field", '{"items":[{"text":"a"}]}', "is not a todo file"),
-        ("wrong-root", "[]", "does not start with a JSON object"),
-        ("not-json", "this is not json", "does not start with a JSON object"),
-        ("empty-file", "", "is empty"),
-        ("whitespace-only", "  \n\t ", "is empty"),
+        ("wrong-type", '{"items":[{"text":1,"done":false}]}', "expected string, got int"),
+        ("missing-field", '{"items":[{"text":"a"}]}', 'missing field "done"'),
+        ("wrong-root", "[]", "expected object, got array"),
+        ("not-json", "this is not json", "json: expected true"),
+        ("empty-file", "", "json: unexpected end of input"),
+        ("whitespace-only", "  \n\t ", "json: unexpected end of input"),
+        ("truncated-array", '{"items":[{"text":"a","done":false}', "json: unexpected end of input in an array"),
+        ("trailing-garbage", '{"items":[]} nonsense', "json: trailing input"),
     ]:
         with open(f, "w") as fh:
             fh.write(text)
         bad, err = fails()
         check(f"refuse-{label}", bad, "must not start from an empty list")
-        check(f"refuse-{label}-explains", want in err, repr(err[:200]))
+        check(f"refuse-{label}-says-why", "is not a todo file" in err and want in err, repr(err[:200]))
         check(f"refuse-{label}-names-file", f in err, repr(err[:200]))
         check(f"refuse-{label}-untouched", open(f).read() == text, "must not rewrite")
-
-    # A syntax error deeper than the first byte crashes inside json.slap's parser
-    # rather than returning a 'no -- see the note in todo.slap. What must hold
-    # regardless is that it exits nonzero and does not touch the file. If these
-    # ever start producing "is not a todo file", json.slap grew a real parse
-    # error path and the note in todo.slap should be retired.
-    for label, text in [
-        ("truncated-array", '{"items":[{"text":"a","done":false}'),
-        ("trailing-garbage", '{"items":[]} nonsense'),
-    ]:
-        with open(f, "w") as fh:
-            fh.write(text)
-        bad, _ = fails()
-        check(f"syntax-{label}-exits-nonzero", bad)
-        check(f"syntax-{label}-untouched", open(f).read() == text, "must not rewrite")
 
     # the decoder's path annotation is the whole point of using json.slap here
     with open(f, "w") as fh:

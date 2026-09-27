@@ -4,6 +4,9 @@
 
 import concurrent.futures, glob, json, os, re, shutil, subprocess, sys, tempfile, threading, time
 
+sys.path.insert(0, os.path.dirname(__file__))
+import harness
+
 # Euler problems that take more than 2 s each. They run under `make test-slow`.
 SLOW_EULER = {12, 14, 23, 25, 34, 47}
 TIMEOUT = 60
@@ -91,6 +94,7 @@ def steps(slow):
         ("strings", "parse", "xml", "rss"),
     ]:
         out["lib/" + "+".join(combo)] = (f"cat {lib(*combo)} | ./slap", None)
+    out["scale"] = (f"cat {lib('strings', 'parse', 'json', 'xml')} tests/scale.slap | ./slap", None)
     for name in [
         "ant",
         "dots",
@@ -149,6 +153,14 @@ def status():
         capture_output=True, text=True,
     )
     score["slap.c compiles with no warnings."] = 1.0 if r.returncode == 0 and "warning" not in r.stderr else 0.0
+    feed = os.path.join(SCRATCH, "feed.xml")
+    with open(feed, "w") as f:
+        f.write(harness.big_feed(4100))
+    assert os.path.getsize(feed) >= 600_000, os.path.getsize(feed)
+    src = "".join(open(lib(n)).read() for n in ("strings", "parse", "xml", "rss")) + open("examples/feed.slap").read()
+    t = time.time()
+    r = subprocess.run(["./slap", feed], input=src, capture_output=True, text=True, timeout=60)
+    score["A 600 KB feed renders in under a second."] = 1 / (time.time() - t) if r.stdout.rstrip().endswith("4100 items") else 0.0
     shutil.rmtree(SCRATCH)
     print(json.dumps({k: {"0": round(v, 2)} for k, v in score.items()}, indent=1))
     if min(score.values()) < 1.0:

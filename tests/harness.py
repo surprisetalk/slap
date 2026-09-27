@@ -83,3 +83,17 @@ def server_check(prefix, get_proc):
         return t
 
     return make_check(prefix, tail)
+
+
+def big_feed(n_items):
+    """An RSS document with n_items entries."""
+    items = "".join(
+        f"    <item><title>Post {i}</title><link>http://e.com/{i}</link>"
+        f"<description>Body {i}. {'pad ' * 10}</description></item>\n"
+        for i in range(n_items)
+    )
+    return (
+        '<?xml version="1.0"?>\n<rss version="2.0"><channel>'
+        "<title>Big</title><link>http://e.com</link><description>d</description>\n"
+        f"{items}</channel></rss>\n"
+    )

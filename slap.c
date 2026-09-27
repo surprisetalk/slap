@@ -213,7 +213,8 @@ static inline Value with_tok(Value v, const Token *t) {
    executing from the block; a rebind never writes into a pinned block. */
 typedef struct Binding { uint32_t sym; int slots, cap, pinned; Value *vals; } Binding;
 struct Frame {
-    struct Frame *parent; int bind_count, bind_cap, refcount;
+    struct Frame *parent; int bind_count, bind_cap;
+    int captured; /* a tuple made in this frame may refer to it, so bindings outlive the body that made them */
     Binding *bindings;
     int32_t *hash; uint32_t hash_mask; /* binding index+1 by symbol; 0 is empty */
 };
@@ -404,7 +405,7 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
     default: die("lt: unsupported type %s (only int and float are ordered)", valtag_name(atop.tag)); return 0;
     }
 }
-static uint32_t S_LET, S_IF, S_EFFECT, S_CHECK, S_OK, S_NO, S_CASE, S_MUST, S_QUOTE, S_THEN;
+static uint32_t S_LET, S_IF, S_EFFECT, S_CHECK, S_OK, S_NO, S_NONE, S_HALT, S_TAG, S_PTHEN, S_CASE, S_MUST, S_QUOTE, S_THEN;
 /* ---- TYPE SYSTEM ---- */
 typedef enum { DIR_IN, DIR_OUT } SlotDir;
 typedef enum { OWN_OWN, OWN_COPY, OWN_MOVE, OWN_LENT, OWN_AUTO } OwnMode;
@@ -431,7 +432,7 @@ static void syms_init(void) {
     S_LET=sym_intern("let");
     S_IF=sym_intern("if"); S_EFFECT=sym_intern("effect"); S_CHECK=sym_intern("check");
     S_OK=sym_intern("ok"); S_NO=sym_intern("no");
-    S_CASE=sym_intern("case"); S_MUST=sym_intern("must"); S_QUOTE=sym_intern("quote"); S_THEN=sym_intern("then");
+    S_CASE=sym_intern("case"); S_MUST=sym_intern("must"); S_NONE=sym_intern("none"); S_HALT=sym_intern("halt"); S_TAG=sym_intern("tag"); S_PTHEN=sym_intern("pthen"); S_QUOTE=sym_intern("quote"); S_THEN=sym_intern("then");
     for (int i = 0; i < HO_OP_COUNT; i++) ho_ops[i].sym = sym_intern(ho_ops[i].name);
 }
 typedef struct {
@@ -541,7 +542,8 @@ static const char *constraint_name(TypeConstraint c) {
 typedef struct { int parent; TypeConstraint bound; int elem; int box_c; int tag_p; int union_id; } TVarEntry;
 #define UNION_MAX 2048
 #define UNION_VARIANTS_MAX 16
-typedef struct { uint32_t syms[UNION_VARIANTS_MAX]; TypeConstraint types[UNION_VARIANTS_MAX]; int count; } UnionDef;
+/* inferred: the tags a value can carry, found by the checker. Only a declared `either` makes `case` exhaustive. */
+typedef struct { uint32_t syms[UNION_VARIANTS_MAX]; TypeConstraint types[UNION_VARIANTS_MAX]; int count, inferred; } UnionDef;
 #define EFFECT_MAX 4096
 typedef struct {
     int consumed, produced;
@@ -549,8 +551,11 @@ typedef struct {
     int scheme_base, scheme_count;
     int in_tvars[16], out_tvars[16], in_count, out_count;
     int out_effect;
+    int out_tags;    /* the tags its top output can carry: a union id, or 0 when unknown */
     int has_let;     /* body binds a name it reads back: a lend snapshot could alias it */
     int output_is_linear; /* body's sole output is itself a linear-capturing closure; apply should mark output AT_LINEAR */
+    int diverges;    /* body never returns, so it agrees with any branch */
+    int clauses;     /* a {...} clause list: the counts are its deciding clause's, payload included */
     int opaque;      /* body runs code of unknown effect, so running the body does too */
 } TupleEffect;
 #define AT_LINEAR 1
@@ -574,7 +579,8 @@ typedef struct {
     TupleEffect effects[EFFECT_MAX]; int effect_count;
     int user_start, prelude_sig_count, sp_floor, body_depth;
     int underflows; /* values taken from below sp_floor; see tc_take */
-    int opaque_runs; /* runs of code whose effect is unknown; see tc_tuple */
+    int diverged; /* the current body has run a word that never returns */
+    int opaque_at; /* where code of unknown effect last ran in this body, or -1; see tc_take */
     int saw_linear_capture;  /* set by binding-lookup of a linear value; consumed by enclosing tuple-body inference */
     UnionDef unions[UNION_MAX]; int union_count;
 } TypeChecker;
@@ -732,10 +738,51 @@ static void tc_push(TypeChecker *tc, TypeConstraint type, int line) {
         else tc->tvars[at->tvar_id].tag_p = sub;
     }
 }
-/* Record an operation taking n values: any beyond the body's floor are an underflow. */
-static void tc_take(TypeChecker *tc, int n) {
-    int avail = tc->sp - tc->sp_floor;
-    if (n > avail) tc->underflows += n - avail;
+/* Record an operation taking n values: any beyond the body's floor are an underflow.
+   After code of unknown effect runs, that code may have left them, so they become
+   untyped values at the place where it ran. */
+static void tc_take(TypeChecker *tc, int n, int line) {
+    int avail = tc->sp - tc->sp_floor, m = n - avail;
+    if (m <= 0) return;
+    if (tc->opaque_at < 0) { tc->underflows += m; return; }
+    if (tc->sp + m > ASTACK_MAX) die("type checker stack overflow: more than %d values on the stack", ASTACK_MAX);
+    int at = tc->opaque_at < tc->sp_floor ? tc->sp_floor : tc->opaque_at > tc->sp ? tc->sp : tc->opaque_at, top = tc->sp;
+    memmove(&tc->data[at + m], &tc->data[at], (size_t)(top - at) * sizeof(AbstractType));
+    tc->sp = at; for (int k = 0; k < m; k++) tc_push(tc, TC_NONE, line);
+    tc->sp = top + m;
+}
+/* The tags a value can carry: a union id, or 0 when they are unknown. */
+static int tc_tags(TypeChecker *tc, AbstractType *at) {
+    return at->type == TC_TAGGED && at->tvar_id > 0 ? tc->tvars[tvar_find(tc, at->tvar_id)].union_id : 0;
+}
+static void tc_set_tags(TypeChecker *tc, AbstractType *at, int uid) {
+    if (uid && at->type == TC_TAGGED && at->tvar_id > 0) tc->tvars[tvar_find(tc, at->tvar_id)].union_id = uid;
+}
+/* The inferred union with exactly these tags, made once. */
+static int tc_tags_of(TypeChecker *tc, const uint32_t *syms, int n) {
+    for (int u = 0; u < tc->union_count; u++) {
+        UnionDef *ud = &tc->unions[u]; int same = ud->inferred && ud->count == n;
+        for (int k = 0; same && k < n; k++) { same = 0; for (int m = 0; m < n; m++) if (ud->syms[m] == syms[k]) same = 1; }
+        if (same) return u + 1;
+    }
+    if (tc->union_count == UNION_MAX) die("type checker: more than %d distinct tag sets", UNION_MAX);
+    UnionDef *ud = &tc->unions[tc->union_count++]; memset(ud, 0, sizeof(*ud));
+    ud->count = n; ud->inferred = 1; memcpy(ud->syms, syms, (size_t)n * sizeof(uint32_t));
+    return tc->union_count;
+}
+/* A value that is either a or b carries the tags of both; unknown if either is. */
+static int tc_tags_merge(TypeChecker *tc, int a, int b) {
+    if (!a || !b) return 0;
+    if (a == b) return a;
+    uint32_t syms[UNION_VARIANTS_MAX]; int n = 0;
+    for (int u = 0; u < 2; u++) { UnionDef *ud = &tc->unions[(u ? b : a) - 1];
+        for (int k = 0; k < ud->count; k++) {
+            int seen = 0; for (int m = 0; m < n; m++) if (syms[m] == ud->syms[k]) seen = 1;
+            if (seen) continue;
+            if (n == UNION_VARIANTS_MAX) die("type checker: a value carries more than %d different tags", UNION_VARIANTS_MAX);
+            syms[n++] = ud->syms[k];
+        } }
+    return tc_tags_of(tc, syms, n);
 }
 static int tc_alloc_effect(TypeChecker *tc) {
     if (tc->effect_count >= EFFECT_MAX) die("type checker: more than %d tuple bodies at once; EFFECT_MAX in slap.c sets the limit", EFFECT_MAX);
@@ -831,7 +878,7 @@ static TypeConstraint tc_infer_effect(Token *toks, int start, int end,
     *out_consumed = consumed; *out_produced = vsp; return tt;
 }
 static void tc_apply_effect(TypeChecker *tc, int consumed, int produced, TypeConstraint out_type, int line) {
-    tc_take(tc, consumed); int avail = tc->sp - tc->sp_floor; tc->sp -= (consumed <= avail) ? consumed : avail;
+    tc_take(tc, consumed, line); int avail = tc->sp - tc->sp_floor; tc->sp -= (consumed <= avail) ? consumed : avail;
     for (int i = 0; i < produced; i++) tc_push(tc, (i == produced - 1) ? out_type : TC_NONE, line);
 }
 static int tc_check_either_tags(Token *toks, int start, int end, TypeSig *sig) {
@@ -886,6 +933,7 @@ static void tc_apply_scheme(TypeChecker *tc, TupleEffect *eff, int consumed, int
                             TypeConstraint body_out, const char *name, int line, int fu) {
     int sc = eff->scheme_count, *map = calloc(sc ? sc : 1, sizeof(int));
     if (!map) die("out of memory instantiating %d type variables", sc);
+    tc_take(tc, consumed, line);
     tvar_instantiate(tc, eff, map);
     for (int j = 0; j < eff->in_count && j < tc->sp; j++) {
         int stv = eff->in_tvars[j] - eff->scheme_base;
@@ -901,7 +949,7 @@ static void tc_apply_scheme(TypeChecker *tc, TupleEffect *eff, int consumed, int
             }
         }
     }
-    tc_take(tc, consumed); int avail = tc->sp - tc->sp_floor; tc->sp -= (consumed <= avail) ? consumed : avail;
+    int avail = tc->sp - tc->sp_floor; tc->sp -= (consumed <= avail) ? consumed : avail;
     for (int j = 0; j < eff->out_count; j++) {
         int stv = eff->out_tvars[j] - eff->scheme_base, ftv = (stv >= 0 && stv < sc) ? map[stv] : 0;
         if (ftv > 0) { TypeConstraint r = tvar_resolve(tc, ftv);
@@ -925,8 +973,8 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
     TypeConstraint bouts[8] = {0}; int bc = 0;
     int barr_c[8] = {0}, barr_p[8] = {0}, barr_has[8] = {0};
     AbstractType saved = {0}; int had_saved = 0;
+    tc_take(tc, ho->need, line);
     if ((tc->sp - tc->sp_floor) < ho->need) {
-        tc_take(tc, ho->need);
         tc_error(tc, line, 0, "'%s' needs %d input(s), stack has %d", ho->name, ho->need, tc->sp - tc->sp_floor);
         tc->sp = tc->sp_floor;
         for (int j = 0; j < ho->out; j++) tc_push(tc, ho->out_type, line);
@@ -934,7 +982,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
     }
     if (ho->flags & (HO_BOX_BORROW|HO_BOX_MUTATE)) {
         if (tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE) {
-            if (tc->data[tc->sp-1].effect_idx >= 0) { TupleEffect *te = &tc->effects[tc->data[tc->sp-1].effect_idx]; if (te->opaque) tc->opaque_runs++; eff_c = te->consumed; eff_p = te->produced; bo = te->out_type; bk = 1; bteff = te; }
+            if (tc->data[tc->sp-1].effect_idx >= 0) { TupleEffect *te = &tc->effects[tc->data[tc->sp-1].effect_idx]; if (te->opaque && (ho->flags & HO_BOX_BORROW)) tc->opaque_at = tc->sp; eff_c = te->consumed; eff_p = te->produced; bo = te->out_type; bk = 1; bteff = te; }
             tc->sp--;
         }
         if (tc->sp > 0 && tc->data[tc->sp-1].type != TC_BOX && tc->data[tc->sp-1].type != TC_NONE)
@@ -967,7 +1015,9 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         if ((tc->data[tc->sp-2].flags & AT_LINEAR) || tc->data[tc->sp-2].type == TC_BOX)
             tc_error(tc, line, 0, "'case' default must not be a linear value (would leak on any matched branch)");
     }
-    TypeConstraint lpt = TC_NONE; int tptv = 0, lptv = 0;
+    TupleEffect *clauses = ho->sym == S_CASE && tc->sp > 0 && tc->data[tc->sp-1].effect_idx >= 0
+                           && tc->effects[tc->data[tc->sp-1].effect_idx].clauses ? &tc->effects[tc->data[tc->sp-1].effect_idx] : NULL;
+    TypeConstraint lpt = TC_NONE; int tptv = 0, lptv = 0, if_tags = 0, if_returns = 0;
     int branch_linear = 0; /* any popped body tuple captures or outputs linear */
     int body_captures_linear = 0; /* primary body tuple captures a linear outer binding */
     for (int n = ho->need; n > 0 && tc->sp > tc->sp_floor; n--) {
@@ -978,17 +1028,24 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         int ib = n > 1;
         if (top->type == TC_TUPLE && top->effect_idx >= 0) {
             TupleEffect *te = &tc->effects[top->effect_idx];
-            if (te->opaque) tc->opaque_runs++;
-            if (!bk) {
+            /* A branch that recurses has only a guessed effect and one that never returns has none,
+               so a branch that returns with a known effect decides. */
+            if (!bk || (ib && ho->sym == S_IF && (te->diverges ? 2 : te->opaque) < (bteff->diverges ? 2 : bteff->opaque))) {
                 eff_c = te->consumed; eff_p = te->produced; bo = te->out_type; bk = 1; boe = te->out_effect; bteff = te;
                 if (top->flags & AT_LINEAR) body_captures_linear = 1;
             }
             if (te->output_is_linear || (top->flags & AT_LINEAR)) branch_linear = 1;
-            if (ib && bc < 8) { barr_c[bc]=te->consumed; barr_p[bc]=te->produced; barr_has[bc]=1; bouts[bc++] = te->out_type; }
-        } else if (ib && top->type != TC_NONE && bc < 8) bouts[bc++] = top->type;
+            if (ib && ho->sym == S_IF && !te->diverges) if_tags = if_returns++ ? tc_tags_merge(tc, if_tags, te->out_tags) : te->out_tags;
+            if (ib && bc < 8) { barr_c[bc]=te->consumed; barr_p[bc]=te->produced; barr_has[bc]=!te->opaque && !te->diverges && ho->sym == S_IF; bouts[bc++] = te->out_type; }
+        } else {
+            if (ib && ho->sym == S_IF) { if_tags = 0; if_returns++; }
+            if (ib && top->type != TC_NONE && bc < 8) bouts[bc++] = top->type;
+        }
         tc->sp--;
     }
-    if ((ho->flags & HO_BODY_1TO1) && bk && (eff_c != 1 || eff_p != 1) && (eff_c + eff_p > 0))
+    /* The rest of the ops leave a count that does not depend on the body. */
+    if ((ho->flags & HO_APPLY_EFFECT) || ho->sym == S_IF) { if (!bk || bteff->opaque) tc->opaque_at = tc->sp; if (bk && bteff->diverges) tc->diverged = 1; }
+    else if ((ho->flags & HO_BODY_1TO1) && bk && !bteff->opaque && (eff_c != 1 || eff_p != 1) && (eff_c + eff_p > 0))
         tc_error(tc, line, 0, "'%s' body must be 1->1, got %d->%d", ho->name, eff_c, eff_p);
     /* HO ops that aggregate body outputs into a container (each, fold)
        would alias a linear closure across iterations or package it into a list.
@@ -1024,7 +1081,7 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
             if (ref != TC_NONE && bouts[i] != ref && !tc_constraint_matches(ref, bouts[i]) && !tc_constraint_matches(bouts[i], ref))
                 tc_error(tc, line, 0, "'%s' branches produce different types: %s vs %s", ho->name, constraint_name(ref), constraint_name(bouts[i]));
         }
-        if (!nested) {
+        {
             int rnet = 0, rset = 0, rci = 0;
             for (int i = 0; i < bc; i++) if (barr_has[i]) { rnet = barr_p[i] - barr_c[i]; rci = i; rset = 1; break; }
             if (rset) for (int i = 0; i < bc; i++)
@@ -1033,7 +1090,6 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
         }
     }
     if (ho->flags & HO_APPLY_EFFECT) {
-        if (!bk) tc->opaque_runs++;
         if (bk) {
             tc_apply_effect(tc, eff_c, eff_p, bo, line);
             if (boe >= 0 && tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE) tc->data[tc->sp-1].effect_idx = boe;
@@ -1049,11 +1105,21 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
     if (ho->sym == S_IF && bk) {
         if (bteff && bteff->scheme_count > 0 && bteff->in_count > 0) tc_apply_scheme(tc, bteff, eff_c, eff_p, bo, "if", line, 0);
         else tc_apply_effect(tc, eff_c, eff_p, bo, line);
+        if (tc->sp > 0 && !tc_tags(tc, &tc->data[tc->sp-1])) tc_set_tags(tc, &tc->data[tc->sp-1], if_tags);
         /* If either branch body produces a linear-capturing closure, mark the
            result linear. Runtime dispatches one branch at a time, but static
            TC can't know which branch wins — both must be treated as tainted. */
         if (branch_linear && tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE)
             tc->data[tc->sp-1].flags |= AT_LINEAR;
+        return;
+    }
+    /* `case` has popped the scrutinee, the default and the clauses. A matching clause takes
+       the rest of its inputs from below; an unmatched tag or predicate leaves the default. */
+    if (clauses) {
+        if (clauses->diverges) tc->diverged = 1;
+        if (clauses->opaque) tc->opaque_at = tc->sp;
+        tc_apply_effect(tc, clauses->consumed - 1, clauses->produced, clauses->out_type, line);
+        if (tc->sp > 0) tc_set_tags(tc, &tc->data[tc->sp-1], clauses->out_tags);
         return;
     }
     TypeConstraint out = ho->out_type;
@@ -1068,7 +1134,9 @@ static void tc_apply_ho(TypeChecker *tc, HOEffect *ho, int line) {
     if ((ho->flags & HO_BODY_1TO1) && out == TC_TAGGED && tc->sp > 0 && tc->data[tc->sp-1].tvar_id > 0) {
         int otp = tvar_content(tc, tc->data[tc->sp-1].tvar_id, TC_TAGGED);
         if (otp > 0) { if (bo != TC_NONE) tvar_bind(tc, otp, bo); else if (tptv > 0) tvar_unify(tc, otp, tptv); }
-        if (lptv > 0) { int uid = tc->tvars[tvar_find(tc, lptv)].union_id; if (uid > 0) tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].union_id = uid; }
+        /* The body changes the payload, so the tags survive but a declared union's payload types do not. */
+        if (lptv > 0) { int uid = tc->tvars[tvar_find(tc, lptv)].union_id;
+            if (uid > 0) tc->tvars[tvar_find(tc, tc->data[tc->sp-1].tvar_id)].union_id = tc_tags_of(tc, tc->unions[uid-1].syms, tc->unions[uid-1].count); }
     }
 }
 static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
@@ -1103,7 +1171,8 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
         if (is_linear_closure) b->consumed_line = line;
         if (b->atype.type == TC_TUPLE && b->atype.effect_idx >= 0) {
             TupleEffect *eff = &tc->effects[b->atype.effect_idx];
-            if (eff->opaque) tc->opaque_runs++;
+            if (eff->opaque) tc->opaque_at = tc->sp;
+            if (eff->diverges) tc->diverged = 1;
             if (eff->scheme_count > 0) tc_apply_scheme(tc, eff, eff->consumed, eff->produced, eff->out_type, sym_name(sym), line, 1);
             else tc_apply_effect(tc, eff->consumed, eff->produced, eff->out_type, line);
             /* Def returns a linear-capturing closure → mark output AT_LINEAR so
@@ -1114,8 +1183,9 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
                 tc->data[tc->sp-1].effect_idx = eff->out_effect;
             return;
         } else {
-            if (b->atype.flags & AT_OPAQUE) tc->opaque_runs++;
+            if (b->atype.flags & AT_OPAQUE) tc->opaque_at = tc->sp;
             tc_push(tc, b->atype.type, line);
+            tc_set_tags(tc, &tc->data[tc->sp-1], tc_tags(tc, &b->atype));
             /* Box bindings: copy the content-type binding from the original
                tvar onto the fresh one so `lend`'s compound-aliasing guard can
                see what the box contains. Uses a fresh tvar for isolation. */
@@ -1142,6 +1212,7 @@ static void tc_check_word(TypeChecker *tc, uint32_t sym, int line) {
     }
     if (tc->unknown_count == TC_UNKNOWN_MAX) die("type checker: more than %d unknown words", TC_UNKNOWN_MAX);
     { tc->unknowns[tc->unknown_count].sym = sym; tc->unknowns[tc->unknown_count].line = line; tc->unknown_count++; }
+    tc->opaque_at = tc->sp;
     return;
 apply_sig:;
     if (sym == S_THEN && tc->sp > 0 && tc->data[tc->sp-1].type == TC_TUPLE && tc->data[tc->sp-1].effect_idx >= 0) {
@@ -1151,8 +1222,8 @@ apply_sig:;
     }
     int ni = 0;
     for (int i = 0; i < sig->slot_count; i++) if (sig->slots[i].direction == DIR_IN) ni++;
+    tc_take(tc, ni, line);
     if (tc->sp < ni) {
-        tc_take(tc, ni);
         tc_error(tc, line, 0, "'%s' needs %d input(s), stack has %d", sym_name(sym), ni, tc->sp);
         if (tc->sp > 0) { fprintf(stderr, "    stack (top first):"); for(int d=tc->sp-1;d>=0&&d>=tc->sp-5;d--) fprintf(stderr," %s",constraint_name(tc->data[d].type)); fprintf(stderr,"\n"); }
         return;
@@ -1253,7 +1324,7 @@ apply_sig:;
         }
         sp2--;
     }
-    tc_take(tc, ni); tc->sp -= ni; if (tc->sp < tc->sp_floor) tc->sp = tc->sp_floor;
+    tc->sp -= ni; if (tc->sp < tc->sp_floor) tc->sp = tc->sp_floor;
     for (int i = pt_count - 1; i >= 0; i--) {
         tc_push(tc, passthrough[i].type, line);
         AbstractType *o = &tc->data[tc->sp-1];
@@ -1314,13 +1385,15 @@ static void tc_tuple(TypeChecker *tc, Token *toks, int i, int close, int total_c
     Token *t = &toks[i];
     int eff_c = 0, eff_p = 0;
     TypeConstraint eff_out = tc_infer_effect(toks, i+1, close, &eff_c, &eff_p, tc, NULL, 0);
-    /* Auto-visible: if this tuple is followed by `'name let`, make
-       name visible inside the body so recursive references
-       typecheck. Binding order: `(body) 'name let`. */
-    if (!tc->recur_pending && close+2 < total_count
-        && toks[close+1].tag == TOK_SYM
-        && toks[close+2].tag == TOK_WORD && toks[close+2].as.sym == S_LET) {
-        uint32_t name_sym = toks[close+1].as.sym;
+    /* Auto-visible: if this tuple is followed by `'name let`, or by `[sig] effect 'name let`,
+       make name visible inside the body so recursive references typecheck. */
+    int nm = close+1;
+    if (nm < total_count && toks[nm].tag == TOK_LBRACKET) { nm += toks[nm].span + 1;
+        nm = nm < total_count && toks[nm].tag == TOK_WORD && toks[nm].as.sym == S_EFFECT ? nm + 1 : total_count; }
+    if (!tc->recur_pending && nm+1 < total_count
+        && toks[nm].tag == TOK_SYM
+        && toks[nm+1].tag == TOK_WORD && toks[nm+1].as.sym == S_LET) {
+        uint32_t name_sym = toks[nm].as.sym;
         for (int j = i+1; j < close; j++) {
             if (toks[j].tag == TOK_WORD && toks[j].as.sym == name_sym) {
                 tc->recur_pending = 1; tc->recur_sym = name_sym; break;
@@ -1331,7 +1404,7 @@ static void tc_tuple(TypeChecker *tc, Token *toks, int i, int close, int total_c
        is checked against the body itself: it runs on exactly the declared inputs,
        and must leave exactly the declared outputs. */
     TypeSig dsig; int has_sig = 0, n_in = 0, n_out = 0; const char *who = "body";
-    TypeConstraint in_c[TYPE_SLOTS_MAX], in_elem[TYPE_SLOTS_MAX];
+    TypeConstraint in_c[TYPE_SLOTS_MAX], in_elem[TYPE_SLOTS_MAX]; int in_tags[TYPE_SLOTS_MAX];
     if (close+2 < total_count && toks[close+1].tag == TOK_LBRACKET) {
         int be = close+1+toks[close+1].span;
         if (be+1 < total_count && toks[be+1].tag == TOK_WORD && toks[be+1].as.sym == S_EFFECT) {
@@ -1345,7 +1418,10 @@ static void tc_tuple(TypeChecker *tc, Token *toks, int i, int close, int total_c
     }
     if (has_sig) {
         for (int k = 0; k < dsig.slot_count; k++)
-            if (dsig.slots[k].direction == DIR_IN) { in_c[n_in] = dsig.slots[k].constraint; in_elem[n_in++] = dsig.slots[k].elem_constraint; }
+            if (dsig.slots[k].direction == DIR_IN) {
+                in_tags[n_in] = dsig.slots[k].either_count ? tc_tags_of(tc, dsig.slots[k].either_syms, dsig.slots[k].either_count) : 0;
+                in_c[n_in] = dsig.slots[k].constraint; in_elem[n_in++] = dsig.slots[k].elem_constraint;
+            }
             else n_out++;
         eff_c = n_in; eff_p = n_out;
     }
@@ -1369,27 +1445,30 @@ static void tc_tuple(TypeChecker *tc, Token *toks, int i, int close, int total_c
                 tc->data[tc->sp-1].type = in_c[j]; tc->tvars[itv[j]].bound = in_c[j];
                 if (in_c[j] == TC_BOX) tc->data[tc->sp-1].flags |= AT_LINEAR;
                 if (in_elem[j] != TC_NONE) tc->tvars[tc->tvars[itv[j]].elem].bound = in_elem[j];
+                tc_set_tags(tc, &tc->data[tc->sp-1], in_tags[j]);
             }
         }
         if (wide) for (int j = 0; j < eff_c; j++) tc_push(tc, TC_NONE, t->line);
         if (tc->recur_pending && tc->recur_sym) {
             int pe = tc_alloc_effect(tc); tc->effects[pe].consumed = eff_c; tc->effects[pe].produced = eff_p; tc->effects[pe].out_type = eff_out;
+            /* Without a signature, the effect is the pre-scan's guess until the body is checked. */
+            tc->effects[pe].opaque = !has_sig;
             AbstractType pa = {0}; pa.type = TC_TUPLE; pa.effect_idx = pe; tc_bind(tc, tc->recur_sym, &pa, t->line);
         }
         /* Inside the body, recur_pending must be 0 so nested defs don't
            mis-attribute to recur_sym. _s.recur_pending restores it at exit
            so the outer def post-body still consumes it. */
         tc->recur_pending = 0;
-        int u0 = tc->underflows, o0 = tc->opaque_runs;
+        int u0 = tc->underflows, oa0 = tc->opaque_at, dv0 = tc->diverged; tc->opaque_at = -1; tc->diverged = 0;
         tc->body_depth++; tc_process_range(tc, toks, i+1, close, total_count); tc->body_depth--;
-        int under = tc->underflows - u0, opaque = tc->opaque_runs > o0; tc->underflows = u0; tc->opaque_runs = o0;
+        int under = tc->underflows - u0, opaque = tc->opaque_at >= 0, diverges = tc->diverged; tc->underflows = u0; tc->opaque_at = oa0; tc->diverged = dv0;
         /* What the body really took and left, rather than the pre-scan's guess. */
         if (!has_sig) { eff_c = (wide ? eff_c : ic) + under; eff_p = tc->sp - _s.sp; }
         else {
             int left = tc->sp - _s.sp;
             if (under) tc_error(tc, t->line, 0, "'%s' reaches below the %d input(s) its type declares", who, n_in);
             /* After code of unknown effect runs, only the caller knows what the body leaves. */
-            else if (opaque) {}
+            else if (opaque || diverges) {}
             else if (left != n_out) tc_error(tc, t->line, 0, "'%s' leaves %d value(s) but its type declares %d output(s)", who, left, n_out);
             else for (int k = 0, o = 0; k < dsig.slot_count; k++) {
                 if (dsig.slots[k].direction != DIR_OUT) continue;
@@ -1409,6 +1488,7 @@ static void tc_tuple(TypeChecker *tc, Token *toks, int i, int close, int total_c
             /* The observed top type is more precise than the pre-scan's. */
             if (ao > 0 && tc->data[tc->sp-1].type != TC_NONE) eff_out = tc->data[tc->sp-1].type;
         }
+        int out_tags = tc->sp > _s.sp ? tc_tags(tc, &tc->data[tc->sp-1]) : 0;
         int body_captured = tc->saw_linear_capture;
         /* output_is_linear: the body's sole output is itself a linear-capturing
            closure (e.g. `(42 box 'b let (b free))` or a def chain thereof).
@@ -1425,7 +1505,7 @@ static void tc_tuple(TypeChecker *tc, Token *toks, int i, int close, int total_c
         int eidx = tc_alloc_effect(tc); TupleEffect *eff = &tc->effects[eidx];
         eff->consumed = eff_c; eff->produced = eff_p; eff->out_type = eff_out; eff->out_effect = out_eff;
         eff->scheme_base = scheme_base; eff->scheme_count = sc; eff->in_count = ic; eff->out_count = oc;
-        eff->output_is_linear = output_captures_linear; eff->opaque = opaque && !has_sig;
+        eff->output_is_linear = output_captures_linear; eff->opaque = opaque && !has_sig; eff->diverges = diverges; eff->out_tags = out_tags;
         for (int j = 0; j < ic; j++) eff->in_tvars[j] = itv[j];
         for (int j = 0; j < oc; j++) eff->out_tvars[j] = otv[j];
         /* has_let tracks only `let`-bindings whose value is read back as a
@@ -1498,7 +1578,16 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
             int close = (i+toks[i].span);
             TypeConstraint vtype = TC_NONE, veffout = TC_NONE;
             int pairs = 0, has_eff = 0;
+            /* The clause that decides what `case` leaves: each body runs with the payload
+               (or scrutinee) on top, so that value counts as its first input. */
+            int cl_c = 0, cl_p = 0, cl_rank = 3, cl_out = TC_NONE, cl_tags = 0, cl_returns = 0, nk = 0;
+            int is_case = close+1 < total_count && toks[close+1].tag == TOK_WORD && toks[close+1].as.sym == S_CASE && tc->sp >= 2;
+            uint32_t keys[UNION_VARIANTS_MAX];
             for (int j = i+1; j < close; ) {
+                if (is_case && toks[j].tag == TOK_SYM) {
+                    if (nk == UNION_VARIANTS_MAX) die("case: more than %d tag clauses", UNION_VARIANTS_MAX);
+                    keys[nk++] = toks[j].as.sym;
+                }
                 if (toks[j].tag == TOK_LPAREN) j = (j+toks[j].span) + 1;
                 else j++;
                 if (j >= close) break;
@@ -1514,7 +1603,16 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                        applied twice without detection. Ban box creation nested in
                        clause bodies. Runtime catches double-free but we'd rather
                        surface this at TC. */
-                    tc_tuple(tc, toks, j, vc2, total_count); tc->sp--;
+                    tc_tuple(tc, toks, j, vc2, total_count);
+                    TupleEffect *ce = &tc->effects[tc->data[tc->sp-1].effect_idx]; tc->sp--;
+                    int rank = ce->diverges ? 2 : ce->opaque;
+                    if (rank == 0 && cl_rank == 0 && ce->produced - ce->consumed != cl_p - cl_c)
+                        tc_error(tc, toks[j].line, 0, "'case' clauses leave different counts: net %+d vs net %+d", cl_p - cl_c, ce->produced - ce->consumed);
+                    if (rank < 2) cl_tags = cl_returns++ ? tc_tags_merge(tc, cl_tags, ce->out_tags) : ce->out_tags;
+                    if (rank < cl_rank) {
+                        cl_rank = rank; cl_c = ce->consumed > 0 ? ce->consumed : 1;
+                        cl_p = ce->produced + cl_c - ce->consumed; cl_out = ce->out_type;
+                    }
                     for (int k = j+1; k < vc2; k++) {
                         if (toks[k].tag == TOK_LPAREN) { k = (k+toks[k].span); continue; }
                         if (toks[k].tag == TOK_LBRACKET) { k = (k+toks[k].span); continue; }
@@ -1538,18 +1636,50 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
             if (vtype != TC_TUPLE && !has_eff) tc_push(tc, TC_REC, t->line);
             else {
                 tc_push(tc, TC_TUPLE, t->line);
-                if (has_eff) { int eidx = tc_alloc_effect(tc); tc->effects[eidx].out_type = veffout; tc->data[tc->sp-1].effect_idx = eidx; }
+                /* The default is pushed, not run, when no clause matches. That cannot happen when
+                   the scrutinee's tags are known and each has a clause. */
+                AbstractType *scr = &tc->data[tc->sp-3], *dfl = &tc->data[tc->sp-2];
+                int live = !is_case || scr->type != TC_TAGGED || !tc_tags(tc, scr); uint32_t missing = 0;
+                if (!live) { UnionDef *ud = &tc->unions[tc_tags(tc, scr)-1];
+                    for (int v = 0; v < ud->count; v++) { int found = 0;
+                        for (int k = 0; k < nk; k++) if (keys[k] == ud->syms[v]) found = 1;
+                        if (!found) { live = 1; if (!missing) missing = ud->syms[v]; } } }
+                if (is_case && live) {
+                    int dtags = tc_tags(tc, dfl);
+                    if (cl_rank == 0 && cl_p != cl_c) {
+                        const char *why = scr->type != TC_TAGGED ? "no predicate holds, which can always happen"
+                            : !tc_tags(tc, scr) ? "a tag it has no clause for arrives, and the checker cannot see which tags arrive"
+                            : "the scrutinee is tagged '%s, which has no clause";
+                        const char *fix = scr->type != TC_TAGGED ? "Make each clause leave one value in place of the scrutinee."
+                            : !tc_tags(tc, scr) ? "Declare the tags where the value comes from, as in [{'ok int 'no list} either lent in ...] effect, or make each clause leave one value in place of the scrutinee."
+                            : "Add a clause for '%s, or make each clause leave one value in place of the scrutinee.";
+                        char msg[512]; snprintf(msg, sizeof msg, "'case' clauses leave net %+d, but it pushes its default when %s, and that leaves net +0.\n    %s", cl_p - cl_c, why, fix);
+                        const char *m = missing ? sym_name(missing) : "";
+                        tc_error(tc, t->line, 0, msg, m, m);
+                    }
+                    cl_tags = cl_returns++ ? tc_tags_merge(tc, cl_tags, dtags) : dtags;
+                    if (cl_rank == 2) { cl_rank = 0; cl_c = 1; cl_p = 1; cl_out = dfl->type; }
+                }
+                if (has_eff) {
+                    int eidx = tc_alloc_effect(tc); TupleEffect *e = &tc->effects[eidx];
+                    e->out_type = cl_rank < 3 ? (TypeConstraint)cl_out : veffout;
+                    e->consumed = cl_c; e->produced = cl_p; e->opaque = cl_rank == 1; e->diverges = cl_rank == 2; e->clauses = cl_rank < 3;
+                    e->out_tags = cl_returns ? cl_tags : 0;
+                    tc->data[tc->sp-1].effect_idx = eidx;
+                }
             }
             i = close; break;
         }
         case TOK_WORD: {
             uint32_t sym = t->as.sym;
+            if (sym == S_HALT || (sym == S_MUST && i > start && toks[i-1].tag == TOK_WORD && (toks[i-1].as.sym == S_NO || toks[i-1].as.sym == S_NONE)))
+                tc->diverged = 1;
             if (sym == S_LET) {
+                if (tc->sp > tc->sp_floor && tc->data[tc->sp-1].type == TC_SYM) tc_take(tc, 2, t->line);
                 if (tc->sp < 2 || tc->data[tc->sp-1].type != TC_SYM || !tc->data[tc->sp-1].sym_id) {
                     tc_error(tc, t->line, 0, "let: expected a value and then a 'name, as in `42 'x let`");
                     tc->sp = tc->sp_floor;
                 } else {
-                    tc_take(tc, 2);
                     uint32_t ns = tc->data[tc->sp-1].sym_id; AbstractType vt = tc->data[tc->sp-2]; tc->sp -= 2;
                     int is_recur = tc->recur_pending && tc->recur_sym == ns;
                     if (tc->recur_pending) tc->recur_pending = 0;
@@ -1648,35 +1778,10 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     if (tc->unknown_count > 0 && tc->unknowns[tc->unknown_count-1].sym == toks[i-1].as.sym) tc->unknown_count--;
                 }
             } else if (sym == S_CASE) {
-                /* Predicate-mode lint: when the scrutinee isn't tagged, clause bodies
-                   run with the scrutinee on top of stack. An empty body `()` preserves
-                   the scrutinee as output; a body like `(42)` replaces it. Mixing the
-                   two produces branches with different output types and breaks the
-                   HO_BRANCHES_AGREE check (because the outer `{...}` effect hides
-                   per-clause shape). Require all bodies to be consistently empty or
-                   consistently non-empty. */
-                if (tc->sp >= 3 && tc->data[tc->sp-3].type != TC_TAGGED) {
-                    int brace = tc_find_brace_before(toks, i);
-                    if (brace >= 0) {
-                        int cl = (brace+toks[brace].span);
-                        int pair = 0, empty_body = 0, nonempty_body = 0;
-                        for (int j = brace + 1; j < cl; ) {
-                            if (toks[j].tag == TOK_LPAREN) {
-                                int close = (j+toks[j].span);
-                                if (pair % 2 == 1) { /* body slot */
-                                    if (close == j + 1) empty_body = 1; else nonempty_body = 1;
-                                }
-                                j = close + 1; pair++;
-                            } else j++;
-                        }
-                        if (empty_body && nonempty_body)
-                            tc_error(tc, t->line, 0, "'case' clause bodies have inconsistent stack effects: empty body `()` preserves scrutinee as output while non-empty bodies replace it. Make all bodies empty, or rewrite empty bodies to return the scrutinee explicitly (e.g., `(dup)` or a typed identity).");
-                    }
-                }
                 /* Exhaustiveness: when scrutinee has a declared union, require every variant to appear as a clause. */
                 if (tc->sp >= 3 && tc->data[tc->sp-3].type == TC_TAGGED && tc->data[tc->sp-3].tvar_id > 0) {
                     int uid = tc->tvars[tvar_find(tc, tc->data[tc->sp-3].tvar_id)].union_id;
-                    if (uid > 0) {
+                    if (uid > 0 && !tc->unions[uid-1].inferred) {
                         int brace = tc_find_brace_before(toks, i);
                         if (brace >= 0) {
                             uint32_t csyms[UNION_VARIANTS_MAX]; int cc = 0;
@@ -1705,7 +1810,17 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
                     }
                 }
                 tc_check_word(tc, sym, t->line);
-            } else tc_check_word(tc, sym, t->line);
+            } else {
+                /* The tags a word's output can carry: its body's, or the literal `'x tag` names,
+                   or for `then` and `pthen` its body's plus the 'no they pass on. */
+                TCBinding *wb = tc_lookup(tc, sym); uint32_t no = S_NO;
+                int tags = wb && wb->atype.type == TC_TUPLE && wb->atype.effect_idx >= 0 ? tc->effects[wb->atype.effect_idx].out_tags : 0;
+                if (sym == S_TAG && tc->sp > 0 && tc->data[tc->sp-1].type == TC_SYM) tags = tc_tags_of(tc, &tc->data[tc->sp-1].sym_id, 1);
+                if (sym == S_THEN || sym == S_PTHEN) tags = tc->sp > 0 && tc->data[tc->sp-1].effect_idx >= 0
+                    ? tc_tags_merge(tc, tc->effects[tc->data[tc->sp-1].effect_idx].out_tags, tc_tags_of(tc, &no, 1)) : 0;
+                tc_check_word(tc, sym, t->line);
+                if (tc->sp > 0 && !tc_tags(tc, &tc->data[tc->sp-1])) tc_set_tags(tc, &tc->data[tc->sp-1], tags);
+            }
             break;
         }
         default: break;
@@ -1724,7 +1839,7 @@ static void tc_process_range(TypeChecker *tc, Token *toks, int start, int end, i
 static int typecheck_tokens(Token *toks, int count, int user_start) {
     /* static: the TypeChecker is megabytes, and -flto inlines this into main(),
        whose frame lives for the whole run. */
-    static TypeChecker tc; memset(&tc, 0, sizeof(tc)); tc.tvar_count = 1; tc.user_start = user_start;
+    static TypeChecker tc; memset(&tc, 0, sizeof(tc)); tc.tvar_count = 1; tc.opaque_at = -1; tc.user_start = user_start;
     tc_process_range(&tc, toks, 0, count, count);
     for (int i = 0; i < tc.sp; i++) {
         if ((tc.data[i].flags & AT_LINEAR) && !(tc.data[i].flags & AT_CONSUMED))
@@ -1737,9 +1852,11 @@ static int typecheck_tokens(Token *toks, int count, int user_start) {
         }
     }
     for (int i = 0; i < tc.unknown_count; i++) {
-        uint32_t sym = tc.unknowns[i].sym; int defined = 0;
-        for (int j = 0; j < tc.bind_count; j++) if (tc.bindings[j].sym == sym) { defined = 1; break; }
-        if (!defined) tc_error(&tc, tc.unknowns[i].line, 0, "unknown word '%s'", sym_name(sym));
+        uint32_t sym = tc.unknowns[i].sym; int def_line = 0;
+        for (int j = 0; j < tc.bind_count; j++) if (tc.bindings[j].sym == sym) { def_line = tc.bindings[j].def_line; break; }
+        if (!def_line) tc_error(&tc, tc.unknowns[i].line, 0, "unknown word '%s'", sym_name(sym));
+        else tc_error(&tc, tc.unknowns[i].line, 0, "'%s' is used on line %d before it is defined on line %d, so the checker cannot know what it takes and leaves there.\n"
+                      "    Declare its type before the first use: '%s [...] effect, listing what it takes and leaves (e.g. int lent in  int move out).", sym_name(sym), tc.unknowns[i].line, def_line, sym_name(sym));
     }
     return tc.errors;
 }
@@ -1906,13 +2023,14 @@ static void prim_must(Frame *e) {
     if(top.as.compound.len==S_OK) { sp--; return; }
     die("must: expected 'ok tagged, got '%s tagged (its payload is on top of the stack below)", sym_name(top.as.compound.len));
 }
-/* tagged default (body) pthen: on 'ok run body on the payload, else leave default under the tagged. */
+/* tagged default (body) pthen: on 'ok run body on the payload, else leave default under the tagged, re-tagged 'no. */
 static void prim_pthen(Frame *env) {
     POP_BODY(body,"pthen"); POP_VAL(def);
     if(sp<=0) die("pthen: stack underflow");
     Value top=stack[sp-1];
     if(top.tag!=VAL_TAGGED) die("pthen: expected tagged, got %s",valtag_name(top.tag));
     if(top.as.compound.len==S_OK){ deep_free_values(def_buf,def_s); sp--; eval_body(body_buf,body_s,env); return; }
+    stack[sp-1].as.compound.len=S_NO;
     int ts=val_slots(top); SPUSH(def_buf,def_s); swap_blocks(sp-def_s-ts,ts,def_s);
 }
 static void prim_while(Frame *env) {
@@ -2041,6 +2159,24 @@ static void prim_reverse(Frame *e){
     int s=val_slots(top),len=(int)top.as.compound.len,p=sp-s;
     slot_reverse(&stack[p],s-1);
     for(int i=0;i<len;i++){ int n=val_slots(stack[p]); slot_reverse(&stack[p],n); p+=n; }
+}
+/* a b zip: [a0 b0] [a1 b1] ... as long as the shorter list. One pass over each;
+   reading element i by index walks a list whose elements span several slots. */
+static void prim_zip(Frame *e){
+    (void)e;
+    for(int k=1;k<=2;k++) if(sp<k||stack[sp-1].tag!=VAL_LIST) die("zip: expected two lists, got %s", sp>=1?valtag_name(stack[sp-1].tag):"an empty stack");
+    POP_VAL(b);
+    if(sp<=0||stack[sp-1].tag!=VAL_LIST) die("zip: expected two lists, got %s under the second list", sp>0?valtag_name(stack[sp-1].tag):"nothing");
+    POP_VAL(a);
+    int la=(int)a_top.as.compound.len,lb=(int)b_top.as.compound.len,n=la<lb?la:lb,p0=sp;
+    int *sa=elem_starts(a_buf,a_s,la),*sb=elem_starts(b_buf,b_s,lb);
+    for(int i=0;i<n;i++){
+        int ao=sa?sa[i]:i,an=sa?sa[i+1]-sa[i]:1,bo=sb?sb[i]:i,bn=sb?sb[i+1]-sb[i]:1;
+        SPUSH(&a_buf[ao],an); SPUSH(&b_buf[bo],bn); spush(val_compound(VAL_LIST,2,an+bn+1));
+    }
+    if(la>n) deep_free_values(&a_buf[sa?sa[n]:n],(sa?sa[la]:la)-(sa?sa[n]:n));
+    if(lb>n) deep_free_values(&b_buf[sb?sb[n]:n],(sb?sb[lb]:lb)-(sb?sb[n]:n));
+    spush(val_compound(VAL_LIST,n,sp-p0+1));
 }
 static void prim_range(Frame *e){(void)e;int64_t end=pop_int(),start=pop_int();int count=0;for(int64_t i=start;i<end;i++){spush(val_int(i));count++;}spush(val_compound(VAL_LIST,count,count+1));}
 static void push_string_bytes(const char *buf, int len);
@@ -2391,12 +2527,16 @@ static void dispatch_word(uint32_t sym, Frame *env) {
     Frame *f=lu.frame; int bi=(int)(b-f->bindings);
     b->pinned++; eval_tuple_scoped(v,s,env); f->bindings[bi].pinned--;
 }
+static void eval_in(Value *body, int slots, Frame *ee);
 static void eval_body(Value *body, int slots, Frame *env) {
+    Value hdr=body[slots-1]; if(hdr.tag!=VAL_TUPLE) die("eval_body: expected tuple, got %s (internal: evaluator received non-tuple header)", valtag_name(hdr.tag));
+    eval_in(body, slots, hdr.as.compound.env?hdr.as.compound.env:env);
+}
+/* Runs a tuple body in frame ee. */
+static void eval_in(Value *body, int slots, Frame *ee) {
     if(++eval_depth > EVAL_DEPTH_MAX) die("recursion depth exceeded (%d levels)", EVAL_DEPTH_MAX);
     c_stack_check("in a nested call");
-    Value hdr=body[slots-1]; if(hdr.tag!=VAL_TUPLE) die("eval_body: expected tuple, got %s (internal: evaluator received non-tuple header)", valtag_name(hdr.tag));
-    int len=(int)hdr.as.compound.len;
-    Frame *ee=hdr.as.compound.env?hdr.as.compound.env:env;
+    int len=(int)body[slots-1].as.compound.len;
     int sbc=ee->bind_count,a0=asp,*st=elem_starts(body,slots,len);
     for(int k=0;k<len;k++){
         int eo=k,es=1; if(st){eo=st[k];es=st[k+1]-st[k];}
@@ -2417,11 +2557,25 @@ static void eval_body(Value *body, int slots, Frame *env) {
             else dispatch_word(ep->as.xt.sym,ee);
             asp=a1;
         } else if(is_compound(ep->tag)){
+            /* `(then) (else) if` written in place: run the chosen branch from this body
+               rather than copy both branches to the stack and then to the aux stack. */
+            if(ep->tag==VAL_TUPLE && k+2<len){
+                int e2=st?st[k+2]:k+2, s2=st?st[k+3]-st[k+2]:1, e1=st?st[k+1]:k+1, s1=e2-e1;
+                const Value *b2=&body[e2+s2-1];
+                if(b2->tag==VAL_XT && b2->as.xt.fn==prim_if && body[e2-1].tag==VAL_TUPLE){
+                    if(b2->loc) current_loc=b2->loc;
+                    if(sp<=0) die("if: stack underflow");
+                    Value c=spop(); if(c.tag!=VAL_INT) die("if: condition must be int, got %s",valtag_name(c.tag));
+                    ee->captured=1; /* as pushing the branches would, so bindings are kept, not remade */
+                    if(c.as.i) eval_in(&body[eo],es,ee); else eval_in(&body[e1],s1,ee);
+                    k+=2; continue;
+                }
+            }
             SPUSH(&body[eo],es);
-            if(ep->tag==VAL_TUPLE){ee->refcount++;stack[sp-1].as.compound.env=ee;}
+            if(ep->tag==VAL_TUPLE){ee->captured=1;stack[sp-1].as.compound.env=ee;}
         } else spush(*ep);
     }
-    if(ee->refcount==0) frame_trim(ee,sbc);
+    if(!ee->captured) frame_trim(ee,sbc);
     asp=a0; eval_depth--;
 }
 static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
@@ -2464,7 +2618,7 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
         }
     }
     Value hdr=val_compound(VAL_TUPLE,ec,sp-eb+1); if(ft) hdr.loc=LOC_PACK(ft->fid,ft->line,ft->col);
-    spush(hdr); if(env) env->refcount++; stack[sp-1].as.compound.env=env;
+    spush(hdr); if(env) env->captured=1; stack[sp-1].as.compound.env=env;
 }
 static void eval(Token *toks, int count, Frame *env) {
     int base=sp; build_tuple(toks,0,count,count,env);
@@ -2569,7 +2723,6 @@ static const char *PRELUDE =
     "(list ('dd-x let dup dd-x member (dd-x drop) (dd-x push) if) fold) ['a list own in  'a list move out] effect 'dedup let\n"
     "3.14159265358979323846 'pi let\n"
     "6.28318530717958647692 'tau let\n"
-    "('b let 'a let a len b len min 'n let 0 n range (dup a swap get must swap b swap get must couple) each) 'zip let\n"
     "(255 band) 'byte-mask let\n"
     "('b let 0 8 range (7 swap sub b swap shr 1 band) each) 'byte-bits let\n"
     "(0 (swap 1 shl bor) fold) 'bits-byte let\n"
@@ -2883,7 +3036,7 @@ static void register_prims(void) {
         R(ffloor,ffloor),R(fround,fround),R(fexp,fexp),R(flog,flog),R(fpow,fpow),R(fatan2,fatan2),
         R(list,list),R(len,size),R(push,push_op),M("pop",pop),
         M("get",get),M("peek",peek),M("nth",nth),M("set",set),R(cat,concat),
-        R(reverse,reverse),{"take-n",prim_take_n,NULL},{"drop-n",prim_drop_n,NULL},R(range,range),
+        R(reverse,reverse),R(zip,zip),{"take-n",prim_take_n,NULL},{"drop-n",prim_drop_n,NULL},R(range,range),
         R(fold,fold),R(each,each),R(sort,sort),M("index-of",indexof),
         M("at",at),R(rec,rec),R(into,into),M("edit",edit),
         R(millis,millis),R(datetime,datetime),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),

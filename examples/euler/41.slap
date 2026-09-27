@@ -68,7 +68,7 @@
     nip nip 1 swap
   ) (
     drop prev-perm not (
-      swap 1 swap
+      "euler/41: every 7-digit pandigital is composite; search 4 digits next" no must
     ) (
       swap
     ) if

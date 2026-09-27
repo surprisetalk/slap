@@ -329,7 +329,7 @@ rec rec eq assert
 {'a 1} 2 'b into 'b at must 2 eq assert
 
 -- case with no match returns default
-100 -1 {(50 lt) (1)} case -1 eq assert
+100 -1 {(50 lt) (drop 1)} case -1 eq assert
 
 -- while that never executes body
 10 (dup 5 lt) (2 mul) while 10 eq assert
@@ -425,6 +425,7 @@ outer 15 eq assert
 0 iota [] eq assert
 
 -- ===== Adversarial: mutual-style via def =====
+'odd? [int lent in  int move out] effect
 (dup 0 eq (drop 1) (1 sub odd?) if) 'even? let
 (dup 0 eq (drop 0) (1 sub even?) if) 'odd? let
 4 even? assert
@@ -832,8 +833,8 @@ list "hi" push "--" str-join "hi" eq assert
 -- case unifies case + case
 1 'foo tag 999 {'foo (1 plus) 'bar (2 plus)} case 2 eq assert
 1 'baz tag 999 {'foo (1 plus) 'bar (2 plus)} case 999 eq assert
-5 'unknown {(3 lt) ('small) (10 lt) ('medium)} case 'medium eq assert
-15 'unknown {(3 lt) ('small) (10 lt) ('medium)} case 'unknown eq assert
+5 'unknown {(3 lt) (drop 'small) (10 lt) (drop 'medium)} case 'medium eq assert
+15 'unknown {(3 lt) (drop 'small) (10 lt) (drop 'medium)} case 'unknown eq assert
 
 -- record clauses
 123 'foo tag () {'foo (1 plus) 'bar (2 plus)} case 124 eq assert
@@ -1397,6 +1398,8 @@ none () no eq assert
 -- parse-until (tagged API)
 "hello=world" ok "=" parse-until must "world" eq assert "hello" eq assert
 "a::b::c" ok "::" parse-until must "b::c" eq assert "a" eq assert
+-- a missing delimiter leaves the same shape: an empty prefix under the error
+"hello" ok "=" parse-until () {'ok (drop "found") 'no (drop "missing")} case "missing" eq assert "" eq assert
 
 -- parse-float (tagged API)
 "3.14" ok parse-float must drop 3.14 eq assert
@@ -1606,6 +1609,8 @@ scope-outer 100 eq assert
 (rec 0 20000 range 'f into 'f (1 push) edit must 'f at must len 20001 eq assert) 'big-edit let big-edit
 (0 300000 range no 0 (drop 1) pthen -1 {'ok (drop -2) 'no (len)} case 300000 eq assert 0 eq assert) 'big-pthen let big-pthen
 ([1 2] no "fallback" (drop 1) pthen drop "fallback" eq assert) 'multi-slot-default let multi-slot-default
+-- like then, pthen passes any tag but 'ok on as 'no
+1 'err tag 0 (drop 5 ok) pthen 1 no eq assert 0 eq assert
 (0 20000 range 0 {(len 5 lt) (drop 1) (len 5 gt) (len)} case 20000 eq assert) 'big-scrutinee let big-scrutinee
 (list 100 (list swap push) repeat print) 'deep-print let deep-print
 -- a box holding a dict: mutate hands the body the contents, lend a copy
@@ -1659,6 +1664,23 @@ dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq a
 -- a body that runs a tuple input: the tuple's effect decides what it leaves
 (apply) [tuple lent in  int move out] effect 'run-in let (3) run-in 3 eq assert
 ('f let 1 f) [tuple lent in  int move out] effect 'run-bound let (1 plus) run-bound 2 eq assert
+(apply plus) [int lent in  tuple lent in  int move out] effect 'add-run let 1 (2) add-run 3 eq assert
+(if) [int lent in  tuple lent in  tuple lent in] effect 'if-in let 1 () () if-in
+-- a branch that never returns agrees with any branch, in either position
+(dup 0 ge (1 plus) ("neg" no must) if) [int lent in  int move out] effect 'inc-b let 1 inc-b 2 eq assert
+1 0 lt ("unreachable" no must) () if
+-- a case clause may consume values below the scrutinee; its effect is the case's
+('lit let dup lit str-find () {'ok ('p let p lit len plus drop-n) 'no (drop "skip-to: not found" no must)} case) 'skip-to let
+("abc>def" ">" skip-to) [list move out] effect 'skip-caller let skip-caller "def" eq assert
+-- the checker infers the tags a word emits, so a case covering them never reaches its default
+(dup 0 lt (drop "neg" no) (ok) if) 'sgn-chk let
+(5 swap sgn-chk 0 {'ok (plus) 'no (drop drop -1)} case) [int lent in  int move out] effect 'add5 let 3 add5 8 eq assert -3 add5 -1 eq assert
+(10 swap ok parse-int 0 {'ok (drop plus) 'no (drop drop drop -1)} case) [list lent in  int move out] effect 'p10 let "5" p10 15 eq assert "x" p10 -1 eq assert
+-- a declared either input tells the body which tags reach its case
+(5 swap 0 {'ok (plus) 'no (drop drop -1)} case) [{'ok int 'no list} either lent in  int move out] effect 'add5-in let 3 ok add5-in 8 eq assert
+-- an undeclared recursive word takes its effect from the branch that does not recurse
+('close let 'acc let dup len 0 eq (acc swap) (1 drop-n acc 1 push close rec-loop) if) 'rec-loop let
+([1 2 3] list 0 rec-loop drop) [list move out] effect 'rec-caller let rec-caller [1 1 1] eq assert
 
 -- ===== Type annotations =====
 -- A forward declaration, then the body under the same signature.

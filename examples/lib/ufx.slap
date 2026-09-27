@@ -1,7 +1,11 @@
 -- ufx.slap: proportional bitmap font codec. 256 width bytes + ICN-encoded glyphs.
 -- Requires icn.slap (icn-decode, icn-encode). Cat icn.slap before ufx.slap.
 
-(dup 256 take-n 'widths let 256 drop-n 8 chunks (icn-decode) each 'glyphs let rec widths 'widths into glyphs 'glyphs into) 'ufx-decode let
+-- ufx-decode: (bytes -- font ok | msg no)
+('ud let
+ ud len 256 lt ("ufx: shorter than the 256-byte width table" no) (
+ ud len 256 sub 8 mod 0 eq not ("ufx: glyph data is not a whole number of 8-byte tiles" no) (
+   rec ud 256 take-n 'widths into ud 256 drop-n 8 chunks (icn-decode) each 'glyphs into ok) if) if) 'ufx-decode let
 (dup 'widths at must swap 'glyphs at must (icn-encode) each flatten cat) 'ufx-encode let
 
 -- ===== tests =====
@@ -9,9 +13,11 @@ list
 0 256 range (drop 4) each
 60 push 66 push 129 push 129 push 129 push 129 push 66 push 60 push
 'ufx-data let
-ufx-data ufx-decode
+ufx-data ufx-decode must
   dup 'widths at must len 256 eq assert
   dup 'widths at must 0 get must 4 eq assert
   'glyphs at must len 1 eq assert
-ufx-data ufx-decode ufx-encode ufx-data eq assert
-"fonts/atari8.uf1" read must dup ufx-decode ufx-encode eq assert
+ufx-data ufx-decode must ufx-encode ufx-data eq assert
+"fonts/atari8.uf1" read must dup ufx-decode must ufx-encode eq assert
+[1 2 3] ufx-decode () {'ok (drop "") 'no ()} case "ufx: shorter than the 256-byte width table" eq assert
+ufx-data 1 push ufx-decode () {'ok (drop "") 'no ()} case "ufx: glyph data is not a whole number of 8-byte tiles" eq assert

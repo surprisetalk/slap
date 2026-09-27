@@ -27,20 +27,6 @@ def run(*argv, timeout=20):
     )
 
 
-def big_feed(n_items):
-    """An RSS document with n_items entries."""
-    items = "".join(
-        f"    <item><title>Post {i}</title><link>http://e.com/{i}</link>"
-        f"<description>Body {i}. {'pad ' * 10}</description></item>\n"
-        for i in range(n_items)
-    )
-    return (
-        '<?xml version="1.0"?>\n<rss version="2.0"><channel>'
-        "<title>Big</title><link>http://e.com</link><description>d</description>\n"
-        f"{items}</channel></rss>\n"
-    )
-
-
 SRC = "".join(open(f).read() for f in LIBS + [FEED])
 
 
@@ -100,15 +86,14 @@ with tempfile.TemporaryDirectory() as d:
     check("notfeed-reason", "unknown feed format" in r.stderr, repr(r.stderr[:200]))
     check("notfeed-no-digest", "==" not in r.stdout)
 
-    # A feed past 16384 bytes of source, the old ceiling on every parse.
+    # A feed far past the old ceiling of 116 items, which recursion per element set.
     big = os.path.join(d, "big.xml")
     with open(big, "w") as f:
-        f.write(big_feed(116))
-    assert os.path.getsize(big) > 16384, os.path.getsize(big)
+        f.write(harness.big_feed(1000))
     r = run(big)
     check(
-        "past-old-16384-cap-renders",
-        r.returncode == 0 and r.stdout.rstrip().endswith("116 items"),
+        "a-1000-item-feed-renders",
+        r.returncode == 0 and r.stdout.rstrip().endswith("1000 items"),
         f"{os.path.getsize(big)} bytes: {r.stderr[:200]}",
     )
 print(f"feed: {count[0]} checks passed")
