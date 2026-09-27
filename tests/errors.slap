@@ -379,11 +379,11 @@ nip
 -- dup a box (linear)
 42 box dup free free
 
--- EXPECT: function body consumes
+-- EXPECT: 'bad' reaches below the 1 input(s) its type declares
 -- body consumes wrong number of inputs
 (drop drop) [int lent in  int move out] effect 'bad let
 
--- EXPECT: function body produces
+-- EXPECT: 'bad2' leaves 2 value(s) but its type declares 1 output(s)
 -- body produces wrong number of outputs
 (dup) [int lent in  int move out] effect 'bad2 let
 
@@ -406,10 +406,6 @@ nip
 -- EXPECT: 'swap' needs 2 input(s), stack has 1
 -- swap with only 1 value (box)
 42 box swap
-
--- EXPECT: function body consumes
--- body declares 2 inputs but only consumes 1
-(drop) [int lent in  int lent in  int move out] effect 'foo let
 
 -- EXPECT: already defined
 -- duplicate def
@@ -935,3 +931,27 @@ dict [256] 1 insert drop
 
 -- EXPECT: drop-n: count -3 is negative
 [1 2 3 4 5] -3 drop-n drop
+
+-- EXPECT: leaves 0 value(s) but its type declares 1 output(s)
+-- a body that calls a user word and leaves nothing
+(drop) 'sig-drop let (1 sig-drop) [int move out] effect 'sig-bad let
+
+-- EXPECT: reaches below the 1 input(s) its type declares
+-- a body that consumes more than it declares
+(plus) [int lent in  int move out] effect 'sig-under let
+
+-- EXPECT: output 1 is list but its type declares int
+-- a body whose output has the wrong type
+("x") [int move out] effect 'sig-str let
+
+-- EXPECT: reaches below the 1 input(s) its type declares
+-- the same check through a forward declaration
+'sig-fwd [int lent in  int move out] effect (drop drop 1) 'sig-fwd let
+
+-- EXPECT: 'drop' needs 1 input(s), stack has 0
+-- a declared word inside an applied body: its real effect reaches the caller
+((drop) [int own in] effect 'f let 1 f) apply drop
+
+-- EXPECT: 'outer' leaves 3 value(s) but its type declares 1 output(s)
+-- a declared word defined inside a body does not hide the body's own count
+((apply) [tuple lent in  int move out] effect 'inner let (4) inner 1 2) [int move out] effect 'outer let

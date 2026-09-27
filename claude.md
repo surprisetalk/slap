@@ -31,7 +31,7 @@ make status      # every likely failure mode, scored; 1.0 is the minimum pass
 One file, `slap.c`: lex → type-check → eval.
 
 - **Lexer** turns source into tokens. Each bracket token records the offset to its partner (`span`), so nothing scans for matches. String literals are UTF-8 bytes.
-- **Checker** (`typecheck_tokens`) runs over builtins, prelude and program before anything executes. Type variables are union-find; every `(...)` body gets a `TupleEffect` (inputs, outputs, scheme) from a pre-scan plus a real check; linear values are tracked per binding. `BUILTIN_TYPES` holds the primitive signatures and `PRELUDE` the words written in slap.
+- **Checker** (`typecheck_tokens`) runs over builtins, prelude and program before anything executes. Type variables are union-find. Every `(...)` body gets a `TupleEffect` (inputs, outputs, scheme). A pre-scan estimates the effect for recursive references, and the real check then sets the counts. A declared signature must match the real check. Linear values are tracked per binding. `BUILTIN_TYPES` holds the primitive signatures and `PRELUDE` the words written in slap.
 - **Evaluator**: `build_tuple` turns tokens into a tuple body; `eval_body` runs it. A word resolves at build time to its primitive (`prim_fns`, indexed by symbol) or, for `X must`, to the fused variant (`prim_must_fns`). Other words look up a frame binding when they run.
 - **Frames** chain lexical scopes. Each binding owns a heap block of its values. `eval_tuple_scoped` trims the bindings a word makes and puts back caller bindings it rebinds; bindings that returned closures refer to move into a child frame.
 

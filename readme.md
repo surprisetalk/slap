@@ -766,13 +766,15 @@ It catches the following at compile time:
 - Code inside `{...}` case clauses and `[...]` list literals is checked like any other body, and `then`'s body must return a tagged value.
 
 **Effect annotations:**
-- `(body) [sig] effect 'name let` validates the body's stack shape against the declared signature.
+- `(body) [sig] effect 'name let` runs the body on exactly the declared inputs. The body must not reach below them, and it must leave exactly the declared outputs, each of the declared type.
+- A body that runs a `tuple` input leaves whatever that tuple leaves, so its outputs are not checked.
+- A recursive word with no signature can get the wrong effect, and its caller then fails its own check. Declare the recursive word's signature.
 - Forward declarations `'name [sig] effect` reconcile with the body when `name` is later defined.
 
 **What the type system does *not* catch:**
 - Division by zero, modulo by zero, out-of-bounds `set`, `nth`, or `peek` (runtime panics).
 - Non-exhaustive `case` on a tagged value whose variants no signature declares: the default fires on any unmatched tag. That is by design.
-- Correctness of effect-annotation schemas (the user is trusted when they write `[sig] effect`; only the body's *shape* is validated, not its meaning).
+- A signature's type variables do not bind to literals in the body: `(2 mul) ['a num lent in  'a num move out] effect` accepts a float and dies at runtime.
 - Recursion depth, memory limits, or other runtime resource exhaustion.
 
 ## testing

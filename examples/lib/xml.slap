@@ -180,6 +180,7 @@
 
 -- ========== Children ==========
 -- _x-read-children-loop: (s acc close -- acc s').  close is the expected close tag.
+'_x-read-children-loop [list own in  list own in  list lent in  list move out  list move out] effect
 ('close let 'acc let
   dup len 0 eq ("xml: unexpected EOF in " close cat no must) () if
   "<!--" _x-starts-with (

@@ -1,11 +1,10 @@
-- [ ] `--check` rejects every type error a word body can make.
+- [ ] `--check` rejects exactly the type errors a word body can make.
   1. `(2 mul)` under `['a num lent in 'a num move out]` accepts a float and dies at runtime: literal types inside a body do not unify with the signature's variables.
-  2. A declared signature is checked against the pre-scan, which ignores words it cannot resolve and every higher-order body, so the check passes or fails by luck (it now runs on user code only). Passing it the checker's context fixes `(42) 'foo let (foo) [int move out] effect 'bar let` but flags xml.slap's `_xml-parse`, because user words carry pre-scan estimates too. Compare against the real checker's result instead.
-  3. The pre-scan does not model `effect`: `((drop) [int own in] effect 'f let 1 f) apply drop` passes and dies at runtime.
-  4. Underflow is clamped at three sites; one `tc_pop` that records the lowest depth would make body input counts exact.
-  5. `apply`, `if` and named calls apply a tuple's effect three different ways. Routing all three through the scheme path gives a false positive on `(push) dip` in the prelude's `chunks`: the scheme's input positions ignore the value `dip` sets aside. Fix that before unifying.
-  6. A bare forward declaration `'name [sig] effect` leaves `'name` on the runtime stack.
-  7. A brace literal that starts like a record but has an odd count (`{'a 1 'b}`) becomes a tuple; the error surfaces later as "expected record, got tuple". Refuse it where it is written.
+  2. An undeclared recursive word can have two self-consistent effects, and the checker takes the pre-scan's. xml.slap's `_x-read-children-loop` checks as 3→3 but is 3→2, so `_xml-parse` failed its own signature until the loop declared one. Seed the recursion placeholder from the real effect of the branch that does not recurse, not from the pre-scan.
+  3. A body that consumes what a `tuple` input leaves fails its own check: `(apply plus) [int lent in  tuple lent in  int move out] effect` reports `'plus' needs 2 input(s)`. The checker runs code of unknown effect as 0→0, so the values it leaves are missing. After a body's first opaque run (`tc->opaque_runs`), a take below its floor must yield untyped placeholders, not an error or an underflow.
+  4. `apply`, `if` and named calls apply a tuple's effect three different ways. Routing all three through the scheme path gives a false positive on `(push) dip` in the prelude's `chunks`: the scheme's input positions ignore the value `dip` sets aside. Fix that before unifying.
+  5. A bare forward declaration `'name [sig] effect` leaves `'name` on the runtime stack.
+  6. A brace literal that starts like a record but has an odd count (`{'a 1 'b}`) becomes a tuple; the error surfaces later as "expected record, got tuple". Refuse it where it is written.
 
 - [ ] You profile a slap program as a flame graph.
   1. Count and time each word in `dispatch_word` behind a `--profile` flag; print folded stacks to stderr at exit.

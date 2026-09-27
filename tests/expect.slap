@@ -1649,6 +1649,17 @@ dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq a
 ("HTTP/1.1 200 OK" crlf cat "garbage line" cat crlf cat crlf cat parse-http 0 {'ok (drop 1) 'no (drop 0)} case 0 eq assert) 'http-no-colon let http-no-colon
 ("HTTP/1.1 200 OK" crlf cat "Content-Length:5" cat crlf cat crlf cat parse-http must 'headers at must 0 get must 'value at must "5" eq assert) 'http-tight-colon let http-tight-colon
 
+-- ===== A declared signature is checked against the body itself =====
+(42) 'sig-foo let (sig-foo) [int move out] effect 'sig-bar let sig-bar 42 eq assert
+((1 plus) dip) [int lent in  int lent in  int move out  int move out] effect 'bump-under let 1 2 bump-under 2 eq assert 2 eq assert
+([1 2] (1 plus) each) [list move out] effect 'sig-each let sig-each [2 3] eq assert
+'sig-fwd2 [int lent in  int move out] effect (1 plus) 'sig-fwd2 let 1 sig-fwd2 2 eq assert
+-- a body may leave a declared input untouched: drop under (int int -- int)
+(drop) [int lent in  int lent in  int move out] effect 'keep-first let 1 2 keep-first 1 eq assert
+-- a body that runs a tuple input: the tuple's effect decides what it leaves
+(apply) [tuple lent in  int move out] effect 'run-in let (3) run-in 3 eq assert
+('f let 1 f) [tuple lent in  int move out] effect 'run-bound let (1 plus) run-bound 2 eq assert
+
 -- ===== Type annotations =====
 -- A forward declaration, then the body under the same signature.
 'twice [int lent in  int move out] effect
