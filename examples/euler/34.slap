@@ -2,7 +2,7 @@
 -- Sum of numbers equal to the sum of factorial of their digits
 -- Answer: 40730
 
-(1 1 2 6 24 120 720 5040 40320 362880) 'facts let
+[1 1 2 6 24 120 720 5040 40320 362880] 'facts let
 
 -- stack: total n
 0 3

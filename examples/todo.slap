@@ -32,8 +32,8 @@ args 0 get must 'FILE let
 args len 1 gt (args 1 get must) ("list") if 'CMD let
 args 2 drop-n 'REST let
 
-("items" ("text" jd-str  jd-field) jd-list jd-field) 'dec-texts let
-("items" ("done" jd-bool jd-field) jd-list jd-field) 'dec-dones let
+("items" "text" jd-str jd-field jd-list jd-field) 'dec-texts let
+("items" "done" jd-bool jd-field jd-list jd-field) 'dec-dones let
 
 -- `each` shrinks the decoded list to one int, so the branch sees only a status.
 ('what let 'res let

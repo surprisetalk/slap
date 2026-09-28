@@ -96,19 +96,20 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
        ch len 0 gt and
        over len LINE-CAP lt and) () while) 'recv-line let
 
-('rtext let 'rcli let
- rcli rtext LF cat tcp-send () {'ok (drop) 'no (drop)} case tcp-close) 'reply-close let
+-- A socket stays on the stack: each word that uses it hands it on or closes it.
+('rtext let
+ rtext LF cat tcp-send () {'ok (drop) 'no (drop)} case tcp-close) 'reply-close let
 
-(recv-line 'rline let 'hcli let
- rline len 0 eq (hcli tcp-close 1) (
+-- stack: store client -> store continue?
+(recv-line 'rline let
+ rline len 0 eq (tcp-close 1) (
    rline has-lf not (
      rline len LINE-CAP ge (
-       hcli "ERR line too long: no newline within 4096 bytes" reply-close 1
-     ) (hcli tcp-close 1) if
+       "ERR line too long: no newline within 4096 bytes" reply-close 1
+     ) (tcp-close 1) if
    ) (
      rline line-head 'hline let hline print
-     hline handle-cmd 'hcont let 'hreply let
-     hcli hreply reply-close hcont
+     (hline handle-cmd) dip rot rot 'hcont let reply-close hcont
    ) if
  ) if) 'handle-conn let
 
@@ -154,7 +155,6 @@ load-snapshot
 save-snapshot must drop  -- an unwritable snapshot is a deployment bug: fail at boot, not on the first SAVE
 PORT print
 PORT tcp-listen must
-(tcp-accept must 'acli let 'asrv let
- acli handle-conn 'going let
- asrv going) () while
+-- stack: store server; the client goes above the store for handle-conn, then the server comes back up
+(tcp-accept must rot swap handle-conn (swap) dip) () while
 tcp-close

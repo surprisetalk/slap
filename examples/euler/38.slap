@@ -28,7 +28,7 @@
 (
   'bcl-k let 'bcl-dc let 'bcl-val let 'bcl-n let
   bcl-dc 9 lt (
-    bcl-n bcl-val bcl-dc bcl-k bcl-n concat-step 'bcl-k2 let 'bcl-dc2 let 'bcl-val2 let
+    bcl-val bcl-dc bcl-k bcl-n concat-step 'bcl-k2 let 'bcl-dc2 let 'bcl-val2 let
     bcl-n bcl-val2 bcl-dc2 bcl-k2 bc-loop
   ) (bcl-val bcl-dc) if
 ) 'bc-loop let

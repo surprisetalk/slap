@@ -142,9 +142,13 @@ over
 rot
 
 -- EXPECT: stack underflow
+-- a body the checker cannot see takes more than there is
+(drop drop) 'dd let ['dd] first quote apply
+
+-- EXPECT: the stack has 1 here
 1 nip
 
--- EXPECT: stack underflow
+-- EXPECT: the stack has 0 here
 nip
 
 -- EXPECT: 'edit' expected rec, got int
@@ -254,44 +258,44 @@ nip
 -- EXPECT: must: expected 'ok tagged
 "" ok parse-float must
 
--- Compound-guard messages. These runtime checks are typecheck-shadowed for
--- ordinary code; `quote` outputs an unconstrained 'a, so a quoted scalar or
--- tagged binding slips the checker and must die with the exact guard text.
+-- Compound-guard messages. The checker catches these in ordinary code. It cannot
+-- see which binding `quote` reads when the symbol comes from data, so these
+-- reach the runtime guard and must die with its exact text.
 -- EXPECT: len: expected compound, got int
-5 'x let 'x quote len
+5 'x let ['x] 0 get must quote len
 
 -- EXPECT: len: tagged values have no length (case-match first)
-5 ok 'x let 'x quote len
+5 ok 'x let ['x] 0 get must quote len
 
 -- EXPECT: push: expected list or tuple, got int
-5 'x let 'x quote 1 push
+5 'x let ['x] 0 get must quote 1 push
 
 -- EXPECT: push: expected list or tuple, got tagged
-5 ok 'x let 'x quote 1 push
+5 ok 'x let ['x] 0 get must quote 1 push
 
 -- EXPECT: pop: expected list or tuple, got int
-5 'x let 'x quote pop drop
+5 'x let ['x] 0 get must quote pop drop
 
 -- EXPECT: pop: expected list or tuple, got tagged
-5 ok 'x let 'x quote pop drop
+5 ok 'x let ['x] 0 get must quote pop drop
 
 -- EXPECT: get: expected list or tuple, got int
-5 'x let 'x quote 0 get drop
+5 'x let ['x] 0 get must quote 0 get drop
 
 -- EXPECT: get: expected list or tuple, got tagged
-5 ok 'x let 'x quote 0 get drop
+5 ok 'x let ['x] 0 get must quote 0 get drop
 
 -- EXPECT: set: expected list or tuple, got int
-5 'x let 'x quote 0 1 set drop
+5 'x let ['x] 0 get must quote 0 1 set drop
 
 -- EXPECT: set: expected list or tuple, got tagged
-5 ok 'x let 'x quote 0 1 set drop
+5 ok 'x let ['x] 0 get must quote 0 1 set drop
 
 -- EXPECT: cat: expected compound, got int
-5 'x let [] 'x quote cat drop
+5 'x let [] ['x] 0 get must quote cat drop
 
 -- EXPECT: cat: cannot cat tagged values
-5 ok 'x let [] 'x quote cat drop
+5 ok 'x let [] ['x] 0 get must quote cat drop
 
 -- a body that pushes literals onto a nearly full operand stack
 -- EXPECT: stack overflow
@@ -1155,6 +1159,404 @@ rec 5 'c 3 (drop 'a) repeat into 'c at
 -- EXPECT: 'f' passes its input's records back to itself, nested past 32 records deep
 -- a record that holds a record of its own kind has no finite type here
 ('p at f) 'f let
+
+-- EXPECT: TYPE ERROR
+-- if: a branch replaces a value deeper than the other branch takes
+{'a 1} {'x 1} 1 (drop {'y 1}) (drop drop {'b 1} {'y 1}) if drop 'b at
+
+-- EXPECT: TYPE ERROR
+-- if: a branch passes through a value the other replaces
+{'b 1} 1 () (drop {'a 1}) if 'a at
+
+-- EXPECT: TYPE ERROR
+-- if: the payload a branch passes through
+{'b 1} 'x tag 1 () (drop {'a 1} 'x tag) if 0 {'x ('a at)} case
+
+-- EXPECT: TYPE ERROR
+-- case: the default leaves a value a clause replaces
+{'a 1} 5 {'y 1} {(3 lt) (drop drop {'b 1} {'y 1})} case drop 'b at
+
+-- EXPECT: TYPE ERROR
+-- a word leaves a body that reads a key under another value
+(('a at) 1) 'mk let {'b 1} mk drop apply
+
+-- EXPECT: TYPE ERROR
+-- quote inside a body
+('a at) 'f let {'b 1} ('f quote) apply apply
+
+-- EXPECT: TYPE ERROR
+-- a fold's initial value is a body that reads a key
+{'b 1} [1] ('a at) (drop) fold apply
+
+-- EXPECT: TYPE ERROR
+-- a while whose cond is not written in place
+('cond let {'b 0} 'cond quote ('a (1 plus) edit) while) 'run let (1) run
+
+-- EXPECT: TYPE ERROR
+-- an edit body that applies unknown code
+('bd let {'a 1} {'k 0} 'k ('bd quote apply) edit drop 'a at) 'run let (drop drop drop {'b 1} {'k 0} 0) run
+
+-- EXPECT: TYPE ERROR
+-- a value of unknown type meets a record literal
+('k at must 1 () (drop {'b 1}) if 'b at) 'f let {'k {'z 1}} f
+
+-- EXPECT: TYPE ERROR
+-- a quoted record of unknown shape meets a record literal
+{'z 1} 'r let 1 ('r quote) ({'b 1}) if 'b at
+
+-- EXPECT: TYPE ERROR
+-- a declared word calling itself forgets the records below its inputs
+('n let 'body let n 0 eq (body) ('body quote {'a 1} rot rot n 1 sub g swap 'a at drop) if) [rec own in  tuple own in  int own in  rec move out] effect 'g let {'z 1} (drop drop {'b 1} {'c 1}) 1 g
+
+-- EXPECT: TYPE ERROR
+-- a case predicate reaches below the scrutinee
+{'a 1} 5 0 {(drop drop {'b 1} 0) (drop 7)} case drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- a filter predicate reaches below its element
+{'a 1} [1] (drop rot drop {'b 1} rot rot 1) filter swap 'a at
+
+-- EXPECT: TYPE ERROR
+-- a mutate body reaches below the box
+{'a 1} {'b 1} box (swap) mutate free 'a at
+
+-- EXPECT: TYPE ERROR
+-- a lend body reaches below the box
+{'a 1} {'b 1} box (swap) lend drop free 'a at
+
+-- EXPECT: TYPE ERROR
+-- an each body of unknown effect
+[{'a 1}] (1 (drop {'b 1}) repeat) each 0 get must 'a at
+
+-- EXPECT: TYPE ERROR
+-- a case clause of unknown effect
+{'a 1} 'x tag 0 {'x (0 (dup 1 lt) (drop drop {'b 1} 1) while drop)} case 'a at
+
+-- EXPECT: TYPE ERROR
+-- a declared either output that a called word widens
+('z tag) 'mk let (mk) [int own in  {'a int} either move out] effect 'f let 5 f {'b 1} {'a (drop {'a 1})} case 'a at
+
+-- EXPECT: TYPE ERROR
+-- a tag a declared either input does not name
+() [{'a int} either own in  {'a int} either move out] effect 'f let 5 'z tag f {'b 1} {'a (drop {'a 1})} case 'a at
+
+-- EXPECT: TYPE ERROR
+-- a declared 'a output that is not the 'a input
+(drop {'z 1}) ['a own in  'a move out] effect 'f let {'a 1} f 'a at
+
+-- EXPECT: TYPE ERROR
+-- a declared either output whose 'a payload is not the 'a input
+(drop {'z 1} ok) ['a own in  {'ok 'a 'no int} either move out] effect 'f let {'a 1} f must 'a at
+
+-- EXPECT: TYPE ERROR
+-- a declared tuple output hides a body that reads a key
+(('a at)) [tuple move out] effect 'g let {'b 1} g apply
+
+-- EXPECT: TYPE ERROR
+-- a program redefines ok
+(0 (ok) (drop {'b 1} 'ok tag) if) 'ok let {'a 1} ok must 'a at
+
+-- EXPECT: TYPE ERROR
+-- a program redefines no
+(0 (no) (drop {'b 1} ok) if) 'no let 0 ({'a 1}) (5 no must) if 'a at
+
+-- EXPECT: TYPE ERROR
+-- a word redefined after a word that calls it
+{'a 1} 'r let (r 'a at) 'h let (0 (r) {'b 1} if) 'r let h
+
+-- EXPECT: TYPE ERROR
+-- cat of two bodies
+{'z 1} (drop {'a 1}) (drop {'b 1}) cat apply 'a at
+
+-- EXPECT: TYPE ERROR
+-- each over a dict
+dict "k" {'a 1} insert (drop {'b 1}) each "k" of must nip 'zzz at
+
+-- EXPECT: TYPE ERROR
+-- a body that reads keys leaves through a fold
+((drop {'b 1})) [tuple move out] effect 'g let [1] {'a 1} (drop g apply) fold 'a at
+
+-- EXPECT: TYPE ERROR
+-- a then body reads a key the ok payload lacks
+{'b 1} ok ('a at ok) then must drop
+
+-- EXPECT: TYPE ERROR
+-- nth of a bound list whose elements lack the key
+[{'b 1}] 'nl let 'nl 0 nth must 'a at
+
+-- EXPECT: TYPE ERROR
+-- a trial of unknown code hides a body that reads keys: each
+(apply) 'ap let {'b 1} [1] (drop ('a at) (0 drop) ap) each 0 get must apply
+
+-- EXPECT: TYPE ERROR
+-- a trial of unknown code hides a body that reads keys: if
+(apply) 'ap let {'b 1} 0 ((drop {'a 1})) (('a at) (0 drop) ap) if apply
+
+-- EXPECT: TYPE ERROR
+-- a body without a type variable merges with another body
+{'z 1} 0 ((drop {'a 1})) ((drop {'b 1}) () cat) if apply 'a at
+
+-- EXPECT: TYPE ERROR
+-- a recursive call's outputs are what the word leaves
+(dup 0 eq (drop {'a 1} {'b 2}) (1 sub f swap) if) 'f let 1 f 'b at
+
+-- EXPECT: TYPE ERROR
+-- a declared name bound to a body the checker did not see written
+'g [int own in  int move out] effect (swap drop {'b 1} swap) 'x let 'x quote 'g let {'a 1} 5 g drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- a list whose elements the checker cannot see meets a record: flatten
+[[{'b 1}]] flatten [{'a 1}] cat first 'a at
+
+-- EXPECT: TYPE ERROR
+-- a list whose elements the checker cannot see meets a record: set
+[{'b 1}] 0 {'b 1} set must {'a 1} push first 'a at
+
+-- EXPECT: TYPE ERROR
+-- a declared output type variable that no input binds
+(drop {'b 1}) ['a own in  'b move out] effect 'f let 1 f dup {'a 1} cat drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- default on a payload the checker does not track
+{'b 1} ok (ok) then {'a 1} default 'a at
+
+-- EXPECT: TYPE ERROR
+-- a recursive call on another record: the output is that record, not the input
+((drop {} 0 f) () if) 'f let {'z 5} 1 f 'z at
+
+-- EXPECT: TYPE ERROR
+-- a declared recursive word whose 'a output is its recursive call's input
+((drop {'y 1} 0 f) () if) ['a own in  int own in  'a move out] effect 'f let {'z 5} 1 f 'z at
+
+-- EXPECT: TYPE ERROR
+-- an if branch whose effect the checker lost
+{'a 1} 1 [(drop {'b 1})] first () if 'a at
+
+-- EXPECT: TYPE ERROR
+-- a word input used as an if branch
+({'a 1} 1 rot () if 'a at) 'h let (drop {'b 1}) h
+
+-- EXPECT: TYPE ERROR
+-- a mutate body whose effect the checker lost
+{'b 1} box [(drop {'a 1})] first mutate ('b at) lend print free
+
+-- EXPECT: TYPE ERROR
+-- a filter body whose effect the checker lost
+{'a 1} [1] [(drop rot drop {'b 1} rot rot 1)] first filter swap 'a at
+
+-- EXPECT: TYPE ERROR
+-- a declared 'b output that is the 'a input
+(drop) ['a own in  'b own in  'b move out] effect 'f let {'b 1} {'a 1} f 'a at
+
+-- EXPECT: TYPE ERROR
+-- a declared 'a output joined with another input
+(0 (drop) (nip) if) ['a own in  'b own in  'a move out] effect 'f let {'a 1} {'b 1} f 'a at
+
+-- EXPECT: TYPE ERROR
+-- an if branch that replaces a value 17 deep
+{'a 1} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 (drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop {'b 1} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0) () if drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- a word that mutates the box it is given
+((drop {'b 1}) mutate) 'f let {'a 1} box f ('a at) lend print free
+
+-- EXPECT: TYPE ERROR
+-- an if join of lists whose elements differ
+[{'a 1}] 1 (drop [{'b 1}]) () if first 'a at
+
+-- EXPECT: TYPE ERROR
+-- a loop join of lists whose elements differ
+[{'a 1}] 3 (drop [{'b 1}]) repeat first 'a at
+
+-- EXPECT: TYPE ERROR
+-- a declared word that applies a tuple input cannot show its 'a output is the input
+(apply) ['a own in  tuple own in  'a move out] effect 'm let {'a 1} (drop {'b 1}) m 'a at
+
+-- EXPECT: TYPE ERROR
+-- a pthen body that reaches below the payload
+{'a 1} 1 ok 0 (drop drop {} 0 0 ok) pthen drop drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- a fold body that reaches below the accumulator
+{'a 1} [1] 0 (drop drop drop {'b 1} 0) fold drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- an if whose else is a value, not a body
+0 ({'a 1}) {'b 1} if 'a at
+
+-- EXPECT: TYPE ERROR
+-- two records that extend one base, one overriding a key
+{'a {'x 1}} 1 ({'y 1} 'a into) () if 'a at 'x at
+
+-- EXPECT: TYPE ERROR
+-- two records that extend one base meet in a list
+{'a {'x 1}} 'r let r {'y 1} 'a into r 5 'q into couple first 'a at 'x at
+
+-- EXPECT: TYPE ERROR
+-- a signature after a body not written in place
+(drop {'b 1}) ok must ['a own in  'a move out] effect 'g let {'a 1} g 'a at
+
+-- EXPECT: TYPE ERROR
+-- the checker frees the effects of old bodies: a body that a type still names is not reused
+{'b 1} (drop {'c 1}) ok () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop must apply 'b at
+
+-- EXPECT: the stack has 0 here
+-- a word that takes more than the top of the program has
+(drop) 'f let f
+
+-- EXPECT: the stack has 0 here
+1 (dup) (dup) if
+
+-- EXPECT: 'g' is declared here but never defined
+'g [int move out] effect g drop
+
+-- EXPECT: 'apply' expected tuple, got int
+5 apply
+
+-- EXPECT: 'each' expected tuple, got rec
+[1] {'b 1} each
+
+-- EXPECT: TYPE ERROR
+-- cat of two records has only the keys of both
+{'a 1} {'b 1} cat 'z at
+
+-- EXPECT: TYPE ERROR
+-- then passes a 'no payload through: it may be the result
+{'b 1} no (drop {'a 1} ok) then {'z 0} {'no ('a at) 'ok ('a at)} case
+
+-- EXPECT: TYPE ERROR
+-- a record built with a data key has fields of unknown type
+{'a {'x 1}} {'y 1} 'a 'b 1 (drop) (nip) if into 'a at 0 (drop {'x 1}) () if 'x at
+
+-- EXPECT: TYPE ERROR
+-- a recursive call's output read inside the body
+(dup 0 eq (drop {'b 1}) (1 sub f 0 (drop {'a 1}) () if dup 'a at drop) if) 'f let 1 f
+
+-- EXPECT: TYPE ERROR
+-- a body in a list literal meets another body
+[({'b 1})] first 0 (drop ({'a 1})) () if apply 'a at
+
+-- EXPECT: TYPE ERROR
+-- a body wider than 16 values leaves a list
+(1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 [{'b 1}]) apply 0 (drop [{'a 1}]) () if first 'a at
+
+-- EXPECT: TYPE ERROR
+-- an on handler whose effect the checker lost
+{'a 1} 'tick [(drop drop {'b 1})] first on 'tick (drop dup 'a at drop) on (dup drop) show
+
+-- EXPECT: TYPE ERROR
+-- an on handler survives the checker freeing old bodies
+{'a 1} 'tick (drop drop {'b 1}) on (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop (drop) drop 'tick (drop dup 'a at drop) on (drop) show
+
+-- EXPECT: TYPE ERROR
+-- a declared list output holds values the checker has not seen
+([{'b 1}]) [list move out] effect 'f let f 0 (drop [{'a 1}]) () if first 'a at
+
+-- EXPECT: TYPE ERROR
+-- a list of tagged values meets a list of lists
+[{'b 1} ok] [[{'a 1}]] cat 0 get must ('a at) each
+
+-- EXPECT: TYPE ERROR
+-- default's payload and fallback of different types
+{'b 1} ok ok [{'a 1}] default ('a at) each
+
+-- EXPECT: TYPE ERROR
+-- if branches that leave different types
+{'b 1} ok [{'a 1}] 1 (drop) (nip) if ('a at) each
+
+-- EXPECT: TYPE ERROR
+-- a box binding after a mutate through a lookup
+{'a 1} box 'bx let bx (drop {'b 1}) mutate 'y let bx ('a at) lend drop free
+
+-- EXPECT: TYPE ERROR
+-- a declared sym output that is not the sym input
+(drop 'b) ['s sym own in  's sym move out] effect 'f let {'a 1} 'a f at
+
+-- EXPECT: TYPE ERROR
+-- default of symbols leaves the payload's
+{'a 1} 'b ok 'a default at
+
+-- EXPECT: TYPE ERROR
+-- default of bodies leaves the payload's
+({'b 1}) ok ({'a 1}) default apply 'a at
+
+-- EXPECT: TYPE ERROR
+-- each on a list push built
+list {'b 1} push () each 0 (drop [{'a 1}]) () if first 'a at
+
+-- EXPECT: TYPE ERROR
+-- cat of a record with keys the checker cannot see
+(5 'q into {'a {'x 1}} swap cat 'a at 'x at) 'f let {'a {'y 1}} f
+
+-- EXPECT: TYPE ERROR
+-- cat of a met record
+{'b {'x 1}} {'b {'y 1}} 0 (drop {'a 1}) () if cat 'b at 'x at
+
+-- EXPECT: TYPE ERROR
+-- a then body that leaves two values
+{'a 1} 5 ok (drop {'b 1} 7 ok) then drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- a then body that takes nothing
+{'a 1} {'b 1} ok (7 ok) then must drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- a pthen body that leaves three values
+{'a 1} 5 ok 0 (drop {'b 1} 7 8 ok) pthen drop drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- an on handler that runs unknown code
+{'a 1} 'tick (drop [(drop {'b 1})] first apply) on 'tick (drop dup 'a at drop) on (drop) show
+
+-- EXPECT: TYPE ERROR
+-- a bare list output meets a list of records
+"a,b" "," str-split first 0 (drop {'a 1}) () if 'a at
+
+-- EXPECT: TYPE ERROR
+-- if branches with lists of different element types
+1 ([1]) ([{'a 1}]) if first 'a at
+
+-- EXPECT: TYPE ERROR
+-- default of an int payload and a record
+5 ok {'a 2} default 'a at
+
+-- EXPECT: TYPE ERROR
+-- if branches of an int and a record
+5 {'a 1} 1 (drop) (nip) if 'a at
+
+-- EXPECT: TYPE ERROR
+-- a key read from a recursive call's output that the word may not leave
+(dup 0 eq (drop {'b 1}) (1 sub f 'a at drop {'a 1}) if) 'f let 1 f
+
+-- EXPECT: TYPE ERROR
+-- a body taken out of a box by lend keeps the key it reads
+{'b 1} ('a at) box () lend swap free apply
+
+-- EXPECT: 'then' takes a value tagged 'ok or 'no
+-- then leaves () for any other tag
+5 'x tag (ok) then must
+
+-- EXPECT: 'then' takes a value tagged 'ok or 'no
+-- a value whose tags the checker cannot see
+(ok) 'mk let 5 ['mk] first quote apply (ok) then must
+
+-- EXPECT: 'then' takes a value tagged 'ok or 'no
+-- a word that thens its input: its callers must pass 'ok or 'no
+((ok) then) 'f let 5 'x tag f must
+
+-- EXPECT: 'if' expected tuple, got int
+-- a value as the else branch
+1 (5) 7 if
+
+-- EXPECT: 'repeat' runs its body again and again
+-- a loop body that changes the stack's depth
+1 2 3 4 (drop) repeat
+
+-- EXPECT: 'while' runs its body again and again
+0 (dup 3 lt) (1 plus 7) while
+
+-- EXPECT: 'if' condition must be int
+"s" (1) (2) if
 
 -- EXPECT: C stack
 -- the checker nests one C call per nested body

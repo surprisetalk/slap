@@ -114,33 +114,33 @@ Atomic identifiers. Prefixed with `'`.
 
 ### definitions
 
-`let` takes value-then-name. On lookup, tuples auto-execute; other values push.
+`let` takes value-then-name. A body written right before `'name let` defines a word: looking the name up runs it. Any other value bound by name is pushed when looked up; `apply` runs a body value.
 
 ```slap
--- tuple binding: auto-executes on lookup (for functions)
+-- a body written before its name: a word
 (2 mul) 'double let
 5 double              -- 10
 
--- scalar binding: pushes on lookup
+-- any other value: pushed on lookup
 42 'answer let
 answer                -- 42
+[(2 mul)] first 'twice let
+5 twice apply         -- 10
 ```
 
-To bind a literal tuple as data (so lookup pushes it without running), wrap in extra parens — the outer tuple auto-execs and pushes the inner:
+A word whose body is a body pushes that body when it runs:
 
 ```slap
 ((1 2 3)) 'foo let
 foo                   -- (1 2 3) on stack
 ```
 
-To thread a bound closure through a nested call without auto-executing it, use `quote`:
+`quote` pushes a word's body without running it:
 
 ```slap
 (1 plus) 'inc1 let
 'inc1 quote           -- (1 plus), pushed without running it
 ```
-
-`quote` is mainly used when passing a closure parameter into a recursive call — see [closures](#closures).
 
 ### control flow
 
@@ -177,21 +177,20 @@ Functions capture their defining scope:
 ```slap
 ('n let (n plus)) 'make-adder let
 
-5 make-adder 'add5 let
-3 add5                 -- 8
-7 add5                 -- 12
+5 make-adder 'add5 let  -- a body made at runtime: a value
+3 add5 apply           -- 8
+7 add5 apply           -- 12
 
 ('lo let 'hi let (dup lo le not swap hi lt and)) 'make-between let
 10 1 make-between 'in-range let
-5 in-range             -- 1
-15 in-range            -- 0
+5 in-range apply       -- 1
+15 in-range apply      -- 0
 ```
 
-When a closure is passed as a parameter and needs to be handed down to a recursive call, use `quote` to push it as data rather than running it:
+A body passed as an input is a value: `apply` runs it, and the name passes it on as it is:
 
 ```slap
--- 'pred let binds a predicate; recursion passes it down via 'pred quote
-('pred let dup 0 gt (dup pred drop 1 sub 'pred quote countdown) () if) 'countdown let
+('pred let dup 0 gt (dup pred apply drop 1 sub pred countdown) () if) 'countdown let
 5 (iseven) countdown    -- applies pred at each step, terminates at 0
 ```
 
@@ -589,24 +588,24 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
 ```slap
 160 'W let  120 'H let  W H mul 'N let  4 'S let
 
--- wrapped cell lookup; the grid stays let-bound and nth reads it by symbol
-(H plus H mod W mul  swap W plus W mod  plus nth must) 'cell let
-
-('cy let 'cx let 'gs let
-  gs cx 1 sub cy 1 sub cell
-  gs cx       cy 1 sub cell plus
-  gs cx 1 plus cy 1 sub cell plus
-  gs cx 1 sub cy       cell plus
-  gs cx 1 plus cy       cell plus
-  gs cx 1 sub cy 1 plus cell plus
-  gs cx       cy 1 plus cell plus
-  gs cx 1 plus cy 1 plus cell plus
-) 'neighbors let
-
-('g let  list 0
+('g let
+  -- wrapped cell lookup; the grid stays let-bound and nth reads it by name,
+  -- so the words that read it live where 'g is bound
+  (H plus H mod W mul  swap W plus W mod  plus 'g swap nth must) 'cell let
+  ('cy let 'cx let
+    cx 1 sub cy 1 sub cell
+    cx       cy 1 sub cell plus
+    cx 1 plus cy 1 sub cell plus
+    cx 1 sub cy       cell plus
+    cx 1 plus cy       cell plus
+    cx 1 sub cy 1 plus cell plus
+    cx       cy 1 plus cell plus
+    cx 1 plus cy 1 plus cell plus
+  ) 'neighbors let
+  list 0
   (dup N lt) (
     dup W divmod 'y let 'x let
-    'g x y neighbors 'n let
+    x y neighbors 'n let
     'g over nth must 1 eq (n 2 eq n 3 eq or) (n 3 eq) if
     (1) (0) if
     swap (push) dip 1 plus
@@ -778,20 +777,29 @@ It catches the following at compile time:
 **Tagged unions:**
 - Tags are open by default; `case` on an untyped tagged value accepts any variant with a default clause.
 - A value whose variants a signature declares (`{'ok 'a 'no ()} either`, as `pop`, `get` and `read` do) is closed: `case` must cover every variant.
-- `either` in effect annotations (`{'ok int 'no str} either`) validates `tag` emission sites: the body may only emit variants named in the schema.
+- A word the program declares with an `either` output (`{'ok int 'no str} either move out`) must leave only the tags it names, including tags from the words it calls. When the checker cannot see which tags the body leaves, callers treat the output's tags as unknown, so a `case` on it keeps its default.
+- A word the program declares with an `either` input accepts only a value whose tags the checker can see, all named in the declaration.
+- `then` takes only a value tagged `'ok` or `'no`, and the checker must see its tags. A word that uses `then` on its input passes that rule on to its callers.
 
 **Protocols (typeclasses):**
 - `ord` (`lt`, `sort`) accepts int and float only. Symbols are Eq but not Ord — ordering symbols by intern id is an implementation accident, not a semantic.
 - `num`, `seq`, `semigroup`, `sized` and `functor` gate other ops.
 - Code inside case clauses is checked like any other body, and `then`'s body must return a tagged value.
 - A `[...]` or `{...}` literal is built once, when the program is read, before anything runs. Its code sees only what is written inside it and the prelude, not names the program binds. Build such a value at runtime instead: `list x push`, `rec x 'key into`.
-- A `{...}` literal is a record when its values pair up as `'key value`, and a tuple otherwise; `{}` is the empty record. A tuple bound by name runs when it is looked up, so `{1 2 3} 't let t` pushes 1 2 3. Right before `case`, a `{...}` literal is a clause list, and every clause body is `(...)`: write `(drop 1)`, not `1`.
+- A `{...}` literal is a record when its values pair up as `'key value`, and a tuple otherwise; `{}` is the empty record. A tuple written right before its `'name let` is a word, so `{1 2 3} 't let t` pushes 1 2 3. Right before `case`, a `{...}` literal is a clause list, and every clause body is `(...)`: write `(drop 1)`, not `1`.
 
 **Effect annotations:**
 - `(body) [sig] effect 'name let` runs the body on exactly the declared inputs. The body must not reach below them, and it must leave exactly the declared outputs, each of the declared type.
 - A declared input is rigid: the body must accept every value its type admits. `(2 mul) ['a num lent in  'a num move out] effect` is an error, because the literal `2` makes the body int-only.
 - A body that runs a `tuple` input leaves whatever that tuple leaves, so its outputs are not checked.
+- An output declared with an input's type variable (`['a own in  'a move out]`) is that input to callers, keys and all, so the body must leave the input there. `(drop {'z 1})` with that signature is an error.
+- A declared `tuple` output hides the body's effect, so it may not be a body that reads record keys.
+- A declared name is bound to a body written right before `'name let`; `x 'name let` with a computed `x` is an error, since callers trust the declaration. A declared word that is used must be defined somewhere.
+- `apply`, `dip`, `each`, `fold`, `while`, `on` and `show` take a body: `5 apply` is an error. At the top of the program, nothing may take more values than the stack holds.
+- A recursive call leaves what the word leaves: the checker joins its outputs with the word's own, so they carry only the keys every path gives them.
 - A recursive word takes its effect from the branch that does not recurse.
+- A loop leaves the stack as deep as it found it: a `repeat` body, or one run of a `while` cond (less its flag) and body, must leave as many values as it takes.
+- `if` takes two bodies, `cond (then) (else) if`; a plain value as a branch is an error.
 - `if` branches and `case` clauses must leave the same count. A branch that never returns (`x no must`, `none must`, `halt`) agrees with any other branch.
 - `case` pushes its default when no clause matches, so its clauses must leave one value in place of the scrutinee, unless every tag the scrutinee can carry has a clause. The checker infers those tags from `ok`, `no`, `'x tag`, `then`, `pthen` and a declared `either`.
 - A word used before its definition, as in mutual recursion, needs `'name [sig] effect` before its first use.
@@ -802,6 +810,8 @@ It catches the following at compile time:
 - Division by zero, modulo by zero, out-of-bounds `set`, `nth`, or `peek` (runtime panics).
 - Non-exhaustive `case` on a tagged value whose variants no signature declares: the default fires on any unmatched tag. That is by design.
 - Recursion depth, memory limits, or other runtime resource exhaustion.
+- A word's `let` rebinds the name where the word was defined, so it shadows a top-level name for the words it calls. A called word that reads that name as a record can then fail in `at`.
+- A recursive word that meets its own call's result with a record inside its body, and reads a key there, can fail in `at` (todo.md).
 
 ## testing
 

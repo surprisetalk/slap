@@ -223,6 +223,26 @@ rec 1 'n into 0 20000 range 'big into
 
 -- ===== Box =====
 42 box free
+-- cat of two records has the keys of both; the right one wins
+{'a 1 'c 3} {'a 2 'b 1} cat dup 'a at 2 eq assert dup 'b at 1 eq assert 'c at 3 eq assert
+-- a body taken out of a list keeps its effect
+{'b 1} [({'a 1})] first apply 'a at 1 eq assert 'b at 1 eq assert
+-- each over a list push built
+list {'b 1} push (dup drop) each 0 get must 'b at 1 eq assert
+-- nth reads a bound list's elements, keys and all
+[{'a 1} {'a 2}] 'nl let 'nl 1 nth must 'a at 2 eq assert
+-- default never runs its fallback: a body there is the value
+{'a 1} ({'x 1}) ok (swap drop {'b 1} swap {'c 1}) default drop 'a at 1 eq assert
+-- a word that thens its input takes 'ok and 'no values
+((1 plus ok) then) 'then-inc let 5 ok then-inc must 6 eq assert 5 no then-inc 0 {'ok (drop 1) 'no (drop 2)} case 2 eq assert
+-- then leaves the body's payload, keys and all
+{'a 1} ok ('a (1 plus) edit ok) then must 'a at 2 eq assert
+-- a then body reads keys from the ok payload
+{'a 1} ok ('a at ok) then must 1 eq assert
+-- a case default that cannot run need not match the clauses' type
+1 ok "s" {'ok (drop 5) 'no (drop 6)} case 5 eq assert
+-- each branch of an if may free the same box binding
+(1 box 'hb let 1 (hb free 1) (0 (hb free 1) (hb free 2) if) if) apply 1 eq assert
 42 box (21 mul) lend 882 eq assert free
 42 box (1 plus) mutate () lend 43 eq assert free
 
@@ -463,8 +483,10 @@ free
   ('b let a b plus)
 ) 'make-adder2 let
 3 make-adder2 'add3 let
-4 add3 7 eq assert
-10 add3 13 eq assert
+4 add3 apply 7 eq assert
+10 add3 apply 13 eq assert
+-- a name bound to a body value pushes it; only a body written before 'name let is a word
+4 add3 swap drop 10 swap apply 13 eq assert
 
 -- ===== Complex: closure over captured variable in map =====
 (
@@ -472,7 +494,7 @@ free
   (factor mul)
 ) 'scale let
 3 scale 'triple let
-[1 2 3 4] (triple) each [3 6 9 12] eq assert
+[1 2 3 4] (triple apply) each [3 6 9 12] eq assert
 
 -- ===== Complex: GCD via recursion =====
 (
@@ -585,9 +607,9 @@ dup dup mul 2.0 sub fabs 0.0001 lt assert drop
   (dup lo le not swap hi lt and)
 ) 'make-between let
 10 1 make-between 'in-range let
-5 in-range assert
-0 in-range not assert
-10 in-range not assert
+5 in-range apply assert
+0 in-range apply not assert
+10 in-range apply not assert
 
 -- ===== Complex: box with record inside =====
 {'count 0 'total 0} box
@@ -1606,10 +1628,10 @@ scope-outer 100 eq assert
 (list 0 (dup 9000 lt) (swap [1] push swap 1 plus) while drop
  0 [1 2] set must dup len 9000 eq assert 0 get must [1 2] eq assert) 'big-set let big-set
 (rec 0 20000 range 'f into 'f (1 push) edit 'f at len 20001 eq assert) 'big-edit let big-edit
-(0 300000 range no 0 (drop 1) pthen -1 {'ok (drop -2) 'no (len)} case 300000 eq assert 0 eq assert) 'big-pthen let big-pthen
-([1 2] no "fallback" (drop 1) pthen drop "fallback" eq assert) 'multi-slot-default let multi-slot-default
+(0 300000 range no 0 (drop 0 1 ok) pthen -1 {'ok (drop -2) 'no (len)} case 300000 eq assert 0 eq assert) 'big-pthen let big-pthen
+([1 2] no "fallback" (drop 0 1 ok) pthen drop "fallback" eq assert) 'multi-slot-default let multi-slot-default
 -- like then, pthen passes any tag but 'ok on as 'no
-1 'err tag 0 (drop 5 ok) pthen 1 no eq assert 0 eq assert
+1 'err tag 0 (drop 0 5 ok) pthen 1 no eq assert 0 eq assert
 (0 20000 range 0 {(len 5 lt) (drop 1) (len 5 gt) (len)} case 20000 eq assert) 'big-scrutinee let big-scrutinee
 (list 100 (list swap push) repeat print) 'deep-print let deep-print
 -- a box holding a dict: mutate hands the body the contents, lend a copy
@@ -1660,7 +1682,7 @@ dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq a
 (drop) [int lent in  int lent in  int move out] effect 'keep-first let 1 2 keep-first 1 eq assert
 -- a body that runs a tuple input: the tuple's effect decides what it leaves
 (apply) [tuple lent in  int move out] effect 'run-in let (3) run-in 3 eq assert
-('f let 1 f) [tuple lent in  int move out] effect 'run-bound let (1 plus) run-bound 2 eq assert
+('f let 1 f apply) [tuple lent in  int move out] effect 'run-bound let (1 plus) run-bound 2 eq assert
 (apply plus) [int lent in  tuple lent in  int move out] effect 'add-run let 1 (2) add-run 3 eq assert
 (if) [int lent in  tuple lent in  tuple lent in] effect 'if-in let 1 () () if-in
 -- a branch that never returns agrees with any branch, in either position
@@ -1785,7 +1807,7 @@ rec 5 'a into 'a at 5 eq assert
 {'x 1} ok must 'x at 1 eq assert
 [{'x 1} {'x 2}] 1 get must 'x at 2 eq assert
 {'x 1} ok 0 {'ok ('x at) 'no (drop 9)} case 1 eq assert
-{'x 1} 0 {(dup 'x at 1 eq) ('x at 10 plus)} case 11 eq assert
+{'x 1} 0 {('x at 1 eq) ('x at 10 plus)} case 11 eq assert
 {'x 1} box ('x at) lend 1 eq assert ('x (1 plus) edit) mutate ('x at) lend 2 eq assert free
 -- a word's list input stands for a caller's list: its elements must have the keys the word reads
 (('x at) each) 'xs-of let [{'x 1} {'x 2 'y 0}] xs-of [1 2] eq assert
@@ -1793,3 +1815,9 @@ rec 5 'a into 'a at 5 eq assert
 
 -- ===== Done =====
 "All tests passed!" print
+
+-- a literal that holds a dict is a value: each run gets its own copy, which the binding owns and frees
+( {'m dict} 'st let  st 'm at "k" 1 insert len 1 eq assert ) 'fresh-dict let
+fresh-dict fresh-dict fresh-dict
+( [dict] 'sts let  sts 0 get must "k" 1 insert len 1 eq assert ) 'fresh-dicts let
+fresh-dicts fresh-dicts fresh-dicts

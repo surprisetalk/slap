@@ -368,7 +368,7 @@
 ('xdec let 'src let
   src _xml-parse () {'ok ('root let root "/" root 'name at must cat xdec _xapply) 'no (no)} case) 'xd-run let
 
-('xq let 'xsrc let xsrc xq xd-run) 'xd-eval let
+('xq let 'xsrc let xsrc xq apply xd-run) 'xd-eval let
 
 -- ========== Builder combinators (xe-*) ==========
 -- Sugar for constructing XML records that xml-render can serialize.

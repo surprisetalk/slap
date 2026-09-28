@@ -65,7 +65,7 @@
 (
   swap dup digits-to-num
   dup is-prime (
-    nip nip 1 swap
+    rot drop
   ) (
     drop prev-perm not (
       "euler/41: every 7-digit pandigital is composite; search 4 digits next" no must

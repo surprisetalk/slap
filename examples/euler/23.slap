@@ -36,8 +36,8 @@ drop
 abundants len 'alen let
 
 -- Mark sums of abundant pairs in a boolean array
-list 28124 (0 push) repeat box 'sums-box let
-sums-box (
+list 28124 (0 push) repeat box
+(
   -- stack: arr
   0
   -- stack: arr i
@@ -64,10 +64,10 @@ sums-box (
   ) while
   drop
   -- stack: arr
-) mutate 'sums-built let
+) mutate
 
 -- Sum all n not expressible as sum of two abundants
-sums-built (
+(
   'sums let
   0 1
   -- stack: total sn
@@ -83,5 +83,5 @@ sums-built (
   ) while
   drop print
   sums
-) mutate 'sums-done let
-sums-done free
+) mutate
+free

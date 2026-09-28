@@ -7,6 +7,9 @@ SDL_EXTRA :=
 ifeq ($(UNAME_S),Darwin)
 SDL_EXTRA := -lobjc
 endif
+# The new checker (todo.md step 4), beside the old one until the switch.
+slap-next: slap.c
+	$(CC) $(CFLAGS) -DSLAP_NEXT -o slap-next slap.c -lm
 slap-sdl: slap.c
 	$(CC) $(CFLAGS) -DSLAP_SDL -o slap-sdl slap.c -lm $(SDL_EXTRA) $(shell sdl2-config --cflags --libs 2>/dev/null || echo "-lSDL2")
 # GROWABLE_ARRAYBUFFERS=0: with ALLOW_MEMORY_GROWTH, emscripten >=6 backs the
@@ -34,9 +37,9 @@ slap-wasm: slap.c shell.html
 	[ $$status -eq 0 ] || { echo "slap-wasm: emcc failed (exit $$status); no output written" >&2; exit $$status; }; \
 	echo "wrote $$NAME.html $$NAME.js $$NAME.wasm"
 clean:
-	rm -f slap slap-sdl *.wasm *.js
+	rm -f slap slap-next slap-sdl *.wasm *.js
 	@find . -maxdepth 1 -name '*.html' ! -name 'shell.html' -delete
-test: slap
+test: slap slap-next
 	@python3 tests/suite.py
 # Euler problems that take seconds each; the list is SLOW_EULER in tests/suite.py.
 test-slow: slap

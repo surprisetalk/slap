@@ -354,7 +354,7 @@
 
 -- source-string (decoder-quotation) jd-eval -> value-ok | msg-no
 -- Applies the quotation to build a decoder, then runs it. Use for inline decoders.
-('_e-q let '_e-src let _e-src _e-q jd-run) 'jd-eval let
+('_e-q let '_e-src let _e-src _e-q apply jd-run) 'jd-eval let
 
 -- ========== JSON encoder helpers (je-*) ==========
 -- Each je-* returns a fragment-string ready to concatenate.

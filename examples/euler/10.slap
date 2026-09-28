@@ -6,9 +6,9 @@
 -- covers odd numbers up to 1,999,999. Mark composites during `mutate`
 -- (set only, no reads), then `lend` and sum via O(1) `nth` reads.
 
-list 1000000 (1 push) repeat box 'sv let
+list 1000000 (1 push) repeat box
 
-sv (
+(
   0 0 set must                                    -- 1 is not prime
   1
   (dup 2 mul 1 plus dup mul 2000000 lt)          -- (2i+1)^2 < 2M
@@ -22,9 +22,9 @@ sv (
     i 1 plus
   ) while
   drop
-) mutate 'svb let
+) mutate
 
-svb (
+(
   'data let
   2 1                                              -- sum=2 (even prime), k=1
   (dup 1000000 lt)

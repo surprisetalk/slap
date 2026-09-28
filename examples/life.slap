@@ -11,29 +11,21 @@ N 'I-DRAW let
 N 1 plus 'I-MX let
 N 2 plus 'I-MY let
 
--- Look up cell at must wrapped (x, y) via nth must (no grid copy)
-(
-  H plus H mod W mul
-  swap W plus W mod
-  plus nth must
-) 'cell let
-
--- Count live neighbors of (x, y); gs is a symbol for nth must
-(
-  'cy let 'cx let 'gs let
-  gs cx 1 sub cy 1 sub cell
-  gs cx       cy 1 sub cell plus
-  gs cx 1 plus cy 1 sub cell plus
-  gs cx 1 sub cy       cell plus
-  gs cx 1 plus cy       cell plus
-  gs cx 1 sub cy 1 plus cell plus
-  gs cx       cy 1 plus cell plus
-  gs cx 1 plus cy 1 plus cell plus
-) 'neighbors let
-
 -- Compute next generation
 (
   'g let
+  -- cell reads the grid by name with nth (no grid copy), so it lives where 'g is bound
+  (H plus H mod W mul  swap W plus W mod  plus 'g swap nth must) 'cell let
+  ('cy let 'cx let
+    cx 1 sub cy 1 sub cell
+    cx       cy 1 sub cell plus
+    cx 1 plus cy 1 sub cell plus
+    cx 1 sub cy       cell plus
+    cx 1 plus cy       cell plus
+    cx 1 sub cy 1 plus cell plus
+    cx       cy 1 plus cell plus
+    cx 1 plus cy 1 plus cell plus
+  ) 'neighbors let
   'g I-DRAW nth must 'dv let
   'g I-MX nth must 'mxv let
   'g I-MY nth must 'myv let
@@ -41,7 +33,7 @@ N 2 plus 'I-MY let
   (dup N lt)
   (
     dup W divmod 'y let 'x let
-    'g x y neighbors 'n let
+    x y neighbors 'n let
     'g over nth must 1 eq
       (n 2 eq n 3 eq or)
       (n 3 eq)

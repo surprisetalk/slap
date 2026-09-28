@@ -22,7 +22,7 @@ args len 1 gt (args 1 get must) ("fonts/atari8.uf1") if 'FONT let
 32 'BG let
 
 FONT read 'RD let
-RD (drop 1) each 0 default not (
+RD (drop 1 ok) then 0 default not (
   "banner: cannot read " FONT cat die) () if
 RD must 'RAW let
 

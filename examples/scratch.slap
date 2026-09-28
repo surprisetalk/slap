@@ -302,13 +302,13 @@ argv len 0 gt (
   ) (
   key 1073741904 eq (
     dup 'before at len 0 gt (
-      dup 'before at pop 'mc let 'before into
+      dup 'before at pop must 'mc let 'before into
       'after (mc push) edit
     ) () if
   ) (
   key 1073741903 eq (
     dup 'after at len 0 gt (
-      dup 'after at pop 'mc let 'after into
+      dup 'after at pop must 'mc let 'after into
       'before (mc push) edit
     ) () if
   ) (

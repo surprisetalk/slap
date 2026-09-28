@@ -7,9 +7,9 @@
 --
 -- Sieve 0..10^6 once; every is-prime check is O(1) nth.
 
-list 1000000 (1 push) repeat box 'sv let
+list 1000000 (1 push) repeat box
 
-sv (
+(
   0 0 set must 1 0 set must
   2
   (dup dup mul 1000000 lt)
@@ -22,9 +22,9 @@ sv (
     i 1 plus
   ) while
   drop
-) mutate 'svb let
+) mutate
 
-svb (
+(
   'data let
   ('data swap nth must 1 eq) 'is-prime let
 
@@ -93,5 +93,5 @@ svb (
   ) while
   drop print
   data
-) mutate 'done let
-done free
+) mutate
+free

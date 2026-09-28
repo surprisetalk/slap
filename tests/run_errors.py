@@ -34,12 +34,12 @@ def cases(text):
     return out
 
 
-def check(case, parse_lib):
+def check(case, parse_lib, binary):
     code = "\n".join(case["code"]) + "\n"
     src = (parse_lib if NEEDS_PARSE.search(code) else "") + code
     try:
         r = subprocess.run(
-            ["./slap"], input=src, capture_output=True, text=True, timeout=TIMEOUT
+            [binary], input=src, capture_output=True, text=True, timeout=TIMEOUT
         )
     except subprocess.TimeoutExpired:
         return f"timed out after {TIMEOUT} s"
@@ -59,25 +59,28 @@ def check(case, parse_lib):
 
 
 def main():
-    if not os.access("./slap", os.X_OK):
-        sys.exit("errors: no ./slap binary. Run `make slap` from the repo root.")
-    all_cases = cases(open("tests/errors.slap").read())
+    # `run_errors.py ./slap-next tests/next.slap` runs the new checker's cases (todo.md step 4).
+    binary, path = (sys.argv[1:3] + ["./slap", "tests/errors.slap"][len(sys.argv[1:3]):])
+    if not os.access(binary, os.X_OK):
+        sys.exit(f"errors: no {binary} binary. Run `make {binary[2:]}` from the repo root.")
+    name = os.path.basename(path)
+    all_cases = cases(open(path).read())
     parse_lib = open("examples/lib/parse.slap").read()
     failed = 0
     with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as pool:
         for case, why in zip(
-            all_cases, pool.map(lambda c: check(c, parse_lib), all_cases)
+            all_cases, pool.map(lambda c: check(c, parse_lib, binary), all_cases)
         ):
             if why:
                 failed += 1
                 code = "\n    ".join(case["code"])
                 print(
-                    f"errors.slap:{case['line']}: {why}\n  code:\n    {code}",
+                    f"{name}:{case['line']}: {why}\n  code:\n    {code}",
                     file=sys.stderr,
                 )
     if failed:
-        sys.exit(f"errors: {failed} of {len(all_cases)} cases failed")
-    print(f"errors: {len(all_cases)} cases passed")
+        sys.exit(f"{name}: {failed} of {len(all_cases)} cases failed")
+    print(f"{name}: {len(all_cases)} cases passed")
 
 
 if __name__ == "__main__":

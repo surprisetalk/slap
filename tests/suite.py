@@ -5,7 +5,7 @@
 import concurrent.futures, glob, json, os, random, re, shutil, subprocess, sys, tempfile, threading, time
 
 sys.path.insert(0, os.path.dirname(__file__))
-import harness
+import harness, run_errors
 
 # Euler problems that take more than 2 s each. They run under `make test-slow`.
 SLOW_EULER = {12, 14, 23, 25, 34, 47}
@@ -96,6 +96,7 @@ def steps(slow):
                 None,
             ),
             "errors": ("python3 tests/run_errors.py", None),
+            "next errors": ("python3 tests/run_errors.py ./slap-next tests/next.slap", None),
             "closures": (closures, None),
             "profile": (profile, None),
             "closed stdout": ("echo '42 print' | ./slap >&-; test $? -eq 1", None),
@@ -162,6 +163,38 @@ def run(name, cmd, ok):
     return name, cmd, passed, detail, time.time() - start
 
 
+# The new checker (todo.md step 4): the share of programs it accepts, and the share of errors.slap cases
+# the old checker refuses at check time that it refuses too. A crash or a build warning stops the status.
+def next_checker():
+    r = subprocess.run(["make", "slap-next"], capture_output=True, text=True)
+    if r.returncode or "warning" in r.stderr:
+        sys.exit(f"status: make slap-next failed or warned:\n{r.stderr[-3000:]}")
+    uses = {
+        "feed": ("strings", "parse", "xml", "rss"), "todo": ("strings", "parse", "json"),
+        "fetch": ("strings", "parse"), "wiki": ("strings", "parse"), "serve": ("strings", "parse"),
+        "kv-server": ("strings", "parse"), "kv-client": ("strings", "parse"),
+        "banner": ("strings", "icn"), "plasma": ("strings", "parse", "tga"),
+    }
+    read = lambda *paths: "".join(open(p).read() for p in paths)
+    progs = [read(lib("strings").split()[0], p) for p in glob.glob("examples/euler/*.slap") + glob.glob("examples/utils/*.slap")]
+    progs += [read(*lib(*uses.get(os.path.basename(p)[:-5], ("strings",))).split(), p) for p in glob.glob("examples/*.slap")]
+    progs += [read(*lib(*c).split()) for c in [("icn",), ("chr",), ("nmt",), ("tga",), ("gly",), ("ulz",), ("icn", "ufx"), ("strings", "parse", "json"), ("strings", "parse", "xml", "rss")]]
+    progs.append(read(*lib("strings", "parse").split(), "tests/expect.slap"))
+    parse_lib = open(lib("parse")).read()
+    cases = ["\n".join(c["code"]) + "\n" for c in run_errors.cases(open("tests/errors.slap").read())]
+    cases = [(parse_lib if run_errors.NEEDS_PARSE.search(c) else "") + c for c in cases]
+    def refuses(binary, src):
+        r = subprocess.run([binary, "--check"], input=src, capture_output=True, text=True, timeout=TIMEOUT)
+        if r.returncode not in (0, 1):
+            sys.exit(f"status: {binary} --check exited {r.returncode} (a negative code is a signal):\n{r.stderr[-2000:]}\n--- program ---\n{src[-2000:]}")
+        return r.returncode == 1
+    with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as pool:
+        accepted = sum(not x for x in pool.map(lambda src: refuses("./slap-next", src), progs))
+        old = [c for c, x in zip(cases, pool.map(lambda src: refuses("./slap", src), cases)) if x]
+        caught = sum(pool.map(lambda src: refuses("./slap-next", src), old))
+    return accepted / len(progs), caught / len(old)
+
+
 def status():
     """Each condition scores 1.0 at the minimum pass and 0.0 at total failure."""
     score = {}
@@ -212,6 +245,9 @@ def status():
             fused += len(re.findall(r"(?<![\w'-])(?:at|edit)\s+must\b", code))
             bare += len(re.findall(r"(?<![\w'-])(?:at|edit)(?![\w?!-])(?!\s+must\b)", code))
     score["No record read can fail: every at and edit is proved."] = bare / (bare + fused) if fused else 1.0
+    accepted, caught = next_checker()
+    score["The new checker accepts every example, library and test."] = accepted
+    score["The new checker refuses every program the old one refuses."] = caught
     shutil.rmtree(SCRATCH)
     print(json.dumps({k: {"0": round(v, 2)} for k, v in score.items()}, indent=1))
     if min(score.values()) < 1.0:
