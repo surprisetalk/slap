@@ -6,7 +6,7 @@
  ud len 256 lt ("ufx: shorter than the 256-byte width table" no) (
  ud len 256 sub 8 mod 0 eq not ("ufx: glyph data is not a whole number of 8-byte tiles" no) (
    rec ud 256 take-n 'widths into ud 256 drop-n 8 chunks (icn-decode) each 'glyphs into ok) if) if) 'ufx-decode let
-(dup 'widths at must swap 'glyphs at must (icn-encode) each flatten cat) 'ufx-encode let
+(dup 'widths at swap 'glyphs at (icn-encode) each flatten cat) 'ufx-encode let
 
 -- ===== tests =====
 list
@@ -14,9 +14,9 @@ list
 60 push 66 push 129 push 129 push 129 push 129 push 66 push 60 push
 'ufx-data let
 ufx-data ufx-decode must
-  dup 'widths at must len 256 eq assert
-  dup 'widths at must 0 get must 4 eq assert
-  'glyphs at must len 1 eq assert
+  dup 'widths at len 256 eq assert
+  dup 'widths at 0 get must 4 eq assert
+  'glyphs at len 1 eq assert
 ufx-data ufx-decode must ufx-encode ufx-data eq assert
 "fonts/atari8.uf1" read must dup ufx-decode must ufx-encode eq assert
 [1 2 3] ufx-decode () {'ok (drop "") 'no ()} case "ufx: shorter than the 256-byte width table" eq assert

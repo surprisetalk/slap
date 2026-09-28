@@ -1,0 +1,10 @@
+-- uniq.slap: print a file, dropping each line that repeats the one before it.
+--   cat examples/lib/strings.slap examples/utils/uniq.slap | ./slap FILE
+-- A final newline ends the last line; it does not start another.
+1 "FILE" arg-count
+0 arg-bytes "\n" str-split pop must dup len 0 eq (drop) (push) if 'all let
+-- Pair each line with the one before it; [-1] is before the first, and no line equals it.
+all list [-1] push all cat zip
+  (dup 0 get must swap 1 get must eq not) filter
+  (0 get must) each
+list (cat 10 push) fold stdout-write

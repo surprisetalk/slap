@@ -190,10 +190,10 @@ list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq
 (10 20 30) apply 30 eq assert 20 eq assert 10 eq assert
 
 -- ===== Records =====
-{'x 10 'y 20} 'x at must 10 eq assert
+{'x 10 'y 20} 'x at 10 eq assert
 
 -- ===== Records: into =====
-{'x 10 'y 20} 30 'x into 'x at must 30 eq assert
+{'x 10 'y 20} 30 'x into 'x at 30 eq assert
 
 -- into replaces a key in place and appends an unknown one, so field order never
 -- moves. A replacement of a different width has to slide the fields after it,
@@ -212,14 +212,14 @@ list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq
 -- 'n if the big field's slot count is right.
 rec 1 'n into 0 20000 range 'big into
   dup len 2 eq assert
-  dup 'n at must 1 eq assert
+  dup 'n at 1 eq assert
   0 30000 range 'big into
   dup len 2 eq assert
-  dup 'n at must 1 eq assert
+  dup 'n at 1 eq assert
   5 'big into
   dup len 2 eq assert
-  dup 'big at must 5 eq assert
-  'n at must 1 eq assert
+  dup 'big at 5 eq assert
+  'n at 1 eq assert
 
 -- ===== Box =====
 42 box free
@@ -322,11 +322,11 @@ free
 rec rec eq assert
 
 -- multiple record fields
-{'a 1 'b 2 'c 3} 'b at must 2 eq assert
-{'a 1 'b 2 'c 3} 'c at must 3 eq assert
+{'a 1 'b 2 'c 3} 'b at 2 eq assert
+{'a 1 'b 2 'c 3} 'c at 3 eq assert
 
 -- record into creates new field
-{'a 1} 2 'b into 'b at must 2 eq assert
+{'a 1} 2 'b into 'b at 2 eq assert
 
 -- case with no match returns default
 100 -1 {(50 lt) (drop 1)} case -1 eq assert
@@ -498,12 +498,12 @@ free
 
 -- ===== Complex: records built incrementally =====
 rec 10 'x into 20 'y into 30 'z into
-  dup 'x at must 10 eq assert
-  dup 'y at must 20 eq assert
-  'z at must 30 eq assert
+  dup 'x at 10 eq assert
+  dup 'y at 20 eq assert
+  'z at 30 eq assert
 
 -- ===== Complex: record overwrite =====
-{'x 1 'y 2} 99 'x into 'x at must 99 eq assert
+{'x 1 'y 2} 99 'x into 'x at 99 eq assert
 
 -- ===== Complex: box mutate in while loop =====
 0 box
@@ -591,12 +591,12 @@ dup dup mul 2.0 sub fabs 0.0001 lt assert drop
 
 -- ===== Complex: box with record inside =====
 {'count 0 'total 0} box
-  ('count (1 plus) edit must) mutate
-  ('count (1 plus) edit must) mutate
-  ('total (100 plus) edit must) mutate
+  ('count (1 plus) edit) mutate
+  ('count (1 plus) edit) mutate
+  ('total (100 plus) edit) mutate
   () lend
-  dup 'count at must 2 eq assert
-  'total at must 100 eq assert
+  dup 'count at 2 eq assert
+  'total at 100 eq assert
 free
 
 -- ===== Complex: triple nested list operations =====
@@ -784,11 +784,11 @@ list "hi" push "--" str-join "hi" eq assert
 (
   "HTTP/1.1 200 OK" crlf cat "Content-Type: text/html" cat crlf cat crlf cat "hello body" cat
   parse-http must 'r let
-  r 'status at must 200 eq assert
-  r 'headers at must len 1 eq assert
-  r 'headers at must 0 get must 'key at must "Content-Type" eq assert
-  r 'headers at must 0 get must 'value at must "text/html" eq assert
-  r 'body at must "hello body" eq assert
+  r 'status at 200 eq assert
+  r 'headers at len 1 eq assert
+  r 'headers at 0 get must 'key at "Content-Type" eq assert
+  r 'headers at 0 get must 'value at "text/html" eq assert
+  r 'body at "hello body" eq assert
 ) 'test-parse-http let test-parse-http
 
 (
@@ -817,9 +817,9 @@ list "hi" push "--" str-join "hi" eq assert
   srv2 tcp-close
 
   parse-http must 'resp let
-  resp 'status at must 200 eq assert
-  resp 'body at must "hello" eq assert
-  resp 'headers at must len 2 eq assert
+  resp 'status at 200 eq assert
+  resp 'body at "hello" eq assert
+  resp 'headers at len 2 eq assert
 ) 'test-http-loopback let test-http-loopback
 
 -- ===== Tagged Unions (Sum Types) =====
@@ -956,7 +956,7 @@ x (2 mul ok) then -1 default 84 eq assert
 42 ok 99 default 42 eq assert
 
 -- tag with record payload
-{'x 10 'y 20} ok must 'x at must 10 eq assert
+{'x 10 'y 20} ok must 'x at 10 eq assert
 
 -- tag with list payload
 [1 2 3] ok must [1 2 3] eq assert
@@ -1004,27 +1004,27 @@ nil () {'nil (drop 0) 'cons (first)} case 0 eq assert
 -- ===== Record edit =====
 
 -- basic edit
-{'a 1 'b 2} 'a (10 plus) edit must dup 'a at must 11 eq assert 'b at must 2 eq assert
+{'a 1 'b 2} 'a (10 plus) edit dup 'a at 11 eq assert 'b at 2 eq assert
 
 -- chained edits
-{'x 0 'y 0} 'x (5 plus) edit must 'y (3 plus) edit must
-dup 'x at must 5 eq assert 'y at must 3 eq assert
+{'x 0 'y 0} 'x (5 plus) edit 'y (3 plus) edit
+dup 'x at 5 eq assert 'y at 3 eq assert
 
 -- edit preserves other fields
 {'name [72 105] 'score 100 'lives 3}
-'score (50 plus) edit must
-dup 'score at must 150 eq assert
-dup 'lives at must 3 eq assert
-'name at must [72 105] eq assert
+'score (50 plus) edit
+dup 'score at 150 eq assert
+dup 'lives at 3 eq assert
+'name at [72 105] eq assert
 
 -- edit with mul
-{'width 10 'height 20} 'width (2 mul) edit must 'width at must 20 eq assert
+{'width 10 'height 20} 'width (2 mul) edit 'width at 20 eq assert
 
 -- edit on single-field record
-{'val 42} 'val (1 plus) edit must 'val at must 43 eq assert
+{'val 42} 'val (1 plus) edit 'val at 43 eq assert
 
 -- edit body that replaces value entirely
-{'a 1 'b 2} 'a (drop 99) edit must 'a at must 99 eq assert
+{'a 1 'b 2} 'a (drop 99) edit 'a at 99 eq assert
 
 -- ===== Adversarial: Tagged Unions =====
 
@@ -1074,33 +1074,33 @@ rec ok must rec eq assert
 -- ===== Adversarial: Record Edit =====
 
 -- edit that changes value len (int -> list)
-rec 1 'a into 2 'b into 'a (drop [10 20 30]) edit must
-  dup 'a at must [10 20 30] eq assert
-  'b at must 2 eq assert
+rec 1 'a into 2 'b into 'a (drop [10 20 30]) edit
+  dup 'a at [10 20 30] eq assert
+  'b at 2 eq assert
 
 -- edit on record with many fields
 rec 1 'a into 2 'b into 3 'c into 4 'd into 5 'e into
-  'c (100 plus) edit must
-  dup 'a at must 1 eq assert
-  dup 'b at must 2 eq assert
-  dup 'c at must 103 eq assert
-  dup 'd at must 4 eq assert
-  'e at must 5 eq assert
+  'c (100 plus) edit
+  dup 'a at 1 eq assert
+  dup 'b at 2 eq assert
+  dup 'c at 103 eq assert
+  dup 'd at 4 eq assert
+  'e at 5 eq assert
 
 -- chained edit then at on every field
 rec 0 'x into 0 'y into 0 'z into
-  'x (10 plus) edit must 'y (20 plus) edit must 'z (30 plus) edit must
-  dup 'x at must 10 eq assert
-  dup 'y at must 20 eq assert
-  'z at must 30 eq assert
+  'x (10 plus) edit 'y (20 plus) edit 'z (30 plus) edit
+  dup 'x at 10 eq assert
+  dup 'y at 20 eq assert
+  'z at 30 eq assert
 
 -- edit with body that doubles a list
-rec [1 2] 'data into 'data (dup cat) edit must 'data at must [1 2 1 2] eq assert
+rec [1 2] 'data into 'data (dup cat) edit 'data at [1 2 1 2] eq assert
 
 -- ===== Adversarial: Stack Combinators =====
 
 -- over with records
-rec 1 'x into  rec 2 'y into  over 'x at must 1 eq assert drop drop
+rec 1 'x into  rec 2 'y into  over 'x at 1 eq assert drop drop
 
 -- rot with 3 different compound values
 [1] [2 3] [4 5 6] rot [1] eq assert [4 5 6] eq assert [2 3] eq assert
@@ -1109,7 +1109,7 @@ rec 1 'x into  rec 2 'y into  over 'x at must 1 eq assert drop drop
 42 ok 99 ok nip -1 default 99 eq assert
 
 -- tuck with records
-rec 1 'a into  rec 2 'b into  swap over 'b at must 2 eq assert 'a at must 1 eq assert 'b at must 2 eq assert
+rec 1 'a into  rec 2 'b into  swap over 'b at 2 eq assert 'a at 1 eq assert 'b at 2 eq assert
 
 -- over with tagged values
 1 ok 2 ok over -1 default 1 eq assert drop drop
@@ -1261,15 +1261,15 @@ entries "definitely_not_a_real_file.slap" member not assert
 
 -- record edit inside box mutate, repeated
 {'count 0} box
-  ('count (1 plus) edit must) mutate
-  ('count (1 plus) edit must) mutate
-  ('count (1 plus) edit must) mutate
-  () lend 'count at must 3 eq assert
+  ('count (1 plus) edit) mutate
+  ('count (1 plus) edit) mutate
+  ('count (1 plus) edit) mutate
+  () lend 'count at 3 eq assert
   free
 
 -- deeply nested records: 4 levels, at-chain to the leaf
 {'a {'b {'c {'d 10}}}} 'nest4 let
-nest4 'a at must 'b at must 'c at must 'd at must 10 eq assert
+nest4 'a at 'b at 'c at 'd at 10 eq assert
 
 -- stack combinator shapes: assert exact order after chained ops
 -- 1 2 3 4 over over over  ==>  1 2 3 4 3 4 3
@@ -1319,9 +1319,8 @@ nest4 'a at must 'b at must 'c at must 'd at must 10 eq assert
 [1 2 3] 1 99 set must [1 99 3] eq assert
 [1 2 3] 5 99 set none eq assert
 
--- at returns tagged
-{'x 10 'y 20} 'x at must 10 eq assert
-{'x 10 'y 20} 'z at none eq assert
+-- at with must, until every site drops the must
+{'x 10 'y 20} 'x at 10 eq assert
 
 -- index-of returns tagged
 [10 20 30] 20 index-of must 1 eq assert
@@ -1508,7 +1507,7 @@ outer-val 99 eq assert
 
 -- extract record snapshot, mutate, snapshot unaffected
 {'x [10 20 30] 'y 'tag} box
-  ('x at must) lend 'snap-xs let
+  ('x at) lend 'snap-xs let
   (drop {'x [0] 'y 'gone}) mutate
   free
   snap-xs [10 20 30] eq assert
@@ -1521,7 +1520,7 @@ outer-val 99 eq assert
 
 -- deeply nested: 3-level record, extract leaf list, mutate entirely, verify
 {'a {'b {'c [7 8 9]}}} box
-  ('a at must 'b at must 'c at must) lend 'snap-leaf let
+  ('a at 'b at 'c at) lend 'snap-leaf let
   (drop {'a {'b {'c [0]}}}) mutate
   free
   snap-leaf [7 8 9] eq assert
@@ -1572,9 +1571,9 @@ outer-val 99 eq assert
 
 -- `at` on a record field past 16384 slots
 (
-  rec 0 20000 range 'big into 'big at must len 20000 eq assert
-  rec 0 20000 range 'big into 1 'n into 'big at must len 20000 eq assert
-  rec 0 20000 range 'big into 1 'n into 'n at must 1 eq assert
+  rec 0 20000 range 'big into 'big at len 20000 eq assert
+  rec 0 20000 range 'big into 1 'n into 'big at len 20000 eq assert
+  rec 0 20000 range 'big into 1 'n into 'n at 1 eq assert
 ) 'test-record-field-past-local-max let test-record-field-past-local-max
 
 -- 100000-character token runs: parse.slap's combinators must not recurse per
@@ -1606,7 +1605,7 @@ scope-outer 100 eq assert
 ([0 20000 range] 0 get must len 20000 eq assert) 'big-get let big-get
 (list 0 (dup 9000 lt) (swap [1] push swap 1 plus) while drop
  0 [1 2] set must dup len 9000 eq assert 0 get must [1 2] eq assert) 'big-set let big-set
-(rec 0 20000 range 'f into 'f (1 push) edit must 'f at must len 20001 eq assert) 'big-edit let big-edit
+(rec 0 20000 range 'f into 'f (1 push) edit 'f at len 20001 eq assert) 'big-edit let big-edit
 (0 300000 range no 0 (drop 1) pthen -1 {'ok (drop -2) 'no (len)} case 300000 eq assert 0 eq assert) 'big-pthen let big-pthen
 ([1 2] no "fallback" (drop 1) pthen drop "fallback" eq assert) 'multi-slot-default let multi-slot-default
 -- like then, pthen passes any tag but 'ok on as 'no
@@ -1618,8 +1617,6 @@ scope-outer 100 eq assert
 (dict "a" 1 insert box (len drop) lend ("a" of must 1 eq assert drop) lend free) 'box-dict-lend let box-dict-lend
 -- set out of bounds consumes the list
 (1 [1 2 3] 5 99 set [] default drop 1 eq assert) 'set-miss let set-miss
--- edit on a missing key consumes the record
-(1 {'a 1} 'b (1 plus) edit -1 default -1 eq assert 1 eq assert) 'edit-miss let edit-miss
 
 -- ===== String literals are UTF-8 bytes, like everything read from a file =====
 "é" [195 169] eq assert
@@ -1652,7 +1649,7 @@ dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq a
 -- ===== parse-http refuses what it cannot read =====
 ("HTTP/1.1 OK" crlf cat crlf cat parse-http 0 {'ok (drop 1) 'no (drop 0)} case 0 eq assert) 'http-no-code let http-no-code
 ("HTTP/1.1 200 OK" crlf cat "garbage line" cat crlf cat crlf cat parse-http 0 {'ok (drop 1) 'no (drop 0)} case 0 eq assert) 'http-no-colon let http-no-colon
-("HTTP/1.1 200 OK" crlf cat "Content-Length:5" cat crlf cat crlf cat parse-http must 'headers at must 0 get must 'value at must "5" eq assert) 'http-tight-colon let http-tight-colon
+("HTTP/1.1 200 OK" crlf cat "Content-Length:5" cat crlf cat crlf cat parse-http must 'headers at 0 get must 'value at "5" eq assert) 'http-tight-colon let http-tight-colon
 
 -- ===== A declared signature is checked against the body itself =====
 (42) 'sig-foo let (sig-foo) [int move out] effect 'sig-bar let sig-bar 42 eq assert
@@ -1689,8 +1686,9 @@ dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq a
 5 twice 10 eq assert
 (1 plus) [int lent in  int move out] effect 'my-inc let
 5 my-inc my-inc 7 eq assert
-(2 mul) ['a num lent in  'a num move out] effect 'my-double let
+(dup plus) ['a num lent in  'a num move out] effect 'my-double let
 3 my-double 6 eq assert
+1.5 my-double 3.0 eq assert
 -- Declarations with no body, and re-declarations of primitives, bind nothing.
 'my-push ['a seq own in  'a own in  'a seq move out] effect
 'my-len [lent in  int move out] effect
@@ -1742,6 +1740,56 @@ dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq a
 (42 box 'b let b (1 plus) mutate (1 plus) mutate free) 'clean-17 let clean-17
 -- drop-n past 16384 slots
 (list 20000 (1 push) repeat 1 drop-n len 19999 eq assert) 'clean-18 let clean-18
+
+-- ===== The checker agrees with the runtime =====
+-- a body that reads below its inputs never sees the caller's values
+1.5 2.5 (0 (drop drop) apply push) drop drop drop
+-- a forward declaration leaves nothing on the stack, inside a body too
+[1 2] (1 plus 'g [int lent in  int move out] effect) each [2 3] eq assert
+[1 2] ('g [int lent in  int move out] effect (1 plus) 'g let g) each [2 3] eq assert
+-- a brace literal is a record when its keys are symbols, whatever its values are
+{'a 1 'b "s"} drop
+5 {'f (1 plus)} 'f at apply 6 eq assert
+{'name [72 105] 'inner {'b {'c 1}}} 'inner at 'b at 'c at 1 eq assert
+{} rec eq assert
+-- an odd count, or a value in a key's place, makes a tuple
+{'r 'g 'b} len 3 eq assert
+{[1 2] 0 get must} len 1 eq assert
+-- a tuple bound by name runs when looked up, whichever brackets built it
+{1 2 3} 't let t plus plus 6 eq assert
+
+-- ===== at and edit never fail: the checker proves the key =====
+{'x 10 'y 20} 'x at 10 eq assert
+rec 5 'a into 'a at 5 eq assert
+{'a 1} 2 'b into dup 'b at 2 eq assert 'a at 1 eq assert
+{'a 1 'a 2} 'a at 2 eq assert
+{'x 10 'y 20} 'rxy let rxy 'x at rxy 'y at plus 30 eq assert
+{'p {'q 7}} 'p at 'q at 7 eq assert
+{'x 10} dup 'x at swap drop 10 eq assert
+{'a 1 'b 2} 'a (10 plus) edit dup 'a at 11 eq assert 'b at 2 eq assert
+{'a [1 2]} 'a (3 push) edit 'a at [1 2 3] eq assert
+(rec 5 'a into) 'mk-a let mk-a 'a at 5 eq assert
+-- a word's input stands for whatever record its caller passes: the caller must pass the keys it reads
+('sxr let sxr 'x at sxr 'y at plus) 'sum-xy let {'x 1 'y 2} sum-xy 3 eq assert {'x 1 'y 2 'z 3} sum-xy 3 eq assert
+('wr let wr 5 'w into) 'with-w let {'a 1} with-w dup 'w at 5 eq assert 'a at 1 eq assert
+('n (1 plus) edit) 'bump let {'n 1 'm 9} bump dup 'n at 2 eq assert 'm at 9 eq assert
+(dup 'n at 0 eq (drop 0) ('n (1 sub) edit count-n 1 plus) if) 'count-n let {'n 3 'o 0} count-n 3 eq assert
+-- loops and list bodies see the records they run on
+[{'x 1} {'x 2 'y 3}] ('x at) each [1 2] eq assert
+[{'x 1} {'x 2}] ('x at 1 gt) filter len 1 eq assert
+[{'x 1} {'x 2}] 0 ('x at plus) fold 3 eq assert
+{'i 0} (dup 'i at 3 lt) ('i (1 plus) edit) while 'i at 3 eq assert
+{'i 0} 3 ('i (1 plus) edit) repeat 'i at 3 eq assert
+0 ({'a 1 'c 3}) ({'b 1 'c 4}) if 'c at 4 eq assert
+-- a tagged value carries each tag's payload type, through must and into case clauses
+{'x 1} ok must 'x at 1 eq assert
+[{'x 1} {'x 2}] 1 get must 'x at 2 eq assert
+{'x 1} ok 0 {'ok ('x at) 'no (drop 9)} case 1 eq assert
+{'x 1} 0 {(dup 'x at 1 eq) ('x at 10 plus)} case 11 eq assert
+{'x 1} box ('x at) lend 1 eq assert ('x (1 plus) edit) mutate ('x at) lend 2 eq assert free
+-- a word's list input stands for a caller's list: its elements must have the keys the word reads
+(('x at) each) 'xs-of let [{'x 1} {'x 2 'y 0}] xs-of [1 2] eq assert
+[{'k 3}] 'kl let kl 0 get must 'k at 3 eq assert kl ('k at) each [3] eq assert
 
 -- ===== Done =====
 "All tests passed!" print

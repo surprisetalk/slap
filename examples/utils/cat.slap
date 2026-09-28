@@ -1,0 +1,4 @@
+-- cat.slap: print a file.
+--   cat examples/lib/strings.slap examples/utils/cat.slap | ./slap FILE
+1 "FILE" arg-count
+0 arg-bytes stdout-write

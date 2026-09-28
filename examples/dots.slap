@@ -18,14 +18,14 @@ rec
 
 'mousemove (
   'mmy let 'mmx let
-  'mx (drop mmx) edit must 'my (drop mmy) edit must
+  'mx (drop mmx) edit 'my (drop mmy) edit
 ) on
 
 (
   'frame let 'i let 'st let
-  st 'xs at must i get must 'x let  st 'ys at must i get must 'y let
-  st 'vxs at must i get must 'vx let  st 'vys at must i get must 'vy let
-  st 'mx at must 'mxv let  st 'my at must 'myv let
+  st 'xs at i get must 'x let  st 'ys at i get must 'y let
+  st 'vxs at i get must 'vx let  st 'vys at i get must 'vy let
+  st 'mx at 'mxv let  st 'my at 'myv let
 
   x mxv sub 'dx let  y myv sub 'dy let
   dx dx mul dy dy mul plus 'dist2 let
@@ -62,8 +62,8 @@ rec
   'yf let 'xf let
 
   st
-  'xs (i xf set must) edit must 'ys (i yf set must) edit must
-  'vxs (i vx3 set must) edit must 'vys (i vy3 set must) edit must
+  'xs (i xf set must) edit 'ys (i yf set must) edit
+  'vxs (i vx3 set must) edit 'vys (i vy3 set must) edit
 ) 'update-dot let
 
 (
@@ -76,8 +76,8 @@ rec
 
 'tick (
   drop
-  'frame (1 plus) edit must
-  dup 'frame at must 'fr let
+  'frame (1 plus) edit
+  dup 'frame at 'fr let
   0 fr tick-loop
 ) on
 
@@ -90,8 +90,8 @@ rec
 (
   'frame let 'st let 'i let
   i N lt (
-    st 'xs at must i get must 'x let  st 'ys at must i get must 'y let
-    st 'mx at must 'mxv let  st 'my at must 'myv let
+    st 'xs at i get must 'x let  st 'ys at i get must 'y let
+    st 'mx at 'mxv let  st 'my at 'myv let
     x mxv sub 'dx let  y myv sub 'dy let
     dx dx mul dy dy mul plus 'dist2 let
     x hxs i get must sub abs y hys i get must sub abs plus 'hd let
@@ -111,7 +111,7 @@ rec
 (
   drop
   dup 'st let
-  st 'frame at must 'fr let
+  st 'frame at 'fr let
   0 clear
   0 st fr draw-dots
 ) show

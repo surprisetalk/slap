@@ -188,8 +188,8 @@
 -- Records take more than one slot each, so these scan a whole list with `each`,
 -- `filter` or `index-of` rather than reading it one index at a time.
 
--- _x-is-text: (node -- node bool).  Non-consuming.
-(dup 'text at () {'ok (drop 1) 'no (drop 0)} case) '_x-is-text let
+-- _x-is-text: (node -- node bool).  Non-consuming.  A text node has one field; an element has three.
+(dup len 1 eq) '_x-is-text let
 
 -- _x-trim: (s -- s').  Drops leading and trailing whitespace.
 ('xs let
@@ -203,7 +203,7 @@
  () {'ok ('xfk let 'xfa xfk nth must 1 get must ok) 'no (drop none)} case) '_x-find-attr let
 
 -- _x-name-is: (node name -- bool).  False for a text node.
-('xnm let 'name at () {'ok (xnm eq) 'no (drop 0)} case) '_x-name-is let
+('xnm let dup len 3 eq ('name at must xnm eq) (drop 0) if) '_x-name-is let
 
 -- _x-find-child: (children name -- record ok | none).  The first element with the name.
 ('xcn let 'xcs let
@@ -439,9 +439,7 @@
 -- xml-render: (node-record -- xml-string).  Dispatches text vs element.
 -- Body: consume node-record from caller, produce string.
 ('node let
-  node 'text at
-  () {'ok (_xe-escape-text)
-   'no (drop node _xe-render-elem)} case) 'xml-render let
+  node len 1 eq (node 'text at must _xe-escape-text) (node _xe-render-elem) if) 'xml-render let
 
 -- ========== Pretty-print variant ==========
 
@@ -452,9 +450,7 @@
 -- _xe-kids-all-text? : (kids-list -- bool).  True if every child is a text node.
 ('ks let
   ks len 0 eq (1) (
-    ks 0 get must 'text at
-    () {'ok (drop ks 1 drop-n _xe-kids-all-text?-loop)
-     'no (drop 0)} case) if) '_xe-kids-all-text?-loop let
+    ks 0 get must len 1 eq (ks 1 drop-n _xe-kids-all-text?-loop) (0) if) if) '_xe-kids-all-text?-loop let
 
 (_xe-kids-all-text?-loop) '_xe-kids-all-text? let
 
@@ -483,9 +479,7 @@
 
 -- xml-render-pretty: (depth node-record -- string-with-trailing-newline)
 ('node let 'depth let
-  node 'text at
-  () {'ok (_xe-escape-text)
-   'no (drop depth node _xe-render-elem-pretty)} case
+  node len 1 eq (node 'text at must _xe-escape-text) (depth node _xe-render-elem-pretty) if
   list 10 push cat) 'xml-render-pretty let
 
 -- xml-pretty: (root-node -- string).  Top-level pretty-print; starts at depth 0.

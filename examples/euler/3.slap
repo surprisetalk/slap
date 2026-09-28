@@ -3,13 +3,13 @@
 -- Answer: 6857
 
 rec 600851475143 'n into 2 'i into
-(dup 'i at must dup mul over 'n at must le)
+(dup 'i at dup mul over 'n at le)
 (
-  dup 'n at must 'n let  dup 'i at must 'i let
+  dup 'n at 'n let  dup 'i at 'i let
   n i mod 0 eq
-    ('n (i div) edit must)
-    ('i (1 plus) edit must)
+    ('n (i div) edit)
+    ('i (1 plus) edit)
   if
 )
 while
-'n at must print
+'n at print

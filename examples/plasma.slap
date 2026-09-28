@@ -83,11 +83,11 @@ OUT N N 24 PIXELS tga-header write must drop
 -- ===== self-test: read back what we just wrote =====
 
 OUT read must tga-decode must 'IMG let
-IMG 'width  at must N eq assert
-IMG 'height at must N eq assert
-IMG 'depth  at must 24 eq assert
-IMG 'pixels at must len N N mul 3 mul eq assert
+IMG 'width  at N eq assert
+IMG 'height at N eq assert
+IMG 'depth  at 24 eq assert
+IMG 'pixels at len N N mul 3 mul eq assert
 -- a plasma that came out one flat colour means the field collapsed
-IMG 'pixels at must dedup len 1 gt assert
+IMG 'pixels at dedup len 1 gt assert
 
 "plasma: wrote " OUT cat " (" cat N int-str cat "x" cat N int-str cat ", 24-bit TGA)" cat say

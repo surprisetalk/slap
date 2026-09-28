@@ -1,27 +1,51 @@
-- [ ] `--check` rejects exactly the type errors a word body can make.
-  1. `(2 mul)` under `['a num lent in 'a num move out]` accepts a float and dies at runtime: literal types inside a body do not unify with the signature's variables.
-  2. `apply`, `if` and named calls apply a tuple's effect three different ways. Routing all three through the scheme path gives a false positive on `(push) dip` in the prelude's `chunks`: the scheme's input positions ignore the value `dip` sets aside. Fix that before unifying.
-  3. A bare forward declaration `'name [sig] effect` leaves `'name` on the runtime stack.
-  4. A brace literal that starts like a record but has an odd count (`{'a 1 'b}`) becomes a tuple; the error surfaces later as "expected record, got tuple". Refuse it where it is written.
-  5. A `case` whose clauses are plain values (`{'ok 1 'no 2}`) is rejected as "rec vs int", but runs: a matching value clause leaves the payload under the value. Refuse value clauses where they are written, since a clause body `(drop 1)` says the same thing.
-
-- [ ] You read a record field the checker knows exists without `must`.
-  1. The checker tracks record keys: a `{...}` literal and `into` add them.
-  2. Decide the word: a total accessor the checker accepts only on a record known to have the key. `at` stays fallible for records of unknown shape.
-  3. Replace `'key at must` in examples and libs (about 300 sites).
-
-- [ ] You profile a slap program as a flame graph.
-  1. Count and time each word in `dispatch_word` behind a `--profile` flag; print folded stacks to stderr at exit.
+- [ ] You read a record field with `'k at`; it never fails, because the checker proves the key.
+  Decisions, made up front: inference only, no shape syntax. `edit` is total too. `'k at must` and `edit must` become errors at the end.
+  `make status` counts the sites left ("No record read can fail"); every other program already reads with bare `at`.
+  1. xml.slap and rss.slap (the last `at must` sites). Their nodes are records of two shapes in one list, built in `while`/`pthen` loops and read through `quote apply` decoders and the forward-declared `_xelem`/`_xapply`. Decide how the checker learns a node's keys, then tag nodes `'text`/`'elem` and read element fields in `{'elem (…)}` clauses:
+     a. Tag rows program-wide: every `'T tag` payload must have every key some `{'T (…)}` clause reads (a whole-program check after `typecheck_tokens`' pass).
+     b. Or: `then`/`pthen`/`default` and declared words carry payload maps (`vrow`) and record rows through their inferred scheme, not only their signature.
+  2. A word's `let` rebinds in the frame the word was made in, so it shadows a top-level name for every word it calls: `'getx [int move out] effect ('x let getx) 'h let {'a 1} 'x let (x 'a at) 'getx let {'b 1} h` passes `--check` and dies in `at`. Decide: give each call its own frame at runtime (claude.md says frames chain lexical scopes), or have the checker refuse a word's `let` of a name some word it calls reads as a global.
+  3. These pass `--check` and then die in `at` with "the checker proved it has". Each needs a failing case in the Soundness section of tests/errors.slap first.
+     a. Branch joins meet only the values a branch leaves on top; one that replaces deeper values escapes the meet. Meet every position either branch consumes, and the default's for `case`:
+        `{'a 1} {'x 1} 1 (drop {'y 1}) (drop drop {'b 1} {'y 1}) if drop 'b at`
+        `{'a 1} 5 {'y 1} {(3 lt) (drop drop {'b 1} {'y 1})} case drop 'b at`
+     b. A body that reads keys loses its effect and then runs unchecked: a word leaving it under another value, `quote` inside a body, a fold's initial value, a `while` whose other body is not literal, an `edit` body that applies one. Rather than one rule per path, give a tuple's tvar the key it reads, so `apply` of a tuple with no effect refuses it wherever it came from:
+        `(('a at) 1) 'mk let {'b 1} mk drop apply`
+        `('a at) 'f let {'b 1} ('f quote) apply apply`
+        `{'b 1} [1] ('a at) (drop) fold apply`
+        `('cond let {'b 0} 'cond quote ('a (1 plus) edit) while) 'run let (1) run`
+        `('bd let {'a 1} {'k 0} 'k ('bd quote apply) edit drop 'a at) 'run let (drop drop drop {'b 1} {'k 0} 0) run`
+     c. A value of unknown type (from `at must`, `quote`) that meets a known record takes its keys; `row_join` clears keys only for a type bound to `rec`. Mark values whose type is unknown, and let them make keys unknown too:
+        `('k at must 1 () (drop {'b 1}) if 'b at) 'f let {'k {'z 1}} f`
+        `{'z 1} 'r let 1 ('r quote) ({'b 1}) if 'b at`
+     d. `on` handlers go unchecked when `show` runs inside a word, below the handlers' state, or with a render body that is not literal.
+     e. A recursive call to a declared word does not forget the records below its inputs: `.unknown` is read from the placeholder while the body is still being checked.
+     f. A trial passes a body fewer values than it takes (case predicates, `filter`, `lend`, `mutate`), and what the body replaces below keeps its keys: `{'a 1} {'b 1} box (swap) mutate free 'a at`.
+     g. A trial of a body with unknown effect (inside `each`, `fold`, `case`, `mutate`) trusts what comes out: `[{'a 1}] (1 (drop {'b 1}) repeat) each 0 get must 'a at`.
+     h. `if` meets what the other branch leaves, not values it passes through: `{'b 1} 1 () (drop {'a 1}) if 'a at`.
+     i. A declared `either` is trusted as closed; a tag a called word emits gets through: `('z tag) 'mk let (mk) [int own in {'a int} either move out] effect 'f let 5 f {'b 1} {'a (drop {'a 1})} case 'a at`.
+     j. A declared type-variable output is not checked against the body: `(drop {'z 1}) ['a own in 'a move out] effect 'f let {'a 1} f 'a at` (and `(drop 5)` for ints).
+     k. A recursive `let` skips "already defined", so a program can redefine `ok`, `no` or a global the checker already relied on: `(0 (ok) (drop {'b 1} 'ok tag) if) 'ok let {'a 1} ok must 'a at`.
+     l. Tuple `cat` keeps only the first body's effect: `{'z 1} (drop {'a 1}) (drop {'b 1}) cat apply 'a at`.
+     m. `each` over a dict runs its body unchecked: `dict "k" {'a 1} insert (drop {'b 1}) each "k" of must nip 'zzz at`.
+     Holes of the same kind that die elsewhere: an `if` condition's type is not checked (`"s" (1) (2) if`), a loop body that changes the stack's depth passes (`1 2 3 3 (drop) repeat`), and a box is freed twice through a body (`1 box (dup) apply free free`).
+     Programs it refuses that it should accept: `then`/`pthen` bodies cannot read payload keys (`{'a 1} ok ('a at ok) then`), `nth` on a bound list of records, nested `repeat` over a record, and a `case` whose default cannot run is still type-compared with its clauses.
+  4. A record that holds records of its own kind (a linked list: `(dup 'next at 0 eq ('v at) ('next at walk) if) 'walk let`) has no finite row, so the checker refuses it and points to `at must`. Decide: rows get recursive types, or `at must` stays for such fields and step 5 keeps it.
+  5. When no `at must`/`edit must` remains: make them errors ("at never fails; drop the must"), drop `prim_at_must`/`prim_edit_must` and the unchecked runtime message, and remove the site count from `make status`.
 
 - [ ] A long-running server that makes closures per request holds steady memory.
   1. Frames made for escaping closures are never freed (about 0.5 KB each). Freeing them needs lifetime tracking for tuple envs: count references on copy, drop and trim.
 
-- [ ] You run coreutils written in slap (cat, wc, head, grep -F, sort, uniq).
-  1. Put them in examples/utils/; one runner diffs them against the system tools; reuse them as benchmarks.
-
-- [ ] You run pico8/tic80 carts. Needs a Lua interpreter in slap first; decker or duskos are closer.
-
-- [ ] You run your personal apps (snews, snail) in slap.
+- [ ] You run a pico8 cart headless for N frames and its screen matches a reference render.
+  Tradeoffs, decided up front: pico8 only; tic80 reuses the interpreter later. The screen has 4 greys, so 16 colours rank-map to 4 like uxn.slap. No audio: sfx/music are no-ops. Speed is ~190k uxn instructions/s, so carts run far below 30 fps; correctness first. Lua tables cannot be slap values (dicts cannot be let-bound, dup deep-copies), so all Lua state lives in one heap threaded on the stack.
+  1. examples/lua.slap lexer: read the source by index with `nth`, as json.slap does. No per-character recursion.
+  2. The parser emits a flat int bytecode list. A `while` + step loop runs it, like uxn.slap's run-more; the Lua call stack is data, not slap recursion.
+  3. Heap: tables are int ids; entries live in one dict keyed by encoded `id:key` bytes, plus a key list per table for `pairs`. Closures are (proto id, upvalue ids).
+  4. Numbers are pico8 16.16 fixed point in ints.
+  5. tests/run_lua.py diffs `print` output against system `lua` on tests/lua/*.lua scripts that stay in integers.
+  6. Cart loader for the .p8 text format: __lua__, __gfx__, __map__ sections.
+  7. API subset: cls pset pget rectfill circfill line spr map btn print rnd flr sin cos; _init/_update/_draw.
+  8. tests/run_pico8.py runs a small cart headless and diffs a palette-index pixel dump against a committed reference made with pico8's export (or zepto8).
 
 <!--
 - no vigil. nothing kept in intermediate state outside of physical notes and single working copy. publish sequels not incremental improvements.

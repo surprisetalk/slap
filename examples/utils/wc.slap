@@ -1,0 +1,9 @@
+-- wc.slap: count the lines, words and bytes of a file.
+--   cat examples/lib/strings.slap examples/utils/wc.slap | ./slap FILE
+1 "FILE" arg-count
+0 arg-bytes 'in let
+('c let c 32 eq c 9 ge c 13 le and or) 'space? let
+-- A word starts at a byte that is not space. The fold keeps count*2 + (1 inside a word).
+in 0 ('c let 'a let c space? (a 2 div 2 mul) (a 2 mod 1 eq (a) (a 2 div 1 plus 2 mul 1 plus) if) if) fold 2 div 'words let
+('s let s len 8 lt (" " s cat pad) (s) if) 'pad let
+in (10 eq) filter len int-str pad words int-str pad cat in len int-str pad cat " " cat args 0 get must cat 10 push stdout-write

@@ -70,13 +70,13 @@ RESP crlf crlf cat str-find () {'ok (drop 1) 'no (drop 0)} case not (
   cat RESP len int-str cat " bytes)" cat die) () if
 
 RESP parse-http must 'R let
-R 'status at must 'STATUS let
-R 'headers at must 'HEADERS let
-R 'body at must 'BODY let
+R 'status at 'STATUS let
+R 'headers at 'HEADERS let
+R 'body at 'BODY let
 
 SHOW-HEAD (
   "HTTP/1.0 " STATUS int-str cat say
-  HEADERS list ('h let h 'key at must ": " cat h 'value at must cat LF cat cat) fold out
+  HEADERS list ('h let h 'key at ": " cat h 'value at cat LF cat cat) fold out
   HEAD-ONLY () (LF out) if
 ) () if
 

@@ -6,22 +6,22 @@
 (
   'n let 'ds let
   rec 0 'carry into list 'result into 0 'j into
-  (dup 'j at must ds len lt)
+  (dup 'j at ds len lt)
   (
-    dup 'j at must ds swap get must n mul over 'carry at must plus 'val let
-    'result (val 10 mod push) edit must
-    'carry (drop val 10 div) edit must
-    'j (1 plus) edit must
+    dup 'j at ds swap get must n mul over 'carry at plus 'val let
+    'result (val 10 mod push) edit
+    'carry (drop val 10 div) edit
+    'j (1 plus) edit
   )
   while
-  (dup 'carry at must 0 gt)
+  (dup 'carry at 0 gt)
   (
-    dup 'carry at must 'c let
-    'result (c 10 mod push) edit must
-    'carry (10 div) edit must
+    dup 'carry at 'c let
+    'result (c 10 mod push) edit
+    'carry (10 div) edit
   )
   while
-  'result at must
+  'result at
 ) 'mul-digits let
 
 ('nn let (nn mul-digits) mutate) 'mul-box let

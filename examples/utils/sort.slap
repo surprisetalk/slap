@@ -1,0 +1,44 @@
+-- sort.slap: print the lines of a file in byte order, like LC_ALL=C sort.
+--   cat examples/lib/strings.slap examples/utils/sort.slap | ./slap FILE
+--
+-- A list is a flat run of values on the stack, so moving one past another costs its length.
+-- The sort therefore moves only line numbers: it reads the text and the line ends with `nth`
+-- on bound names, pushes onto one list at the top of the stack, and keeps its counters above it.
+1 "FILE" arg-count
+0 arg-bytes 'in let
+in len 'n let
+-- Where each line ends: every newline, and the end of the text when it has no final newline.
+0 n range ('in swap nth must 10 eq) filter
+n 0 gt ('in n 1 sub nth must 10 eq not) (0) if (n push) () if 'ends let
+ends len 'lines let
+('k let k 0 eq (0) ('ends k 1 sub nth must 1 plus) if) 'start let
+-- Byte order: the first differing byte decides, and a prefix comes first.
+('b let 'a let
+ a start 'sa let  'ends a nth must sa sub 'la let
+ b start 'sb let  'ends b nth must sb sub 'lb let
+ la lb min 'm let
+ 0 (dup m lt (dup sa plus 'in swap nth must over sb plus 'in swap nth must eq) (0) if) (1 plus) while 'k let
+ k m lt ('in sa k plus nth must 'in sb k plus nth must lt) (la lb lt) if
+) 'line-lt let
+-- Bottom-up merge sort of the line numbers: each pass merges runs of width w in src into runs of 2w.
+0 lines range 1
+(dup lines lt) (
+  'w let 'src let
+  list 0
+  (dup lines lt) (
+    'lo let
+    lo w plus lines min 'mid let  mid w plus lines min 'hi let
+    lo mid
+    (over mid lt over hi lt or) (
+      'j let 'i let
+      j hi lt (i mid lt ('src j nth must 'src i nth must line-lt) (1) if) (0) if
+      ('src j nth must push  i j 1 plus) ('src i nth must push  i 1 plus j) if
+    ) while
+    drop drop hi
+  ) while
+  drop w 2 mul
+) while
+drop
+list ('k let  'ends k nth must 'e let  k start
+  (dup e lt) ('p let 'in p nth must push p 1 plus) while drop 10 push) fold
+stdout-write

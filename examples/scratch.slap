@@ -84,13 +84,13 @@ argv len 0 gt (
       1 plus
     ) while
     drop
-  ) edit must
+  ) edit
 ) () if
 
 (
   argv len 0 gt (
-    dup 'before at must 'sav-bef let
-    dup 'after at must 'sav-aft let
+    dup 'before at 'sav-bef let
+    dup 'after at 'sav-aft let
     list 0
     (dup sav-bef len lt) (
       dup 'wi let
@@ -213,8 +213,8 @@ argv len 0 gt (
   'my let 'mx let
   my PAD-Y ge (
     -- Build full text: before + reversed after
-    dup 'before at must 'mbef let
-    dup 'after at must 'maft let
+    dup 'before at 'mbef let
+    dup 'after at 'maft let
     list 0
     (dup mbef len lt) (
       dup 'mfi let
@@ -238,19 +238,19 @@ argv len 0 gt (
       dup 'hi let
       swap 'ws let
       'full hi nth must 'hch let
-      mx ws 'hx at must sub dup mul my ws 'hy at must sub dup mul plus 'hd let
-      hd ws 'bestd at must lt
+      mx ws 'hx at sub dup mul my ws 'hy at sub dup mul plus 'hd let
+      hd ws 'bestd at lt
         (ws hi 'best into hd 'bestd into)
         (ws)
       if
       hch 10 eq (
-        PAD-X 'hx into 'hy (LH plus) edit must
+        PAD-X 'hx into 'hy (LH plus) edit
       ) (
         body-font hch get must 'hw let
         hw 0 gt (
-          'hx (hw plus 1 plus) edit must
-          dup 'hx at must PAD-X TW plus gt (
-            PAD-X 'hx into 'hy (LH plus) edit must
+          'hx (hw plus 1 plus) edit
+          dup 'hx at PAD-X TW plus gt (
+            PAD-X 'hx into 'hy (LH plus) edit
           ) () if
         ) () if
       ) if
@@ -260,9 +260,9 @@ argv len 0 gt (
     drop
     -- Check end-of-text position
     'ws-end let
-    mx ws-end 'hx at must sub dup mul my ws-end 'hy at must sub dup mul plus 'end-d let
-    end-d ws-end 'bestd at must lt
-      (full len) (ws-end 'best at must) if
+    mx ws-end 'hx at sub dup mul my ws-end 'hy at sub dup mul plus 'end-d let
+    end-d ws-end 'bestd at lt
+      (full len) (ws-end 'best at) if
     'best-pos let
     -- Rebuild gap buffer at must best-pos
     list 0
@@ -288,40 +288,40 @@ argv len 0 gt (
 'keydown (
   'key let
   key 8 eq (
-    dup 'before at must len 0 gt (
-      dup 'before at must pop drop 'before into do-save
+    dup 'before at len 0 gt (
+      dup 'before at pop drop 'before into do-save
     ) () if
   ) (
   key 13 eq (
-    'before (10 push) edit must do-save
+    'before (10 push) edit do-save
   ) (
   key 127 eq (
-    dup 'after at must len 0 gt (
-      dup 'after at must pop drop 'after into do-save
+    dup 'after at len 0 gt (
+      dup 'after at pop drop 'after into do-save
     ) () if
   ) (
   key 1073741904 eq (
-    dup 'before at must len 0 gt (
-      dup 'before at must pop 'mc let 'before into
-      'after (mc push) edit must
+    dup 'before at len 0 gt (
+      dup 'before at pop 'mc let 'before into
+      'after (mc push) edit
     ) () if
   ) (
   key 1073741903 eq (
-    dup 'after at must len 0 gt (
-      dup 'after at must pop 'mc let 'after into
-      'before (mc push) edit must
+    dup 'after at len 0 gt (
+      dup 'after at pop 'mc let 'after into
+      'before (mc push) edit
     ) () if
   ) (
     key 32 ge key 127 lt and (
-      'before (key push) edit must do-save
+      'before (key push) edit do-save
     ) () if
   ) if) if) if) if) if
 ) on
 
 (
   drop
-  dup 'before at must 'show-bef let
-  dup 'after at must 'show-aft let
+  dup 'before at 'show-bef let
+  dup 'after at 'show-aft let
   3 clear
   draw-titlebar
   draw-torn

@@ -114,19 +114,19 @@ rec 0 'sel into "The quick brown fox jumps over the lazy dog" 'txt into
 
 'keydown (
   'key let
-  key 1073741906 eq ('sel (1 sub 0 max) edit must) (
-  key 1073741905 eq ('sel (1 plus nf 1 sub min) edit must) (
+  key 1073741906 eq ('sel (1 sub 0 max) edit) (
+  key 1073741905 eq ('sel (1 plus nf 1 sub min) edit) (
   key 8 eq key 127 eq or (
-    dup 'txt at must len 0 gt ('txt (dup len 1 sub take-n) edit must) () if
+    dup 'txt at len 0 gt ('txt (dup len 1 sub take-n) edit) () if
   ) (
-    key 32 ge key 126 le and ('txt (key push) edit must) () if
+    key 32 ge key 126 le and ('txt (key push) edit) () if
   ) if) if) if
 ) on
 
 (
   drop
-  dup 'sel at must 'sel-v let
-  dup 'txt at must 'txt-v let
+  dup 'sel at 'sel-v let
+  dup 'txt at 'txt-v let
   3 clear
 
   -- Label font

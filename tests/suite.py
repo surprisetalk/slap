@@ -2,7 +2,7 @@
 """Run every check in parallel. `suite.py` is `make test`, `suite.py slow` is
 `make test-slow`, and `suite.py status` is `make status`."""
 
-import concurrent.futures, glob, json, os, re, shutil, subprocess, sys, tempfile, threading, time
+import concurrent.futures, glob, json, os, random, re, shutil, subprocess, sys, tempfile, threading, time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -46,6 +46,32 @@ def closures():
     return code == 0 and mb < 200, f"exit {code}, peak RSS {mb:.0f} MB (limit 200)\n" + err.read().decode()[-2000:]
 
 
+def profile():
+    """--profile prints folded stacks, one `a;b;c nanoseconds` line per call path, even when the program dies."""
+    folded = re.compile(r"^[^ ;]+(;[^ ;]+)* [0-9]+$")
+    def run(src):
+        r = subprocess.run(["./slap", "--profile"], input=src, capture_output=True, text=True, timeout=TIMEOUT)
+        return r.returncode, r.stderr.splitlines()
+    code, lines = run("(1 plus) 'inc2 let (0 (dup 1000 lt) (inc2) while) 'count let count drop\n")
+    if code != 0 or not lines or not all(folded.match(l) for l in lines):
+        return False, f"plain run: exit {code}\n" + "\n".join(lines[:20])
+    if not any(re.search(r"(^|;)count;while;inc2;plus [0-9]+$", l) for l in lines):
+        return False, "no count;while;inc2;plus line:\n" + "\n".join(lines[:20])
+    code, lines = run("(0 (dup 3000 lt) (1 plus) while drop) 'pc let (1 (pc) () if) 'pb let (1 (pb) () if) 'pa let pa (pop must) len 1 eq assert\n")
+    if code != 0 or not any(re.search(r"^pa;if;pb;if;pc;while", l) for l in lines):
+        return False, "nested words under if must keep their own frames:\n" + "\n".join(lines[:20])
+    code, lines = run("(1 0 div) 'boom let boom\n")
+    if code != 1 or not any(re.match(r"^boom;div [0-9]+$", l) for l in lines):
+        return False, f"dying run: exit {code}\n" + "\n".join(lines[-20:])
+    code, lines = run("'odd? [int lent in  int move out] effect\n"
+                      "(dup 0 eq (drop 1) (1 sub odd?) if) 'even? let\n"
+                      "(dup 0 eq (drop 0) (1 sub even?) if) 'odd? let\n"
+                      "2000 even? drop\n")
+    if code != 0 or len(lines) > 20:
+        return False, f"mutual recursion: exit {code}, {len(lines)} lines (limit 20)\n" + "\n".join(lines[:30])
+    return True, ""
+
+
 def steps(slow):
     euler_files = sorted(
         glob.glob("examples/euler/*.slap"), key=lambda p: int(re.sub(r"\D", "", p))
@@ -71,14 +97,20 @@ def steps(slow):
             ),
             "errors": ("python3 tests/run_errors.py", None),
             "closures": (closures, None),
+            "profile": (profile, None),
             "closed stdout": ("echo '42 print' | ./slap >&-; test $? -eq 1", None),
             "stdout reader quits": ("echo '(1) (1 print) while' | ./slap | head -1 >/dev/null; true", None),
+            "stdout write keeps order": (
+                """echo '42 print "/dev/stdout" "x" write must drop 43 print' | ./slap""",
+                lambda out: out == "42\nx43\n",
+            ),
             "wiki": ("python3 tests/run_wiki.py", None),
             "kv": ("python3 tests/run_kv.py", None),
             "feed": ("python3 tests/run_feed.py", None),
             "todo": ("python3 tests/run_todo.py", None),
             "serve": ("python3 tests/run_serve.py", None),
             "codec": ("python3 tests/run_codec.py", None),
+            "utils": ("python3 tests/run_utils.py", None),
         }
     )
     for name in ["chip8", "uxn", "maze", "raycast"]:
@@ -161,6 +193,25 @@ def status():
     t = time.time()
     r = subprocess.run(["./slap", feed], input=src, capture_output=True, text=True, timeout=60)
     score["A 600 KB feed renders in under a second."] = 1 / (time.time() - t) if r.stdout.rstrip().endswith("4100 items") else 0.0
+    rng = random.Random(1)
+    vocab = ["apple", "Apple", "banana", "cherry", "ö", "日本", "zeta", "alpha", "beta", "gamma", "delta"]
+    text = "".join(" ".join(rng.choice(vocab) for _ in range(rng.randrange(1, 6))) + "\n" for _ in range(20000)).encode()
+    lines = os.path.join(SCRATCH, "lines.txt")
+    with open(lines, "wb") as f:
+        f.write(text)
+    src = open(lib("strings"), "rb").read() + open("examples/utils/sort.slap", "rb").read()
+    t = time.time()
+    r = subprocess.run(["./slap", lines], input=src, capture_output=True, timeout=60)
+    ok = r.returncode == 0 and r.stdout == b"".join(sorted(text.splitlines(keepends=True)))
+    score["sort.slap sorts 20,000 lines in under a second."] = 1 / (time.time() - t) if ok else 0.0
+    # `at` and `edit` never fail; every `'k at must` is a read the checker does not prove yet.
+    fused = bare = 0
+    for path in glob.glob("examples/**/*.slap", recursive=True) + glob.glob("tests/*.slap"):
+        for line in open(path):
+            code = re.sub(r'"(\\.|[^"\\])*"', '""', line).split("--")[0]
+            fused += len(re.findall(r"(?<![\w'-])(?:at|edit)\s+must\b", code))
+            bare += len(re.findall(r"(?<![\w'-])(?:at|edit)(?![\w?!-])(?!\s+must\b)", code))
+    score["No record read can fail: every at and edit is proved."] = bare / (bare + fused) if fused else 1.0
     shutil.rmtree(SCRATCH)
     print(json.dumps({k: {"0": round(v, 2)} for k, v in score.items()}, indent=1))
     if min(score.values()) < 1.0:

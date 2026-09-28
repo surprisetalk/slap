@@ -25,7 +25,7 @@ rec
 
 'mousemove (
   'mmy let 'mmx let
-  'mx (drop mmx) edit must 'my (drop mmy) edit must
+  'mx (drop mmx) edit 'my (drop mmy) edit
 ) on
 
 -- Separation inner loop
@@ -50,19 +50,19 @@ rec
 -- Update one boid
 (
   'frame let 'i let 'st let
-  st 'xs at must 'xsv let  st 'ys at must 'ysv let
-  st 'vxs at must 'vxsv let  st 'vys at must 'vysv let
+  st 'xs at 'xsv let  st 'ys at 'ysv let
+  st 'vxs at 'vxsv let  st 'vys at 'vysv let
   xsv i get must 'xi let  ysv i get must 'yi let
   vxsv i get must 'vxi let  vysv i get must 'vyi let
 
   -- Shift trail history
   st
-  'p3xs (i st 'p2xs at must i get must set must) edit must
-  'p3ys (i st 'p2ys at must i get must set must) edit must
-  'p2xs (i st 'p1xs at must i get must set must) edit must
-  'p2ys (i st 'p1ys at must i get must set must) edit must
-  'p1xs (i xi set must) edit must
-  'p1ys (i yi set must) edit must
+  'p3xs (i st 'p2xs at i get must set must) edit
+  'p3ys (i st 'p2ys at i get must set must) edit
+  'p2xs (i st 'p1xs at i get must set must) edit
+  'p2ys (i st 'p1ys at i get must set must) edit
+  'p1xs (i xi set must) edit
+  'p1ys (i yi set must) edit
   'st2 let
 
   -- Separation
@@ -81,14 +81,14 @@ rec
   ay1 avy vyi sub 3 div plus 'ay2 let
 
   -- Mouse attraction with swirl
-  st2 'mx at must 'mxv let  st2 'my at must 'myv let
+  st2 'mx at 'mxv let  st2 'my at 'myv let
   mxv xi sub 'mdx let  myv yi sub 'mdy let
   ax2 mdx 16 div plus mdy neg 12 div plus 'ax3 let
   ay2 mdy 16 div plus mdx 12 div plus 'ay3 let
 
   -- Flee predator
-  st2 'ptimer at must 0 gt (
-    xi st2 'px at must sub 'pdx let  yi st2 'py at must sub 'pdy let
+  st2 'ptimer at 0 gt (
+    xi st2 'px at sub 'pdx let  yi st2 'py at sub 'pdy let
     pdx abs pdy abs plus 'pdist let
     pdist 140 lt pdist 0 gt and (
       ax3 pdx sign 50 mul plus
@@ -105,8 +105,8 @@ rec
   yi vyi3 4 div plus 480 wrap 'yi2 let
 
   st2
-  'xs (i xi2 set must) edit must 'ys (i yi2 set must) edit must
-  'vxs (i vxi3 set must) edit must 'vys (i vyi3 set must) edit must
+  'xs (i xi2 set must) edit 'ys (i yi2 set must) edit
+  'vxs (i vxi3 set must) edit 'vys (i vyi3 set must) edit
 ) 'update-one-boid let
 
 (
@@ -119,18 +119,18 @@ rec
 
 (
   'frame let 'st let
-  st 'ptimer at must 0 gt (
-    st 'px at must 'cpx let  st 'py at must 'cpy let
+  st 'ptimer at 0 gt (
+    st 'px at 'cpx let  st 'py at 'cpy let
 
     -- Compute velocity toward flock center
-    st 'xs at must 0 (plus) fold N div cpx sub 6 div -8 8 clamp 'npvx let
-    st 'ys at must 0 (plus) fold N div cpy sub 6 div -8 8 clamp 'npvy let
+    st 'xs at 0 (plus) fold N div cpx sub 6 div -8 8 clamp 'npvx let
+    st 'ys at 0 (plus) fold N div cpy sub 6 div -8 8 clamp 'npvy let
 
     st
-    'ppx (drop cpx) edit must 'ppy (drop cpy) edit must
-    'ptimer (1 sub) edit must
-    'pvx (drop npvx) edit must 'pvy (drop npvy) edit must
-    'px (drop cpx npvx plus) edit must 'py (drop cpy npvy plus) edit must
+    'ppx (drop cpx) edit 'ppy (drop cpy) edit
+    'ptimer (1 sub) edit
+    'pvx (drop npvx) edit 'pvy (drop npvy) edit
+    'px (drop cpx npvx plus) edit 'py (drop cpy npvy plus) edit
   ) (
     frame 500 mod 0 eq frame 0 gt and (
       4 random
@@ -141,17 +141,17 @@ rec
       ) if) if) if
       'spy let 'spx let
       st
-      'ptimer (drop 540) edit must
-      'px (drop spx) edit must 'py (drop spy) edit must
-      'ppx (drop spx) edit must 'ppy (drop spy) edit must
+      'ptimer (drop 540) edit
+      'px (drop spx) edit 'py (drop spy) edit
+      'ppx (drop spx) edit 'ppy (drop spy) edit
     ) (st) if
   ) if
 ) 'update-predator let
 
 'tick (
   drop
-  'frame (1 plus) edit must
-  dup 'frame at must 'fr let
+  'frame (1 plus) edit
+  dup 'frame at 'fr let
 
   fr update-predator
   0 fr update-boids-loop
@@ -177,7 +177,7 @@ rec
 (
   'st let 'i let
   i N lt (
-    st 'p3xs at must i get must st 'p3ys at must i get must 1 pixel
+    st 'p3xs at i get must st 'p3ys at i get must 1 pixel
     i 1 plus st draw-trail3
   ) () if
 ) 'draw-trail3 let
@@ -185,7 +185,7 @@ rec
 (
   'st let 'i let
   i N lt (
-    st 'p2xs at must i get must 'tx let  st 'p2ys at must i get must 'ty let
+    st 'p2xs at i get must 'tx let  st 'p2ys at i get must 'ty let
     tx ty 1 pixel
     szs i get must 2 gt (tx 1 plus ty 1 pixel) () if
     i 1 plus st draw-trail2
@@ -195,7 +195,7 @@ rec
 (
   'st let 'i let
   i N lt (
-    st 'p1xs at must i get must 'tx let  st 'p1ys at must i get must 'ty let
+    st 'p1xs at i get must 'tx let  st 'p1ys at i get must 'ty let
     tx ty 2 pixel
     szs i get must 1 gt (tx 1 plus ty 2 pixel) () if
     i 1 plus st draw-trail1
@@ -214,11 +214,11 @@ rec
 (
   'st let 'i let
   i N lt (
-    st 'vxs at must i get must abs st 'vys at must i get must abs plus 'spd let
+    st 'vxs at i get must abs st 'vys at i get must abs plus 'spd let
     spd 8 gt (3) (spd 3 gt (2) (1) if) if 'bc let
-    st 'vxs at must i get must sign 'sdx let  st 'vys at must i get must sign 'sdy let
+    st 'vxs at i get must sign 'sdx let  st 'vys at i get must sign 'sdy let
     szs i get must 'sz let
-    st 'xs at must i get must 'bx let  st 'ys at must i get must 'by let
+    st 'xs at i get must 'bx let  st 'ys at i get must 'by let
 
     -- Head pixel
     bx by bc pixel
@@ -239,13 +239,13 @@ rec
 (
   drop
   dup 'st let
-  st 'frame at must 'frame let
+  st 'frame at 'frame let
   0 clear
 
   -- Mouse attractor
-  st 'mx at must 'mxv let
+  st 'mx at 'mxv let
   mxv -1 neq (
-    st 'my at must 'myv let
+    st 'my at 'myv let
     frame 3 div 6 mod 3 plus 'r1 let
     frame 2 div 8 mod 5 plus 'r2 let
     mxv myv r1 1 draw-diamond
@@ -253,9 +253,9 @@ rec
   ) () if
 
   -- Predator
-  st 'ptimer at must 0 gt (
+  st 'ptimer at 0 gt (
     frame 2 div 2 mod 1 plus 'pc let
-    st 'px at must 'ppx let  st 'py at must 'ppy let
+    st 'px at 'ppx let  st 'py at 'ppy let
     -- Thick cross
     (
       'pd let
@@ -272,7 +272,7 @@ rec
     frame 4 div 10 mod 6 plus 'dring let
     ppx ppy dring 1 draw-diamond
     -- Predator trail
-    st 'ppx at must -100 neq (st 'ppx at must st 'ppy at must 1 pixel) () if
+    st 'ppx at -100 neq (st 'ppx at st 'ppy at 1 pixel) () if
   ) () if
 
   -- Trails

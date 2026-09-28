@@ -37,9 +37,17 @@ slap-sdl < examples/life.slap
 
 CLI:
 ```
-slap [--check] [--headless] [args...] < file.slap
+slap [--check] [--headless] [--profile] [args...] < file.slap
   --check      type-check only, no execution
   --headless   (SDL) run without a window, tick loop continues indefinitely
+  --profile    at exit, print one `word;word;word nanoseconds` line per call path to stderr
+```
+
+`--profile` output is folded stacks. Recursion folds into one frame, and primitives are frames, so time spent in a body that `each` or `if` runs goes to the words in that body. Draw it with [FlameGraph](https://github.com/brendangregg/FlameGraph):
+
+```bash
+./slap --profile args < prog.slap 2> prog.folded
+flamegraph.pl --countname=ns prog.folded > prog.svg
 ```
 
 System primitives:
@@ -252,10 +260,13 @@ Key-value maps keyed by symbols.
 
 ```slap
 {'x 10 'y 20}                -- record
-{'x 10 'y 20} 'x at must     -- 10 (at returns tagged; must unwraps)
+{'x 10 'y 20} 'x at          -- 10
+{'x 10 'y 20} 'x (1 plus) edit  -- {'x 11 'y 20}
 {'x 10 'y 20} 30 'x into     -- {'x 30 'y 20}
 rec 10 'x into 20 'y into    -- {'x 10 'y 20}
 ```
+
+`at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. It knows the keys of records built with `{...}`, `rec` and `into`, and follows them through `let`, stack words, calls, `if`, `case`, loops, lists and tagged payloads. A word that reads `'k` from its input makes every caller pass a record with `'k`. The key must be written as a literal; for keys that are data, use a dict. The old form `'k at must` still runs, unchecked, while xml.slap and rss.slap move off it.
 
 ### strings
 
@@ -317,12 +328,12 @@ Realistic example — a mutable counter:
 
 ```slap
 {'count 0 'total 0} box
-  ('count (1 plus) edit must) mutate
-  ('count (1 plus) edit must) mutate
-  ('total (100 plus) edit must) mutate
+  ('count (1 plus) edit) mutate
+  ('count (1 plus) edit) mutate
+  ('total (100 plus) edit) mutate
   () lend
-  dup 'count at must 2 eq assert
-  'total at must 100 eq assert
+  dup 'count at 2 eq assert
+  'total at 100 eq assert
 free
 ```
 
@@ -397,9 +408,9 @@ Definitions written in slap itself, loaded at startup.
 
 | Word | Effect | Example |
 |------|--------|---------|
-| `inc` | n → n+1 | `5 inc` → `6` |
-| `dec` | n → n-1 | `5 dec` → `4` |
-| `neg` | n → -n | `5 neg` → `-5` |
+| `inc` | int → int+1 | `5 inc` → `6` |
+| `dec` | int → int-1 | `5 dec` → `4` |
+| `neg` | int → -int (`fneg` for floats) | `5 neg` → `-5` |
 | `abs` | n → \|n\| | `-3 abs` → `3` |
 | `sqr` | n → n\*n | `5 sqr` → `25` |
 | `max` | a b → max | `3 5 max` → `5` |
@@ -535,7 +546,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/xml.slap` | Elm-style XML decoder (requires `strings.slap` for `int-str`) |
 | `examples/lib/rss.slap` | RSS/Atom feed parser (requires `xml.slap`) |
 | `examples/lib/json.slap` | Elm-style JSON decoder (requires `strings.slap` for `int-str`) |
-| `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request` |
+| `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request`, `arg-count`, `arg-bytes`, `stdout-write` |
 
 `jd-run` and `xd-run` return `value ok`, or `msg no` for a syntax error as well as a shape error. Neither library recurses per byte or per element, so input size is bounded by memory; nesting deeper than 256 is refused. `jd-str` decodes `\u` escapes, surrogate pairs included, to UTF-8 and refuses a raw control byte; `je-str` escapes every byte under 0x20, so anything it writes reads back.
 
@@ -712,6 +723,13 @@ cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/tga.slap \
     examples/plasma.slap | ./slap plasma.tga 64
 ```
 
+Coreutils in `examples/utils/`: `cat`, `wc`, `head` (10 lines), `grep` (a fixed string, like `grep -F`), `uniq` and `sort` (byte order, like `LC_ALL=C sort`). Each reads the file named by its argument (grep takes a pattern, then a file), because the program itself arrives on stdin, and refuses any other number of arguments. `tests/run_utils.py` diffs each one against the system tool, and `make status` times `sort.slap` on 20,000 lines.
+
+```bash
+cat examples/lib/strings.slap examples/utils/sort.slap | ./slap words.txt
+cat examples/lib/strings.slap examples/utils/grep.slap | ./slap needle words.txt
+```
+
 `serve.slap` decodes the request target before testing it, so `%2e%2e` and `..` are the same string by the time the rule sees them, and the rule is a byte allowlist rather than a denylist. `fetch.slap` is the one place `parse-http` is used as designed: it reads a *response*, where the number after the first space is the status — hand it a request line and it reports 0 and loses the method and path, which is why both servers here parse requests by hand.
 
 The store keeps its data in a dict threaded on the stack and persists to a flat `key<TAB>value` snapshot on `SAVE`/`SHUTDOWN`. The protocol is one LF-terminated command per connection (`SET`/`GET`/`DEL`/`KEYS`/`SAVE`/`PING`/`SHUTDOWN`); malformed input, dead peers, and an unwritable snapshot are all reported without taking the single-threaded server down, while a corrupt snapshot is refused loudly at boot rather than silently pruned.
@@ -765,10 +783,13 @@ It catches the following at compile time:
 **Protocols (typeclasses):**
 - `ord` (`lt`, `sort`) accepts int and float only. Symbols are Eq but not Ord — ordering symbols by intern id is an implementation accident, not a semantic.
 - `num`, `seq`, `semigroup`, `sized` and `functor` gate other ops.
-- Code inside `{...}` case clauses and `[...]` list literals is checked like any other body, and `then`'s body must return a tagged value.
+- Code inside case clauses is checked like any other body, and `then`'s body must return a tagged value.
+- A `[...]` or `{...}` literal is built once, when the program is read, before anything runs. Its code sees only what is written inside it and the prelude, not names the program binds. Build such a value at runtime instead: `list x push`, `rec x 'key into`.
+- A `{...}` literal is a record when its values pair up as `'key value`, and a tuple otherwise; `{}` is the empty record. A tuple bound by name runs when it is looked up, so `{1 2 3} 't let t` pushes 1 2 3. Right before `case`, a `{...}` literal is a clause list, and every clause body is `(...)`: write `(drop 1)`, not `1`.
 
 **Effect annotations:**
 - `(body) [sig] effect 'name let` runs the body on exactly the declared inputs. The body must not reach below them, and it must leave exactly the declared outputs, each of the declared type.
+- A declared input is rigid: the body must accept every value its type admits. `(2 mul) ['a num lent in  'a num move out] effect` is an error, because the literal `2` makes the body int-only.
 - A body that runs a `tuple` input leaves whatever that tuple leaves, so its outputs are not checked.
 - A recursive word takes its effect from the branch that does not recurse.
 - `if` branches and `case` clauses must leave the same count. A branch that never returns (`x no must`, `none must`, `halt`) agrees with any other branch.
@@ -780,7 +801,6 @@ It catches the following at compile time:
 **What the type system does *not* catch:**
 - Division by zero, modulo by zero, out-of-bounds `set`, `nth`, or `peek` (runtime panics).
 - Non-exhaustive `case` on a tagged value whose variants no signature declares: the default fires on any unmatched tag. That is by design.
-- A signature's type variables do not bind to literals in the body: `(2 mul) ['a num lent in  'a num move out] effect` accepts a float and dies at runtime.
 - Recursion depth, memory limits, or other runtime resource exhaustion.
 
 ## testing

@@ -10,3 +10,9 @@
 ('sep let 'parts let parts len 0 eq (list) (parts 1 drop-n parts first (sep swap cat cat) fold) if) 'str-join let
 
 ('body let 'headers let 'path let 'host let 'method let method " " cat path cat " HTTP/1.1" cat crlf cat "Host: " cat host cat crlf cat headers cat body len 0 gt ("Content-Length: " cat body len int-str cat crlf cat) () if crlf cat body cat) 'http-request let
+
+-- Dies unless the program got exactly n arguments, naming them as usage does.
+('usage let 'n let args len n eq () ("expected " n int-str cat " argument(s): " cat usage cat no must) if) 'arg-count let
+-- The bytes of the file named by argument i. Dies naming what is missing.
+('i let args i get () {'ok ('p let p read () {'ok () 'no (drop "cannot read " p cat no must)} case) 'no (drop "expected a file name as argument" no must)} case) 'arg-bytes let
+('s let "/dev/stdout" s write must drop) 'stdout-write let

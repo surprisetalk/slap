@@ -147,7 +147,7 @@ rot
 -- EXPECT: stack underflow
 nip
 
--- EXPECT: edit: expected record
+-- EXPECT: 'edit' expected rec, got int
 1 'x (1 plus) edit
 
 -- EXPECT: key
@@ -226,7 +226,7 @@ nip
 -- EXPECT: needs 3 input
 1 'ok tag 1 case
 
--- EXPECT: case: need even number of clauses
+-- EXPECT: case: need even number of clauses: 'ok has no body
 1 'ok tag () {'ok} case
 
 -- EXPECT: key
@@ -971,3 +971,191 @@ dict [256] 1 insert drop
 -- EXPECT: 'case' clauses leave net -1, but it pushes its default when a tag it has no clause for arrives, and the checker cannot see which tags arrive
 -- tags the checker cannot see may reach the default, which leaves the scrutinee's place filled
 (5 swap 0 {'ok (plus)} case) [tagged lent in  int move out] effect 'cd let
+
+-- EXPECT: record literal: key 'b has no value
+-- EXPECT-LINE: 1
+{'a 1 'b} 'a at must
+
+-- EXPECT: 'case' clause 'ok is 1, not a body. A clause runs code on the payload: write (drop 1)
+1 ok 0 {'ok 1 'no 2} case
+
+-- EXPECT: 'case' clause key 1 is not a 'tag or a (predicate)
+1 rec {1 (drop 7)} case
+
+-- EXPECT: case: the clause for 'ok is int, not a body. A clause runs code on the payload: write (drop 1)
+-- a clause record that reaches case through a binding
+{'ok 1 'no 2} 'cl let 1 ok 0 cl case
+
+-- EXPECT: 'case' clause (5 lt) is "abc", not a body. A clause runs code on the payload: write (drop "abc")
+3 0 {(5 lt) "abc"} case
+
+-- EXPECT: 'case' clause 'ok matches a tag, but the value is int, not tagged
+5 0 {'ok (drop 1)} case
+
+-- EXPECT: case: clause key 'ok matches a tag, but the value is int, not tagged
+{'ok (drop 1)} 'cl let 5 0 cl case
+
+-- EXPECT: case: clause key 1 is int, not a (predicate)
+-- clauses that a word returns
+({1 (drop 7)}) 'mk let 5 0 mk case
+
+-- EXPECT: 'x' is bound when the program runs, but a [...] or {...} literal is built when the program is read
+5 'x let {'a x}
+
+-- EXPECT: list literal [drop] takes 1 value(s) from outside it
+1 [drop]
+
+-- EXPECT: 'f' declares input 1 as a list of num, but its body only works when the elements are int
+(1 push) [num list own in  num list move out] effect 'f let
+
+-- EXPECT: 'my-double' declares input 1 as num, but its body only works when it is int
+-- a literal inside the body does not make a declared input narrower
+(2 mul) ['a num lent in  'a num move out] effect 'my-double let
+
+-- EXPECT: 'inc' expected int, got float
+1.5 inc
+
+-- EXPECT: 'gt' expected ord, got list
+[1] [2] gt
+
+-- EXPECT: 'apply' input type mismatch: expected int, got list
+"a" (1 plus) apply
+
+-- EXPECT: 'dip' input type mismatch: expected int, got list
+"a" 5 (1 plus) dip
+
+-- EXPECT: 'at' reads 'z, but this record has no 'z
+{'x 10 'y 20} 'z at
+
+-- EXPECT: 'at' needs its key written as a literal
+'a 'k let {'a 1} k at
+
+-- EXPECT: 'edit' reads 'b, but this record has no 'b
+{'a 1} 'b (1 plus) edit
+
+-- EXPECT: dup: stack overflow: this needs 1100001 more value slots, but only
+0 1100000 range dup
+
+-- EXPECT: 'sxy' reads 'y from its input 1, but the record passed here has no 'y
+('r let r 'x at r 'y at plus) 'sxy let {'x 1} sxy
+
+-- EXPECT: 'cnt' reads 'n from its input 1, but the record passed here has no 'n
+(dup 'n at 0 eq (drop 0) (drop {'m 1} cnt) if) 'cnt let {'n 3} cnt
+
+-- EXPECT: 'lend' reads 'x from its input 1, but the record passed here has no 'x
+-- a lend body gets the box's contents
+{'y 1} box ('x at) lend drop free
+
+-- EXPECT: 'at' reads 'b, but this record has no 'b
+-- either branch of an if may make the record
+1 ({'a 1}) ({'b 1}) if 'b at
+
+-- EXPECT: 'case' reads 'z from its input 1, but the record passed here has no 'z
+-- a predicate runs on the scrutinee too
+{'x 1} 0 {(dup 'z at 1 eq) (drop 5)} case
+
+-- EXPECT: 'xs-of' reads 'x from its input 1, but the record passed here has no 'x
+(('x at) each) 'xs-of let [{'y 1}] xs-of
+
+-- ===== Soundness: each passed --check once, then died reading a key the checker proved =====
+
+-- EXPECT: TYPE ERROR
+-- if: a branch leaves a body that reads a key
+{'b 1} 1 (('a at)) ((drop 0)) if apply
+
+-- EXPECT: TYPE ERROR
+-- case: clauses take different counts
+{'a 1} 5 0 {(3 lt) (drop 1) (9 lt) (drop drop {'b 1} 1)} case drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- a loop on state below the body's inputs
+(3 (drop {'b 1}) repeat) 'f let {'a 1} f 'a at
+
+-- EXPECT: TYPE ERROR
+-- a while on state below the body's inputs
+((dup 'n at 0 gt) (drop {'m 0}) while) 'f let {'n 1} f
+
+-- EXPECT: TYPE ERROR
+-- nested loops
+{'a 1} 3 (3 (drop {'b 1}) repeat) repeat 'a at
+
+-- EXPECT: TYPE ERROR
+-- a loop inside an edit body
+{'a {'x 1}} 'a (3 (drop {'b 1}) repeat) edit 'a at 'x at
+
+-- EXPECT: TYPE ERROR
+-- loop state wider than 16 values
+{'a 1} 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 1 (drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop {'b 1} 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16) repeat drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- a loop body that grows the stack
+{'a 1} 1 ({'b 1}) repeat 'a at
+
+-- EXPECT: TYPE ERROR
+-- a while cond that replaces the state
+{'a 1} (drop {'b 1} 0) () while 'a at
+
+-- EXPECT: TYPE ERROR
+-- a loop replaces a literal key
+{'b 1} 'b 3 (drop 'a) repeat at
+
+-- EXPECT: TYPE ERROR
+-- a loop replaces the key into uses
+rec 5 'c 3 (drop 'a) repeat into 'c at
+
+-- EXPECT: TYPE ERROR
+-- quote keeps the body's reads
+('a at) 'f let {'b 1} 'f quote apply
+
+-- EXPECT: TYPE ERROR
+-- a body taken out of a tagged value
+{'b 1} (drop {'c 1}) ok must apply 'b at
+
+-- EXPECT: TYPE ERROR
+-- a body taken out of a list
+{'b 1} [1] (drop ('a at)) each 0 get must apply
+
+-- EXPECT: TYPE ERROR
+-- a declared tuple input applied
+(apply) [tuple own in] effect 'run let {'a 1} (drop {'b 1}) run 'a at
+
+-- EXPECT: TYPE ERROR
+-- an input meets a record literal
+(dup {'a 1} cat drop 'a at) 'f let {'b 1} f
+
+-- EXPECT: TYPE ERROR
+-- an input meets a loop's record
+(dup 0 (drop {'a 1}) repeat 'a at nip) 'f let {'b 1} f
+
+-- EXPECT: TYPE ERROR
+-- an unknown value meets a record literal
+{'b 1} ok must dup {'a 1} cat drop 'a at
+
+-- EXPECT: TYPE ERROR
+-- an unknown value meets a loop's record
+{'b 1} ok must 0 (drop {'a 1}) repeat 'a at
+
+-- EXPECT: TYPE ERROR
+-- two inputs of one type
+(dup rot couple drop 'a at) 'f let {'a 1} {'b 1} f
+
+-- EXPECT: TYPE ERROR
+-- a recursive call inside a nested body
+(dup 'n at 0 eq (drop 0) (drop {'m 1} (cnt) apply) if) 'cnt let {'n 3} cnt
+
+
+-- EXPECT: TYPE ERROR
+-- a while cond reads deeper than the body
+{'b 1} 0 (over 'a at 3 lt) (1 plus) while
+
+-- EXPECT: TYPE ERROR
+-- a fold body reaching below its inputs
+{'b 1} [1] 0 (drop drop 'a at) fold
+
+-- EXPECT: 'f' passes its input's records back to itself, nested past 32 records deep
+-- a record that holds a record of its own kind has no finite type here
+('p at f) 'f let
+
+-- EXPECT: C stack
+-- the checker nests one C call per nested body
+((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) apply print

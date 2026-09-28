@@ -1,0 +1,9 @@
+-- head.slap: print the first 10 lines of a file.
+--   cat examples/lib/strings.slap examples/utils/head.slap | ./slap FILE
+1 "FILE" arg-count
+0 arg-bytes 'in let
+in len 'n let
+-- Count newlines until the tenth, or until the end.
+0 0 (over 10 lt over n lt and) (dup 'in swap nth must 10 eq (swap 1 plus swap) () if 1 plus) while
+'end let drop
+in end take-n stdout-write
