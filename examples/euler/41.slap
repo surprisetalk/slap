@@ -22,7 +22,7 @@
   0 (swap 10 mul plus) fold
 ) 'digits-to-num let
 
--- list-swap: list i j -> list  (swap elements at must i and j)
+-- list-swap: list i j -> list  (swap elements at i and j)
 (
   'lsw-j let 'lsw-i let 'lsw-l let
   lsw-l lsw-i get must 'lsw-tmp let

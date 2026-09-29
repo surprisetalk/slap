@@ -1,30 +1,28 @@
 -- xml.slap: Elm-style XML decoder library.
--- Parser produces records:
---   Element: {'name "tag" 'attrs [[name val]...] 'children [...]}
---   Text:    {'text "raw string"}
--- _xml-parse returns `record ok`, or `msg no` for input that is not well-formed.
+-- An element is a record {'name "tag" 'attrs [[name val]...] 'children [node...]}.
+-- A node is `element 'elem tag` or `text 'text tag`.
+-- _xml-parse returns the root `element ok`, or `msg no` for input that is not well-formed.
 -- Decoders (xd-*) are first-class composable values. Run with xd-run or xd-eval.
 -- Errors are XPath-ish strings: "/rss/channel/item[2]/title: missing".
 
 -- ========== Char predicates ==========
 
-('c let
-  c 32 eq c 9 eq or c 10 eq or c 13 eq or) '_x-ws? let
+-- These run once per byte, so they keep the byte on the stack rather than bind it: a body that
+-- binds a name gets a frame of its own on every run.
+(dup 32 eq  over 9 eq or  over 10 eq or  swap 13 eq or) '_x-ws? let
 
-('c let
-  c 65 ge c 90 le and
-  c 97 ge c 122 le and or
-  c 95 eq or
-  c 58 eq or) '_x-name-start? let
+(dup dup 65 ge swap 90 le and
+ over dup 97 ge swap 122 le and or
+ over 95 eq or
+ swap 58 eq or) '_x-name-start? let
 
-('c let
-  c 65 ge c 90 le and
-  c 97 ge c 122 le and or
-  c 48 ge c 57 le and or
-  c 45 eq or
-  c 95 eq or
-  c 58 eq or
-  c 46 eq or) '_x-name-char? let
+(dup dup 65 ge swap 90 le and
+ over dup 97 ge swap 122 le and or
+ over dup 48 ge swap 57 le and or
+ over 45 eq or
+ over 95 eq or
+ over 58 eq or
+ swap 46 eq or) '_x-name-char? let
 
 -- ========== Parser ==========
 -- _xml-parse binds the source as '_xin and every step reads it by index with
@@ -32,164 +30,164 @@
 -- state is `i ok`, or `msg no` from the first failure; `then` and `pthen`
 -- carry a failure past the steps after it.
 
--- _xc: (i -- c).  The byte at i, or -1 past the end.
-('_xin swap nth () {'ok () 'no (drop -1)} case) '_xc let
+-- _xml-parse: (source -- record ok | msg no).  The helpers live inside it, so each reads the
+-- input it binds as '_xin by name, not a caller's.
+('_xin let
+  -- _xc: (i -- c).  The byte at i, or -1 past the end.
+  ('_xin swap nth () {'ok () 'no (drop -1)} case) '_xc let
 
--- _xws: (i -- i')
-((dup _xc _x-ws?) (1 plus) while) '_xws let
+  -- _xws: (i -- i')
+  ((dup _xc _x-ws?) (1 plus) while) '_xws let
 
--- _xat: (i lit -- bool).  Does lit start at i?
-('xl let 'xi let
- 0 (dup xl len lt (dup 'xk let xi xk plus _xc 'xl xk nth must eq) (0) if) (1 plus) while
- xl len eq) '_xat let
+  -- _xat: (i lit -- bool).  Does lit start at i?
+  ('xl let 'xi let
+   0 (dup xl len lt (dup dup xi plus _xc swap 'xl swap nth must eq) (0) if) (1 plus) while
+   xl len eq) '_xat let
 
--- _xpast: (i lit -- st).  The index just past the next lit at or after i.
-('xpl let
- (dup _xc 0 ge (dup xpl _xat not) (0) if) (1 plus) while
- dup _xc 0 lt (drop "xml: expected " xpl cat " not found" cat no) (xpl len plus ok) if) '_xpast let
+  -- _xpast: (i lit -- st).  The index just past the next lit at or after i.
+  ('xpl let
+   (dup _xc 0 ge (dup xpl _xat not) (0) if) (1 plus) while
+   dup _xc 0 lt (drop "xml: expected " xpl cat " not found" cat no) (xpl len plus ok) if) '_xpast let
 
--- _xslice: (a b -- bytes).  The input from a up to b.
-('xsb let list swap (dup xsb lt) ('xsj let xsj _xc push xsj 1 plus) while drop) '_xslice let
+  -- _xslice: (a b -- bytes).  The input from a up to b.
+  ('xsb let list swap (dup xsb lt) ('xsj let xsj _xc push xsj 1 plus) while drop) '_xslice let
 
--- _xname: (i -- name st)
-('xni let xni _xc 'xc0 let
- xc0 0 lt (list "xml: expected a name" no) (
- xc0 _x-name-start? not (list "xml: a name cannot start with '" list xc0 push cat "'" cat no) (
-   list xni (dup _xc _x-name-char?) ('xnj let xnj _xc push xnj 1 plus) while ok) if) if) '_xname let
+  -- _xname: (i -- name st)
+  ('xni let xni _xc 'xc0 let
+   xc0 0 lt (list "xml: expected a name" no) (
+   xc0 _x-name-start? not (list "xml: a name cannot start with '" list xc0 push cat "'" cat no) (
+     list xni (dup _xc _x-name-char?) (dup _xc rot swap push swap 1 plus) while ok) if) if) '_xname let
 
--- ========== Entities ==========
+  -- ========== Entities ==========
 
--- _x-utf8: (codepoint -- bytes ok | msg no)
-('cp let
- cp 1 lt cp 1114111 gt or cp 55296 ge cp 57343 le and or ("xml: numeric entity is not a character" no) (
- cp 128 lt (list cp push ok) (
- cp 2048 lt (list 192 cp 6 shr bor push 128 cp 63 band bor push ok) (
- cp 65536 lt (list 224 cp 12 shr bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push ok) (
-   list 240 cp 18 shr bor push 128 cp 12 shr 63 band bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push ok
- ) if) if) if) if) '_x-utf8 let
+  -- _x-utf8: (codepoint -- bytes ok | msg no)
+  ('cp let
+   cp 1 lt cp 1114111 gt or cp 55296 ge cp 57343 le and or ("xml: numeric entity is not a character" no) (
+   cp 128 lt (list cp push ok) (
+   cp 2048 lt (list 192 cp 6 shr bor push 128 cp 63 band bor push ok) (
+   cp 65536 lt (list 224 cp 12 shr bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push ok) (
+     list 240 cp 18 shr bor push 128 cp 12 shr 63 band bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push ok
+   ) if) if) if) if) '_x-utf8 let
 
--- _x-num-entity: (digits base -- codepoint ok | msg no).  A bad digit poisons the fold with -1.
-('xbase let 'xds let
- xds len 0 eq ("xml: empty numeric entity" no) (
- xds len 8 gt ("xml: numeric entity longer than 8 digits" no) (
-   xds 0 ('xd let 'xacc let
-     xd 48 ge xd 57 le and (xd 48 sub) (
-     xbase 16 eq xd 97 ge xd 102 le and and (xd 87 sub) (
-     xbase 16 eq xd 65 ge xd 70 le and and (xd 55 sub) (-1) if) if) if 'xdv let
-     xacc 0 lt xdv 0 lt or xdv xbase ge or (-1) (xacc xbase mul xdv plus) if) fold
-   dup 0 lt (drop "xml: bad digit in a numeric entity" no) (ok) if) if) if) '_x-num-entity let
+  -- _x-num-entity: (digits base -- codepoint ok | msg no).  A bad digit poisons the fold with -1.
+  ('xbase let 'xds let
+   xds len 0 eq ("xml: empty numeric entity" no) (
+   xds len 8 gt ("xml: numeric entity longer than 8 digits" no) (
+     xds 0 ('xd let 'xacc let
+       xd 48 ge xd 57 le and (xd 48 sub) (
+       xbase 16 eq xd 97 ge xd 102 le and and (xd 87 sub) (
+       xbase 16 eq xd 65 ge xd 70 le and and (xd 55 sub) (-1) if) if) if 'xdv let
+       xacc 0 lt xdv 0 lt or xdv xbase ge or (-1) (xacc xbase mul xdv plus) if) fold
+     dup 0 lt (drop "xml: bad digit in a numeric entity" no) (ok) if) if) if) '_x-num-entity let
 
--- _x-entity: (body -- bytes ok | msg no).  body is what lies between & and ;.
-('xb let
- xb len 0 eq ("xml: empty entity &;" no) (
- xb 0 get must 35 eq (
-   xb 1 drop-n 'xn let
-   xn len 0 gt (xn 0 get must 'xh let xh 120 eq xh 88 eq or) (0) if
-   (xn 1 drop-n 16) (xn 10) if _x-num-entity (_x-utf8) then
- ) (
-   xb "amp" eq (list 38 push ok) (
-   xb "lt" eq (list 60 push ok) (
-   xb "gt" eq (list 62 push ok) (
-   xb "quot" eq (list 34 push ok) (
-   xb "apos" eq (list 39 push ok) (
-     "xml: unknown entity &" xb cat ";" cat no) if) if) if) if) if) if) if) '_x-entity let
+  -- _x-entity: (body -- bytes ok | msg no).  body is what lies between & and ;.
+  ('xb let
+   xb len 0 eq ("xml: empty entity &;" no) (
+   xb 0 get must 35 eq (
+     xb 1 drop-n 'xn let
+     xn len 0 gt (xn 0 get must 'xh let xh 120 eq xh 88 eq or) (0) if
+     (xn 1 drop-n 16) (xn 10) if _x-num-entity (_x-utf8) then
+   ) (
+     xb "amp" eq (list 38 push ok) (
+     xb "lt" eq (list 60 push ok) (
+     xb "gt" eq (list 62 push ok) (
+     xb "quot" eq (list 34 push ok) (
+     xb "apos" eq (list 39 push ok) (
+       "xml: unknown entity &" xb cat ";" cat no) if) if) if) if) if) if) if) '_x-entity let
 
--- _xentity: (i -- bytes st).  i is just past '&'.  A body past 32 bytes is unterminated.
-('xei let
- xei (dup _xc 'xec let xec 59 eq not xec 0 ge and) (1 plus) while 'xej let
- xej _xc 59 eq not xej xei sub 32 gt or (list "xml: unterminated entity" no) (
-   xei xej _xslice _x-entity () {'ok (xej 1 plus ok) 'no (list swap no)} case) if) '_xentity let
+  -- _xentity: (i -- bytes st).  i is just past '&'.  A body past 32 bytes is unterminated.
+  ('xei let
+   xei (dup _xc 'xec let xec 59 eq not xec 0 ge and) (1 plus) while 'xej let
+   xej _xc 59 eq not xej xei sub 32 gt or (list "xml: unterminated entity" no) (
+     xei xej _xslice _x-entity () {'ok (xej 1 plus ok) 'no (list swap no)} case) if) '_xentity let
 
--- ========== Text and attributes ==========
--- The loops below keep what they build at the bottom of the stack and a
--- `1`/`0` go-on flag on top, with the state between them.
+  -- ========== Text and attributes ==========
+  -- The loops below keep what they build at the bottom of the stack and a
+  -- `1`/`0` go-on flag on top, with the state between them.
 
--- _xtext: (i -- text st).  Runs to the next '<' or the end.
-('xti let list xti ok 1
- (dup) (drop 0 ('xtj let xtj _xc 'xtc let
-     xtc 0 lt xtc 60 eq or (0 xtj ok) (
-     xtc 38 eq (xtj 1 plus _xentity (cat) dip 1 swap) (xtc push 1 xtj 1 plus ok) if) if) pthen swap) while
- drop) '_xtext let
+  -- _xtext: (i -- text st).  Runs to the next '<' or the end.
+  ('xti let list xti ok 1
+   -- the step runs once per byte, so it keeps the index and the byte on the stack: (text i -- text more st)
+   (dup) (drop 0 (dup _xc
+       dup 0 lt over 60 eq or (drop 0 swap ok) (
+       dup 38 eq (drop 1 plus _xentity (cat) dip 1 swap) (swap (push) dip 1 swap 1 plus ok) if) if) pthen swap) while
+   drop) '_xtext let
 
--- _xattr-val: (i -- value st).  i is at the opening quote.
-('xai let xai _xc 'xq let
- xq 34 eq xq 39 eq or not (list "xml: attribute value must be quoted" no) (
-   list xai 1 plus ok 1
-   (dup) (drop 0 ('xaj let xaj _xc 'xac let
-       xac 0 lt (0 "xml: unterminated attribute value" no) (
-       xac xq eq (0 xaj 1 plus ok) (
-       xac 38 eq (xaj 1 plus _xentity (cat) dip 1 swap) (xac push 1 xaj 1 plus ok) if) if) if) pthen swap) while
-   drop) if) '_xattr-val let
+  -- _xattr-val: (i -- value st).  i is at the opening quote.
+  ('xai let xai _xc 'xq let
+   xq 34 eq xq 39 eq or not (list "xml: attribute value must be quoted" no) (
+     list xai 1 plus ok 1
+     (dup) (drop 0 ('xaj let xaj _xc 'xac let
+         xac 0 lt (0 "xml: unterminated attribute value" no) (
+         xac xq eq (0 xaj 1 plus ok) (
+         xac 38 eq (xaj 1 plus _xentity (cat) dip 1 swap) (xac push 1 xaj 1 plus ok) if) if) if) pthen swap) while
+     drop) if) '_xattr-val let
 
--- _xattrs: (i -- attrs st).  attrs is a list of [name value] couples; stops at / or >.
-(list swap ok 1
- (dup) (drop 0 ('xsi let xsi _xws 'xsj let xsj _xc 'xsc let
-     xsc 47 eq xsc 62 eq or (0 xsj ok) (
-     xsc 0 lt (0 "xml: unexpected end of input in a tag" no) (
-       xsj _xname swap 'xan let
-       (_xws 'xse let xse _xc 61 eq (xse 1 plus _xws ok) ("xml: expected = after attribute " xan cat no) if) then
-       list (_xattr-val) pthen swap 'xav let (xan xav couple push) dip 1 swap) if) if) pthen swap) while
- drop) '_xattrs let
+  -- _xattrs: (i -- attrs st).  attrs is a list of [name value] couples; stops at / or >.
+  (list swap ok 1
+   (dup) (drop 0 ('xsi let xsi _xws 'xsj let xsj _xc 'xsc let
+       xsc 47 eq xsc 62 eq or (0 xsj ok) (
+       xsc 0 lt (0 "xml: unexpected end of input in a tag" no) (
+         xsj _xname swap 'xan let
+         (_xws 'xse let xse _xc 61 eq (xse 1 plus _xws ok) ("xml: expected = after attribute " xan cat no) if) then
+         list (_xattr-val) pthen swap 'xav let (xan xav couple push) dip 1 swap) if) if) pthen swap) while
+   drop) '_xattrs let
 
--- ========== Elements ==========
+  -- ========== Elements ==========
 
--- _xcdata: (i -- text st).  i is just past "<![CDATA[".
-('xci let xci "]]>" _xpast () {'ok ('xck let xci xck 3 sub _xslice xck ok) 'no (list swap no)} case) '_xcdata let
+  -- _xcdata: (i -- text st).  i is just past "<![CDATA[".
+  ('xci let xci "]]>" _xpast () {'ok ('xck let xci xck 3 sub _xslice xck ok) 'no (list swap no)} case) '_xcdata let
 
-'_xelem [int lent in  int lent in  rec move out  tagged move out] effect
+  -- _xnone: (-- element).  What a failed step leaves in place of an element.
+  (rec "" 'name into list 'attrs into list 'children into) '_xnone let
 
--- _xchildren: (i depth close -- children st).  Reads up to and through </close>.
-('xcl let 'xcd let list swap ok 1
- (dup) (drop 0 ('xhi let
-     xhi _xc 0 lt (0 "xml: unexpected end of input inside <" xcl cat ">" cat no) (
-     xhi "<!--" _xat (1 xhi 4 plus "-->" _xpast) (
-     xhi "<![CDATA[" _xat (xhi 9 plus _xcdata swap rec swap 'text into swap (push) dip 1 swap) (
-     xhi "<?" _xat (1 xhi 2 plus "?>" _xpast) (
-     xhi "</" _xat (
-       xhi 2 plus _xname swap 'xct let
-       (_xws 'xck let xct xcl eq not ("xml: expected </" xcl cat "> but found </" cat xct cat ">" cat no) (
-          xck _xc 62 eq (xck 1 plus ok) ("xml: expected > to close </" xct cat no) if) if) then
-       0 swap) (
-     xhi _xc 60 eq (xhi xcd 1 plus _xelem (push) dip 1 swap) (
-       xhi _xtext swap rec swap 'text into swap (push) dip 1 swap
-     ) if) if) if) if) if) if) pthen swap) while
- drop) '_xchildren let
+  -- _xelem: (i depth -- element st).  i is at '<'.  The children, up to and
+  -- through </name>, are read by _xelem one level deeper.  Nesting past 256 is
+  -- refused before it can exhaust the interpreter's recursion limit.
+  ('xed let 'xei let
+   xed 256 gt (_xnone "xml: elements nested deeper than 256" no) (
+   xei _xc 60 eq not (_xnone "xml: expected <" no) (
+     xei 1 plus _xname swap 'xen let
+     list (_xattrs) pthen swap 'xea let
+     list ('xri let xri _xws 'xrj let
+       xrj "/>" _xat (list xrj 2 plus ok) (
+       xrj _xc 62 eq (
+         list xrj 1 plus ok 1
+         (dup) (drop 0 ('xhi let
+             xhi _xc 0 lt (0 "xml: unexpected end of input inside <" xen cat ">" cat no) (
+             xhi "<!--" _xat (1 xhi 4 plus "-->" _xpast) (
+             xhi "<![CDATA[" _xat (xhi 9 plus _xcdata swap 'text tag swap (push) dip 1 swap) (
+             xhi "<?" _xat (1 xhi 2 plus "?>" _xpast) (
+             xhi "</" _xat (
+               xhi 2 plus _xname swap 'xct let
+               (_xws 'xck let xct xen eq not ("xml: expected </" xen cat "> but found </" cat xct cat ">" cat no) (
+                  xck _xc 62 eq (xck 1 plus ok) ("xml: expected > to close </" xct cat no) if) if) then
+               0 swap) (
+             xhi _xc 60 eq (xhi xed 1 plus _xelem swap 'elem tag swap (push) dip 1 swap) (
+               xhi _xtext swap 'text tag swap (push) dip 1 swap
+             ) if) if) if) if) if) if) pthen swap) while
+         drop) (list "xml: expected > or /> after <" xen cat no) if) if) pthen swap 'xek let
+     rec xen 'name into xea 'attrs into xek 'children into swap) if) if) '_xelem let
 
--- _xelem: (i depth -- record st).  i is at '<'.  Nesting past 256 is refused
--- before it can exhaust the interpreter's recursion limit.
-('xed let 'xei let
- xed 256 gt (rec "xml: elements nested deeper than 256" no) (
- xei _xc 60 eq not (rec "xml: expected <" no) (
-   xei 1 plus _xname swap 'xen let
-   list (_xattrs) pthen swap 'xea let
-   list ('xri let xri _xws 'xrj let
-     xrj "/>" _xat (list xrj 2 plus ok) (
-     xrj _xc 62 eq (xrj 1 plus xed xen _xchildren) (list "xml: expected > or /> after <" xen cat no) if) if) pthen swap 'xek let
-   rec xen 'name into xea 'attrs into xek 'children into swap) if) if) '_xelem let
+  -- ========== Document ==========
 
--- ========== Document ==========
+  -- _xtrivia: (i -- st).  Skips whitespace and comments.
+  (ok 1 (dup) (drop 0 ('xvi let xvi _xws 'xvj let xvj "<!--" _xat (1 xvj 4 plus "-->" _xpast) (0 xvj ok) if) pthen swap) while drop) '_xtrivia let
 
--- _xtrivia: (i -- st).  Skips whitespace and comments.
-(ok 1 (dup) (drop 0 ('xvi let xvi _xws 'xvj let xvj "<!--" _xat (1 xvj 4 plus "-->" _xpast) (0 xvj ok) if) pthen swap) while drop) '_xtrivia let
+  -- _xprolog: (i -- st).  A byte-order mark, then trivia, <?xml ...?> and <!DOCTYPE ...>.
+  ('xp0 let
+   xp0 _xc 239 eq xp0 1 plus _xc 187 eq and xp0 2 plus _xc 191 eq and (xp0 3 plus) (xp0) if
+   _xtrivia
+   ('xp1 let xp1 "<?xml" _xat (xp1 5 plus "?>" _xpast) (xp1 ok) if) then (_xtrivia) then
+   ('xp2 let xp2 "<!DOCTYPE" _xat (xp2 9 plus ">" _xpast) (xp2 ok) if) then (_xtrivia) then) '_xprolog let
 
--- _xprolog: (i -- st).  A byte-order mark, then trivia, <?xml ...?> and <!DOCTYPE ...>.
-('xp0 let
- xp0 _xc 239 eq xp0 1 plus _xc 187 eq and xp0 2 plus _xc 191 eq and (xp0 3 plus) (xp0) if
- _xtrivia
- ('xp1 let xp1 "<?xml" _xat (xp1 5 plus "?>" _xpast) (xp1 ok) if) then (_xtrivia) then
- ('xp2 let xp2 "<!DOCTYPE" _xat (xp2 9 plus ">" _xpast) (xp2 ok) if) then (_xtrivia) then) '_xprolog let
-
--- _xml-parse: (source -- record ok | msg no)
-('_xin let 0 _xprolog rec (0 _xelem) pthen
- (_xtrivia) then ('xz let xz _xc 0 lt (0 ok) ("xml: trailing input after the root element" no) if) then
- () {'ok (drop ok) 'no (swap drop no)} case) [list lent in  {'ok rec 'no list} either move out] effect '_xml-parse let
+  0 _xprolog _xnone (0 _xelem) pthen
+  (_xtrivia) then ('xz let xz _xc 0 lt (0 ok) ("xml: trailing input after the root element" no) if) then
+  () {'ok (drop ok) 'no (swap drop no)} case) '_xml-parse let
 
 -- ========== Helpers for decoders ==========
--- Records take more than one slot each, so these scan a whole list with `each`,
--- `filter` or `index-of` rather than reading it one index at a time.
-
--- _x-is-text: (node -- node bool).  Non-consuming.  A text node has one field; an element has three.
-(dup len 1 eq) '_x-is-text let
+-- Nodes take more than one slot each, so these scan a whole list with `each`,
+-- `fold` or `index-of` rather than reading it one index at a time.
 
 -- _x-trim: (s -- s').  Drops leading and trailing whitespace.
 ('xs let
@@ -202,323 +200,169 @@
  xfa (0 get must) each xfn index-of
  () {'ok ('xfk let 'xfa xfk nth must 1 get must ok) 'no (drop none)} case) '_x-find-attr let
 
--- _x-name-is: (node name -- bool).  False for a text node.
-('xnm let dup len 3 eq ('name at must xnm eq) (drop 0) if) '_x-name-is let
-
--- _x-find-child: (children name -- record ok | none).  The first element with the name.
-('xcn let 'xcs let
- xcs (xcn _x-name-is) each 1 index-of
- () {'ok ('xck let 'xcs xck nth must ok) 'no (drop none)} case) '_x-find-child let
-
--- _x-filter-children: (children name -- elements).  Every element with the name.
-('xfc let (xfc _x-name-is) filter) '_x-filter-children let
-
--- _x-all-elem-children: (children -- elements).  Every child that is not text.
-((_x-is-text swap drop not) filter) '_x-all-elem-children let
+-- _x-elems: (children keep -- elements).  The element children whose name keep
+-- accepts: (name -- bool).
+('xk let list (list {'elem ('r let r 'name at xk apply (list r push) (list) if)} case cat) fold) '_x-elems let
 
 -- _x-collect-text: (children -- text ok | none).  The children's text joined, or
 -- none if any child is an element.
-(dup (_x-is-text swap drop not) each 1 index-of
- () {'ok (drop drop none) 'no (drop list ('text at must cat) fold ok)} case) '_x-collect-text let
+("" ok (none {'text (ok)} case 'xr let ('xa let xr (xa swap cat ok) then) then) fold) '_x-collect-text let
 
--- ========== Decoder constructors ==========
--- Representation: [dname args...] 'xdec tag
+-- _xa-list: (elements dec -- values ok | msg no).  The first failing element
+-- wins, and its index is the count of elements decoded before it: "[1]...".
+('d let list ok ('x let (x d apply () {'ok (push ok) 'no ('m let len int-str "[" swap cat "]" cat m cat no)} case) then) fold) '_xa-list let
 
-(list 'text     push 'xdec tag) 'xd-text let
-(list 'raw-text push 'xdec tag) 'xd-raw-text let
-(list 'tag      push 'xdec tag) 'xd-tag let
-(list 'attrs    push 'xdec tag) 'xd-attrs let
+-- ========== Decoders ==========
+-- A decoder is a body (element -- value ok | msg no).  A failure message starts
+-- with the path below the element, and each decoder on the way out puts its own
+-- step in front; xd-run adds the root's name.
 
-('v let 'v quote () eq ("") ('v quote) if) '_xd-or-empty let
+(('children at _x-collect-text () {'ok (_x-trim ok) 'no (drop "/text(): element has non-text children" no)} case)) 'xd-text let
+(('children at _x-collect-text () {'ok (ok) 'no (drop "/text(): element has non-text children" no)} case)) 'xd-raw-text let
+(('name at ok)) 'xd-tag let
+(('attrs at ok)) 'xd-attrs let
 
-('n let list 'attr push n push 'xdec tag) 'xd-attr let
+-- xd-attr: (name -- dec).
+('n let ('attrs at n _x-find-attr () {'ok (ok) 'no (drop "/@" n cat ": missing attribute" cat no)} case)) 'xd-attr let
 
-('d let 'n let list 'child push n push d push 'xdec tag) 'xd-child let
-('d let 'n let list 'children push n push d push 'xdec tag) 'xd-children let
-('d let list 'all-children push d push 'xdec tag) 'xd-all-children let
+-- xd-child: (name dec -- dec').  The first child element with the name.
+('d let 'n let ('children at (n eq) _x-elems 0 get
+   () {'ok (d apply () {'ok (ok) 'no ("/" n cat swap cat no)} case)
+       'no (drop "/" n cat ": no such child" cat no)} case)) 'xd-child let
 
-('d let 'ks let list 'at push ks push d push 'xdec tag) 'xd-at let
-('f let 'd let list 'map push d push 'f quote push 'xdec tag) 'xd-map let
-('f let 'd let list 'andThen push d push 'f quote push 'xdec tag) 'xd-and-then let
-('ds let list 'oneOf push ds push 'xdec tag) 'xd-one-of let
-('d let list 'maybe push d push 'xdec tag) 'xd-maybe let
-('v let list 'succeed push v push 'xdec tag) 'xd-succeed let
-('m let list 'fail push m push 'xdec tag) 'xd-fail let
+-- xd-children: (name dec -- dec').  Every child element with the name.
+('d let 'n let ('children at (n eq) _x-elems d _xa-list () {'ok (ok) 'no ("/" n cat swap cat no)} case)) 'xd-children let
 
--- xd-default-ns: return the element's xmlns attribute, or "" if not declared.
--- Useful for detecting Atom feeds (xmlns="http://www.w3.org/2005/Atom"), etc.
-(
-  "xmlns" xd-attr xd-maybe (_xd-or-empty) xd-map) 'xd-default-ns let
+-- xd-all-children: (dec -- dec').  Every child element.
+('d let ('children at (drop 1) _x-elems d _xa-list () {'ok (ok) 'no ("/*" swap cat no)} case)) 'xd-all-children let
 
--- xd-all-of: (list-of-decoders -- decoder).
--- Applies each decoder to the current element and returns a list of their
--- results. Fails if any sub-decoder fails. Useful for building records
--- without the exponential let-nesting of xd-and-then chains.
-('ds let list 'allOf push ds push 'xdec tag) 'xd-all-of let
+-- xd-at: (names dec -- dec').  Children nested along names: ["b" "c"] reads /b/c.
+(swap reverse swap (swap xd-child) fold) 'xd-at let
 
--- ========== _xapply: (elem path dec -- result-tagged) ==========
+-- xd-map: (dec f -- dec').  f: (value -- value').
+('f let 'd let (d apply (f apply ok) then)) 'xd-map let
 
-'_xapply [rec own in  list own in  tagged own in  {'ok 'a 'no list} either move out] effect
+-- xd-map2: (dec1 dec2 f -- dec).  f: (value1 value2 -- value).  Both decoders
+-- read the same element; `rec xd-succeed "t" xd-text ('title into) xd-map2`
+-- builds a record one field at a time.
+('f let 'd2 let 'd1 let ('e let e d1 apply ('a let e d2 apply (a swap f apply ok) then) then)) 'xd-map2 let
 
--- _xa-list: (items path inner -- resultTagged).  The first failing item wins.
--- `each` decodes every item in one pass; only a failing item is decoded again
--- to put its index in the path.
-('xli let 'xlp let 'xls let
-  xls (xlp xli _xapply) each
-  dup (() {'ok (drop 0) 'no (drop 1)} case) each 1 index-of
-  () {'ok ('xlk let drop 'xls xlk nth must xlp "[" cat xlk int-str cat "]" cat xli _xapply)
-      'no (drop (must) each ok)} case) '_xa-list let
+-- xd-and-then: (dec f -- dec').  f: (value -- dec2), and dec2 reads the same element.
+('f let 'd let ('e let e d apply (f apply e swap apply) then)) 'xd-and-then let
 
--- _xa-at-walk: (elem path keys inner -- resultTagged)
-('inner let 'keys let 'path let 'elem let
-  keys len 0 eq (elem path inner _xapply) (
-    keys 0 get must 'k let
-    elem 'children at must 'kids let
-    kids k _x-find-child
-    () {'ok ('c let
-        c path "/" cat k cat keys 1 drop-n inner _xa-at-walk)
-     'no (drop path "/" cat k cat ": no such child" cat no)} case
-  ) if) '_xa-at-walk let
+-- xd-one-of: (decs -- dec).  The first decoder that succeeds wins.
+('ds let ('e let
+   ds ": oneOf: no decoders matched" no
+   ('dd let () {'ok (ok) 'no (drop e dd apply)} case) fold
+   () {'ok (ok) 'no (drop ": oneOf: no decoders matched" no)} case)) 'xd-one-of let
 
--- _xa-all-of-loop: (decs idx elem path acc -- resultTagged).
--- Walks each decoder, appending results to acc; short-circuits on first 'no.
-('acc let 'path let 'elem let 'idx let 'decs let
-  idx decs len ge (acc ok) (
-    elem path decs idx get must _xapply
-    () {'ok ('v let
-       decs idx 1 plus elem path acc v push _xa-all-of-loop)
-     'no (no)} case
-  ) if) '_xa-all-of-loop let
+-- xd-maybe: (dec -- dec').  value ok ok, or none ok when dec fails.
+('d let (d apply () {'ok (ok ok) 'no (drop none ok)} case)) 'xd-maybe let
 
--- _xa-one-of-loop: (elem path decoders -- resultTagged)
-('ds let 'path let 'elem let
-  ds len 0 eq (path ": oneOf: no decoders matched" cat no) (
-    elem path ds 0 get must _xapply
-    () {'ok (ok)
-     'no (drop
-       ds len 1 eq (path ": oneOf: no decoders matched" cat no) (
-         elem path ds 1 drop-n _xa-one-of-loop
-       ) if)} case
-  ) if) '_xa-one-of-loop let
+('v let (drop v ok)) 'xd-succeed let
+('m let (drop ": " m cat no)) 'xd-fail let
 
-('d let 'path let 'elem let
-  d () {'xdec ()} case 'node let
-  node 0 get must 'dname let
-
-  dname 'text eq (
-    elem 'children at must _x-collect-text
-    () {'ok (_x-trim ok)
-     'no (drop path "/text(): element has non-text children" cat no)} case
-  ) (dname 'raw-text eq (
-    elem 'children at must _x-collect-text
-    () {'ok (ok)
-     'no (drop path "/text(): element has non-text children" cat no)} case
-  ) (dname 'tag eq (
-    elem 'name at must ok
-  ) (dname 'attrs eq (
-    elem 'attrs at must ok
-  ) (dname 'attr eq (
-    node 1 get must 'an let
-    elem 'attrs at must an _x-find-attr
-    () {'ok (ok)
-     'no (drop path "/@" cat an cat ": missing attribute" cat no)} case
-  ) (dname 'child eq (
-    node 1 get must 'cn let
-    elem 'children at must cn _x-find-child
-    () {'ok ('cv let
-       cv path "/" cat cn cat node 2 get must _xapply)
-     'no (drop path "/" cat cn cat ": no such child" cat no)} case
-  ) (dname 'children eq (
-    node 1 get must 'cn2 let
-    elem 'children at must cn2 _x-filter-children
-    path "/" cat cn2 cat node 2 get must _xa-list
-  ) (dname 'all-children eq (
-    elem 'children at must _x-all-elem-children
-    path "/*" cat node 1 get must _xa-list
-  ) (dname 'at eq (
-    elem path node 1 get must node 2 get must _xa-at-walk
-  ) (dname 'map eq (
-    node 2 get must 'mf let
-    elem path node 1 get must _xapply
-    () {'ok ('mf quote apply ok)
-     'no (no)} case
-  ) (dname 'andThen eq (
-    node 2 get must 'af let
-    elem path node 1 get must _xapply
-    () {'ok ('af quote apply 'ad let elem path ad _xapply)
-     'no (no)} case
-  ) (dname 'allOf eq (
-    node 1 get must 0 elem path list _xa-all-of-loop
-  ) (dname 'oneOf eq (
-    elem path node 1 get must _xa-one-of-loop
-  ) (dname 'maybe eq (
-    elem path node 1 get must _xapply
-    () {'ok (ok)
-     'no (drop () ok)} case
-  ) (dname 'succeed eq (
-    node 1 get must ok
-  ) (dname 'fail eq (
-    path ": " cat node 1 get must cat no
-  ) (
-    path ": unknown decoder" cat no
-  ) if) if) if) if) if) if) if) if) if) if) if) if) if) if) if) if) '_xapply let
+-- xd-default-ns: the element's xmlns attribute, or "" if it declares none.
+-- Useful for detecting Atom feeds (xmlns="http://www.w3.org/2005/Atom").
+("xmlns" xd-attr xd-maybe ("" default) xd-map) 'xd-default-ns let
 
 -- ========== Public entry ==========
 
-('xdec let 'src let
-  src _xml-parse () {'ok ('root let root "/" root 'name at must cat xdec _xapply) 'no (no)} case) 'xd-run let
+-- xd-run: (source dec -- value ok | msg no).
+('d let _xml-parse ('root let root d apply () {'ok (ok) 'no ("/" root 'name at cat swap cat no)} case) then) 'xd-run let
 
-('xq let 'xsrc let xsrc xq apply xd-run) 'xd-eval let
+-- xd-eval: (source (-- dec) -- value ok | msg no).  Builds the decoder, then runs it.
+(apply xd-run) 'xd-eval let
 
 -- ========== Builder combinators (xe-*) ==========
--- Sugar for constructing XML records that xml-render can serialize.
+-- Nodes for xml-render.
 
--- xe-text: (string -- text-node-record)
-('s let rec s 'text into) 'xe-text let
+-- xe-text: (string -- node)
+('text tag) 'xe-text let
 
--- xe-elem: (name attrs-list children-list -- element-record)
-('kids let 'ats let 'nm let
-  rec nm 'name into ats 'attrs into kids 'children into) 'xe-elem let
+-- xe-elem: (name attrs children -- node)
+('kids let 'ats let 'nm let rec nm 'name into ats 'attrs into kids 'children into 'elem tag) 'xe-elem let
 
 -- ========== Encoder (xml-render) ==========
 
--- _xe-escape-text-loop: (s acc -- acc s').  Escape & < > in text content.
-('acc let
-  dup len 0 gt (
-    dup 0 get must 'c let
-    1 drop-n
-    c 38 eq (acc "&amp;" cat _xe-escape-text-loop) (
-    c 60 eq (acc "&lt;" cat _xe-escape-text-loop) (
-    c 62 eq (acc "&gt;" cat _xe-escape-text-loop) (
-      acc c push _xe-escape-text-loop
-    ) if) if) if
-  ) (acc swap) if) '_xe-escape-text-loop let
+-- Escape & < > in text, and " too in an attribute value.
+(list ('c let c 38 eq ("&amp;" cat) (c 60 eq ("&lt;" cat) (c 62 eq ("&gt;" cat) (c push) if) if) if) fold) '_xe-escape-text let
+(list ('c let c 38 eq ("&amp;" cat) (c 60 eq ("&lt;" cat) (c 62 eq ("&gt;" cat) (c 34 eq ("&quot;" cat) (c push) if) if) if) if) fold) '_xe-escape-attr let
 
-(list _xe-escape-text-loop drop) '_xe-escape-text let
+-- _xe-render-attrs: (attrs -- string).  ` name="value"` for each.
+(list ('xp let " " cat 'xp 0 nth must cat "=\"" cat 'xp 1 nth must _xe-escape-attr cat "\"" cat) fold) '_xe-render-attrs let
 
--- _xe-escape-attr-loop: also escapes double-quote.
-('acc let
-  dup len 0 gt (
-    dup 0 get must 'c let
-    1 drop-n
-    c 38 eq (acc "&amp;" cat _xe-escape-attr-loop) (
-    c 60 eq (acc "&lt;" cat _xe-escape-attr-loop) (
-    c 62 eq (acc "&gt;" cat _xe-escape-attr-loop) (
-    c 34 eq (acc "&quot;" cat _xe-escape-attr-loop) (
-      acc c push _xe-escape-attr-loop
-    ) if) if) if) if
-  ) (acc swap) if) '_xe-escape-attr-loop let
+-- _xe-open: (element -- children start-tag name).  "<name attrs", without its end.
+(dup 'name at 'nm let dup 'attrs at 'ats let 'children at "<" nm cat ats _xe-render-attrs cat nm) '_xe-open let
 
-(list _xe-escape-attr-loop drop) '_xe-escape-attr let
-
--- _xe-render-attrs-loop: (attrs-list acc -- acc')
-('acc let
-  dup len 0 gt (
-    dup 0 get must 'pair let
-    1 drop-n
-    pair 0 get must 'n let
-    pair 1 get must _xe-escape-attr 'v let
-    acc " " cat n cat "=\"" cat v cat "\"" cat
-    _xe-render-attrs-loop
-  ) (acc swap) if) '_xe-render-attrs-loop let
-
-(list _xe-render-attrs-loop drop) '_xe-render-attrs let
-
--- _xe-render-elem: (elem-record -- string).  Renders an element node.
-'xml-render [rec own in  list move out] effect
-('node let
-  node 'name at must 'nm let
-  "<" nm cat
-  node 'attrs at must _xe-render-attrs cat
-  node 'children at must 'kids let
-  kids len 0 eq
-    ("/>" cat)
-    (">" cat kids (xml-render) each flatten cat "</" cat nm cat ">" cat) if
-) '_xe-render-elem let
-
--- xml-render: (node-record -- xml-string).  Dispatches text vs element.
--- Body: consume node-record from caller, produce string.
-('node let
-  node len 1 eq (node 'text at must _xe-escape-text) (node _xe-render-elem) if) 'xml-render let
+-- xml-render: (node -- xml-string).
+("" {'text (_xe-escape-text)
+     'elem (_xe-open 'nm let 'st let
+            0 peek 0 {'ok (drop 1)} case 'more let
+            (xml-render) each flatten 'inner let
+            st more (">" cat inner cat "</" cat nm cat ">" cat) ("/>" cat) if)} case) 'xml-render let
 
 -- ========== Pretty-print variant ==========
 
--- _xe-repeat-spaces: (n -- string of 2n spaces)
-('n let
-  0 n 2 mul range list ('i let 32 push) fold) '_xe-repeat-spaces let
+-- _xe-kids-all-text?: (children -- bool).
+((0 {'elem (drop 1)} case) each 1 index-of 1 {'ok (drop 0)} case) '_xe-kids-all-text? let
 
--- _xe-kids-all-text? : (kids-list -- bool).  True if every child is a text node.
-('ks let
-  ks len 0 eq (1) (
-    ks 0 get must len 1 eq (ks 1 drop-n _xe-kids-all-text?-loop) (0) if) if) '_xe-kids-all-text?-loop let
+-- xml-render-pretty: (depth node -- string ending in a newline)
+(swap 'xd let
+ "" {'text (_xe-escape-text)
+     'elem (_xe-open 'nm let 'st let 'kids let
+            list xd 2 mul (32 push) repeat 'ind let
+            ind st cat
+            kids len 0 eq ("/>" cat) (
+            kids _xe-kids-all-text? (">" cat kids (xml-render) each flatten cat "</" cat nm cat ">" cat) (
+              ">" cat list 10 push cat
+              kids (xd 1 plus swap xml-render-pretty) each flatten cat
+              ind "</" cat cat nm cat ">" cat) if) if)} case
+ list 10 push cat) 'xml-render-pretty let
 
-(_xe-kids-all-text?-loop) '_xe-kids-all-text? let
-
-'xml-render-pretty [int lent in  rec own in  list move out] effect
-
--- _xe-render-elem-pretty: (depth node-record -- string)
-('node let 'depth let
-  node 'name at must 'nm let
-  depth _xe-repeat-spaces 'ind let
-  ind "<" cat nm cat
-  node 'attrs at must _xe-render-attrs cat
-  node 'children at must 'kids let
-  kids len 0 eq (
-    "/>" cat
-  ) (kids _xe-kids-all-text? (
-    -- inline: <tag>text</tag> on one line
-    ">" cat
-    kids (xml-render) each flatten cat
-    "</" cat nm cat ">" cat
-  ) (
-    -- multi-line: children on their own lines, indented
-    ">" cat list 10 push cat
-    kids (depth 1 plus swap xml-render-pretty) each flatten cat
-    ind "</" cat cat nm cat ">" cat
-  ) if) if) '_xe-render-elem-pretty let
-
--- xml-render-pretty: (depth node-record -- string-with-trailing-newline)
-('node let 'depth let
-  node len 1 eq (node 'text at must _xe-escape-text) (depth node _xe-render-elem-pretty) if
-  list 10 push cat) 'xml-render-pretty let
-
--- xml-pretty: (root-node -- string).  Top-level pretty-print; starts at depth 0.
+-- xml-pretty: (node -- string).  Top-level pretty-print; starts at depth 0.
 (0 swap xml-render-pretty) 'xml-pretty let
 
 -- ========== Tests ==========
 
-"<a/>" _xml-parse must 'name at must "a" eq assert
-"<a/>" _xml-parse must 'attrs at must len 0 eq assert
-"<a/>" _xml-parse must 'children at must len 0 eq assert
+-- Test helpers: xerr gives a result's error, or "" on success; node-name and
+-- node-text read a node, or give "" for the other kind.
+(() {'ok (drop "") 'no ()} case) 'xerr let
+("" {'elem ('name at)} case) 'node-name let
+("" {'text ()} case) 'node-text let
 
-"<a>hi</a>" _xml-parse must 'children at must 0 get must 'text at must "hi" eq assert
+"<a/>" _xml-parse must 'name at "a" eq assert
+"<a/>" _xml-parse must 'attrs at len 0 eq assert
+"<a/>" _xml-parse must 'children at len 0 eq assert
 
-"<a id=\"1\" cls='x'/>" _xml-parse must 'attrs at must 'ats let
+"<a>hi</a>" _xml-parse must 'children at 0 get must node-text "hi" eq assert
+
+"<a id=\"1\" cls='x'/>" _xml-parse must 'attrs at 'ats let
 ats 0 get must 0 get must "id" eq assert
 ats 0 get must 1 get must "1" eq assert
 ats 1 get must 0 get must "cls" eq assert
 ats 1 get must 1 get must "x" eq assert
 
-"<a><b>1</b><c>2</c></a>" _xml-parse must 'children at must 'nks let
+"<a><b>1</b><c>2</c></a>" _xml-parse must 'children at 'nks let
 nks len 2 eq assert
-nks 0 get must 'name at must "b" eq assert
-nks 1 get must 'name at must "c" eq assert
+nks 0 get must node-name "b" eq assert
+nks 1 get must node-name "c" eq assert
 
-"<a><![CDATA[<not>xml</not>]]></a>" _xml-parse must 'children at must 0 get must
-  'text at must "<not>xml</not>" eq assert
+"<a><![CDATA[<not>xml</not>]]></a>" _xml-parse must 'children at 0 get must
+  node-text "<not>xml</not>" eq assert
 
-"<a>&amp;&lt;&gt;&quot;&apos;</a>" _xml-parse must 'children at must 0 get must
-  'text at must "&<>\"'" eq assert
+"<a>&amp;&lt;&gt;&quot;&apos;</a>" _xml-parse must 'children at 0 get must
+  node-text "&<>\"'" eq assert
 
-"<a>&#65;&#x41;</a>" _xml-parse must 'children at must 0 get must
-  'text at must "AA" eq assert
+"<a>&#65;&#x41;</a>" _xml-parse must 'children at 0 get must
+  node-text "AA" eq assert
 
-"<a><!-- skip me -->hi</a>" _xml-parse must 'children at must 0 get must
-  'text at must "hi" eq assert
+"<a><!-- skip me -->hi</a>" _xml-parse must 'children at 0 get must
+  node-text "hi" eq assert
 
-"<?xml version=\"1.0\"?><a/>" _xml-parse must 'name at must "a" eq assert
+"<?xml version=\"1.0\"?><a/>" _xml-parse must 'name at "a" eq assert
 
-"<atom:link href='x'/>" _xml-parse must 'name at must "atom:link" eq assert
+"<atom:link href='x'/>" _xml-parse must 'name at "atom:link" eq assert
 
 "<a>42</a>" xd-text xd-run "42" ok eq assert
 "<a>  42  </a>" xd-text xd-run "42" ok eq assert
@@ -540,21 +384,28 @@ nks 1 get must 'name at must "c" eq assert
 "<feed><t>Hi</t><t>Bye</t></feed>"
   ("t" xd-text xd-children) xd-eval ["Hi" "Bye"] ok eq assert
 
+"<a><b>1</b>x<c>2</c></a>" xd-text xd-all-children xd-run ["1" "2"] ok eq assert
+
 ("x" xd-attr xd-maybe) 'maybe-x-attr let
-"<a/>" maybe-x-attr xd-run () ok eq assert
-"<a x=\"1\"/>" maybe-x-attr xd-run "1" ok eq assert
+"<a/>" maybe-x-attr xd-run none ok eq assert
+"<a x=\"1\"/>" maybe-x-attr xd-run "1" ok ok eq assert
 
 (list "wrong" xd-fail push xd-text push xd-one-of) 'first-int-fail-then-text let
 "<a>hi</a>" first-int-fail-then-text xd-run "hi" ok eq assert
 
+(xd-tag xd-text ('t let "=" cat t cat) xd-map2) 'tag-eq-text let
+"<a>hi</a>" tag-eq-text xd-run "a=hi" ok eq assert
+
 -- Adversarial
-"<a/>" "id" xd-attr xd-run () {'no ()} case "/a/@id: missing attribute" eq assert
-"<a/>" "b" xd-text xd-child xd-run () {'no ()} case "/a/b: no such child" eq assert
-"<a><b><c/></b></a>" "b" xd-text xd-child xd-run () {'no ()} case
+"<a/>" "id" xd-attr xd-run xerr "/a/@id: missing attribute" eq assert
+"<a/>" "b" xd-text xd-child xd-run xerr "/a/b: no such child" eq assert
+"<a><b><c/></b></a>" "b" xd-text xd-child xd-run xerr
   "/a/b/text(): element has non-text children" eq assert
+"<a><b>1</b><b><c/></b></a>" "b" xd-text xd-children xd-run xerr
+  "/a/b[1]/text(): element has non-text children" eq assert
 
 (list xd-one-of) 'empty-one let
-"<a/>" empty-one xd-run () {'no ()} case "/a: oneOf: no decoders matched" eq assert
+"<a/>" empty-one xd-run xerr "/a: oneOf: no decoders matched" eq assert
 
 -- xd-attrs: returns list of [name val] couples
 "<a x=\"1\" y=\"2\"/>" xd-attrs xd-run must 'atsv let
@@ -563,18 +414,18 @@ atsv 0 get must 0 get must "x" eq assert
 atsv 0 get must 1 get must "1" eq assert
 
 -- xml-render: roundtrip
-"<a id=\"1\"><b>hi &amp; bye</b><c/></a>" _xml-parse must xml-render 'rendered let
+"<a id=\"1\"><b>hi &amp; bye</b><c/></a>" _xml-parse must 'elem tag xml-render 'rendered let
 rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 
 -- render simple self-closing
-"<a/>" _xml-parse must xml-render "<a/>" eq assert
+"<a/>" _xml-parse must 'elem tag xml-render "<a/>" eq assert
 
 -- render with text escaping
-"<a>1 &lt; 2 &amp; 3 &gt; 0</a>" _xml-parse must xml-render
+"<a>1 &lt; 2 &amp; 3 &gt; 0</a>" _xml-parse must 'elem tag xml-render
   "<a>1 &lt; 2 &amp; 3 &gt; 0</a>" eq assert
 
 -- render with attr containing quote/ampersand
-"<a x=\"a &amp; &quot;b&quot;\"/>" _xml-parse must xml-render
+"<a x=\"a &amp; &quot;b&quot;\"/>" _xml-parse must 'elem tag xml-render
   "<a x=\"a &amp; &quot;b&quot;\"/>" eq assert
 
 -- xe-text / xe-elem combinators roundtrip
@@ -582,14 +433,14 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 "p" list list "hi" xe-text push xe-elem xml-render "<p>hi</p>" eq assert
 
 -- xml-pretty: basic indentation
-"<a><b>hi</b><c/></a>" _xml-parse must xml-pretty
+"<a><b>hi</b><c/></a>" _xml-parse must 'elem tag xml-pretty
   "<a>\n  <b>hi</b>\n  <c/>\n</a>\n" eq assert
 
 -- xml-pretty: self-close
-"<a/>" _xml-parse must xml-pretty "<a/>\n" eq assert
+"<a/>" _xml-parse must 'elem tag xml-pretty "<a/>\n" eq assert
 
 -- xml-pretty: nested
-"<a><b><c>deep</c></b></a>" _xml-parse must xml-pretty
+"<a><b><c>deep</c></b></a>" _xml-parse must 'elem tag xml-pretty
   "<a>\n  <b>\n    <c>deep</c>\n  </b>\n</a>\n" eq assert
 
 -- xd-default-ns: missing xmlns → ""
@@ -602,7 +453,6 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 
 -- ========== Malformed input returns 'no, never a crash ==========
 
-(() {'ok (drop "") 'no ()} case) 'xerr let
 "" _xml-parse xerr "xml: expected <" eq assert
 "hello" _xml-parse xerr "xml: expected <" eq assert
 "<a>" _xml-parse xerr "xml: unexpected end of input inside <a>" eq assert
@@ -622,5 +472,5 @@ list 300 ("<a>" cat) repeat _xml-parse xerr "xml: elements nested deeper than 25
 "<a>" xd-text xd-run xerr "xml: unexpected end of input inside <a>" eq assert
 
 -- A numeric entity is a character, so it is UTF-8 encoded
-"<a>&#8217;</a>" _xml-parse must 'children at must 0 get must 'text at must list 226 push 128 push 153 push eq assert
+"<a>&#8217;</a>" _xml-parse must 'children at 0 get must node-text list 226 push 128 push 153 push eq assert
 "<a>&#0;</a>" _xml-parse xerr "xml: numeric entity is not a character" eq assert

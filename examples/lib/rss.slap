@@ -8,106 +8,51 @@
 
 -- ========== Helpers ==========
 
--- Replace () (from xd-maybe miss) with empty string "".
--- Used as an xd-map function: (v -- v-or-empty)
-('v let 'v quote () eq ("") ('v quote) if) '_rss-or-empty let
+-- _rss-opt-text: (name -- dec).  The trimmed text of the first <name> child, or "".
+('n let n xd-text xd-child xd-maybe ("" default) xd-map) '_rss-opt-text let
 
--- Optional text child: if <name> exists, return its trimmed text; else "".
--- Usage: name _rss-opt-text   builds a decoder.
-('n let
-  n xd-text xd-child xd-maybe (_rss-or-empty) xd-map) '_rss-opt-text let
-
--- Try the first child tag's text; if empty, fall back to the second.
--- Can't easily use a generic helper here: let bindings for `n1`/`n2` would be
--- clobbered by a later call, and the returned decoder's body runs later. Instead
--- each fallback case lives in its own def so the tag names are captured at
--- definition time via auto-exec quotations.
-(
-  "summary" _rss-opt-text ('v let
-    v "" eq ("content" _rss-opt-text) (v xd-succeed) if
-  ) xd-and-then) '_atom-summary-dec let
-
-(
-  "published" _rss-opt-text ('v let
-    v "" eq ("updated" _rss-opt-text) (v xd-succeed) if
-  ) xd-and-then) '_atom-published-dec let
+-- Atom's <summary> falls back to <content>, and <published> to <updated>.
+("summary" _rss-opt-text ('v let v "" eq ("content" _rss-opt-text) (v xd-succeed) if) xd-and-then) '_atom-summary-dec let
+("published" _rss-opt-text ('v let v "" eq ("updated" _rss-opt-text) (v xd-succeed) if) xd-and-then) '_atom-published-dec let
 
 -- ========== RSS 2.0 ==========
+-- Each record is built one field at a time: xd-map2 runs a field's decoder and
+-- puts its value into the record.
 
--- Item decoder: expects an <item> element. Produces a normalized item record.
--- One xd-all-of + one xd-map instead of 6 nested xd-and-then's: one let total
--- during decoding instead of six, which greatly reduces the per-item frame
--- save/restore overhead on large feeds.
-(
-  list
-    "title"       _rss-opt-text push
-    "link"        _rss-opt-text push
-    "description" _rss-opt-text push
-    "pubDate"     _rss-opt-text push
-    "guid"        _rss-opt-text push
-    xd-attrs push
-  xd-all-of
-  ('vs let
-    rec vs 0 get must 'title into
-        vs 1 get must 'link into
-        vs 2 get must 'summary into
-        vs 3 get must 'published into
-        vs 4 get must 'id into
-        vs 5 get must 'attrs into) xd-map) '_rss2-item let
+(rec xd-succeed
+   "title"       _rss-opt-text ('title into) xd-map2
+   "link"        _rss-opt-text ('link into) xd-map2
+   "description" _rss-opt-text ('summary into) xd-map2
+   "pubDate"     _rss-opt-text ('published into) xd-map2
+   "guid"        _rss-opt-text ('id into) xd-map2
+   xd-attrs      ('attrs into) xd-map2) '_rss2-item let
 
-(
-  list
-    "title"       _rss-opt-text push
-    "link"        _rss-opt-text push
-    "description" _rss-opt-text push
-    "item" _rss2-item xd-children push
-  xd-all-of
-  ('vs let
-    rec "rss" 'kind into
-        vs 0 get must 'title into
-        vs 1 get must 'link into
-        vs 2 get must 'description into
-        vs 3 get must 'items into) xd-map) '_rss2-channel let
+(rec "rss" 'kind into xd-succeed
+   "title"       _rss-opt-text ('title into) xd-map2
+   "link"        _rss-opt-text ('link into) xd-map2
+   "description" _rss-opt-text ('description into) xd-map2
+   "item" _rss2-item xd-children ('items into) xd-map2) '_rss2-channel let
 
 ("channel" _rss2-channel xd-child) '_rss2-feed let
 
 -- ========== Atom ==========
 
--- Atom <link href="..." rel="alternate"/> → just pop href of first link.
--- Tries first <link> child's href; "" if missing.
-("href" xd-attr xd-maybe (_rss-or-empty) xd-map) '_atom-href-of-link let
-("link" _atom-href-of-link xd-child xd-maybe (_rss-or-empty) xd-map) '_atom-link let
+-- Atom <link href="..." rel="alternate"/>: the href of the first <link>, or "".
+("link" "href" xd-attr xd-child xd-maybe ("" default) xd-map) '_atom-link let
 
-(
-  list
-    "title" _rss-opt-text push
-    _atom-link push
-    _atom-summary-dec push
-    _atom-published-dec push
-    "id" _rss-opt-text push
-    xd-attrs push
-  xd-all-of
-  ('vs let
-    rec vs 0 get must 'title into
-        vs 1 get must 'link into
-        vs 2 get must 'summary into
-        vs 3 get must 'published into
-        vs 4 get must 'id into
-        vs 5 get must 'attrs into) xd-map) '_atom-entry let
+(rec xd-succeed
+   "title" _rss-opt-text ('title into) xd-map2
+   _atom-link            ('link into) xd-map2
+   _atom-summary-dec     ('summary into) xd-map2
+   _atom-published-dec   ('published into) xd-map2
+   "id" _rss-opt-text    ('id into) xd-map2
+   xd-attrs              ('attrs into) xd-map2) '_atom-entry let
 
-(
-  list
-    "title" _rss-opt-text push
-    _atom-link push
-    "subtitle" _rss-opt-text push
-    "entry" _atom-entry xd-children push
-  xd-all-of
-  ('vs let
-    rec "atom" 'kind into
-        vs 0 get must 'title into
-        vs 1 get must 'link into
-        vs 2 get must 'description into
-        vs 3 get must 'items into) xd-map) '_atom-feed let
+(rec "atom" 'kind into xd-succeed
+   "title" _rss-opt-text    ('title into) xd-map2
+   _atom-link               ('link into) xd-map2
+   "subtitle" _rss-opt-text ('description into) xd-map2
+   "entry" _atom-entry xd-children ('items into) xd-map2) '_atom-feed let
 
 -- ========== Dispatch on root tag ==========
 
@@ -117,23 +62,21 @@
     "unknown feed format: " root-tag cat xd-fail
   ) if) if) '_rss-dispatch let
 
-(xd-tag (_rss-dispatch) xd-and-then) '_rss-root let
-
 -- rss-parse: (source -- feed-record ok | err no)
-('src let src _rss-root xd-run) 'rss-parse let
+(xd-tag (_rss-dispatch) xd-and-then xd-run) 'rss-parse let
 
 -- ========== Accessors ==========
-('r let r 'kind at must) 'rss-kind let
-('r let r 'title at must) 'rss-title let
-('r let r 'link at must) 'rss-link let
-('r let r 'description at must) 'rss-description let
-('r let r 'items at must) [rec own in  list move out] effect 'rss-items let
-('i let i 'title at must) 'rss-item-title let
-('i let i 'link at must) 'rss-item-link let
-('i let i 'summary at must) 'rss-item-summary let
-('i let i 'published at must) 'rss-item-published let
-('i let i 'id at must) 'rss-item-id let
-('i let i 'attrs at must) 'rss-item-attrs let
+('kind at) 'rss-kind let
+('title at) 'rss-title let
+('link at) 'rss-link let
+('description at) 'rss-description let
+('items at) 'rss-items let
+('title at) 'rss-item-title let
+('link at) 'rss-item-link let
+('summary at) 'rss-item-summary let
+('published at) 'rss-item-published let
+('id at) 'rss-item-id let
+('attrs at) 'rss-item-attrs let
 
 -- ========== RSS 2.0 generation (rss-to-xml) ==========
 
@@ -236,7 +179,7 @@
   </channel>
 </rss>") '_rss-sample let
 
-_rss-sample rss-parse () {'ok () 'no (drop "fail")} case 'feed let
+_rss-sample rss-parse must 'feed let
 feed rss-kind "rss" eq assert
 feed rss-title "My Blog" eq assert
 feed rss-link "http://example.com" eq assert
@@ -273,7 +216,7 @@ items 1 get must rss-item-summary "<p>html body</p>" eq assert
   </entry>
 </feed>") '_atom-sample let
 
-_atom-sample rss-parse () {'ok () 'no (drop "fail")} case 'afeed let
+_atom-sample rss-parse must 'afeed let
 afeed rss-kind "atom" eq assert
 afeed rss-title "Atom Blog" eq assert
 afeed rss-link "http://example.com" eq assert
@@ -285,13 +228,13 @@ aitems 0 get must rss-item-link "http://example.com/a1" eq assert
 aitems 0 get must rss-item-id "urn:uuid:1" eq assert
 
 -- Adversarial: unknown root
-"<html><body>hi</body></html>" rss-parse () {'no ()} case
+"<html><body>hi</body></html>" rss-parse xerr
   "/html: unknown feed format: html" eq assert
 
 -- Missing optional field: no description in channel
 (
 "<rss><channel><title>X</title><link>Y</link></channel></rss>") '_rss-no-desc let
-_rss-no-desc rss-parse () {'ok () 'no (drop "fail")} case 'nd let
+_rss-no-desc rss-parse must 'nd let
 nd rss-description "" eq assert
 nd rss-items len 0 eq assert
 
@@ -300,7 +243,7 @@ nd rss-items len 0 eq assert
 "<feed><title>F</title>
   <entry><title>T</title><content>body via content</content><id>1</id></entry>
 </feed>") '_atom-content-sample let
-_atom-content-sample rss-parse () {'ok () 'no (drop "fail")} case 'ac let
+_atom-content-sample rss-parse must 'ac let
 ac rss-items 0 get must rss-item-summary "body via content" eq assert
 
 -- Atom updated fallback (no <published>, has <updated>)
@@ -308,7 +251,7 @@ ac rss-items 0 get must rss-item-summary "body via content" eq assert
 "<feed><title>F</title>
   <entry><title>T</title><updated>2024-03-01</updated><id>1</id></entry>
 </feed>") '_atom-updated-sample let
-_atom-updated-sample rss-parse () {'ok () 'no (drop "fail")} case 'au let
+_atom-updated-sample rss-parse must 'au let
 au rss-items 0 get must rss-item-published "2024-03-01" eq assert
 
 -- Item attrs exposed (podcast enclosure pattern)
@@ -316,7 +259,7 @@ au rss-items 0 get must rss-item-published "2024-03-01" eq assert
 "<rss><channel><title>Pod</title>
   <item isPermaLink=\"true\"><title>Ep1</title><guid>ep1</guid></item>
 </channel></rss>") '_rss-pod-sample let
-_rss-pod-sample rss-parse () {'ok () 'no (drop "fail")} case 'pod let
+_rss-pod-sample rss-parse must 'pod let
 pod rss-items 0 get must rss-item-attrs 'pod-attrs let
 pod-attrs len 1 eq assert
 pod-attrs 0 get must 0 get must "isPermaLink" eq assert
@@ -338,7 +281,7 @@ rec "rss" 'kind into
 built-feed rss-to-xml 'xml-out let
 
 -- The generated XML should reparse to the same normalized fields.
-xml-out rss-parse () {'ok () 'no (drop "fail")} case 'rt let
+xml-out rss-parse must 'rt let
 rt rss-kind "rss" eq assert
 rt rss-title "My Feed" eq assert
 rt rss-items 0 get must rss-item-title "Post 1" eq assert
@@ -357,7 +300,7 @@ rec "atom" 'kind into
 'atom-feed let
 
 atom-feed rss-to-xml 'atom-xml let
-atom-xml rss-parse () {'ok () 'no (drop "fail")} case 'art let
+atom-xml rss-parse must 'art let
 art rss-kind "atom" eq assert
 art rss-title "Atom Feed" eq assert
 art rss-link "http://example.com" eq assert

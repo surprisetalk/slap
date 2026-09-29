@@ -264,7 +264,7 @@ argv len 0 gt (
     end-d ws-end 'bestd at lt
       (full len) (ws-end 'best at) if
     'best-pos let
-    -- Rebuild gap buffer at must best-pos
+    -- Rebuild gap buffer at best-pos
     list 0
     (dup best-pos lt) (
       dup 'rbi let

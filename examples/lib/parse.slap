@@ -24,7 +24,7 @@
 -- character AND `let`-bound the accumulator at every level, so it filled the
 -- frame arena at 2045 characters.
 ('pred let 0 ('pwi let pwi peek 0 {'ok (pred apply) 'no (drop 0)} case pwi swap) (1 plus) while
- 'pwn let dup pwn take-n swap pwn drop-n) [list own in  tuple own in  list move out  list move out] effect 'parse-while-core let
+ 'pwn let dup pwn take-n swap pwn drop-n) 'parse-while-core let
 ('pred let list ('pred quote parse-while-core ok) pthen) 'parse-while let
 ('delim let dup delim str-find () {'ok ('pos let dup pos take-n swap pos delim len plus drop-n ok) 'no (drop drop list "parse-until: delimiter not found" no)} case) 'parse-until-core let
 ('delim let list (delim parse-until-core) pthen) 'parse-until let

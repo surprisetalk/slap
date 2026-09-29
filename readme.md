@@ -246,11 +246,11 @@ list 10 push 20 push            -- [10 20]
 
 ### tuples
 
-Immutable sequences. Parenthesized. Also used as code blocks. Access via destructuring (`apply`) or `len`.
+Parenthesized code blocks. `apply` runs one; `cat` joins two into one.
 
 ```slap
 (10 20 30) apply             -- pushes 10 20 30
-(1 2 3) len                  -- 3
+3 (1 plus) (2 mul) cat apply -- 8
 ```
 
 ### records
@@ -265,7 +265,19 @@ Key-value maps keyed by symbols.
 rec 10 'x into 20 'y into    -- {'x 10 'y 20}
 ```
 
-`at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. It knows the keys of records built with `{...}`, `rec` and `into`, and follows them through `let`, stack words, calls, `if`, `case`, loops, lists and tagged payloads. A word that reads `'k` from its input makes every caller pass a record with `'k`. The key must be written as a literal; for keys that are data, use a dict. The old form `'k at must` still runs, unchecked, while xml.slap and rss.slap move off it.
+`at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. A record's type names its keys and the type of each value, `{'x int 'y int}`. `into` adds a key, or replaces the value of a key the record has. A word that reads `'k` from its input takes any record that has `'k`, so every caller must pass one. Records in one list, or left by the two branches of an `if`, have the same keys. The key is written as a literal right before `at`, `into` or `edit`; for keys that are data, use a dict.
+
+### dicts
+
+Maps from strings to values of one type.
+
+```slap
+dict "a" 1 insert "b" 2 insert  -- a dict of ints
+"a" of must                     -- 1, with the dict still under it
+drop "b" remove dict-keys       -- the dict and ["a"]
+```
+
+`of` gives `value ok`, or `key no` for a key the dict does not have. `each` and `fold` give the body each entry as the record `{'key str 'value v}`, in no set order: `('value at 10 mul) each` maps the values, and `0 ('value at plus) fold` sums them. A bound dict is copied by each lookup, so two names never share one.
 
 ### strings
 
@@ -336,20 +348,36 @@ Realistic example — a mutable counter:
 free
 ```
 
+A box stays on the stack from `box` to `free`: it cannot be bound with `let`, stored in a list, record or dict, duplicated or dropped. `lend` and `mutate` give it back. A socket from `tcp-listen`, `tcp-connect` or `tcp-accept` follows the same rules and ends with `tcp-close`.
+
 ## type system
 
-All code is type-checked before execution. Types are inferred — no annotations required.
+All code is type-checked before it runs. Types are inferred, so a program needs no annotations. The checker unifies types, as ML and Haskell do; when it cannot prove a program safe, it refuses the program.
 
-### stackable vs linear
+A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, and the rest of the stack stays as it was. A word defined from a body is generic: `(dup) 'twin let` works on any value it can copy. A value bound with `let` has one type, but a bound body may run at any stack depth.
 
-| Category   | Types                                                        | Rules                        |
-|------------|--------------------------------------------------------------|------------------------------|
-| Stackable  | Int, Float, Symbol, Tuple, Record, List, String, Tagged, Dict | Freely `dup` and `drop`      |
-| Linear     | Box                                                          | Must consume exactly once    |
+### types
 
-Boxes must be consumed via `free`, `lend`, or `mutate`. `lend` gives its body a copy of the contents. Dicts are stackable: use `dup` to branch and `drop` to discard. `free` rejects dicts at type time.
+| Type | Value | In a signature |
+|------|-------|----------------|
+| int, float, symbol | `1` `1.5` `'a` | `int` `float` `sym` |
+| list | `[1 2]` | `int list` |
+| string | `"hi"` | `str` (a list of bytes: `int list`) |
+| body | `(1 plus)` | `( int -> int )` |
+| record | `{'x 1}` | `{'x int}`, or `{'x int \| 'r}` for "at least `'x`" |
+| tagged | `5 'n tag` | `{'n int 'z ()} either` |
+| result | `5 ok`, `"e" no` | `{'ok int 'no str} either` |
+| dict | `dict` | `int dict` |
+| box | `5 box` | `int box` |
+| socket | `0 tcp-listen must` | `socket` |
 
-A dict is the one stackable type that cannot be `let`-bound. It is a heap object, and a binding would alias it rather than copy it, so dropping either copy would leave the other reading freed memory. Thread it on the stack (see `examples/kv-server.slap`) or use a record if you need something bindable.
+Type variables are symbols: `'a list`. A signature is a promise for every type it allows, so a bare `list` means "a list of whatever element type the caller picks": a body that leaves `int list` must say `int list`.
+
+Every tag but `'ok` and `'no` has one payload type in the whole program: once `5 'n tag` appears, `'n` always holds an int. Recursive data goes through tags, as in `rec 1 'hd into nil 'tl into 'cons tag`. `ok` and `no` build results, which `then`, `pthen`, `default` and `must` take.
+
+### ownership
+
+A value is copyable unless it holds a box or a socket. Only a copyable value may be bound with `let`, duplicated, dropped, put in a list, record or dict, or left on the stack when the program ends. A body given to `each`, `fold`, `edit`, `mutate` or `lend` sees only its input, not the stack below it.
 
 ### effect annotations
 
@@ -360,34 +388,28 @@ Optional type annotations declare stack effects:
 (dup mul) [int lent in  int move out] effect 'square let
 ```
 
-A signature can also come first, as `'name [sig] effect`; the body later bound to that name is checked against it:
+A signature can also come first, as `'name [sig] effect`; the body later bound to that name is checked against it. A word used before its definition, as in mutual recursion, needs one:
 
 ```slap
 'triple [int lent in  int move out] effect
 (3 mul) 'triple let
 ```
 
-Ownership modes: `lent` (borrowed/copyable), `move` (consumed), `own` (linear ownership). A word in a signature that is not a type or mode is an error; type variables are symbols (`'a`).
+The checker holds the body to the signature for every type the signature allows: `(2 mul) ['a num lent in  'a num move out] effect` is an error, because `2` makes the body int-only. A `lent` or `copy` slot takes a copyable value; `own`, `move` and `auto` slots may hold a box. A body type in a slot runs on the word's own stack below its declared inputs, so `(apply) [( -> int ) own in  int move out] effect` checks; a body type that names its own rest, as in `( ..x int -> ..x int )`, has a stack of its own.
 
 ### protocol constraints
 
-Built-in protocols group types by capability. Use in effect annotations:
-
-```slap
-(len) ['a sized lent in  int move out] effect 'my-len let
-(sort) ['a ord seq own in  'a ord seq move out] effect 'my-sort let
-```
+Built-in protocols group types by capability. Use them in signatures, as in `['a ord list own in  'a ord list move out]`:
 
 | Protocol | Keyword | Types | Operations |
 |----------|---------|-------|------------|
-| Sized | `sized` | list, tuple, record, dict | `len` |
-| Seq | `seq` | list | `get`, `peek`, `set`, `push`, `pop`, `cat` |
-| Eq | `eq` | all stackable | `eq` |
-| Ord | `ord` | int, float | `lt`, `sort` |
 | Num | `num` | int, float | `plus`, `sub`, `mul`, `div` |
-| Semigroup | `semigroup` | list, tuple, record | `cat` |
+| Ord | `ord` | int, float | `lt`, `sort` |
+| Sized | `sized` | list, record, dict | `len` |
+| Semigroup | `semigroup` | list, record, body | `cat` |
+| Copy | `copy` | every type without a box or socket | `let`, `dup`, `drop`, `eq` |
 
-Also recognized: `functor` (the input of `each`) and `dict`. Symbols are comparable with `eq` but not orderable.
+Symbols are comparable with `eq` but not orderable.
 
 ## prelude
 
@@ -756,62 +778,31 @@ cat lib.slap main.slap | slap
 
 ## what the type system catches
 
-The type checker runs on all code (builtins, prelude, user) before execution.
-It catches the following at compile time:
+The checker runs on the prelude and the program before anything executes. It refuses:
 
-**Linear resources (boxes):**
-- A box must be consumed exactly once via `free`, `lend`, or `mutate`.
-- Embedding a box into a stackable container (list, tuple, record, tagged) is rejected.
-- Tagging a box keeps it linear, so `42 box 'x tag` cannot then be dropped, duplicated, pushed or inserted. `42 box ok must free` is the legitimate shape and still works.
-- A Box *binding* is single-use across all its lookups: the name may be read as many times as you like, but only one read may reach a word that retires the cell. `lend` and `mutate` hand the same box back, so freeing what they return consumes the binding too; `swap` merely moves it and does not.
-- Duplicating a box with `dup` is rejected (boxes aren't copyable).
-- A closure that captures a linear outer binding is marked linear itself — applying it twice is rejected.
-- Higher-order ops (`each`, `fold`, `while`) reject bodies that capture linear outer bindings.
-- `cat` propagates linear-capture: joining a linear-capturing closure with a pure one yields a linear-capturing result.
-- A linear-capturing closure cannot recurse on itself — each recursive call would re-consume the capture.
+**Types**
+- A word given a value of the wrong type: `"a" 1 plus`.
+- `at` or `edit` on a key the record may lack. The checker follows records through `let`, stack words, calls, branches, loops, lists and tag payloads.
+- A list whose values differ in type, and `if` branches or `case` clauses that leave different types.
+- A tag used with two payload types.
+- A `case` that may meet a tag it does not name, when its default is not of the clauses' type. The checker infers which tags a value can carry from `ok`, `no`, `'x tag`, `then`, `pthen` and declared `either` types.
+- A body that breaks its declared signature for some type the signature allows.
+- Code that takes more values than the stack holds.
+- A word used before its definition without `'name [sig] effect`, and a declared word never defined.
+- A name used where it is not bound. Names are lexical: a body sees the names bound where it is written, and never a caller's.
 
-**Aliasing through `lend`/`mutate`:**
-- `lend`'s body may not `let`-bind the snapshot when the box contains a **box or a dict**. Boxed lists, records, tuples and tagged values are safe to bind.
-- Indexed read access via `'name k nth` or `k peek` is exempt — neither pulls the list to the stack as a binding.
+**Ownership**
+- A box or socket that is bound, duplicated, dropped, stored in a container, or left at the end.
+- A body given to `each`, `fold`, `edit`, `mutate` or `lend` that reaches below its input.
 
-**Tagged unions:**
-- Tags are open by default; `case` on an untyped tagged value accepts any variant with a default clause.
-- A value whose variants a signature declares (`{'ok 'a 'no ()} either`, as `pop`, `get` and `read` do) is closed: `case` must cover every variant.
-- A word the program declares with an `either` output (`{'ok int 'no str} either move out`) must leave only the tags it names, including tags from the words it calls. When the checker cannot see which tags the body leaves, callers treat the output's tags as unknown, so a `case` on it keeps its default.
-- A word the program declares with an `either` input accepts only a value whose tags the checker can see, all named in the declaration.
-- `then` takes only a value tagged `'ok` or `'no`, and the checker must see its tags. A word that uses `then` on its input passes that rule on to its callers.
+**Literals**
+- A `[...]` or `{...}` literal is built once, when the program is read. Its code sees only what is written inside it and the prelude. Build such a value at runtime instead: `list x push`, `rec x 'key into`.
+- A `{...}` literal is a record when its values pair up as `'key value`, and a tuple otherwise; `{}` is the empty record. Right before `case`, a `{...}` literal is a clause list, and every clause body is `(...)`: write `(drop 1)`, not `1`.
 
-**Protocols (typeclasses):**
-- `ord` (`lt`, `sort`) accepts int and float only. Symbols are Eq but not Ord — ordering symbols by intern id is an implementation accident, not a semantic.
-- `num`, `seq`, `semigroup`, `sized` and `functor` gate other ops.
-- Code inside case clauses is checked like any other body, and `then`'s body must return a tagged value.
-- A `[...]` or `{...}` literal is built once, when the program is read, before anything runs. Its code sees only what is written inside it and the prelude, not names the program binds. Build such a value at runtime instead: `list x push`, `rec x 'key into`.
-- A `{...}` literal is a record when its values pair up as `'key value`, and a tuple otherwise; `{}` is the empty record. A tuple written right before its `'name let` is a word, so `{1 2 3} 't let t` pushes 1 2 3. Right before `case`, a `{...}` literal is a clause list, and every clause body is `(...)`: write `(drop 1)`, not `1`.
-
-**Effect annotations:**
-- `(body) [sig] effect 'name let` runs the body on exactly the declared inputs. The body must not reach below them, and it must leave exactly the declared outputs, each of the declared type.
-- A declared input is rigid: the body must accept every value its type admits. `(2 mul) ['a num lent in  'a num move out] effect` is an error, because the literal `2` makes the body int-only.
-- A body that runs a `tuple` input leaves whatever that tuple leaves, so its outputs are not checked.
-- An output declared with an input's type variable (`['a own in  'a move out]`) is that input to callers, keys and all, so the body must leave the input there. `(drop {'z 1})` with that signature is an error.
-- A declared `tuple` output hides the body's effect, so it may not be a body that reads record keys.
-- A declared name is bound to a body written right before `'name let`; `x 'name let` with a computed `x` is an error, since callers trust the declaration. A declared word that is used must be defined somewhere.
-- `apply`, `dip`, `each`, `fold`, `while`, `on` and `show` take a body: `5 apply` is an error. At the top of the program, nothing may take more values than the stack holds.
-- A recursive call leaves what the word leaves: the checker joins its outputs with the word's own, so they carry only the keys every path gives them.
-- A recursive word takes its effect from the branch that does not recurse.
-- A loop leaves the stack as deep as it found it: a `repeat` body, or one run of a `while` cond (less its flag) and body, must leave as many values as it takes.
-- `if` takes two bodies, `cond (then) (else) if`; a plain value as a branch is an error.
-- `if` branches and `case` clauses must leave the same count. A branch that never returns (`x no must`, `none must`, `halt`) agrees with any other branch.
-- `case` pushes its default when no clause matches, so its clauses must leave one value in place of the scrutinee, unless every tag the scrutinee can carry has a clause. The checker infers those tags from `ok`, `no`, `'x tag`, `then`, `pthen` and a declared `either`.
-- A word used before its definition, as in mutual recursion, needs `'name [sig] effect` before its first use.
-- `case` takes its effect from its clauses. A clause runs with the payload on top and may consume values below it.
-- Forward declarations `'name [sig] effect` reconcile with the body when `name` is later defined.
-
-**What the type system does *not* catch:**
-- Division by zero, modulo by zero, out-of-bounds `set`, `nth`, or `peek` (runtime panics).
-- Non-exhaustive `case` on a tagged value whose variants no signature declares: the default fires on any unmatched tag. That is by design.
-- Recursion depth, memory limits, or other runtime resource exhaustion.
-- A word's `let` rebinds the name where the word was defined, so it shadows a top-level name for the words it calls. A called word that reads that name as a record can then fail in `at`.
-- A recursive word that meets its own call's result with a record inside its body, and reads a key there, can fail in `at` (todo.md).
+**What it does *not* catch**
+- Division by zero, out-of-bounds `set`, `nth` or `peek`, and `must` on a `'no` (runtime errors with a message).
+- Recursion depth, memory limits, and other runtime resource exhaustion.
+- `cat` of two closures made in different frames dies at runtime.
 
 ## testing
 

@@ -1,6 +1,5 @@
 .DS_Store
 slap
-slap-next
 slap-sdl
 /*.html
 !/shell.html

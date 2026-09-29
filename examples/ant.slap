@@ -6,7 +6,7 @@
 19200 'N let
 4 'S let
 
--- Draw SxS block at must grid (gx, gy) with color c
+-- Draw SxS block at grid (gx, gy) with color c
 (
   'c let 'gy let 'gx let
   gx S mul gy S mul S S c fill-rect
@@ -25,7 +25,7 @@ N 3 plus 'I-STEPS let
   dup I-AY get must 'ay let
   dup I-DIR get must 'dir let
 
-  -- read must cell at must ant position
+  -- read the cell at the ant position
   dup ay W mul ax plus get must 'cell let
 
   -- turn: white(0)->right, black(1)->left

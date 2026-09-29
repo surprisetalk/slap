@@ -53,11 +53,7 @@ SRC read must 'RAW let
 
 RAW rss-parse 'PARSED let
 
--- `each` maps the ok payload and passes a 'no straight through. Shrinking the
--- feed record to one int before the `case` was required when `case` copied its
--- payload; it is merely tidy now, and left in place because it is the shape to
--- reach for whenever a branch's success payload is large.
-PARSED (drop 0) each () {'ok (drop "") 'no ()} case 'PERR let
+PARSED () {'ok (drop "") 'no ()} case 'PERR let
 PERR len 0 gt ("feed: " SRC cat " is not a feed -- " cat PERR cat die) () if
 
 PARSED must 'FEED let

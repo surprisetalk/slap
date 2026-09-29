@@ -42,9 +42,9 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 -- ===== snapshot =====
 
 -- Fallible: returns the write's tagged result so callers choose crash vs report.
--- fold hands the body a (key value) tuple; never let-bind it, a bound tuple auto-execs.
-(dup list (dup 0 get must 'fk let 1 get must 'fv let fk cat TAB cat fv cat LF cat) fold
- SNAP swap write) 'save-snapshot let
+-- The signature tells fold it walks a dict, whose entries are {'key k 'value v}.
+(dup list (dup 'key at 'fk let 'value at 'fv let fk cat TAB cat fv cat LF cat) fold
+ SNAP swap write) [str dict own in  str dict move out  {'ok int 'no str} either move out] effect 'save-snapshot let
 
 -- Every non-empty line must be key<TAB>value. A line without a TAB means the file
 -- was corrupted or a prior save was torn mid-write; refuse to load rather than

@@ -2,7 +2,7 @@
 -- d1 * d10 * d100 * d1000 * d10000 * d100000 * d1000000
 -- Answer: 210
 
--- champer-digit: pos -> digit at must that position in Champernowne sequence
+-- champer-digit: pos -> digit at that position in Champernowne sequence
 -- Find which "band" the position falls in, then extract digit
 (
   'cdb-count let 'cdb-start let 'cdb-digits let 'cdb-pos let

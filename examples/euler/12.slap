@@ -2,7 +2,7 @@
 -- First triangle number with over 500 divisors.
 -- Answer: 76576500
 
--- inc-at: box idx -> box (increments value at must idx)
+-- inc-at: box idx -> box (increments value at idx)
 ('idx let ('arr let arr idx get must inc 'v let arr idx v set must) mutate) 'inc-at let
 
 -- Precompute divisor counts using sieve in a boxed array.

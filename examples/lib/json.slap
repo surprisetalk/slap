@@ -4,165 +4,167 @@
 
 -- ========== Internal parser: string -> tagged JSON value ==========
 -- Tagged shapes: n 'int | f 'float | s 'str | 0/1 'bool | () 'null
---                list 'arr | list-of-[k,v] 'obj
+--                list 'arr | list-of-{'key str 'value jv} 'obj
 -- _json-parse binds the input as '_jin and every step reads it by index with
 -- `nth`, so no token copies or cuts the input and nothing recurses per byte.
 -- A step's state is `i ok`, or `msg no` from the first failure; `then` and
 -- `pthen` carry a failure past the steps after it.
 
--- _jc: (i -- c).  The byte at i, or -1 past the end.
-('_jin swap nth () {'ok () 'no (drop -1)} case) '_jc let
+-- _json-parse: (source -- jv ok | msg no).  The helpers live inside it, so each reads the
+-- input it binds as '_jin by name, not a caller's.
+('_jin let
+  -- _jc: (i -- c).  The byte at i, or -1 past the end.
+  ('_jin swap nth () {'ok () 'no (drop -1)} case) '_jc let
 
--- _jws: (i -- i').  Skips JSON whitespace.
-((dup _jc 'c let c 32 eq c 9 eq or c 10 eq or c 13 eq or) (1 plus) while) '_jws let
+  -- _jws: (i -- i').  Skips JSON whitespace.
+  ((dup _jc 'c let c 32 eq c 9 eq or c 10 eq or c 13 eq or) (1 plus) while) '_jws let
 
--- _jlit: (i lit -- st).  Matches lit at i.
-('jl let 'ji let
- 0 (dup jl len lt (dup 'jk let ji jk plus _jc 'jl jk nth must eq) (0) if) (1 plus) while
- dup jl len eq (ji plus ok) (drop "json: expected " jl cat no) if) '_jlit let
+  -- _jlit: (i lit -- st).  Matches lit at i.
+  ('jl let 'ji let
+   0 (dup jl len lt (dup 'jk let ji jk plus _jc 'jl jk nth must eq) (0) if) (1 plus) while
+   dup jl len eq (ji plus ok) (drop "json: expected " jl cat no) if) '_jlit let
 
--- _jhex4: (i -- n).  The four hex digits at i, or -1 if any is not a hex digit.
-('jhi let 0 4 range 0 ('jhk let 'jha let jhi jhk plus _jc 'jhc let
-   jhc 48 ge jhc 57 le and (jhc 48 sub) (jhc 97 ge jhc 102 le and (jhc 87 sub) (
-   jhc 65 ge jhc 70 le and (jhc 55 sub) (-1) if) if) if 'jhv let
-   jha 0 lt jhv 0 lt or (-1) (jha 16 mul jhv plus) if) fold) '_jhex4 let
+  -- _jhex4: (i -- n).  The four hex digits at i, or -1 if any is not a hex digit.
+  ('jhi let 0 4 range 0 ('jhk let 'jha let jhi jhk plus _jc 'jhc let
+     jhc 48 ge jhc 57 le and (jhc 48 sub) (jhc 97 ge jhc 102 le and (jhc 87 sub) (
+     jhc 65 ge jhc 70 le and (jhc 55 sub) (-1) if) if) if 'jhv let
+     jha 0 lt jhv 0 lt or (-1) (jha 16 mul jhv plus) if) fold) '_jhex4 let
 
--- _jutf8: (codepoint -- bytes).  The codepoint is a Unicode scalar value.
-('cp let
- cp 128 lt (list cp push) (
- cp 2048 lt (list 192 cp 6 shr bor push 128 cp 63 band bor push) (
- cp 65536 lt (list 224 cp 12 shr bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push) (
-   list 240 cp 18 shr bor push 128 cp 12 shr 63 band bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push
- ) if) if) if) '_jutf8 let
+  -- _jutf8: (codepoint -- bytes).  The codepoint is a Unicode scalar value.
+  ('cp let
+   cp 128 lt (list cp push) (
+   cp 2048 lt (list 192 cp 6 shr bor push 128 cp 63 band bor push) (
+   cp 65536 lt (list 224 cp 12 shr bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push) (
+     list 240 cp 18 shr bor push 128 cp 12 shr 63 band bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push
+   ) if) if) if) '_jutf8 let
 
--- _jstr: (i -- s st).  i is at the opening quote.  Loop state: bytes, index,
--- and 0 while scanning, 1 at the closing quote, 2 at the end of input, 3 on an
--- escape JSON does not have, 4 on a bad \u escape, 5 on a raw control byte.
--- \u escapes are UTF-8 encoded; a surrogate is only valid as the first half of
--- a \uD8xx\uDCxx pair.
-('jsi let list jsi 1 plus 0
- (dup 0 eq)
- (drop 'ji let ji _jc 'jc let
-   jc 0 lt (ji 2) (
-   jc 34 eq (ji 1 plus 1) (
-   jc 92 eq (
-     ji 1 plus _jc 'je let
-     je 117 eq (
-       ji 2 plus _jhex4 'jh let
-       jh 0 lt (ji 4) (
-       jh 55296 ge jh 56319 le and (
-         ji 6 plus _jc 92 eq ji 7 plus _jc 117 eq and (ji 8 plus _jhex4) (-1) if 'jl let
-         jl 56320 ge jl 57343 le and (
-           jh 55296 sub 10 shl jl 56320 sub bor 65536 plus _jutf8 cat ji 12 plus 0) (ji 4) if
+  -- _jstr: (i -- s st).  i is at the opening quote.  Loop state: bytes, index,
+  -- and 0 while scanning, 1 at the closing quote, 2 at the end of input, 3 on an
+  -- escape JSON does not have, 4 on a bad \u escape, 5 on a raw control byte.
+  -- \u escapes are UTF-8 encoded; a surrogate is only valid as the first half of
+  -- a \uD8xx\uDCxx pair.
+  ('jsi let list jsi 1 plus 0
+   (dup 0 eq)
+   (drop 'ji let ji _jc 'jc let
+     jc 0 lt (ji 2) (
+     jc 34 eq (ji 1 plus 1) (
+     jc 92 eq (
+       ji 1 plus _jc 'je let
+       je 117 eq (
+         ji 2 plus _jhex4 'jh let
+         jh 0 lt (ji 4) (
+         jh 55296 ge jh 56319 le and (
+           ji 6 plus _jc 92 eq ji 7 plus _jc 117 eq and (ji 8 plus _jhex4) (-1) if 'jl let
+           jl 56320 ge jl 57343 le and (
+             jh 55296 sub 10 shl jl 56320 sub bor 65536 plus _jutf8 cat ji 12 plus 0) (ji 4) if
+         ) (
+         jh 56320 ge jh 57343 le and (ji 4) (jh _jutf8 cat ji 6 plus 0) if) if) if
        ) (
-       jh 56320 ge jh 57343 le and (ji 4) (jh _jutf8 cat ji 6 plus 0) if) if) if
+       je 110 eq (10) (je 116 eq (9) (je 114 eq (13) (je 98 eq (8) (je 102 eq (12) (
+       je 34 eq (34) (je 92 eq (92) (je 47 eq (47) (-1) if) if) if) if) if) if) if) if 'jb let
+       je 0 lt (ji 2) (jb 0 lt (ji 3) (jb push ji 2 plus 0) if) if) if
      ) (
-     je 110 eq (10) (je 116 eq (9) (je 114 eq (13) (je 98 eq (8) (je 102 eq (12) (
-     je 34 eq (34) (je 92 eq (92) (je 47 eq (47) (-1) if) if) if) if) if) if) if) if 'jb let
-     je 0 lt (ji 2) (jb 0 lt (ji 3) (jb push ji 2 plus 0) if) if) if
+     jc 32 lt (ji 5) (jc push ji 1 plus 0) if) if) if) if)
+   while
+   'jst let 'ji let
+   jst 1 eq (ji ok) (
+   jst 2 eq ("json: unterminated string" no) (
+   jst 3 eq ("json: unknown escape in string" no) (
+   jst 4 eq ("json: bad \\u escape in string" no) ("json: control byte in a string; escape it as \\u00XX" no) if) if) if) if) '_jstr let
+
+  -- _jdigits: (n i -- n' i').  Folds the decimal digits at i into n.
+  ((dup _jc 'jd let jd 48 ge jd 57 le and) ('jdi let 10 mul jdi _jc 48 sub plus jdi 1 plus) while) '_jdigits let
+
+  -- _jexp: (f st -- f' st').  Applies an exponent (e/E, sign, digits) if one follows.
+  (() {'ok ('jxi let 'jxf let
+     jxi _jc 'jxc let jxc 101 eq jxc 69 eq or (
+       jxi 1 plus _jc 'jxs let
+       jxs 45 eq (-1 jxi 2 plus) (jxs 43 eq (1 jxi 2 plus) (1 jxi 1 plus) if) if 'jxj let 'jxg let
+       0 jxj _jdigits 'jxk let 'jxe let
+       jxk jxj eq (jxf "json: expected a digit in the exponent" no) (
+       jxk jxj sub 3 gt jxe 308 gt or (jxf "json: exponent past 308" no) (
+         jxf 10.0 jxe jxg mul itof fpow mul jxk ok) if) if
+     ) (jxf jxi ok) if)
+    'no (no)} case) '_jexp let
+
+  -- _jnum: (i -- jv st).  An int, unless a fraction or an exponent follows.
+  -- 18 digits always fit in an int, so a longer integer part is refused rather
+  -- than left to wrap.
+  ('jni let
+   jni _jc 45 eq (-1 jni 1 plus) (1 jni) if 'jn1 let 'jsg let
+   0 jn1 _jdigits 'jn2 let 'jint let
+   jn2 _jc 'jc let
+   jn2 jn1 eq (() 'null tag "json: expected a digit" no) (
+   jn2 jn1 sub 18 gt (() 'null tag "json: number has more than 18 digits before the point" no) (
+   jc 46 eq (
+     jint itof 0.1 jn2 1 plus
+     (dup _jc 'jd let jd 48 ge jd 57 le and)
+     ('jfi let 'jfs let jfi _jc 48 sub itof jfs mul plus jfs 10.0 div jfi 1 plus) while
+     'jfk let drop 'jfv let
+     jfk jn2 1 plus eq (() 'null tag "json: expected a digit after ." no) (
+       jfv jfk ok _jexp swap jsg itof mul 'float tag swap) if
    ) (
-   jc 32 lt (ji 5) (jc push ji 1 plus 0) if) if) if) if)
- while
- 'jst let 'ji let
- jst 1 eq (ji ok) (
- jst 2 eq ("json: unterminated string" no) (
- jst 3 eq ("json: unknown escape in string" no) (
- jst 4 eq ("json: bad \\u escape in string" no) ("json: control byte in a string; escape it as \\u00XX" no) if) if) if) if) '_jstr let
+   jc 101 eq jc 69 eq or (jint itof jn2 ok _jexp swap jsg itof mul 'float tag swap) (
+     jint jsg mul 'int tag jn2 ok) if) if) if) if) '_jnum let
 
--- _jdigits: (n i -- n' i').  Folds the decimal digits at i into n.
-((dup _jc 'jd let jd 48 ge jd 57 le and) ('jdi let 10 mul jdi _jc 48 sub plus jdi 1 plus) while) '_jdigits let
+  -- _jarr-next: (i -- more st).  Reads the separator after an array element.
+  (_jws 'jak let jak _jc 'jac let
+   jac 44 eq (1 jak 1 plus ok) (
+   jac 93 eq (0 jak 1 plus ok) (
+   jac 0 lt (0 "json: unexpected end of input in an array" no) (
+     0 "json: expected , or ] in an array" no) if) if) if) '_jarr-next let
 
--- _jexp: (f st -- f' st').  Applies an exponent (e/E, sign, digits) if one follows.
-(() {'ok ('jxi let 'jxf let
-   jxi _jc 'jxc let jxc 101 eq jxc 69 eq or (
-     jxi 1 plus _jc 'jxs let
-     jxs 45 eq (-1 jxi 2 plus) (jxs 43 eq (1 jxi 2 plus) (1 jxi 1 plus) if) if 'jxj let 'jxg let
-     0 jxj _jdigits 'jxk let 'jxe let
-     jxk jxj eq (jxf "json: expected a digit in the exponent" no) (
-     jxk jxj sub 3 gt jxe 308 gt or (jxf "json: exponent past 308" no) (
-       jxf 10.0 jxe jxg mul itof fpow mul jxk ok) if) if
-   ) (jxf jxi ok) if)
-  'no (no)} case) '_jexp let
+  -- Object parts.  _jkey: (i -- s st), _jcolon: (i -- st), _jobj-next: (i -- more st).
+  (_jws 'jki let jki _jc 34 eq (jki _jstr) ("" "json: expected \" to start an object key" no) if) '_jkey let
+  (_jws 'jci let jci _jc 58 eq (jci 1 plus ok) ("json: expected : after an object key" no) if) '_jcolon let
+  (_jws 'jek let jek _jc 'jec let
+   jec 44 eq (1 jek 1 plus ok) (
+   jec 125 eq (0 jek 1 plus ok) (
+   jec 0 lt (0 "json: unexpected end of input in an object" no) (
+     0 "json: expected , or } in an object" no) if) if) if) '_jobj-next let
 
--- _jnum: (i -- jv st).  An int, unless a fraction or an exponent follows.
--- 18 digits always fit in an int, so a longer integer part is refused rather
--- than left to wrap.
-('jni let
- jni _jc 45 eq (-1 jni 1 plus) (1 jni) if 'jn1 let 'jsg let
- 0 jn1 _jdigits 'jn2 let 'jint let
- jn2 _jc 'jc let
- jn2 jn1 eq (() 'null tag "json: expected a digit" no) (
- jn2 jn1 sub 18 gt (() 'null tag "json: number has more than 18 digits before the point" no) (
- jc 46 eq (
-   jint itof 0.1 jn2 1 plus
-   (dup _jc 'jd let jd 48 ge jd 57 le and)
-   ('jfi let 'jfs let jfi _jc 48 sub itof jfs mul plus jfs 10.0 div jfi 1 plus) while
-   'jfk let drop 'jfv let
-   jfk jn2 1 plus eq (() 'null tag "json: expected a digit after ." no) (
-     jfv jfk ok _jexp swap jsg itof mul 'float tag swap) if
- ) (
- jc 101 eq jc 69 eq or (jint itof jn2 ok _jexp swap jsg itof mul 'float tag swap) (
-   jint jsg mul 'int tag jn2 ok) if) if) if) if) '_jnum let
+  -- _jv-at: (i depth -- jv st).  One value at i.  An array or object reads each
+  -- element with _jv-at one level deeper; nesting past 256 is refused before it
+  -- can exhaust the interpreter's recursion limit.  An object entry is
+  -- {'key str 'value jv}.
+  ('jd let _jws 'ji let ji _jc 'jc let
+   jd 256 gt (() 'null tag "json: nested deeper than 256" no) (
+   jc 0 lt (() 'null tag "json: unexpected end of input" no) (
+   jc 34 eq (ji _jstr swap 'str tag swap) (
+   jc 91 eq (
+     ji 1 plus _jws 'jai let
+     jai _jc 93 eq (list 'arr tag jai 1 plus ok) (
+       list jai ok 1
+       (dup) (drop () 'null tag (jd 1 plus _jv-at) pthen (push) dip 0 (_jarr-next) pthen swap) while
+       drop swap 'arr tag swap) if) (
+   jc 123 eq (
+     ji 1 plus _jws 'joi let
+     joi _jc 125 eq (list 'obj tag joi 1 plus ok) (
+       list joi ok 1
+       (dup) (drop "" (_jkey) pthen swap 'jk let
+         (_jcolon) then () 'null tag (jd 1 plus _jv-at) pthen swap 'jv let
+         (rec jk 'key into jv 'value into push) dip
+         0 (_jobj-next) pthen swap) while
+       drop swap 'obj tag swap) if) (
+   jc 116 eq (1 'bool tag ji "true" _jlit) (
+   jc 102 eq (0 'bool tag ji "false" _jlit) (
+   jc 110 eq (() 'null tag ji "null" _jlit) (
+   jc 45 eq jc 48 ge jc 57 le and or (ji _jnum) (
+     () 'null tag "json: unexpected character '" list jc push cat "'" cat no
+   ) if) if) if) if) if) if) if) if) if) '_jv-at let
 
-'_jval [tagged own in  int lent in  tagged move out  tagged move out] effect
+  -- _jend: (i -- st).  Only whitespace may follow the value.
+  (_jws _jc 0 lt (0 ok) ("json: trailing input" no) if) '_jend let
+  0 0 _jv-at swap 'jv0 let (_jend) then (drop jv0 ok) then) '_json-parse let
 
--- _jarr: (i depth -- jv st).  i is just past '['.
--- _jarr-next: (i -- more st).  Reads the separator after an element.
-(_jws 'jak let jak _jc 'jac let
- jac 44 eq (1 jak 1 plus ok) (
- jac 93 eq (0 jak 1 plus ok) (
- jac 0 lt (0 "json: unexpected end of input in an array" no) (
-   0 "json: expected , or ] in an array" no) if) if) if) '_jarr-next let
-('jad let _jws 'jai let
- jai _jc 93 eq (list 'arr tag jai 1 plus ok) (
-   list jai ok 1
-   (dup) (drop jad 1 plus _jval (push) dip 0 (_jarr-next) pthen swap) while
-   drop swap 'arr tag swap) if) '_jarr let
+-- ========== Decoders ==========
+-- A decoder is a body (jv -- value ok | msg no).  A failure message starts with
+-- the path below the decoder, and each decoder on the way out puts its own step
+-- in front, so jd-run reports "$.a.b[0].c: expected int, got string".
 
--- _jobj: (i depth -- jv st).  i is just past '{'.  Entries are [key value] couples.
-(_jws 'jki let jki _jc 34 eq (jki _jstr) ("" "json: expected \" to start an object key" no) if) '_jkey let
-(_jws 'jci let jci _jc 58 eq (jci 1 plus ok) ("json: expected : after an object key" no) if) '_jcolon let
-(_jws 'jek let jek _jc 'jec let
- jec 44 eq (1 jek 1 plus ok) (
- jec 125 eq (0 jek 1 plus ok) (
- jec 0 lt (0 "json: unexpected end of input in an object" no) (
-   0 "json: expected , or } in an object" no) if) if) if) '_jobj-next let
-('jod let _jws 'joi let
- joi _jc 125 eq (list 'obj tag joi 1 plus ok) (
-   list joi ok 1
-   (dup) (drop "" (_jkey) pthen swap 'jk let
-     (_jcolon) then jod 1 plus _jval swap 'jv let (jk jv couple push) dip
-     0 (_jobj-next) pthen swap) while
-   drop swap 'obj tag swap) if) '_jobj let
-
--- _jv-at: (i depth -- jv st).  One value at i.  Nesting past 256 is refused
--- before it can exhaust the interpreter's recursion limit.
-('jd let _jws 'ji let ji _jc 'jc let
- jd 256 gt (() 'null tag "json: nested deeper than 256" no) (
- jc 0 lt (() 'null tag "json: unexpected end of input" no) (
- jc 34 eq (ji _jstr swap 'str tag swap) (
- jc 91 eq (ji 1 plus jd _jarr) (
- jc 123 eq (ji 1 plus jd _jobj) (
- jc 116 eq (1 'bool tag ji "true" _jlit) (
- jc 102 eq (0 'bool tag ji "false" _jlit) (
- jc 110 eq (() 'null tag ji "null" _jlit) (
- jc 45 eq jc 48 ge jc 57 le and or (ji _jnum) (
-   () 'null tag "json: unexpected character '" list jc push cat "'" cat no
- ) if) if) if) if) if) if) if) if) if) '_jv-at let
-
--- _jval: (st depth -- jv st').
-('jvd let () 'null tag (jvd _jv-at) pthen) '_jval let
-
--- _json-parse: (source -- jv ok | msg no)
-(_jws _jc 0 lt (0 ok) ("json: trailing input" no) if) '_jend let
-('_jin let 0 ok 0 _jval swap 'jv0 let (_jend) then
- jv0 swap () {'ok (drop ok) 'no (swap drop no)} case) '_json-parse let
-
--- ========== Helpers ==========
-
--- _type-name: (jv -- jv name-str). Non-consuming over at the JSON value's tag.
+-- _type-name: (jv -- jv name-str).
 (dup
-  () {'int   (drop "int")
+  "" {'int   (drop "int")
    'float (drop "float")
    'str   (drop "string")
    'bool  (drop "bool")
@@ -170,191 +172,54 @@
    'arr   (drop "array")
    'obj   (drop "object")} case) '_type-name let
 
--- _mismatch: (jv path expected-str -- err-tagged)
-('_mm-exp let '_mm-path let '_mm-jv let
-  _mm-path ": expected " cat _mm-exp cat ", got " cat
-  _mm-jv _type-name '_mm-tn let drop _mm-tn cat no) '_mismatch let
+-- _jwant: (jv want -- jv err).  The error a decoder gives when jv is not a want.
+('w let _type-name 'tn let ": expected " w cat ", got " cat tn cat no) '_jwant let
 
--- _find-field: (key entries -- payload-ok | none).  entries = list of [k,v] couples.
--- The first entry with the key wins.
-('_ff-ents let '_ff-key let
-  _ff-ents (0 get must) each _ff-key index-of
-  () {'ok ('_ff-k let '_ff-ents _ff-k nth must 1 get must ok) 'no (drop none)} case
-) '_find-field let
+(("int"    _jwant {'int (ok)} case)) 'jd-int let
+(("float"  _jwant {'float (ok)} case)) 'jd-float let
+(("string" _jwant {'str (ok)} case)) 'jd-str let
+(("bool"   _jwant {'bool (ok)} case)) 'jd-bool let
+(("null"   _jwant {'null (ok)} case)) 'jd-null let
 
--- ========== Decoder constructors ==========
--- Representation: [dname args...] 'dec tag
+-- jd-list: (dec -- dec').  The first failing item wins, and its index is the
+-- count of items decoded before it: "[1]: ...".
+('d let ("array" _jwant {'arr (
+   list ok ('x let (x d apply () {'ok (push ok) 'no ('m let len int-str "[" swap cat "]" cat m cat no)} case) then) fold)} case)) 'jd-list let
 
-(list 'int   push 'dec tag) 'jd-int let
-(list 'str   push 'dec tag) 'jd-str let
-(list 'bool  push 'dec tag) 'jd-bool let
-(list 'float push 'dec tag) 'jd-float let
-(list 'null  push 'dec tag) 'jd-null let
+-- jd-field: (key dec -- dec').  The first entry with the key wins.
+('d let 'k let ("object" _jwant {'obj ('es let
+   es ('key at) each k index-of
+   () {'ok ('i let 'es i nth must 'value at d apply () {'ok (ok) 'no ("." k cat swap cat no)} case)
+       'no (drop ": missing field \"" k cat "\"" cat no)} case)} case)) 'jd-field let
 
-('_jl-d let list 'list push _jl-d push 'dec tag) 'jd-list let
-('_jf-d let '_jf-k let list 'field push _jf-k push _jf-d push 'dec tag) 'jd-field let
-('_jat-d let '_jat-ks let list 'at push _jat-ks push _jat-d push 'dec tag) 'jd-at let
-('_jm-f let '_jm-d let list 'map push _jm-d push '_jm-f quote push 'dec tag) 'jd-map let
-('_jat2-f let '_jat2-d let list 'andThen push _jat2-d push '_jat2-f quote push 'dec tag) 'jd-and-then let
-('_jo-ds let list 'oneOf push _jo-ds push 'dec tag) 'jd-one-of let
-('_jmb-d let list 'maybe push _jmb-d push 'dec tag) 'jd-maybe let
-('_js-v let list 'succeed push _js-v push 'dec tag) 'jd-succeed let
-('_jf2-m let list 'fail push _jf2-m push 'dec tag) 'jd-fail let
+-- jd-at: (keys dec -- dec').  Fields nested along keys: ["a" "b"] reads $.a.b.
+(swap reverse swap (swap jd-field) fold) 'jd-at let
 
--- ========== _japply: (jv path dec -- result-tagged) ==========
+-- jd-map: (dec f -- dec').  f: (value -- value').
+('f let 'd let (d apply (f apply ok) then)) 'jd-map let
 
-'_japply [tagged own in  list own in  tagged own in  {'ok 'a 'no list} either move out] effect
+-- jd-and-then: (dec f -- dec').  f: (value -- dec2), and dec2 reads the same jv.
+('f let 'd let ('jv let jv d apply (f apply jv swap apply) then)) 'jd-and-then let
 
--- _ja-list: (items path inner -- resultTagged).  The first failing item wins.
--- Items take more than one slot each, so reading one by index walks the list;
--- `each` decodes them all in one pass, and only a failing item is decoded again
--- to put its index in the path.
-(
-  '_l-inner let '_l-path let '_l-items let
-  _l-items (_l-path _l-inner _japply) each
-  dup (() {'ok (drop 0) 'no (drop 1)} case) each 1 index-of
-  () {'ok ('_l-k let drop
-          '_l-items _l-k nth must _l-path "[" cat _l-k int-str cat "]" cat _l-inner _japply)
-      'no (drop (must) each ok)} case
-) '_ja-list let
+-- jd-one-of: (decs -- dec).  The first decoder that succeeds wins.
+('ds let ('jv let
+   ds ": oneOf: no decoders matched" no
+   ('dd let () {'ok (ok) 'no (drop jv dd apply)} case) fold
+   () {'ok (ok) 'no (drop ": oneOf: no decoders matched" no)} case)) 'jd-one-of let
 
--- jd-at walk: (jv path keys inner -- resultTagged)
-(
-  '_w-inner let '_w-keys let '_w-path let '_w-jv let
-  _w-keys len 0 eq (_w-jv _w-path _w-inner _japply) (
-    _w-keys 0 get must '_w-k let
-    _w-jv () {'obj ('_w-ents let
-       _w-k _w-ents _find-field
-       () {'ok ('_w-v let
-          _w-v _w-path "." cat _w-k cat _w-keys 1 drop-n _w-inner _ja-at-walk)
-        'no (drop _w-path ": missing field \"" cat _w-k cat "\"" cat no)} case)
-     'int   (drop _w-jv _w-path "object" _mismatch)
-     'float (drop _w-jv _w-path "object" _mismatch)
-     'str   (drop _w-jv _w-path "object" _mismatch)
-     'bool  (drop _w-jv _w-path "object" _mismatch)
-     'null  (drop _w-jv _w-path "object" _mismatch)
-     'arr   (drop _w-jv _w-path "object" _mismatch)} case
-  ) if
-) '_ja-at-walk let
+-- jd-maybe: (dec -- dec').  value ok ok, or none ok when dec fails.
+('d let (d apply () {'ok (ok ok) 'no (drop none ok)} case)) 'jd-maybe let
 
--- one-of loop: (jv path decoders -- resultTagged)
-(
-  '_o-ds let '_o-path let '_o-jv let
-  _o-ds len 0 eq (_o-path ": oneOf: no decoders matched" cat no) (
-    _o-jv _o-path _o-ds 0 get must _japply
-    () {'ok (ok)
-     'no (drop
-       _o-ds len 1 eq (_o-path ": oneOf: no decoders matched" cat no) (
-         _o-jv _o-path _o-ds 1 drop-n _ja-one-of-loop
-       ) if)} case
-  ) if
-) '_ja-one-of-loop let
-
-(
-  '_a-d let '_a-path let '_a-jv let
-  _a-d () {'dec ()} case '_a-node let
-  _a-node 0 get must '_a-dname let
-
-  _a-dname 'int eq (
-    _a-jv () {'int (ok)
-           'float (drop _a-jv _a-path "int" _mismatch)
-           'str   (drop _a-jv _a-path "int" _mismatch)
-           'bool  (drop _a-jv _a-path "int" _mismatch)
-           'null  (drop _a-jv _a-path "int" _mismatch)
-           'arr   (drop _a-jv _a-path "int" _mismatch)
-           'obj   (drop _a-jv _a-path "int" _mismatch)} case
-  ) (_a-dname 'float eq (
-    _a-jv () {'float (ok)
-           'int   (drop _a-jv _a-path "float" _mismatch)
-           'str   (drop _a-jv _a-path "float" _mismatch)
-           'bool  (drop _a-jv _a-path "float" _mismatch)
-           'null  (drop _a-jv _a-path "float" _mismatch)
-           'arr   (drop _a-jv _a-path "float" _mismatch)
-           'obj   (drop _a-jv _a-path "float" _mismatch)} case
-  ) (_a-dname 'str eq (
-    _a-jv () {'str (ok)
-           'int   (drop _a-jv _a-path "string" _mismatch)
-           'float (drop _a-jv _a-path "string" _mismatch)
-           'bool  (drop _a-jv _a-path "string" _mismatch)
-           'null  (drop _a-jv _a-path "string" _mismatch)
-           'arr   (drop _a-jv _a-path "string" _mismatch)
-           'obj   (drop _a-jv _a-path "string" _mismatch)} case
-  ) (_a-dname 'bool eq (
-    _a-jv () {'bool (ok)
-           'int   (drop _a-jv _a-path "bool" _mismatch)
-           'float (drop _a-jv _a-path "bool" _mismatch)
-           'str   (drop _a-jv _a-path "bool" _mismatch)
-           'null  (drop _a-jv _a-path "bool" _mismatch)
-           'arr   (drop _a-jv _a-path "bool" _mismatch)
-           'obj   (drop _a-jv _a-path "bool" _mismatch)} case
-  ) (_a-dname 'null eq (
-    _a-jv () {'null (ok)
-           'int   (drop _a-jv _a-path "null" _mismatch)
-           'float (drop _a-jv _a-path "null" _mismatch)
-           'str   (drop _a-jv _a-path "null" _mismatch)
-           'bool  (drop _a-jv _a-path "null" _mismatch)
-           'arr   (drop _a-jv _a-path "null" _mismatch)
-           'obj   (drop _a-jv _a-path "null" _mismatch)} case
-  ) (_a-dname 'succeed eq (
-    _a-node 1 get must ok
-  ) (_a-dname 'fail eq (
-    _a-path ": " cat _a-node 1 get must cat no
-  ) (_a-dname 'list eq (
-    _a-jv () {'arr (
-       _a-path _a-node 1 get must _ja-list)
-     'int   (drop _a-jv _a-path "array" _mismatch)
-     'float (drop _a-jv _a-path "array" _mismatch)
-     'str   (drop _a-jv _a-path "array" _mismatch)
-     'bool  (drop _a-jv _a-path "array" _mismatch)
-     'null  (drop _a-jv _a-path "array" _mismatch)
-     'obj   (drop _a-jv _a-path "array" _mismatch)} case
-  ) (_a-dname 'field eq (
-    _a-jv () {'obj ('_a-ents let
-       _a-node 1 get must '_a-fk let
-       _a-fk _a-ents _find-field
-       () {'ok ('_a-fv let
-          _a-fv _a-path "." cat _a-fk cat _a-node 2 get must _japply)
-        'no (drop _a-path ": missing field \"" cat _a-fk cat "\"" cat no)} case)
-     'int   (drop _a-jv _a-path "object" _mismatch)
-     'float (drop _a-jv _a-path "object" _mismatch)
-     'str   (drop _a-jv _a-path "object" _mismatch)
-     'bool  (drop _a-jv _a-path "object" _mismatch)
-     'null  (drop _a-jv _a-path "object" _mismatch)
-     'arr   (drop _a-jv _a-path "object" _mismatch)} case
-  ) (_a-dname 'at eq (
-    _a-jv _a-path _a-node 1 get must _a-node 2 get must _ja-at-walk
-  ) (_a-dname 'map eq (
-    _a-node 2 get must '_a-mf let
-    _a-jv _a-path _a-node 1 get must _japply
-    () {'ok ('_a-mf quote apply ok)
-     'no (no)} case
-  ) (_a-dname 'andThen eq (
-    _a-node 2 get must '_a-af let
-    _a-jv _a-path _a-node 1 get must _japply
-    () {'ok ('_a-af quote apply '_a-ad let _a-jv _a-path _a-ad _japply)
-     'no (no)} case
-  ) (_a-dname 'oneOf eq (
-    _a-jv _a-path _a-node 1 get must _ja-one-of-loop
-  ) (_a-dname 'maybe eq (
-    _a-jv _a-path _a-node 1 get must _japply
-    () {'ok (ok)
-     'no (drop () ok)} case
-  ) (
-    _a-path ": unknown decoder" cat no
-  ) if) if) if) if) if) if) if) if) if) if) if) if) if) if
-) '_japply let
+('v let (drop v ok)) 'jd-succeed let
+('m let (drop ": " m cat no)) 'jd-fail let
 
 -- ========== Public entry ==========
 
--- source-string decoder jd-run -> value-ok | msg-no
--- Decoder must be a pre-built tagged value (e.g., bare `jd-int` or a def'd composed decoder).
-('_r-dec let '_r-src let
-  _r-src _json-parse () {'ok ("$" _r-dec _japply) 'no (no)} case
-) 'jd-run let
+-- jd-run: (source dec -- value ok | msg no).
+('d let _json-parse (d apply () {'ok (ok) 'no ("$" swap cat no)} case) then) 'jd-run let
 
--- source-string (decoder-quotation) jd-eval -> value-ok | msg-no
--- Applies the quotation to build a decoder, then runs it. Use for inline decoders.
-('_e-q let '_e-src let _e-src _e-q apply jd-run) 'jd-eval let
+-- jd-eval: (source (-- dec) -- value ok | msg no).  Builds the decoder, then runs it.
+(apply jd-run) 'jd-eval let
 
 -- ========== JSON encoder helpers (je-*) ==========
 -- Each je-* returns a fragment-string ready to concatenate.
@@ -400,6 +265,9 @@
 
 -- ========== Tests ==========
 
+-- jerr: (result -- msg).  The error, or "" on success.
+(() {'ok (drop "") 'no ()} case) 'jerr let
+
 -- Primitives
 "42" jd-int jd-run 42 ok eq assert
 "-7" jd-int jd-run -7 ok eq assert
@@ -442,23 +310,24 @@
 
 -- Succeed / fail
 "42" 7 jd-succeed jd-run 7 ok eq assert
-"42" "nope" jd-fail jd-run () {'no ()} case "$: nope" eq assert
+"42" "nope" jd-fail jd-run jerr "$: nope" eq assert
 
 -- And-then: validate positive int
 (jd-int ('n let n 0 gt (n jd-succeed) ("must be positive" jd-fail) if) jd-and-then) 'positive-int let
 "5" positive-int jd-run 5 ok eq assert
-"-1" positive-int jd-run () {'no ()} case "$: must be positive" eq assert
+"-1" positive-int jd-run jerr "$: must be positive" eq assert
 
 -- One-of (list of decoders must be built at runtime since list literals are
 -- eagerly evaluated at build time and can't see user def'd names)
 (list jd-int push "wrong" jd-fail push jd-one-of) 'try-int-or-fail let
 "42" try-int-or-fail jd-run 42 ok eq assert
-(list jd-int push jd-str push jd-one-of) 'int-or-str let
+(list jd-str push jd-int (int-str) jd-map push jd-one-of) 'int-or-str let
 "\"hi\"" int-or-str jd-run "hi" ok eq assert
+"42" int-or-str jd-run "42" ok eq assert
 
 -- Maybe
-"{\"a\": 1}" "a" jd-int jd-field jd-maybe jd-run 1 ok eq assert
-"{}" "a" jd-int jd-field jd-maybe jd-run () ok eq assert
+"{\"a\": 1}" "a" jd-int jd-field jd-maybe jd-run 1 ok ok eq assert
+"{}" "a" jd-int jd-field jd-maybe jd-run none ok eq assert
 
 -- Nested complex
 ("id" jd-int jd-field) 'id-dec let
@@ -469,32 +338,32 @@
 
 -- ========== Adversarial tests ==========
 
-"\"x\"" jd-int jd-run () {'no ()} case "$: expected int, got string" eq assert
-"42" jd-str jd-run () {'no ()} case "$: expected string, got int" eq assert
-"true" jd-int jd-run () {'no ()} case "$: expected int, got bool" eq assert
-"[1]" jd-int jd-run () {'no ()} case "$: expected int, got array" eq assert
-"{}" jd-int jd-run () {'no ()} case "$: expected int, got object" eq assert
+"\"x\"" jd-int jd-run jerr "$: expected int, got string" eq assert
+"42" jd-str jd-run jerr "$: expected string, got int" eq assert
+"true" jd-int jd-run jerr "$: expected int, got bool" eq assert
+"[1]" jd-int jd-run jerr "$: expected int, got array" eq assert
+"{}" jd-int jd-run jerr "$: expected int, got object" eq assert
 
-"{}" "a" jd-int jd-field jd-run () {'no ()} case "$: missing field \"a\"" eq assert
+"{}" "a" jd-int jd-field jd-run jerr "$: missing field \"a\"" eq assert
 
-"[1, \"x\", 3]" jd-int jd-list jd-run () {'no ()} case
+"[1, \"x\", 3]" jd-int jd-list jd-run jerr
   "$[1]: expected int, got string" eq assert
 
 ("c" jd-int jd-field) 'c-dec let
 ("b" c-dec jd-list jd-field) 'b-dec let
 ("a" b-dec jd-field) 'a-dec let
 "{\"a\":{\"b\":[{\"c\":\"wrong\"}]}}" a-dec jd-run
-  () {'no ()} case "$.a.b[0].c: expected int, got string" eq assert
+  jerr "$.a.b[0].c: expected int, got string" eq assert
 
 (list jd-one-of) 'empty-one-of let
-"42" empty-one-of jd-run () {'no ()} case "$: oneOf: no decoders matched" eq assert
+"42" empty-one-of jd-run jerr "$: oneOf: no decoders matched" eq assert
 
 ("v" positive-int jd-field) 'v-pos-dec let
 "{\"v\": -1}" v-pos-dec jd-run
-  () {'no ()} case "$.v: must be positive" eq assert
+  jerr "$.v: must be positive" eq assert
 
-"3.14" jd-int jd-run () {'no ()} case "$: expected int, got float" eq assert
-"42" jd-float jd-run () {'no ()} case "$: expected float, got int" eq assert
+"3.14" jd-int jd-run jerr "$: expected int, got float" eq assert
+"42" jd-float jd-run jerr "$: expected float, got int" eq assert
 
 -- ========== Encoder tests ==========
 
@@ -517,7 +386,6 @@ list "a" 1 je-int couple push "b" "hi" je-str couple push je-obj
 
 -- ========== Malformed input returns 'no, never a crash ==========
 
-(() {'ok (drop "") 'no ()} case) 'jerr let
 "" jd-int jd-run jerr "json: unexpected end of input" eq assert
 "  " jd-int jd-run jerr "json: unexpected end of input" eq assert
 "hello" jd-int jd-run jerr "json: unexpected character 'h'" eq assert
