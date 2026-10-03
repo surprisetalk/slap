@@ -1,14 +1,26 @@
-- [ ] A long-running server that makes closures and dicts per request holds steady memory (code review).
-  - A predicate `case` in a body that binds names leaks that body's frame on each run: `('x let x 0 {(0 gt) (drop 1)} case) 'f let 0 N (drop 5 f) repeat` grows to 408 MB at N=1e6; a tag case stays at 4.7 MB. `eval_run` takes a frame reference when it pushes a `{...}` tuple, and `prim_case` pops the clause list with `POP_VAL`, so the reference is never dropped.
-  - `dict "k" 1 insert box free` leaks the dict: `prim_free` does not deep-free the contents.
-  - A dict inside a list or record leaks when `len`, `eq`, `get`, `take-n`, `drop-n`, `index-of` or `at` discard the rest of the value: they drop slots without `deep_free_values`. Breaker round 11's cases are in the scratchpad of session 73692256 (break11/).
-  - A `{...}` literal that holds a dict leaks the copy each push makes: `0 400000 (drop {'b dict "k" 1 insert} drop 0) repeat drop` reaches 127 MB (35 MB at 100000); the same record built at runtime stays at 4.6 MB.
-  - A let-bound closure chain stored in a dict leaks: `( 'k let ( k apply 1 plus) ) 'wr let` then `N ( (0 plus) 3 (wr) repeat 'c let dict "a" c insert drop ) repeat` reaches 211 MB at N=1e5 (25.5 MB at 1e4). A plain closure or a `cat` join in a dict does not leak.
-  - A cycle is never freed: a closure made by a nested body and stored in an outer frame's binding keeps that frame, which keeps the closure's frame.
-  1. Tests first: run each case under `/usr/bin/time -l` and bound its peak memory, or check it with `leaks --atExit`.
-  2. `prim_case`: `stage_body(asp-1)` right after `POP_VAL(clauses)` when the clauses are a tuple.
-  3. `prim_free` and each primitive above deep-free what they discard.
-  4. Cycles need a design (weak parent links or a collector): ask before you start.
+- [ ] You iterate a dict as a list of entries, and `each`/`fold` take only lists.
+  Decided: the checker now picks each-dict/fold-dict by looking at the stack below the body, so a word that folds a dict input needs a signature. kv-server's save-snapshot is the only real use, and its signature exists only for that. One primitive, `dict-entries`, replaces the two dict forms. It leaves the dict, as `dict-keys` does. Tradeoff: mapping a dict's values back into a dict is a fold that inserts, not one `each`.
+  1. Tests first. expect.slap: `dict "a" 1 insert dict-entries` leaves the dict and `[{'key "a" 'value 1}]`. errors.slap: `dict (drop 0) each` is refused, and the message names dict-entries.
+  2. Add the `dict-entries` primitive: TYPES `'dict-entries ( 'a dict -> 'a dict {'key str 'value 'a} list )`, with one `dict_push_entry` per entry.
+  3. Delete the each-dict/fold-dict TYPES entries, `ty_each_dict`/`ty_fold_dict`, the stack check in ty_range, and the dict branches of prim_each and prim_fold. When `each` or `fold` meets a dict, the error says "iterate a dict with dict-entries".
+  4. kv-server.slap save-snapshot: use `dict-entries`, and delete its signature. Check every other dict user in examples/.
+  5. readme dicts section: iterate with dict-entries. Delete the note that a word that folds a dict needs a signature.
+
+- [ ] You write `case` with only its clauses, and the checker proves at the case that they cover the value.
+  Decided: `case` takes no default. 98 of 113 case sites pass a default that never runs (`()` or `0` beside 'ok and 'no clauses). About 15 sites in json.slap and xml.slap use a real default. Without a default, the clauses close the value's tag set, unless a last `'_` clause takes the whole value. So unification decides coverage at the case, and nothing waits for the word's type. Predicate clauses go too: they have 0 uses outside the tests, and nested `if` does the same. Tradeoff: a case without `'_` on a word's input closes the input's tag set, so a caller that passes another tag is refused at the call, where today the default runs.
+  1. Tests first. errors.slap: a case with only an 'a clause on a value that may be 'b is refused, and the message names 'b. A predicate clause is refused. expect.slap: a `'_` clause gets the tagged value. A result case with 'ok and 'no clauses needs no `'_`.
+  2. prim_case: pop the clauses only. A `'_` clause runs on the tagged value itself. No match without `'_` dies with a checker-bug message, as KEY_MISSING does. Delete the predicate path.
+  3. ty_case: pop no default. Without `'_`, unify the value with a tag set of exactly the clause tags (K_TNIL tail). With `'_`, the tail stays open, and the `'_` body takes the value's type. A result needs 'ok and 'no clauses, or `'_`. Delete TyLater, ty_later, ty_case_later, ty_case_live, ty_case_unnamed, ty_cases_settle and their callers. Keep ty_input_holds: ty_gens_settle uses it.
+  4. Rewrite the call sites: delete each default. The real defaults in json.slap and xml.slap become `'_ (drop <default>)` clauses. The prelude's then, default and member drop their defaults.
+  5. readme case section and claude.md Checker paragraph: delete TyLater/ty_cases_settle. errors.slap: delete the deferred-coverage cases.
+
+- [ ] You write a `[...]` or `{...}` literal as data, and a body inside it sees the names around it.
+  Decided: a literal holds only ints, floats, strings, symbols, nested literals and bodies. No code runs when the program is read. `{...}` is a record of 'key value pairs and nothing else: not a tuple, not a dict. Code builds a dict, as in `(dict "k" 1 insert)`, in any body, including a body inside a literal. A body inside a literal closes over the frame that pushes the literal, like any other body (option B). Measured: no example or library puts a word in a literal, and only uxn.slap's opcode table puts bodies in one. Tradeoffs: computed constants such as `[1 2 plus]` and the `{1 2}` tuple form go (0 uses outside tests). Each push of a list or record literal that holds a body walks it to point its bodies at the frame. Do this after the `case` entry, which removes the tuple form of clause lists.
+  1. Tests first. errors.slap: `[1 2 plus]` is refused, and the message names the word and shows `list 1 2 plus push`. `{1 2}` is refused, and the message points to `(1 2)`. expect.slap: `( 'x let [ (x) ] 0 get must apply ) 'f let 5 f 5 eq assert`, and `[ (dict "k" 1 insert) ] 0 get must apply "k" of must 1 eq assert drop`. tests/suite.py STEADY: a word that pushes `[ (x) ]` 100,000 times holds steady memory.
+  2. Checker: in a literal, a word at the literal's own level is an error. Delete `ty_literal`, `ty_lit_depth`, `tyb_visible` and every "built when the program is read" error. Type a literal from its constants and bodies (ty_body, as anywhere). A `{...}` with an odd count, or with a key place that is not a symbol, is refused. Delete the `{...}` tuple branch and its `'name let` word form.
+  3. build_tuple: build a literal's constants directly instead of calling eval. A list or record literal that holds a body gets a header flag at build time. Rename VF_DICT to that flag: no literal can hold a dict now. eval_run: when it pushes a flagged literal, it sets each VAL_TUPLE slot's env to the running frame and calls frame_ref for each, so deep_free_values drops them all later. The staged release frees a record (case clauses) with deep_free_values, and drops a body's header frame as before.
+  4. No literal holds a dict now, so delete every literal-dict path: VF_DICT's three marks in build_tuple, the copy-on-push branch and the bare VAL_DICT element branch in eval_run, the dict branch of the staged release, cat's VF_DICT propagation, `vals_hold_dict` and `dicts_made` (only vals_hold_dict reads it). Delete the tests that push a dict literal: the two STEADY cases in tests/suite.py (`{'b dict …}` and `({'b dict …} drop) (0) cat apply`), expect.slap's fresh-dict and fresh-dicts, and errors.slap's `{dict} 'w let`.
+  5. readme: the literal rules and the `{...}` rule. claude.md: the Evaluator paragraph ("evaluated by build_tuple, once") and the Invariants line on literals that hold a dict. Rewrite or delete the tests in expect.slap and errors.slap that compute inside literals.
 
 - [ ] A program that halts cannot leave a box or socket behind (code review; breaker round 15 a2, a3).
   `(dup 0 eq (drop halt) (1 sub 5 box swap f) if) 'f let 3 f` checks and exits 0 with three boxes on the stack: each recursive call's fresh stack rest (ty_define) loses the copy mark `halt` put on the word's rest. `5 box (halt) dip free` exits 0 too, and the same with a socket: `dip` holds its value aside, and the halt rule sees only the body's stack. Breaker a2: `( dup 0 eq (halt) (1 sub  5 box swap w  swap free) if ) 'w let 3 w`.
@@ -17,21 +29,10 @@
   3. `dip`: when its body's stack rest carries the copy mark, the held value must be copyable too. Check TYPES for every other word that holds values aside while a body runs, and do the same.
   4. `ty_value` copies the rest's copy mark when a use makes it fresh, so a `halt` after that use misses it: `ty_gens_settle` refuses a freshened rest whose mark changed.
 
-- [ ] `'k at must` checks on a field that holds a result (breaker round 15 b4).
-  `{'r 5 ok} 'r at must` is refused by token adjacency, though the field is a result and `must` is right.
-  1. errors.slap/expect.slap first: that program passes; `{'r 5} 'r at must` still says "at never fails ... Drop must".
-  2. Drop the adjacency rule. When `must` after `at`/`edit` fails to unify with a result, the error adds "at never fails: drop must".
-
 - [ ] `lend` runs a body that applies a word's input, as `mutate` and `each` do (breaker round 15 b3).
   `( 'g let 5 box (g apply) lend swap free ) 'w let (1 plus) w print` is refused with "lend's body may not take values below the box's contents". The message is misleading: `mutate` and `each` accept the same body.
   1. expect.slap first: that program prints 6.
   2. ty_lend: collect the body's outputs after unifying its type, not before the input body's effect is known. Reword the message.
-
-- [ ] A `filter` predicate sees only the element it tests.
-  The prelude's filter runs the predicate inside a fold, so `[5 6 7 8] (drop over len 2 lt) filter` reads filter's own accumulator and gives [5 6]. It is type-safe but leaks the implementation.
-  1. errors.slap first: that predicate is refused ("this body must turn its inputs into one value").
-  2. filter becomes a primitive, a loop like `prim_each`: copy each element, run the predicate, keep the element when the predicate leaves a nonzero int (`one_value_above` checks it leaves one value).
-  3. TYPES: `'filter ( ..s 'a list ( ..!r 'a -> ..!r int ) -> ..s 'a list )`. Delete the prelude definition.
 
 - [ ] A type error names each variable once across its lines (breaker round 14).
   `'apply' takes ( ..a -> ..b ) / but the stack has ... / <why>`: the "takes" line shows a fresh copy of the word's type, so its names ('a, ..a) are not the ones the why line uses. ty_define and the case messages already print their types before they unify.
@@ -40,14 +41,14 @@
   3. Inside a `[...]` literal, `1 [drop]` says "'drop' takes 'a copyable / but the stack has nothing": say that a literal's code starts from an empty stack.
 
 - [ ] Checker messages and docs say what the code does (code review; silent-failure audit; breaker rounds 14 and 15).
-  1. Mismatch messages read backwards where the actual type is passed first: `[1] 'xs let 'xs "a" nth` says "int is not a list", `5 (drop) lend` says "'a box is not int", `5 0 {'a ()} case` says "tagged .. is not int", `{'a 1} len {'a 1} cat` says "{| ..a} is not int". Call `ty_unify(expected, actual)` at nth, lend's box, the case scrutinee and cat, as `ty_apply` does. Pin one message each in errors.slap.
+  1. Mismatch messages read backwards where the actual type is passed first: `[1] 'xs let 'xs "a" nth` says "int is not a list", `5 (drop) lend` says "'a box is not int", `5 {'a ()} case` says "tagged .. is not int", `{'a 1} len {'a 1} cat` says "{| ..a} is not int". Call `ty_unify(expected, actual)` at nth, lend's box, the case scrutinee and cat, as `ty_apply` does. Pin one message each in errors.slap.
   2. A `lent` or `copy` slot accepts a box or socket type: `(free) [int box lent in] effect` passes. `ty_mark_copy` dies with an annotation error on K_BOX and K_SOCK.
-  3. Name the fix in the message and in the readme: a word that runs `each`/`fold` over a dict input needs a signature, and today the error is "int dict is not a list" (readme's dicts section); `halt` is refused in every declared word and in each/fold bodies, since their stacks are a caller's; the "more than 4096 case forms" limit names no fix.
+  3. Name the fix in the message and in the readme: `halt` is refused in every declared word and in each/fold bodies, since their stacks are a caller's.
   4. Refusals caused by `halt` never mention halt. "one path leaves N more values ... a branch, clause, loop pass or recursive call" appears where there is no branch. Tag-set variables print as an unnamed `tagged ..`, so "declares X, but its body is X" can show two equal types: name them like row variables. "program too long" prints the whole 160 KB source line. `{'a int | 'r | 's}` silently drops 'r: refuse a second `|`.
   5. `ty_lend` pushes two fresh values after an underflow whatever the body leaves. The leftover check at program end waits until other errors are fixed.
-  6. readme: readme's `{...}` rule and an expect.slap comment say an unpaired literal is a tuple, but `{'a 1 'b}` is now an error: state the rule as the checker applies it. A signature passes a value through unchanged only when both slots name one variable: `[tagged own in  tagged move out]` is two tag sets, so a body that returns its input is refused with "a type the signature leaves open is ...". Write `['t own in  't move out]`: one sentence and the example beside "A signature is a promise for every type it allows".
-  7. Stale: the comment above `binding_release` names the old checker's box bindings; claude.md's Frames paragraph gives "about a tenth of the run time", a number that goes stale. errors.slap:1182 now fails on `at must`, not its record-literal rule (drop the must); 1238, 1242 and 1246 repeat the "already defined" block at 430-460 (merge).
-  8. `chunks` with size 0 dies with the generic must text at `<prelude>:38`. A message naming chunks, the size it got and the caller's line needs a way for prelude code to fail with its own text.
+  6. readme: a signature passes a value through unchanged only when both slots name one variable: `[tagged own in  tagged move out]` is two tag sets, so a body that returns its input is refused with "a type the signature leaves open is ...". Write `['t own in  't move out]`: one sentence and the example beside "A signature is a promise for every type it allows".
+  7. Stale: the comment above `binding_release` names the old checker's box bindings; claude.md's Frames paragraph gives "about a tenth of the run time", a number that goes stale. In errors.slap, the cases "a program redefines ok", "a program redefines no" and "a word redefined after a word that calls it" repeat the "already defined" block (merge).
+  8. `chunks` with size 0 dies with the generic must text at chunks' line in the prelude. A message naming chunks, the size it got and the caller's line needs a way for prelude code to fail with its own text.
   9. `'x [strng lent in] effect` reports "at line 1" in the text, with the caret at column 1. Pass the annotation's token to the error, as `ty_err` does for words, so the caret and line come from it; drop the "at line %d" text. errors.slap: EXPECT-COL on an unknown type word.
 
 - [ ] The JSON and XML libraries refuse what they cannot read or write, and say where (silent-failure audit; breaker round 15).
@@ -71,6 +72,11 @@
   9. Then tic80 on the same lua.slap; duskos and decker after.
 
 ## Blocked on you
+
+- [ ] A closure stored in an outer frame's binding is freed when nothing reaches it (code review).
+  A cycle is never freed: a closure made by a nested body and stored in an outer frame's binding keeps that frame, which keeps the closure's frame. `( 'k let ( k apply 1 plus) ) 'wr let 0 100000 (drop (0 plus) 3 (wr) repeat 'c let 0) repeat drop` reaches 201 MB: `(0 plus)` closes over the outer body's frame, and the chain ends in that frame's binding `c`. With `(0 plus)` bound at the top level it stays at 4.5 MB.
+  Decide: weak parent links, or a collector.
+  1. Tests first: a loop that makes such a cycle each pass holds steady memory.
 
 - [ ] You apply a body while a copy of it is on the stack, and `cat` bodies in a word (breaker round 15 b1, b2).
   `(5) dup apply print drop` is refused: `dup` gives both copies one type, and applying one changes the depth below the other. This caused nearly all of the 145 refusals among 66,000 generated well-typed programs. `( cat ) 'c let (1 plus) (2 mul) c` is refused, though the readme lists body as a Semigroup; making cat generic over bodies as it stands would be unsound.

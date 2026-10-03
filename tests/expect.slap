@@ -170,6 +170,8 @@ list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq
 
 -- ===== List Higher-Order: filter =====
 [1 2 3 4 5] (2 mod 1 eq) filter [1 3 5] eq assert
+-- a kept dict keeps its entries
+list dict "k" 7 insert push (drop 1) filter 0 get must "k" of must 7 eq assert drop
 
 -- ===== List Higher-Order: fold =====
 [1 2 3] 0 (plus) fold 6 eq assert
@@ -198,6 +200,9 @@ list 300000 (7 push) repeat box ('snap let 'snap 0 nth must) lend swap free 7 eq
 
 -- ===== Records =====
 {'x 10 'y 20} 'x at 10 eq assert
+-- a field may hold a result, and must unwraps it
+{'r 5 ok} 'r at must 5 eq assert
+{'r 5 ok} 'r (must 1 plus ok) edit 'r at must 6 eq assert
 
 -- ===== Records: into =====
 {'x 10 'y 20} 30 'x into 'x at 30 eq assert

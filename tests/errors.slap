@@ -182,6 +182,14 @@ nip
 -- EXPECT: one record has 'b and the other has not.
 {'a 1} 'b (1 plus) edit
 
+-- EXPECT: at never fails
+-- EXPECT: Drop must.
+{'r 5} 'r at must
+
+-- EXPECT: edit never fails
+-- EXPECT: Drop must.
+{'r 5} 'r (1 plus) edit must
+
 -- EXPECT: recursion depth exceeded
 (inf) 'inf let inf
 
@@ -1183,9 +1191,9 @@ rec 5 'c 3 (drop 'a) repeat into 'c at
 -- an edit body that applies unknown code
 ('bd let {'a 1} {'k 0} 'k ('bd quote apply) edit drop 'a at) 'run let (drop drop drop {'b 1} {'k 0} 0) run
 
--- EXPECT: TYPE ERROR
+-- EXPECT: one record has 'b and the other has not.
 -- a value of unknown type meets a record literal
-('k at must 1 () (drop {'b 1}) if 'b at) 'f let {'k {'z 1}} f
+('k at 1 () (drop {'b 1}) if 'b at) 'f let {'k {'z 1}} f
 
 -- EXPECT: TYPE ERROR
 -- a quoted record of unknown shape meets a record literal
@@ -1202,6 +1210,10 @@ rec 5 'c 3 (drop 'a) repeat into 'c at
 -- EXPECT: TYPE ERROR
 -- a filter predicate reaches below its element
 {'a 1} [1] (drop rot drop {'b 1} rot rot 1) filter swap 'a at
+
+-- EXPECT: this body must turn its inputs into one value and cannot reach the stack below them.
+-- a filter predicate sees only its element, not filter's own list
+[5 6 7 8] (drop over len 2 lt) filter
 
 -- EXPECT: TYPE ERROR
 -- a mutate body reaches below the box

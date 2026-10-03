@@ -24,7 +24,8 @@ typedef struct Frame Frame;
 typedef void (*PrimFn)(Frame *env);
 typedef struct Value {
     ValTag tag;
-    uint32_t flags; /* VF_BINDS on a tuple header: its body makes names, so each run gets its own frame */
+    uint32_t flags; /* VF_BINDS on a tuple header: its body makes names, so each run gets its own frame.
+                       VF_DICT on a literal's header: it holds a dict, so each push copies it and a primitive that takes it frees it. */
     uint64_t loc;  // (fid<<56) | (line<<24) | col ; 0 = no location
     union {
         int64_t i; double f; uint32_t sym;
@@ -118,6 +119,7 @@ static Value speek(void) { if (sp <= 0) die("stack underflow: this word needs a 
     VCPY(&stack[sp],src,n);sp+=(n);}while(0)
 #define MKVAL(t) Value v={0};v.tag=t
 #define VF_BINDS 1u
+#define VF_DICT 2u
 static Value val_int(int64_t i){MKVAL(VAL_INT);v.as.i=i;return v;}
 static Value val_float(double f){MKVAL(VAL_FLOAT);v.as.f=f;return v;}
 static Value val_sym(uint32_t s){MKVAL(VAL_SYM);v.as.sym=s;return v;}
@@ -266,7 +268,11 @@ static void frame_grow(Frame *f) {
     free(f->hash); f->hash = h; f->hash_mask = (uint32_t)cap*4-1;
     for (int i = 0; i < f->bind_count; i++) hash_put(f, i);
 }
-static void deep_free_values(Value *vals, int slots);
+static void deep_free_owned(Value *vals, int slots);
+/* Most runs hold only ints and symbols: the scan stays inline until it meets a value that owns something. */
+static inline __attribute__((always_inline)) void deep_free_values(Value *vals, int slots) {
+    for(int i=0;i<slots;i++) if(vals[i].tag==VAL_TUPLE||vals[i].tag==VAL_BOX||vals[i].tag==VAL_DICT){ deep_free_owned(vals+i,slots-i); return; }
+}
 static void frame_drop(Frame *f);
 /* A binding's values leave: dicts it owns are freed and each tuple's frame loses a reference, except
    frame f's own tuples, which a binding in f holds weakly. Boxes are left alone: a Box binding (old
@@ -940,6 +946,7 @@ static const char *TYPES =
     "'apply ( ..s ( ..s -> ..t ) -> ..t ) 'dip ( ..s 'x ( ..s -> ..t ) -> ..t 'x )\n"
     "'if ( ..s int ( ..s -> ..t ) ( ..s -> ..t ) -> ..t ) 'while ( ..a ( ..a -> ..b int ) ( ..b -> ..a ) -> ..b )\n"
     "'each ( ..s 'a list ( ..!r 'a -> ..!r 'b ) -> ..s 'b list ) 'fold ( ..s 'a list 'b ( ..!r 'b 'a -> ..!r 'b ) -> ..s 'b )\n"
+    "'filter ( ..s 'a list ( ..!r 'a -> ..!r int ) -> ..s 'a list )\n"
     "'list ( -> 'a list ) 'len ( 'a sized -> int ) 'push ( 'a list 'a -> 'a list ) 'pop ( 'a list -> 'a list {'ok 'a 'no ()} either )\n"
     "'get ( 'a list int -> {'ok 'a 'no ()} either ) 'peek ( 'a list int -> 'a list {'ok 'a 'no ()} either )\n"
     "'set ( 'a list int 'a -> {'ok 'a list 'no ()} either ) 'cat ( 'a semigroup 'a semigroup -> 'a semigroup ) 'reverse ( 'a list -> 'a list )\n"
@@ -1714,9 +1721,12 @@ static void ty_range(Token *toks, int i, int end) {
                 if (ty_unify(render, ty_new(K_FN, ty_new(K_SCONS, top, below, 0), below, 0))) ty_err(line, "show's render body takes a copy of the top value and leaves the stack as it was: %s.", ty_why);
                 ty_cur = ty_new(K_SVAR, 0, 0, 0); break;
             }
+            /* A field may hold a result for must to unwrap; anything else on top means must was written for at or edit. */
             if (w == S_MUST && i > 0 && toks[i-1].tag == TOK_WORD && (toks[i-1].as.sym == S_AT || toks[i-1].as.sym == S_EDIT)) {
-                ty_err(line, "%s never fails: the checker proves the record has the key, so it gives %s, not a result. Drop must.", sym_name(toks[i-1].as.sym), toks[i-1].as.sym == S_AT ? "the value" : "the record");
-                break; }
+                int st = ty_find(ty_cur);
+                if (ty[st].kind == K_SCONS && ty_unify(ty_new(K_RES, ty_new(K_VAR, 0, 0, 0), ty_new(K_VAR, 0, 0, 0), 0), ty[st].a)) {
+                    ty_err(line, "%s never fails: the checker proves the record has the key, so it gives %s, and %s. Drop must.", sym_name(toks[i-1].as.sym), toks[i-1].as.sym == S_AT ? "the value" : "the record", ty_why);
+                    break; } }
             /* `x no must` and `none must` always die, so the code after them never runs: any stack may follow. */
             if (w == S_MUST && i > 0 && toks[i-1].tag == TOK_WORD && (toks[i-1].as.sym == S_NO || toks[i-1].as.sym == S_NONE) && (ty_in_prelude || tyb_find(toks[i-1].as.sym) < tyb_prelude)) { ty_pop(); ty_cur = ty_new(K_SVAR, 0, 0, 0); break; }
             int b = tyb_find(w);
@@ -1830,8 +1840,8 @@ static int *elem_starts(Value *data, int slots, int len) {
 #define POP_VAL(name) \
     if (sp <= 0) die("stack underflow"); \
     Value name##_top = stack[sp-1]; int name##_s = val_slots(name##_top); Value *name##_buf = aux_take(name##_s)
-/* The bodies a running primitive took, by aux index of their header: eval_in drops their closure
-   references when the primitive returns. */
+/* The bodies a running primitive took, by aux index of their header: eval_run frees them when the
+   primitive returns. */
 static int *staged, staged_n, staged_cap;
 static inline void stage_body(int at) {
     if (staged_n == staged_cap) { staged_cap = staged_cap ? 2*staged_cap : 256; staged = realloc(staged, (size_t)staged_cap*sizeof(int)); if (!staged) die("out of memory: %d staged bodies", staged_cap); }
@@ -1839,7 +1849,6 @@ static inline void stage_body(int at) {
 }
 #define POP_BODY(name, label) if (sp<=0) die(label ": stack underflow"); if (stack[sp-1].tag != VAL_TUPLE) die(label ": expected tuple, got %s", valtag_name(stack[sp-1].tag)); POP_VAL(name); stage_body(asp-1)
 static void deep_copy_values(Value *dst, const Value *src, int slots);
-static void deep_free_values(Value *vals, int slots);
 static void prim_dup(Frame *e) { (void)e; if (sp<=0) die("dup: stack underflow"); Value top=stack[sp-1]; if(top.tag<=VAL_XT){spush(top);return;} int s=val_slots(top); stack_room(s,"dup"); deep_copy_values(&stack[sp],&stack[sp-s],s); sp+=s; }
 static void prim_drop(Frame *e) { (void)e; if (sp<=0) die("drop: stack underflow"); Value top=stack[sp-1]; if(top.tag<=VAL_XT){sp--;return;} int s=val_slots(top); deep_free_values(&stack[sp-s],s); sp-=s; }
 static void slot_reverse(Value *a,int n){for(int i=0,j=n-1;i<j;i++,j--){Value t=a[i];a[i]=a[j];a[j]=t;}}
@@ -1902,10 +1911,10 @@ static void prim_wrap(Frame *e){(void)e;int64_t m=pop_int(),v=pop_int();if(m==0)
 INTOP2(band,a&b) INTOP2(bor,a|b) INTOP2(bxor,a^b) INTOP2(shl,SHIFT_OK(shl)?(int64_t)((uint64_t)a<<b):0) INTOP2(shr,SHIFT_OK(shr)?(int64_t)((uint64_t)a>>b):0)
 INTOP2(and,(a&&b)?1:0) INTOP2(or,(a||b)?1:0)
 static void prim_bnot(Frame *e){(void)e;int64_t a=pop_int();spush(val_int(~a));}
-#define CMP2(nm,expr) static void prim_##nm(Frame *e){(void)e;int b=val_start(sp,#nm),a=val_start(b,#nm),r=(expr);sp=a;spush(val_int(r?1:0));}
+#define CMP2(nm,expr) static void prim_##nm(Frame *e){(void)e;int b=val_start(sp,#nm),a=val_start(b,#nm),r=(expr);deep_free_values(&stack[a],sp-a);sp=a;spush(val_int(r?1:0));}
 CMP2(eq, val_equal(&stack[a],b-a,&stack[b],sp-b))
 CMP2(lt, val_less(&stack[a],b-a,&stack[b],sp-b))
-static void prim_print(Frame *e){(void)e;if(sp<=0)die("print: stack underflow");Value top=stack[sp-1];int s=val_slots(top);val_print(&stack[sp-s],s,stdout);printf("\n");sp-=s;
+static void prim_print(Frame *e){(void)e;if(sp<=0)die("print: stack underflow");Value top=stack[sp-1];int s=val_slots(top);val_print(&stack[sp-s],s,stdout);printf("\n");deep_free_values(&stack[sp-s],s);sp-=s;
     if(ferror(stdout)) die("print: cannot write to stdout: %s", strerror(errno));}
 /* A failed write to stdout must not exit 0. */
 static void stdout_check(void){ if(fflush(stdout)||ferror(stdout)){ fprintf(stderr,"slap: cannot write to stdout: %s\n",strerror(errno)); _exit(1); } }
@@ -1944,7 +1953,7 @@ static void case_body_check(Value *buf, ElemRef key, ElemRef body) {
 static void prim_case(Frame *env) {
     if (sp <= 0) die("case: stack underflow");
     if (stack[sp-1].tag!=VAL_TUPLE && stack[sp-1].tag!=VAL_RECORD) die("case: expected tuple or record of clauses, got %s", valtag_name(stack[sp-1].tag));
-    POP_VAL(clauses); int clauses_len=(int)clauses_top.as.compound.len;
+    POP_VAL(clauses); stage_body(asp-1); int clauses_len=(int)clauses_top.as.compound.len;
     POP_VAL(def);
     if (sp <= 0) die("case: stack underflow");
     Value top = stack[sp-1];
@@ -2028,7 +2037,7 @@ static void prim_size(Frame *e) {
     (void)e; Value top=speek();
     if(top.tag==VAL_DICT){ int n=((DictData*)top.as.box)->len; dict_data_free((DictData*)top.as.box); sp--; spush(val_int(n)); return; }
     if(top.tag!=VAL_LIST&&top.tag!=VAL_RECORD) die("len: expected list, record or dict, got %s",valtag_name(top.tag));
-    sp-=val_slots(top); spush(val_int((int)top.as.compound.len));
+    int s=val_slots(top); deep_free_values(&stack[sp-s],s); sp-=s; spush(val_int((int)top.as.compound.len));
 }
 static void prim_push_op(Frame *e) {
     (void)e; int vb=val_start(sp,"push"),vs=sp-vb; if(vb<1) die("push: stack underflow");
@@ -2052,7 +2061,8 @@ static inline void prim_get_impl(Frame *e, int tagged) {
     (void)e; int64_t idx=pop_int(); Value top=speek(); SEQ_GUARD(top,"get");
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,idx);
-    if(ref.base<0) { sp-=s; if(tagged) push_none(); else die("get: index %lld out of bounds (len %d)",(long long)idx,len); return; }
+    if(ref.base<0) { deep_free_values(&stack[base],s); sp=base; if(tagged) push_none(); else die("get: index %lld out of bounds (len %d)",(long long)idx,len); return; }
+    deep_free_values(&stack[base],ref.base); deep_free_values(&stack[base+ref.base+ref.slots],s-ref.base-ref.slots);
     memmove(&stack[base],&stack[base+ref.base],(size_t)ref.slots*sizeof(Value)); sp=base+ref.slots;
     if(tagged) push_ok();
 }
@@ -2109,7 +2119,7 @@ static void prim_concat(Frame *e) {
     }
     memmove(&stack[b2-1],&stack[b2],(size_t)(s2-1)*sizeof(Value)); sp--;
     t2.as.compound.len+=t1.as.compound.len; t2.as.compound.slots=(uint32_t)(val_slots(t1)+s2-1); t2.as.compound.env=e2?e2:e1; t2.loc=0;
-    if(t1.tag==VAL_TUPLE){ t2.flags|=t1.flags&VF_BINDS; if(e1&&e2) frame_drop(e1); }
+    if(t1.tag==VAL_TUPLE){ t2.flags|=t1.flags&(VF_BINDS|VF_DICT); if(e1&&e2) frame_drop(e1); }
     stack[sp-1]=t2;
 }
 static inline void prim_nth_impl(Frame *env, int tagged) {
@@ -2134,9 +2144,10 @@ static void prim_slice_n(int take) {
     if(n<0) die("%s: count %lld is negative", label, (long long)n);
     if(n>len) n=len;
     int start=take?0:(int)n, end_i=take?(int)n:len;
-        int lo = start<len ? compound_elem(&stack[base],s,len,start).base : s-1;
+    int lo = start<len ? compound_elem(&stack[base],s,len,start).base : s-1;
     int hi = end_i<len ? compound_elem(&stack[base],s,len,end_i).base : s-1;
     int nslots = hi-lo;
+    deep_free_values(&stack[base],lo); deep_free_values(&stack[base+hi],s-hi);
     if(lo>0&&nslots>0) memmove(&stack[base],&stack[base+lo],(size_t)nslots*sizeof(Value));
     sp=base+nslots;
     spush(val_compound(VAL_LIST,end_i-start,nslots+1));
@@ -2222,6 +2233,20 @@ static void prim_fold(Frame *env) {
     int p0=sp; SPUSH(init_buf,init_s);
     for(int i=0;i<len;i++){ if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); one_value_above(p0,"fold","the accumulator and one element"); }
 }
+/* The predicate takes a copy of each element; the list keeps the element when it leaves a nonzero int. */
+static void prim_filter(Frame *env) {
+    POP_BODY(fn,"filter");
+    if(sp<=0||stack[sp-1].tag!=VAL_LIST) die("filter: expected list, got %s",sp>0?valtag_name(stack[sp-1].tag):"nothing");
+    POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len),rb=sp,kept=0;
+    for(int i=0;i<len;i++){
+        int b=st?st[i]:i,n=st?st[i+1]-st[i]:1,p0=sp;
+        stack_room(n,"filter"); deep_copy_values(&stack[sp],&list_buf[b],n); sp+=n;
+        eval_body(fn_buf,fn_s,env); one_value_above(p0,"filter","one element");
+        Value keep=spop(); if(keep.tag!=VAL_INT) die("filter: the body must leave an int, got %s",valtag_name(keep.tag));
+        if(keep.as.i){ SPUSH(&list_buf[b],n); kept++; } else deep_free_values(&list_buf[b],n);
+    }
+    spush(val_compound(VAL_LIST,kept,sp-rb+1));
+}
 static int val_cmp(const Value *va, const Value *vb) {
     if(va->tag==VAL_INT&&vb->tag==VAL_INT) return(va->as.i>vb->as.i)-(va->as.i<vb->as.i);
     if(va->tag==VAL_FLOAT&&vb->tag==VAL_FLOAT) return(va->as.f>vb->as.f)-(va->as.f<vb->as.f);
@@ -2239,7 +2264,7 @@ static inline void prim_indexof_impl(Frame *e, int tagged) {
     (void)e; POP_VAL(val); Value top=speek(); if(top.tag!=VAL_LIST) die("index-of: expected list, got %s",valtag_name(top.tag));
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s,r=-1,*st=elem_starts(&stack[base],s,len);
     for(int i=0;i<len&&r<0;i++){int b=st?st[i]:i,n=st?st[i+1]-st[i]:1;if(val_equal(&stack[base+b],n,val_buf,val_s))r=i;}
-    sp-=s;
+    deep_free_values(&stack[base],s); deep_free_values(val_buf,val_s); sp=base;
     if(r<0) { if(tagged) push_none(); else die("index-of: element not found"); }
     else { spush(val_int(r)); if(tagged) push_ok(); }
 }
@@ -2253,6 +2278,7 @@ static void prim_at(Frame *env) {
     int s=val_slots(next),len=(int)next.as.compound.len,base=sp-s;
     int found; ElemRef ref=record_field(&stack[base],s,len,key,&found);
     if(!found) KEY_MISSING("at");
+    deep_free_values(&stack[base],ref.base); deep_free_values(&stack[base+ref.base+ref.slots],s-ref.base-ref.slots);
     memmove(&stack[base],&stack[base+ref.base],ref.slots*sizeof(Value));
     sp=base+ref.slots;
 }
@@ -2293,11 +2319,11 @@ typedef struct BoxData { Value *data; int slots; } BoxData;
 static void prim_box(Frame *e){(void)e;Value top=speek();int s=val_slots(top);BoxData *bd=malloc(sizeof(BoxData));bd->data=malloc(s*sizeof(Value));bd->slots=s;VCPY(bd->data,&stack[sp-s],s);sp-=s;Value v;v.tag=VAL_BOX;v.loc=0;v.as.box=bd;spush(v);}
 static void prim_free(Frame *e){
     (void)e;Value v=spop();
-    if(v.tag==VAL_BOX){BoxData *bd=(BoxData*)v.as.box;if(!bd->data)die("free: double-free detected (box already freed, likely captured by a closure that ran twice)");free(bd->data);bd->data=NULL;bd->slots=-1;return;}
+    if(v.tag==VAL_BOX){BoxData *bd=(BoxData*)v.as.box;deep_free_values(bd->data,bd->slots);free(bd->data);free(bd);return;}
     die("free: expected box, got %s", valtag_name(v.tag));
 }
 #define BOX_UNPACK(who) POP_BODY(fn,who); Value box_val=spop(); if(box_val.tag!=VAL_BOX) die(who ": expected box, got %s", valtag_name(box_val.tag)); \
-    BoxData *bd=(BoxData*)box_val.as.box; if(!bd->data) die(who ": the box was already freed"); stack_room(bd->slots,who)
+    BoxData *bd=(BoxData*)box_val.as.box; stack_room(bd->slots,who)
 /* The body reads a deep copy; the box keeps its own. */
 static void prim_lend(Frame *env) {
     BOX_UNPACK("lend"); int sp0=sp;
@@ -2336,7 +2362,7 @@ static void deep_copy_values(Value *dst, const Value *src, int slots) {
     }
     box_walk_depth--;
 }
-static void deep_free_values(Value *vals, int slots) {
+static void deep_free_owned(Value *vals, int slots) {
     if(++box_walk_depth > BOX_DEPTH_MAX){ box_walk_depth=0;
         die("box nesting deeper than %d -- a box that contains itself cannot be freed", BOX_DEPTH_MAX); }
     for(int i=0;i<slots;i++){
@@ -2344,7 +2370,7 @@ static void deep_free_values(Value *vals, int slots) {
         else if(vals[i].tag==VAL_DICT) dict_data_free((DictData*)vals[i].as.box);
         else if(vals[i].tag==VAL_BOX){
             BoxData *bd=(BoxData*)vals[i].as.box;
-            if(bd->data){ deep_free_values(bd->data,bd->slots); free(bd->data); bd->data=NULL; bd->slots=-1; }
+            deep_free_values(bd->data,bd->slots); free(bd->data); free(bd);
         }
     }
     box_walk_depth--;
@@ -2568,7 +2594,9 @@ static void eval_run(Value *body, int slots, Frame *ee) {
             else if(__builtin_expect(prof_on,0)) prof_dispatch(ep->as.xt.sym,ee);
             else dispatch_word(ep->as.xt.sym,ee);
             /* the bodies the primitive took are used up */
-            while(staged_n>s0){ Value *h=&aux[staged[--staged_n]]; if(h->tag==VAL_TUPLE) frame_drop(h->as.compound.env); }
+            while(staged_n>s0){ int at=staged[--staged_n]; Value *h=&aux[at];
+                if(h->flags&VF_DICT){ int hs=val_slots(*h); deep_free_values(&aux[at-hs+1],hs); }
+                else if(h->tag==VAL_TUPLE) frame_drop(h->as.compound.env); }
             asp=a1;
         } else if(is_compound(ep->tag)){
             /* `(then) (else) if` written in place: run the chosen branch from this body
@@ -2585,7 +2613,7 @@ static void eval_run(Value *body, int slots, Frame *ee) {
                 }
             }
             /* a literal is built once; a dict in it belongs to each copy the program pushes */
-            if(vals_hold_dict(&body[eo],es)){ stack_room(es,"a literal"); deep_copy_values(&stack[sp],&body[eo],es); sp+=es; }
+            if(ep->flags&VF_DICT){ stack_room(es,"a literal"); deep_copy_values(&stack[sp],&body[eo],es); sp+=es; }
             else SPUSH(&body[eo],es);
             if(ep->tag==VAL_TUPLE){ stack[sp-1].as.compound.env=ee; frame_ref(ee); }
         } else if(ep->tag==VAL_DICT){ stack_room(1,"a literal"); deep_copy_values(&stack[sp],ep,1); sp++; }
@@ -2620,7 +2648,7 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
             if(bc+1<tc&&toks[bc+1].tag==TOK_WORD&&toks[bc+1].as.sym==S_EFFECT){if(ec>0&&stack[sp-1].tag==VAL_SYM){sp--;ec--;}j=bc+1;break;}
             int lb=sp; eval(toks+j+1,bc-j-1,env);
             int n=0,p=sp; while(p>lb){p-=val_slots(stack[p-1]);n++;}
-            spush(with_tok(val_compound(VAL_LIST,n,sp-lb+1),tt)); ec++; j=bc; break;
+            spush(with_tok(val_compound(VAL_LIST,n,sp-lb+1),tt)); if(vals_hold_dict(&stack[lb],sp-lb)) stack[sp-1].flags|=VF_DICT; ec++; j=bc; break;
         }
         case TOK_LBRACE:{
             int bc=(j+toks[j].span);
@@ -2628,6 +2656,7 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
             while(p>lb){int vs=val_slots(stack[p-1]);p-=vs;if(ir&&p>lb&&stack[p-1].tag==VAL_SYM){p--;nf++;}else ir=0;}
             if(ir) spush(with_tok(val_compound(VAL_RECORD,nf,ts+1),tt));
             else{int n=0;p=sp;while(p>lb){p-=val_slots(stack[p-1]);n++;}spush(with_tok(val_compound(VAL_TUPLE,n,ts+1),tt));}
+            if(vals_hold_dict(&stack[lb],ts)) stack[sp-1].flags|=VF_DICT;
             ec++; j=bc; break;
         }
         default: break;
@@ -2635,6 +2664,7 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
     }
     Value hdr=val_compound(VAL_TUPLE,ec,sp-eb+1); if(ft) hdr.loc=LOC_PACK(ft->fid,ft->line,ft->col);
     if(binds) hdr.flags|=VF_BINDS;
+    if(vals_hold_dict(&stack[eb],sp-eb)) hdr.flags|=VF_DICT;
     spush(hdr); stack[sp-1].as.compound.env=env;
 }
 static void eval(Token *toks, int count, Frame *env) {
@@ -2670,7 +2700,6 @@ static const char *PRELUDE =
     "(over over lt (drop) (nip) if) 'min let\n"
     "(dup 0 lt (neg) (dup drop) if) 'abs let\n"
     "('f let (dup 0 gt) (1 sub (f apply) dip) while drop) 'repeat let\n"
-    "('p let list (dup p apply (push) (drop) if) fold) 'filter let\n"
     "(dup mul) 'sqr let\n"
     "(0 get must) 'first let\n"
     "(dup len 1 sub get must) 'last let\n"
@@ -2874,7 +2903,6 @@ static int pop_socket_fd(const char *who) {
     Value v = spop();
     if (v.tag != VAL_BOX) die("%s: expected socket (box)", who);
     BoxData *bd = (BoxData*)v.as.box;
-    if (!bd->data) die("%s: the socket box was already freed", who);
     if (bd->slots != 1 || bd->data[0].tag != VAL_INT) die("%s: expected a socket box, got a box that does not hold one int", who);
     int fd = (int)bd->data[0].as.i; struct stat st;
     if (fstat(fd, &st) || !S_ISSOCK(st.st_mode)) die("%s: %d is not a socket", who, fd);
@@ -3009,7 +3037,7 @@ static void register_prims(void) {
         R(list,list),R(len,size),R(push,push_op),M("pop",pop),
         M("get",get),M("peek",peek),M("nth",nth),M("set",set),R(cat,concat),
         R(reverse,reverse),R(zip,zip),{"take-n",prim_take_n,NULL},{"drop-n",prim_drop_n,NULL},R(range,range),
-        R(fold,fold),R(each,each),R(sort,sort),M("index-of",indexof),
+        R(fold,fold),R(each,each),R(filter,filter),R(sort,sort),M("index-of",indexof),
         R(at,at),R(rec,rec),R(into,into),R(edit,edit),
         R(millis,millis),R(datetime,datetime),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),
         R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),

@@ -27,48 +27,96 @@ def euler(path):
     )
 
 
-def closures():
-    """A closure that escapes a word gets its own frame; 20,000 of them must stay small."""
-    src = b"('x let (x)) 'mk let 0 (dup 20000 lt) (dup mk drop 1 plus) while 20000 eq assert\n"
-    err = tempfile.TemporaryFile()
-    p = subprocess.Popen(["./slap"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err)
-    p.stdin.write(src)
-    p.stdin.close()
-    # os.wait4 is the only way to read one child's peak RSS, and it has no timeout.
-    watchdog = threading.Timer(TIMEOUT, p.kill)
-    watchdog.start()
-    _, status, ru = os.wait4(p.pid, 0)
-    watchdog.cancel()
-    # ru_maxrss is bytes on macOS and KiB on Linux.
-    mb = ru.ru_maxrss / (1 << 20 if sys.platform == "darwin" else 1 << 10)
-    code = os.waitstatus_to_exitcode(status)
-    err.seek(0)
-    return code == 0 and mb < 200, f"exit {code}, peak RSS {mb:.0f} MB (limit 200)\n" + err.read().decode()[-2000:]
+DICT = 'dict "k" 1 insert'
+# Each program makes and drops a value 100,000 times. A leak of one dict per pass passes 30 MB.
+# The box program runs 1,000,000 passes: a box's own header is 16 bytes.
+STEADY = [
+    "('x let (x)) 'mk let 0 (dup 100000 lt) (dup mk drop 1 plus) while 100000 eq assert",
+    "('x let x 0 {(0 gt) (drop 1)} case) 'f let 0 100000 (drop 5 f) repeat drop",
+    f"0 1000000 (drop {DICT} box free 0) repeat drop",
+    f"0 100000 (drop {{'b {DICT}}} drop 0) repeat drop",
+    f"0 100000 (drop ({{'b {DICT}}} drop) (0) cat apply) repeat drop",
+    f"0 100000 (drop list {DICT} push dup print len) repeat drop",
+    f"0 100000 (drop list {DICT} push list {DICT} push eq) repeat drop",
+    f"0 100000 (drop list {DICT} push {DICT} push dup 0 get must drop 5 get drop 0) repeat drop",
+    f"0 100000 (drop list {DICT} push {DICT} push 1 take-n drop 0) repeat drop",
+    f"0 100000 (drop list {DICT} push {DICT} push 1 drop-n drop 0) repeat drop",
+    f"0 100000 (drop list {DICT} push {DICT} push {DICT} index-of must) repeat drop",
+    f"0 100000 (drop {{}} {DICT} 'd into 1 'n into 'n at) repeat drop",
+    f"0 100000 (drop list {DICT} push {DICT} push (drop 0) filter len) repeat drop",
+]
+
+
+def steady():
+    """A loop that makes and drops closures, frames and dicts holds steady memory."""
+    bad = []
+    for src in STEADY:
+        err = tempfile.TemporaryFile()
+        p = subprocess.Popen(
+            ["./slap"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err
+        )
+        p.stdin.write(src.encode())
+        p.stdin.close()
+        # os.wait4 is the only way to read one child's peak RSS, and it has no timeout.
+        watchdog = threading.Timer(TIMEOUT, p.kill)
+        watchdog.start()
+        _, status, ru = os.wait4(p.pid, 0)
+        watchdog.cancel()
+        # ru_maxrss is bytes on macOS and KiB on Linux.
+        mb = ru.ru_maxrss / (1 << 20 if sys.platform == "darwin" else 1 << 10)
+        code = os.waitstatus_to_exitcode(status)
+        if code != 0 or mb >= 16:
+            err.seek(0)
+            bad.append(
+                f"exit {code}, peak RSS {mb:.0f} MB (limit 16): {src}\n"
+                + err.read().decode()[-500:]
+            )
+    return not bad, "\n".join(bad)
 
 
 def profile():
     """--profile prints folded stacks, one `a;b;c nanoseconds` line per call path, even when the program dies."""
     folded = re.compile(r"^[^ ;]+(;[^ ;]+)* [0-9]+$")
+
     def run(src):
-        r = subprocess.run(["./slap", "--profile"], input=src, capture_output=True, text=True, timeout=TIMEOUT)
+        r = subprocess.run(
+            ["./slap", "--profile"],
+            input=src,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT,
+        )
         return r.returncode, r.stderr.splitlines()
-    code, lines = run("(1 plus) 'inc2 let (0 (dup 1000 lt) (inc2) while) 'count let count drop\n")
+
+    code, lines = run(
+        "(1 plus) 'inc2 let (0 (dup 1000 lt) (inc2) while) 'count let count drop\n"
+    )
     if code != 0 or not lines or not all(folded.match(l) for l in lines):
         return False, f"plain run: exit {code}\n" + "\n".join(lines[:20])
     if not any(re.search(r"(^|;)count;while;inc2;plus [0-9]+$", l) for l in lines):
         return False, "no count;while;inc2;plus line:\n" + "\n".join(lines[:20])
-    code, lines = run("(0 (dup 3000 lt) (1 plus) while drop) 'pc let (1 (pc) () if) 'pb let (1 (pb) () if) 'pa let pa\n")
+    code, lines = run(
+        "(0 (dup 3000 lt) (1 plus) while drop) 'pc let (1 (pc) () if) 'pb let (1 (pb) () if) 'pa let pa\n"
+    )
     if code != 0 or not any(re.search(r"^pa;if;pb;if;pc;while", l) for l in lines):
-        return False, "nested words under if must keep their own frames:\n" + "\n".join(lines[:20])
+        return False, "nested words under if must keep their own frames:\n" + "\n".join(
+            lines[:20]
+        )
     code, lines = run("(1 0 div) 'boom let boom\n")
     if code != 1 or not any(re.match(r"^boom;div [0-9]+$", l) for l in lines):
         return False, f"dying run: exit {code}\n" + "\n".join(lines[-20:])
-    code, lines = run("'odd? [int lent in  int move out] effect\n"
-                      "(dup 0 eq (drop 1) (1 sub odd?) if) 'even? let\n"
-                      "(dup 0 eq (drop 0) (1 sub even?) if) 'odd? let\n"
-                      "2000 even? drop\n")
+    code, lines = run(
+        "'odd? [int lent in  int move out] effect\n"
+        "(dup 0 eq (drop 1) (1 sub odd?) if) 'even? let\n"
+        "(dup 0 eq (drop 0) (1 sub even?) if) 'odd? let\n"
+        "2000 even? drop\n"
+    )
     if code != 0 or len(lines) > 20:
-        return False, f"mutual recursion: exit {code}, {len(lines)} lines (limit 20)\n" + "\n".join(lines[:30])
+        return (
+            False,
+            f"mutual recursion: exit {code}, {len(lines)} lines (limit 20)\n"
+            + "\n".join(lines[:30]),
+        )
     return True, ""
 
 
@@ -96,7 +144,7 @@ def steps(slow):
                 None,
             ),
             "errors": ("python3 tests/run_errors.py", None),
-            "closures": (closures, None),
+            "steady memory": (steady, None),
             "profile": (profile, None),
             "deep closure chain": (
                 "echo \"(0) 100000 ('c let (c apply 1 plus) 'g let 'g quote) repeat drop\" | ./slap",
@@ -107,7 +155,10 @@ def steps(slow):
                 None,
             ),
             "closed stdout": ("echo '42 print' | ./slap >&-; test $? -eq 1", None),
-            "stdout reader quits": ("echo '(1) (1 print) while' | ./slap | head -1 >/dev/null; true", None),
+            "stdout reader quits": (
+                "echo '(1) (1 print) while' | ./slap | head -1 >/dev/null; true",
+                None,
+            ),
             "stdout write keeps order": (
                 """echo '42 print "/dev/stdout" "x" write must drop 43 print' | ./slap""",
                 lambda out: out == "42\nx43\n",
@@ -134,7 +185,10 @@ def steps(slow):
         ("strings", "parse", "xml", "rss"),
     ]:
         out["lib/" + "+".join(combo)] = (f"cat {lib(*combo)} | ./slap", None)
-    out["scale"] = (f"cat {lib('strings', 'parse', 'json', 'xml')} tests/scale.slap | ./slap", None)
+    out["scale"] = (
+        f"cat {lib('strings', 'parse', 'json', 'xml')} tests/scale.slap | ./slap",
+        None,
+    )
     for name in [
         "ant",
         "dots",
@@ -175,7 +229,9 @@ def status():
     score = {}
     t = time.time()
     r = subprocess.run([sys.executable, __file__], capture_output=True)
-    score["make test passes within 10 s."] = 10 / (time.time() - t) if r.returncode == 0 else 0.0
+    score["make test passes within 10 s."] = (
+        10 / (time.time() - t) if r.returncode == 0 else 0.0
+    )
     docs = open("readme.md").read() + open("claude.md").read()
     samples = re.findall(r"```slap\n(.*?)```", open("readme.md").read(), re.S)
     ran = 0
@@ -183,35 +239,91 @@ def status():
         # SDL and network samples cannot run here; they must still type-check.
         check = ["--check"] if re.search(r"\b(show|on|tcp-\w+)\b", code) else []
         src = open(lib("strings")).read() + code
-        ran += subprocess.run(["./slap", *check], input=src, capture_output=True, text=True, timeout=TIMEOUT).returncode == 0
+        ran += (
+            subprocess.run(
+                ["./slap", *check],
+                input=src,
+                capture_output=True,
+                text=True,
+                timeout=TIMEOUT,
+            ).returncode
+            == 0
+        )
     score["Every readme slap sample runs."] = ran / len(samples)
     paths = set(re.findall(r"\b(?:examples|tests|fonts|assets)/[\w./-]*\w\.\w+", docs))
-    score["Every file the docs name exists."] = sum(os.path.exists(p) for p in paths) / max(len(paths), 1)
-    score["The docs cite no slap.c line numbers."] = 0.0 if re.search(r"slap\.c:\d", docs) else 1.0
-    r = subprocess.run(
-        ["cc", "-std=c99", "-Wall", "-Wextra", "-O3", "-D_POSIX_C_SOURCE=200809L", "-o", os.path.join(SCRATCH, "slap"), "slap.c", "-lm"],
-        capture_output=True, text=True,
+    score["Every file the docs name exists."] = sum(
+        os.path.exists(p) for p in paths
+    ) / max(len(paths), 1)
+    score["The docs cite no slap.c line numbers."] = (
+        0.0 if re.search(r"slap\.c:\d", docs) else 1.0
     )
-    score["slap.c compiles with no warnings."] = 1.0 if r.returncode == 0 and "warning" not in r.stderr else 0.0
+    r = subprocess.run(
+        [
+            "cc",
+            "-std=c99",
+            "-Wall",
+            "-Wextra",
+            "-O3",
+            "-D_POSIX_C_SOURCE=200809L",
+            "-o",
+            os.path.join(SCRATCH, "slap"),
+            "slap.c",
+            "-lm",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    score["slap.c compiles with no warnings."] = (
+        1.0 if r.returncode == 0 and "warning" not in r.stderr else 0.0
+    )
     feed = os.path.join(SCRATCH, "feed.xml")
     with open(feed, "w") as f:
         f.write(harness.big_feed(4100))
     assert os.path.getsize(feed) >= 600_000, os.path.getsize(feed)
-    src = "".join(open(lib(n)).read() for n in ("strings", "parse", "xml", "rss")) + open("examples/feed.slap").read()
+    src = (
+        "".join(open(lib(n)).read() for n in ("strings", "parse", "xml", "rss"))
+        + open("examples/feed.slap").read()
+    )
     t = time.time()
-    r = subprocess.run(["./slap", feed], input=src, capture_output=True, text=True, timeout=60)
-    score["A 600 KB feed renders in under a second."] = 1 / (time.time() - t) if r.stdout.rstrip().endswith("4100 items") else 0.0
+    r = subprocess.run(
+        ["./slap", feed], input=src, capture_output=True, text=True, timeout=60
+    )
+    score["A 600 KB feed renders in under a second."] = (
+        1 / (time.time() - t) if r.stdout.rstrip().endswith("4100 items") else 0.0
+    )
     rng = random.Random(1)
-    vocab = ["apple", "Apple", "banana", "cherry", "ö", "日本", "zeta", "alpha", "beta", "gamma", "delta"]
-    text = "".join(" ".join(rng.choice(vocab) for _ in range(rng.randrange(1, 6))) + "\n" for _ in range(20000)).encode()
+    vocab = [
+        "apple",
+        "Apple",
+        "banana",
+        "cherry",
+        "ö",
+        "日本",
+        "zeta",
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+    ]
+    text = "".join(
+        " ".join(rng.choice(vocab) for _ in range(rng.randrange(1, 6))) + "\n"
+        for _ in range(20000)
+    ).encode()
     lines = os.path.join(SCRATCH, "lines.txt")
     with open(lines, "wb") as f:
         f.write(text)
-    src = open(lib("strings"), "rb").read() + open("examples/utils/sort.slap", "rb").read()
+    src = (
+        open(lib("strings"), "rb").read()
+        + open("examples/utils/sort.slap", "rb").read()
+    )
     t = time.time()
     r = subprocess.run(["./slap", lines], input=src, capture_output=True, timeout=60)
-    ok = r.returncode == 0 and r.stdout == b"".join(sorted(text.splitlines(keepends=True)))
-    score["sort.slap sorts 20,000 lines in under a second."] = 1 / (time.time() - t) if ok else 0.0
+    ok = r.returncode == 0 and r.stdout == b"".join(
+        sorted(text.splitlines(keepends=True))
+    )
+    score["sort.slap sorts 20,000 lines in under a second."] = (
+        1 / (time.time() - t) if ok else 0.0
+    )
     shutil.rmtree(SCRATCH)
     print(json.dumps({k: {"0": round(v, 2)} for k, v in score.items()}, indent=1))
     if min(score.values()) < 1.0:
