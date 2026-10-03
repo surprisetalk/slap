@@ -316,16 +316,30 @@ static inline __attribute__((always_inline)) void frame_bind(Frame *f, uint32_t 
         } else if (b->vals[i].tag == VAL_DICT) b->heap = 1;
     }
 }
-/* A run that made names is over, or a closure over f is gone. A frame's parent loses a reference when
-   the frame goes, so a chain frees in a loop, not by recursion. */
+/* A run that made names is over, or a closure over f is gone. A frame at zero waits on `pending`, linked
+   through its parent field, and one loop trims the waiting frames: a trim in place would recurse through
+   binding_release once per link of a closure chain. */
+/* More frames than memory holds: only a cycle in the frame graph reaches it. */
+#define FRAME_CHAIN_MAX 1000000000L
 static void frame_drop(Frame *f) {
-    for (int hops = 0; f && f != global_frame; hops++) {
-        if (hops > 1000000) die("frame_drop: a frame chain longer than 1000000 links (a cycle?)");
-        if (--f->refs > 0) return;
+    static Frame *pending; static int busy;
+    for (long hops = 0; f && f != global_frame; hops++) {
+        if (hops > FRAME_CHAIN_MAX) die("frame_drop: expected a chain of parent frames to reach the global frame, but it ran past %ld links.\n"
+                                        "  The frames form a cycle, which is an interpreter bug. Report the program.", hops);
+        if (--f->refs > 0) break;
         if (f->refs < 0) die("frame_drop: a frame lost more references than it had (internal)");
-        Frame *p = f->parent; frame_trim(f, 0);
-        f->parent = frame_pool; frame_pool = f; f = p;
+        Frame *p = f->parent; f->parent = pending; pending = f; f = p;
     }
+    if (busy || !pending) return;
+    busy = 1;
+    for (long trimmed = 1; pending; trimmed++) {
+        if (trimmed > FRAME_CHAIN_MAX) die("frame_drop: expected each frame to wait once to be freed, but %ld frames waited in one call.\n"
+                                           "  A frame waited twice, which is an interpreter bug. Report the program.", trimmed);
+        Frame *g = pending; pending = g->parent;
+        frame_trim(g, 0);
+        g->parent = frame_pool; frame_pool = g;
+    }
+    busy = 0;
 }
 static Frame *frame_acquire(Frame *parent) {
     Frame *f = frame_pool;
@@ -394,7 +408,9 @@ static void c_stack_check(const char *what) {
 }
 static void val_print(Value *data, int slots, FILE *out);
 /* Error reports show at most this many elements per compound; 0 means all. */
-static int print_max = 0;
+static int print_max = 0, print_depth = 0;
+/* An error report shows nesting this deep and elides the rest with `...`. */
+#define PRINT_DEPTH_MAX 16
 /* A record prints its keys as elements, so every compound prints n elements. */
 static void print_elems(Value *data, int slots, int n, char open, char close, FILE *out) {
     int *st=malloc((size_t)(n+1)*sizeof(int)); if(!st) die("print: out of memory for %d elements", n);
@@ -405,8 +421,13 @@ static void print_elems(Value *data, int slots, int n, char open, char close, FI
     if(shown<n) fprintf(out," ...%d more",n-shown);
     fputc(close,out); free(st);
 }
+static void val_print_node(Value *data, int slots, FILE *out);
 static void val_print(Value *data, int slots, FILE *out) {
-    c_stack_check("printing a deeply nested value");
+    if (print_max && print_depth >= PRINT_DEPTH_MAX) { fputs("...", out); return; }
+    if (!print_max) c_stack_check("printing a deeply nested value"); /* the error report runs on the deep stack that caused the error */
+    print_depth++; val_print_node(data, slots, out); print_depth--;
+}
+static void val_print_node(Value *data, int slots, FILE *out) {
     Value top = data[slots - 1];
     switch (top.tag) {
     case VAL_INT: fprintf(out, "%lld", (long long)top.as.i); break;
@@ -429,7 +450,7 @@ static void val_print(Value *data, int slots, FILE *out) {
     }
 }
 static void print_stack_summary(FILE *out) {
-    print_max = 32;
+    print_max = 32; print_depth = 0;
     if (sp == 0) { fprintf(out, "\n    stack: (empty)\n"); return; }
     fprintf(out, "\n    stack (%d slot%s):\n", sp, sp==1?"":"s");
     int pos=sp, shown=0;
@@ -437,15 +458,17 @@ static void print_stack_summary(FILE *out) {
     if(pos>0){int rem=0;while(pos>0){pos-=val_slots(stack[pos-1]);rem++;}fprintf(out,"      ... %d more\n",rem);}
 }
 static DictEntry *dict_get(DictData *dd, const char *key, int klen);
-/* A body that looks a name up at runtime: a word that is not a primitive, here or in a body it holds. */
+static uint32_t S_NTH, S_QUOTE;
+/* A body that looks a name up at runtime: a word that is not a primitive, or `nth` or `quote`, which read the name written before them. */
 static int body_reads_names(Value *v, int slots) {
-    for (int i = 0; i < slots; i++) if (v[i].tag == VAL_XT && !prim_fns[v[i].as.xt.sym]) return 1;
+    for (int i = 0; i < slots; i++) if (v[i].tag == VAL_XT && (!prim_fns[v[i].as.xt.sym] || v[i].as.xt.sym == S_NTH || v[i].as.xt.sym == S_QUOTE)) return 1;
     return 0;
 }
 /* Structural equality, element by element: a record by its keys, whatever order they were written in, a
    dict by its entries, and a body by its code, and by the frame it closes over when it reads names. A
    compound's elements are read from its end, where each one's header gives its size. */
 static int val_equal(Value *a, int aslots, Value *b, int bslots) {
+    c_stack_check("while comparing a deeply nested value");
     Value atop = a[aslots - 1], btop = b[bslots - 1];
     if (atop.tag != btop.tag) return 0;
     switch (atop.tag) {
@@ -491,13 +514,13 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
     default: die("lt: unsupported type %s (only int and float are ordered)", valtag_name(atop.tag)); return 0;
     }
 }
-static uint32_t S_CAT, S_NTH, S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_HALT, S_TAG, S_CASE, S_MUST, S_QUOTE, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_EACH, S_FOLD, S_ON, S_SHOW;
+static uint32_t S_CAT, S_CAT_LEFT, S_CAT_RIGHT, S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_HALT, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_EACH, S_FOLD, S_ON, S_SHOW;
 static void syms_init(void) {
     S_LET=sym_intern("let"); S_EFFECT=sym_intern("effect");
     S_OK=sym_intern("ok"); S_NO=sym_intern("no"); S_NONE=sym_intern("none"); S_CASE=sym_intern("case"); S_MUST=sym_intern("must");
     S_HALT=sym_intern("halt"); S_TAG=sym_intern("tag"); S_QUOTE=sym_intern("quote");
     S_AT=sym_intern("at"); S_EDIT=sym_intern("edit"); S_INTO=sym_intern("into"); S_KEY=sym_intern("key"); S_VALUE=sym_intern("value");
-    S_CAT=sym_intern("cat"); S_NTH=sym_intern("nth"); S_EACH=sym_intern("each"); S_FOLD=sym_intern("fold"); S_ON=sym_intern("on"); S_SHOW=sym_intern("show");
+    S_CAT=sym_intern("cat"); S_CAT_LEFT=sym_intern("cat-left"); S_CAT_RIGHT=sym_intern("cat-right"); S_NTH=sym_intern("nth"); S_EACH=sym_intern("each"); S_FOLD=sym_intern("fold"); S_ON=sym_intern("on"); S_SHOW=sym_intern("show");
 }
 /* ---- TYPE CHECKER ---- */
 /* ==== TYPES: inference by unification ====
@@ -1097,7 +1120,7 @@ static void ty_unrigid(int mark) { while (ty_rigid_n > mark) ty[ty_rigid_vars[--
 /* ---- names ---- */
 /* word: 0 a value, 1 a word, 2 the word whose body is being checked. declared: `'name [sig] effect`
    without its body yet. depth: how many bodies deep the name was bound (0: the top level). gen: for a
-   bound body, the stack rest each use makes fresh (see ty_bound_rest), or 0. */
+   bound body whose stack rest each use makes fresh (see ty_bound_rest), its ty_gens index plus 1, or 0. */
 typedef struct { uint32_t sym; int ty, word, line, declared, depth, gen; } TyBind;
 static TyBind *tyb; static int tyb_n, tyb_cap, tyb_prelude;
 static int ty_builtin[SYM_MAX], ty_tagpay[SYM_MAX];
@@ -1164,6 +1187,15 @@ static int ty_on[16], ty_on_line[16], ty_on_mouse[16], ty_on_n, ty_shown, ty_eac
 typedef struct { int tags, dflt, clauses, line; Token *toks; int open, close, scrut, done; } TyLater;
 static TyLater ty_later[4096]; static int ty_later_n;
 static void ty_cases_settle(int from, int level, int word);
+static void ty_gens_settle(int from, int level, int word);
+/* A let-bound body whose uses each make its stack rest fresh (ty_value): sound only if nothing refines
+   the rest after a use. An entry outlives its binding, which its body or word pops first. */
+typedef struct { int rest, ty, line, used; uint32_t sym; } TyGen;
+static TyGen *ty_gens; static int ty_gen_n, ty_gen_cap;
+static int ty_gen_add(int rest, int t, int line, uint32_t sym) {
+    if (ty_gen_n == ty_gen_cap) { ty_gen_cap = ty_gen_cap ? 2*ty_gen_cap : 256; ty_gens = realloc(ty_gens, (size_t)ty_gen_cap * sizeof(TyGen)); if (!ty_gens) die("type checker: out of memory for %d bound bodies", ty_gen_cap); }
+    ty_gens[ty_gen_n] = (TyGen){rest, t, line, 0, sym}; return ++ty_gen_n;
+}
 static void ty_err(int line, const char *fmt, ...) {
     ty_errors++; int fid = LOC_FID(current_loc); const char *f = src_files[fid];
     va_list ap; va_start(ap, fmt);
@@ -1250,7 +1282,7 @@ static int ty_body(Token *toks, int open, int close, int in) {
 /* `(body) [sig] effect 'name let`: a word. Inside its body the word has one type (or its declared
    one); after, the type generalizes. */
 static void ty_define(Token *toks, int open, int close, int sig_open, int sig_close, uint32_t name, int line) {
-    int cases0 = ty_later_n;
+    int cases0 = ty_later_n, gens0 = ty_gen_n;
     ty_redefined(name, line, 1);
     if (ty_literal) ty_err(line, "a [...] or {...} literal is built when the program is read, so it cannot bind names: '%s' would be bound for the whole program. Define it outside the literal.", sym_name(name));
     int fwd = tyb_find(name);
@@ -1281,6 +1313,7 @@ static void ty_define(Token *toks, int open, int close, int sig_open, int sig_cl
         ty_print_count = 0; ty_show(a, sizeof a, want, 0); ty_show(b, sizeof b, bt, 0);
         if (ty_unify(want, bt)) {
             ty_err(line, "'%s' declares %s, but its body is %s: %s.", sym_name(name), a, b, ty_why); want = 0; } }
+    ty_gens_settle(gens0, ty_level - 1, bt);
     ty_level--; tyb_n = mark;
     ty_unrigid(rmark);
     if (want) { ty_generalize(want); scheme = want; }
@@ -1390,8 +1423,9 @@ static int ty_input_holds(int word, int v) {
 }
 /* A body bound with let runs at any stack depth when the stack below it is its own: the body's type
    ends in one stack variable on both sides, and nothing else holds that variable (the stacks being
-   checked, another binding, a recursive call). A caller's body, tied to the word's stack, stays as it is:
-   it may read below its inputs. Returns the variable each use makes fresh, or 0. */
+   checked, another binding, a recursive call). A caller's body, tied to the word's stack, stays as it
+   is: it may read below its inputs. A tag's payload or a waiting case may still tie the variable to
+   more, so ty_gens_settle checks it again. Returns the variable each use makes fresh, or 0. */
 static int ty_bound_rest(int v) {
     int f = ty_find(v);
     if (ty[f].kind != K_FN) return 0;
@@ -1404,8 +1438,10 @@ static int ty_bound_rest(int v) {
 }
 /* A value binding's type for one use. */
 static int ty_value(int b) {
-    int g = tyb[b].gen ? ty_find(tyb[b].gen) : 0;
+    TyGen *e = tyb[b].gen ? &ty_gens[tyb[b].gen - 1] : NULL;
+    int g = e ? ty_find(e->rest) : 0;
     if (!g || ty[g].kind != K_SVAR) return tyb[b].ty;
+    e->used = 1;
     int w = ty_new(K_SVAR, 0, 0, 0); ty[w].prot = ty[g].prot;
     return ty_subst(tyb[b].ty, g, w);
 }
@@ -1430,6 +1466,26 @@ static void ty_cases_settle(int from, int level, int word) {
         if (!progress) break;
     }
     ty_later_n = from;
+}
+/* Once a word's cases settle (`word` its type, `level` the level outside it; 0 at the end of the
+   program), a freshened rest that is still a bare variable no caller's stack reaches kept the body's type
+   final. A rest tied outside the word may still change there, so the scope outside checks it. */
+static void ty_gens_settle(int from, int level, int word) {
+    int keep = from;
+    for (int k = from; k < ty_gen_n; k++) {
+        TyGen e = ty_gens[k]; int r = ty_find(e.rest); const char *why;
+        if (!e.used) continue;
+        if (ty[r].kind != K_SVAR) why = "a case default or a tag's payload, settled after a use, makes it read more of the stack";
+        else if (word && ty_input_holds(word, r)) why = "a caller's body can take its place, and a caller's body may read below its inputs";
+        else if (word && ty[r].level <= level) { ty_gens[keep++] = e; continue; }
+        else continue;
+        char t[512]; ty_print_count = 0; ty_show(t, sizeof t, e.ty, 0);
+        ty_err(e.line, "'%s' was bound to a body whose type was not final at the let: %s.\n"
+               "    Its type is now %s.\n"
+               "    A let-bound body runs at each use's own stack depth only when its type is final where it is bound.\n"
+               "    Write the body in place before '%s let, or apply it where it is made.", sym_name(e.sym), why, t, sym_name(e.sym));
+    }
+    ty_gen_n = keep;
 }
 /* Values collected from a stack type, for literals, lend and record cat. Nothing between filling and
    reading it collects again. */
@@ -1542,7 +1598,8 @@ static void ty_range(Token *toks, int i, int end) {
                 ty_pop(); int v = ty_pop();
                 if (ty_need(v, P_COPY)) ty_err(line, "'%s' cannot be let-bound: %s. Keep it on the stack.", sym_name(toks[i-1].as.sym), ty_why);
                 int gen = ty_bound_rest(v);
-                ty_redefined(toks[i-1].as.sym, line, 0); tyb_push(toks[i-1].as.sym, v, 0, line); tyb[tyb_n-1].gen = gen; break;
+                ty_redefined(toks[i-1].as.sym, line, 0); tyb_push(toks[i-1].as.sym, v, 0, line);
+                tyb[tyb_n-1].gen = gen ? ty_gen_add(gen, v, line, toks[i-1].as.sym) : 0; break;
             }
             if (w == S_QUOTE && i > 0 && toks[i-1].tag == TOK_SYM) {
                 int b = tyb_find(toks[i-1].as.sym); ty_pop();
@@ -1736,6 +1793,7 @@ static int infer_program(Token *table, int table_n, Token *toks, int count, int 
     ty_cur = ty_new(K_SNIL, 0, 0, 0);
     ty_tok_end = count;
     ty_in_prelude = 1; ty_range(toks, 0, user_start); ty_in_prelude = 0; tyb_prelude = tyb_n;
+    if (ty_gen_n) die("type checker: the prelude binds %d computed bodies with let; ty_gens_settle would report them against the user's program. Define each with a body written in place.", ty_gen_n);
     ty_cur = ty_new(K_SNIL, 0, 0, 0);
     ty_range(toks, user_start, count);
     ty_undefined(tyb_prelude);
@@ -1744,6 +1802,7 @@ static int infer_program(Token *table, int table_n, Token *toks, int count, int 
         if (ty_need(ty[x].a, P_COPY)) { ty_err(LOC_LINE(current_loc), "the program ends with a value left on the stack that is never freed: %s.", ty_why); break; }
     /* at the end a set open to more tags has reached every place it can: its tags are all it carries */
     ty_cases_settle(0, 0, 0);
+    ty_gens_settle(0, 0, 0);
     return ty_errors;
 }
 /* ---- PRIMITIVES ---- */
@@ -2028,13 +2087,26 @@ static inline void prim_set_impl(Frame *e, int tagged) {
     if(tagged) push_ok();
 }
 MUST_PAIR(set)
+static void rec_put(uint32_t key, const char *who);
 static void prim_concat(Frame *e) {
     (void)e; if(sp<2) die("cat: stack underflow");
     Value t2=stack[sp-1]; COMPOUND_GUARD(t2, "cat", "cannot cat tagged values");
     int s2=val_slots(t2),b2=sp-s2; if(b2<1) die("cat: stack underflow");
     Value t1=stack[b2-1]; if(t1.tag!=t2.tag) die("cat: cannot join a %s and a %s",valtag_name(t1.tag),valtag_name(t2.tag));
+    if(t2.tag==VAL_RECORD){
+        /* the right record's fields replace the left's, as the checker types it */
+        POP_VAL(r); int n=(int)r_top.as.compound.len,*st=elem_starts(r_buf,r_s,2*n);
+        for(int i=0;i<n;i++){ int k=st?st[2*i]:2*i,v=k+1,ve=st?st[2*i+2]:2*i+2; SPUSH(&r_buf[v],ve-v); rec_put(r_buf[k].as.sym,"cat"); }
+        return;
+    }
     Frame *e1=t1.as.compound.env,*e2=t2.as.compound.env;
-    if(e1&&e2&&e1!=e2) die("cat: these two tuples close over different scopes, so the joined code would have nowhere to look its words up");
+    if(e1&&e2&&e1!=e2){
+        /* Each closure looks its names up in its own frame, so the join runs them as two words of a frame that holds both. */
+        Frame *f=frame_acquire(NULL); int s1=val_slots(t1);
+        frame_bind(f,S_CAT_RIGHT,&stack[b2],s2,1); frame_bind(f,S_CAT_LEFT,&stack[b2-s1],s1,1); sp=b2-s1;
+        spush(val_xt(S_CAT_LEFT,NULL)); spush(val_xt(S_CAT_RIGHT,NULL));
+        Value h=val_compound(VAL_TUPLE,2,3); h.as.compound.env=f; spush(h); return;
+    }
     memmove(&stack[b2-1],&stack[b2],(size_t)(s2-1)*sizeof(Value)); sp--;
     t2.as.compound.len+=t1.as.compound.len; t2.as.compound.slots=(uint32_t)(val_slots(t1)+s2-1); t2.as.compound.env=e2?e2:e1; t2.loc=0;
     if(t1.tag==VAL_TUPLE){ t2.flags|=t1.flags&VF_BINDS; if(e1&&e2) frame_drop(e1); }

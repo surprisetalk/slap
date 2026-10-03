@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs the same checks as `make test`; enable once with `git config core.hooksPath .githooks`.
+exec make test

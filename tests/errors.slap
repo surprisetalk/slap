@@ -780,6 +780,10 @@ list 42 box 'x tag push drop
 -- print recurses once per nesting level
 [] 'n tag 20000 (list swap push 'n tag) repeat print
 
+-- EXPECT: C stack exhausted while comparing a deeply nested value
+-- val_equal recurses once per nesting level
+[] 'n tag 30000 (list swap push 'n tag) repeat dup eq print
+
 -- EXPECT: never closes
 "abc
 
@@ -1993,6 +1997,29 @@ f1 drop  f2 drop  "s" f2 drop drop
 
 -- EXPECT: str is not int.
 ('f let 1 f apply drop "s" f apply) 'w let (1 plus) w
+
+-- EXPECT: was not final at the let
+-- the case default, which reads two values, settles after f's use
+3 'b tag (swap 1 plus swap) {'a (drop (1 plus))} case 'f let
+"s" 5 f apply print drop
+
+-- EXPECT: was not final at the let
+-- a caller's body is the case default
+( 'g let  3 'b tag g {'a (drop (1 plus))} case 'f let
+  "s" 5 f apply print drop ) 'w let
+(swap 1 plus swap) w
+
+-- EXPECT: was not final at the let
+-- the body comes out of a tag's payload, which a caller's body joins after w ends
+(1 plus) 'k tag drop
+( ( ( (1 plus) {'k ()} case ) 'unk let unk ) apply 'f let  "s" 5 f apply print drop ) 'w let
+( 'g let  7 g apply drop  g 'k tag w ) 'v let
+1 (swap 1 plus swap) v drop
+
+-- EXPECT: was not final at the let
+-- p is a tag's payload, which the caller's (drop 5) joins after w ends
+( 'x let  (x 0 {'n ('p let 1 (p apply) () if 0)} case) 0 drop 'h let  h apply drop ) 'w let
+(drop 5) 'n tag w
 
 -- EXPECT: {'ok ... 'no ...} either is a result, which holds only 'ok and 'no: drop | 'r
 ( drop 0 ) [{'ok int | 'r} either lent in  int move out] effect 'f let

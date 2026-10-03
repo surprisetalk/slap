@@ -4,6 +4,7 @@
 --
 -- rss-parse: (source-string -- feed-record ok | err no)
 -- Feed record: {'kind "rss"|"atom" 'title 'link 'description 'items [...]}
+-- 'link is `string ok` or none.
 -- Item record: {'title 'link 'summary 'published 'id}
 
 -- ========== Helpers ==========
@@ -16,12 +17,15 @@
 ("published" _rss-opt-text ('v let v "" eq ("updated" _rss-opt-text) (v xd-succeed) if) xd-and-then) '_atom-published-dec let
 
 -- ========== RSS 2.0 ==========
+
+-- _rss-link: (-- dec).  The text of the first <link>, or none when it is missing or empty.
+("link" xd-text xd-child xd-maybe (() {'ok (dup "" eq (drop none) (ok) if) 'no (drop none)} case) xd-map) '_rss-link let
 -- Each record is built one field at a time: xd-map2 runs a field's decoder and
 -- puts its value into the record.
 
 (rec xd-succeed
    "title"       _rss-opt-text ('title into) xd-map2
-   "link"        _rss-opt-text ('link into) xd-map2
+   _rss-link     ('link into) xd-map2
    "description" _rss-opt-text ('summary into) xd-map2
    "pubDate"     _rss-opt-text ('published into) xd-map2
    "guid"        _rss-opt-text ('id into) xd-map2
@@ -29,7 +33,7 @@
 
 (rec "rss" 'kind into xd-succeed
    "title"       _rss-opt-text ('title into) xd-map2
-   "link"        _rss-opt-text ('link into) xd-map2
+   _rss-link     ('link into) xd-map2
    "description" _rss-opt-text ('description into) xd-map2
    "item" _rss2-item xd-children ('items into) xd-map2) '_rss2-channel let
 
@@ -37,8 +41,16 @@
 
 -- ========== Atom ==========
 
--- Atom <link href="..." rel="alternate"/>: the href of the first <link>, or "".
-("link" "href" xd-attr xd-child xd-maybe ("" default) xd-map) '_atom-link let
+-- Atom <link href="..." rel="alternate"/>: the href of the first <link> whose rel
+-- is "alternate" or absent and whose trimmed href is not empty, else none.  Links with rel
+-- "self", "replies" and the like are other resources.
+("rel" xd-attr xd-maybe ("" default) xd-map
+   ('r let r "" eq r "alternate" eq or)
+   xd-map
+   ('alt let alt ("href" xd-attr xd-maybe (() {'ok (_x-trim dup "" eq (drop none) (ok) if) 'no (drop none)} case) xd-map)
+     (none xd-succeed) if) xd-and-then) '_atom-link-href let
+("link" _atom-link-href xd-children
+   (none ('o let 'acc let acc () {'ok (ok) 'no (drop o)} case) fold) xd-map) '_atom-link let
 
 (rec xd-succeed
    "title" _rss-opt-text ('title into) xd-map2
@@ -89,7 +101,7 @@
 ('item let
   list
   "title"       item rss-item-title     _rss-text-elem push
-  "link"        item rss-item-link      _rss-text-elem push
+  item rss-item-link () {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
   "description" item rss-item-summary   _rss-text-elem push
   "pubDate"     item rss-item-published _rss-text-elem push
   "guid"        item rss-item-id        _rss-text-elem push
@@ -100,7 +112,7 @@
 ('feed let
   list
   "title"       feed rss-title       _rss-text-elem push
-  "link"        feed rss-link        _rss-text-elem push
+  feed rss-link () {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
   "description" feed rss-description _rss-text-elem push
   feed rss-items (_rss-make-item) each cat
   'kids let
@@ -122,7 +134,7 @@
 ('item let
   list
   "title"     item rss-item-title     _rss-text-elem push
-  item rss-item-link _atom-link-elem push
+  item rss-item-link () {'ok (_atom-link-elem push) 'no (drop)} case
   "summary"   item rss-item-summary   _rss-text-elem push
   "published" item rss-item-published _rss-text-elem push
   "id"        item rss-item-id        _rss-text-elem push
@@ -133,7 +145,7 @@
 ('feed let
   list
   "title"    feed rss-title       _rss-text-elem push
-  feed rss-link _atom-link-elem push
+  feed rss-link () {'ok (_atom-link-elem push) 'no (drop)} case
   "subtitle" feed rss-description _rss-text-elem push
   feed rss-items (_atom-make-entry) each cat
   'kids let
@@ -182,12 +194,12 @@
 _rss-sample rss-parse must 'feed let
 feed rss-kind "rss" eq assert
 feed rss-title "My Blog" eq assert
-feed rss-link "http://example.com" eq assert
+feed rss-link "http://example.com" ok eq assert
 feed rss-description "A sample blog" eq assert
 feed rss-items 'items let
 items len 2 eq assert
 items 0 get must rss-item-title "First Post" eq assert
-items 0 get must rss-item-link "http://example.com/1" eq assert
+items 0 get must rss-item-link "http://example.com/1" ok eq assert
 items 0 get must rss-item-summary "Hello & welcome" eq assert
 items 0 get must rss-item-id "http://example.com/1" eq assert
 items 1 get must rss-item-title "Second Post" eq assert
@@ -219,13 +231,41 @@ items 1 get must rss-item-summary "<p>html body</p>" eq assert
 _atom-sample rss-parse must 'afeed let
 afeed rss-kind "atom" eq assert
 afeed rss-title "Atom Blog" eq assert
-afeed rss-link "http://example.com" eq assert
+afeed rss-link "http://example.com" ok eq assert
 afeed rss-description "A sample atom feed" eq assert
 afeed rss-items 'aitems let
 aitems len 2 eq assert
 aitems 0 get must rss-item-title "Atom First" eq assert
-aitems 0 get must rss-item-link "http://example.com/a1" eq assert
+aitems 0 get must rss-item-link "http://example.com/a1" ok eq assert
 aitems 0 get must rss-item-id "urn:uuid:1" eq assert
+
+-- Atom link: the first alternate (or rel-less) link with an href wins.  Self,
+-- replies and hrefless links come first here; a feed without one has no link.
+(
+"<feed><title>F</title>
+  <link rel=\"self\" href=\"http://example.com/feed.atom\"/>
+  <link rel=\"replies\" href=\"http://example.com/replies\"/>
+  <link rel=\"alternate\"/>
+  <link href=\"http://example.com/home\"/>
+  <entry><title>T</title>
+    <link rel=\"replies\" href=\"http://example.com/e/replies\"/>
+    <link rel=\"alternate\" href=\"http://example.com/e\"/><id>1</id></entry>
+  <entry><title>U</title>
+    <link rel=\"self\" href=\"http://example.com/e2.atom\"/><id>2</id></entry>
+</feed>") '_atom-links-sample let
+_atom-links-sample rss-parse must 'al let
+al rss-link "http://example.com/home" ok eq assert
+al rss-items 0 get must rss-item-link "http://example.com/e" ok eq assert
+al rss-items 1 get must rss-item-link none eq assert
+
+-- An empty href or an empty RSS <link> is no link: a later Atom link wins, and RSS gives none.
+"<feed><title>F</title><link rel=\"alternate\" href=\"\"/><link href=\"http://u/after\"/></feed>" rss-parse must
+  rss-link "http://u/after" ok eq assert
+"<feed><title>F</title><link href=\"  \"/><link href=\" http://u/pad \"/></feed>" rss-parse must
+  rss-link "http://u/pad" ok eq assert
+"<rss><channel><title>T</title><link></link><description>d</description><item><title>I</title></item></channel></rss>" rss-parse must 'el let
+el rss-link none eq assert
+el rss-items 0 get must rss-item-link none eq assert
 
 -- Adversarial: unknown root
 "<html><body>hi</body></html>" rss-parse xerr
@@ -269,10 +309,10 @@ pod-attrs 0 get must 1 get must "true" eq assert
 -- Build a feed record by hand and serialize.
 rec "rss" 'kind into
     "My Feed" 'title into
-    "http://example.com" 'link into
+    "http://example.com" ok 'link into
     "A feed" 'description into
     list
-      rec "Post 1" 'title into "http://a/1" 'link into "body 1" 'summary into
+      rec "Post 1" 'title into "http://a/1" ok 'link into "body 1" 'summary into
           "Mon, 01 Jan 2024" 'published into "http://a/1" 'id into list 'attrs into
       push
     'items into
@@ -285,15 +325,15 @@ xml-out rss-parse must 'rt let
 rt rss-kind "rss" eq assert
 rt rss-title "My Feed" eq assert
 rt rss-items 0 get must rss-item-title "Post 1" eq assert
-rt rss-items 0 get must rss-item-link "http://a/1" eq assert
+rt rss-items 0 get must rss-item-link "http://a/1" ok eq assert
 
 -- Atom output roundtrip: build an atom feed, serialize, reparse.
 rec "atom" 'kind into
     "Atom Feed" 'title into
-    "http://example.com" 'link into
+    "http://example.com" ok 'link into
     "Atom desc" 'description into
     list
-      rec "Atom Post" 'title into "http://a/1" 'link into "atom body" 'summary into
+      rec "Atom Post" 'title into "http://a/1" ok 'link into "atom body" 'summary into
           "2024-01-01T00:00:00Z" 'published into "urn:uuid:1" 'id into list 'attrs into
       push
     'items into
@@ -303,8 +343,16 @@ atom-feed rss-to-xml 'atom-xml let
 atom-xml rss-parse must 'art let
 art rss-kind "atom" eq assert
 art rss-title "Atom Feed" eq assert
-art rss-link "http://example.com" eq assert
+art rss-link "http://example.com" ok eq assert
 art rss-items 0 get must rss-item-title "Atom Post" eq assert
-art rss-items 0 get must rss-item-link "http://a/1" eq assert
+art rss-items 0 get must rss-item-link "http://a/1" ok eq assert
 art rss-items 0 get must rss-item-id "urn:uuid:1" eq assert
+
+-- rss-to-xml leaves out an absent link, and the reparse gives none again.
+["rss" "atom"] ('k let
+  rec k 'kind into "T" 'title into none 'link into "d" 'description into
+    list rec "I" 'title into none 'link into "s" 'summary into "p" 'published into "i" 'id into list 'attrs into push
+    'items into
+  rss-to-xml rss-parse must 'nl let
+  nl rss-link none eq nl rss-items 0 get must rss-item-link none eq and) each [1 1] eq assert
 

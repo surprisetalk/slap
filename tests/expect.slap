@@ -84,6 +84,14 @@ answer 42 eq assert
 (2 mul) (1 plus) cat
 3 swap apply 7 eq assert
 
+-- cat on records: the right field replaces the left one
+{'a 1 'b 2} {'a 5} cat {'a 5 'b 2} eq assert
+{'a 1 'b 2} {'a 5} cat len 2 eq assert
+
+-- cat on closures made by two calls of one word joins them
+( 'cc-n let (cc-n) ) 'cc-mk let
+1 cc-mk 2 cc-mk cat apply 2 eq assert 1 eq assert
+
 -- ===== Lists: creation =====
 list [] eq assert
 [0 1 2] len 3 eq assert
@@ -707,6 +715,7 @@ crlf 1 get must 10 eq assert
 123 int-str "123" eq assert
 -1 int-str "-1" eq assert
 -99 int-str "-99" eq assert
+-9223372036854775807 1 sub int-str "-9223372036854775808" eq assert
 1000 int-str "1000" eq assert
 
 -- str-find
@@ -1330,6 +1339,16 @@ none () no eq assert
 "123abc" ok parse-int must "abc" eq assert 123 eq assert
 "-123" ok parse-int must drop -123 eq assert
 
+-- parse-int refuses a number past the int range and keeps both ends
+"9223372036854775808" ok parse-int "fallback" default "fallback" eq assert 0 eq assert
+"18446744073709551617" ok parse-int "fallback" default "fallback" eq assert 0 eq assert
+"-9223372036854775809" ok parse-int "fallback" default "fallback" eq assert 0 eq assert
+"9223372036854775807" ok parse-int must drop 9223372036854775807 eq assert
+"-9223372036854775808" ok parse-int must drop -9223372036854775808 eq assert
+"00000000000000000000009" ok parse-int must drop 9 eq assert
+"9223372036854775808" ok parse-int () {'ok (drop "parsed") 'no ()} case
+  "parse-int: expected an int from -9223372036854775808 to 9223372036854775807, got a number outside that range" eq assert 0 eq assert
+
 -- parse-int failure returns no with default 0
 "abc" ok parse-int "fallback" default "fallback" eq assert 0 eq assert
 
@@ -1802,6 +1821,9 @@ dict "k" 1 insert dict "k" 2 insert eq not assert
 -- two closures are equal only when they share code and frame
 ('n let (n plus)) 'mk-add-eq let 1 mk-add-eq 2 mk-add-eq eq not assert
 (1 plus) (1 plus) eq assert
+-- closures that read different lists by nth or quote are unequal
+('xs let ('xs 0 nth must)) 'mk-nth let [1] mk-nth 'a-nth let [2] mk-nth 'b-nth let 'a-nth quote 'b-nth quote eq not assert
+('xs let ('xs quote)) 'mk-q let [1] mk-q 'a-q let [2] mk-q 'b-q let 'a-q quote 'b-q quote eq not assert
 
 -- ===== Done =====
 "All tests passed!" print

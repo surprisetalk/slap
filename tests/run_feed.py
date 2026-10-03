@@ -86,6 +86,20 @@ with tempfile.TemporaryDirectory() as d:
     check("notfeed-reason", "unknown feed format" in r.stderr, repr(r.stderr[:200]))
     check("notfeed-no-digest", "==" not in r.stdout)
 
+    # rel="self" names the feed document, not its page, so neither the feed nor the entry has a link line.
+    selfonly = os.path.join(d, "self.xml")
+    with open(selfonly, "w") as f:
+        f.write(
+            '<feed><title>S</title><link rel="self" href="http://u/feed.atom"/>'
+            '<entry><title>E</title><link rel="self" href="http://u/e.atom"/><id>1</id></entry></feed>'
+        )
+    r = run(selfonly)
+    check(
+        "atom-self-link-omitted",
+        r.returncode == 0 and r.stdout == "== S (atom)\n\n 1. E\n\n1 item\n",
+        repr(r.stdout[:200]) + r.stderr[:200],
+    )
+
     # A feed far past the old ceiling of 116 items, which recursion per element set.
     big = os.path.join(d, "big.xml")
     with open(big, "w") as f:

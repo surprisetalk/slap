@@ -40,10 +40,13 @@ args len 0 gt (args 0 get must) ("examples/feeds/sample.xml") if 'SRC let
 -- run of stray blank lines.
 ('iv let iv len 0 gt ("    " iv squeeze cat LF cat) ("") if) 'field let
 
+-- A feed or item without a link prints no link line.
+(() {'ok (field) 'no (drop "")} case) 'link-field let
+
 -- item-block: (item -- text).  Everything after the item's number.
 ('it let it rss-item-title squeeze LF cat
   it rss-item-published field cat
-  it rss-item-link      field cat
+  it rss-item-link      link-field cat
   it rss-item-summary clip field cat) 'item-block let
 
 -- A read that fails is fatal: a digest of a file we could not open would be an
@@ -64,7 +67,7 @@ PARSED must 'FEED let
 -- every item.
 FEED rss-items 'ITEMS let
 "== " FEED rss-title squeeze cat " (" cat FEED rss-kind cat ")" cat LF cat
-FEED rss-link field cat
+FEED rss-link link-field cat
 FEED rss-description field cat
 1 ITEMS len 1 plus range (num2 ". " cat LF swap cat) each
 ITEMS (item-block) each zip ('p let p 0 get must p 1 get must cat) each

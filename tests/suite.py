@@ -98,6 +98,14 @@ def steps(slow):
             "errors": ("python3 tests/run_errors.py", None),
             "closures": (closures, None),
             "profile": (profile, None),
+            "deep closure chain": (
+                "echo \"(0) 100000 ('c let (c apply 1 plus) 'g let 'g quote) repeat drop\" | ./slap",
+                None,
+            ),
+            "deep value error prints once": (
+                "test $(echo \"[] 'n tag 20000 (list swap push 'n tag) repeat print\" | ./slap 2>&1 | grep -c 'C stack exhausted') -eq 1",
+                None,
+            ),
             "closed stdout": ("echo '42 print' | ./slap >&-; test $? -eq 1", None),
             "stdout reader quits": ("echo '(1) (1 print) while' | ./slap | head -1 >/dev/null; true", None),
             "stdout write keeps order": (

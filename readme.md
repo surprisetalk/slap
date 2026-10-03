@@ -206,6 +206,8 @@ A body passed as an input is a value: `apply` runs it, and the name passes it on
 5 swap apply              -- 81
 ```
 
+Two closures made in different frames join too. The joined body runs the first closure, then the second, and each one looks its names up in its own frame.
+
 ## data types
 
 ### lists
@@ -263,9 +265,10 @@ Key-value maps keyed by symbols.
 {'x 10 'y 20} 'x (1 plus) edit  -- {'x 11 'y 20}
 {'x 10 'y 20} 30 'x into     -- {'x 30 'y 20}
 rec 10 'x into 20 'y into    -- {'x 10 'y 20}
+{'x 10 'y 20} {'x 5} cat     -- {'x 5 'y 20}
 ```
 
-`at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. A record's type names its keys and the type of each value, `{'x int 'y int}`. `into` adds a key, or replaces the value of a key the record has. A word that reads `'k` from its input takes any record that has `'k`, so every caller must pass one. Records in one list, or left by the two branches of an `if`, have the same keys. The key is written as a literal right before `at`, `into` or `edit`; for keys that are data, use a dict.
+`at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. A record's type names its keys and the type of each value, `{'x int 'y int}`. `into` adds a key, or replaces the value of a key the record has. `cat` puts each field of the right record into the left one. A word that reads `'k` from its input takes any record that has `'k`, so every caller must pass one. Records in one list, or left by the two branches of an `if`, have the same keys. The key is written as a literal right before `at`, `into` or `edit`; for keys that are data, use a dict.
 
 ### dicts
 
@@ -354,7 +357,7 @@ A box stays on the stack from `box` to `free`: it cannot be bound with `let`, st
 
 All code is type-checked before it runs. Types are inferred, so a program needs no annotations. The checker unifies types, as ML and Haskell do; when it cannot prove a program safe, it refuses the program.
 
-A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, and the rest of the stack stays as it was. A word defined from a body is generic: `(dup) 'twin let` works on any value it can copy. A value bound with `let` has one type, but a bound body may run at any stack depth.
+A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, and the rest of the stack stays as it was. A word defined from a body is generic: `(dup) 'twin let` works on any value it can copy. A value bound with `let` has one type, but a bound body the program made may run at any stack depth. A caller's body may not, since it may read below its inputs, and neither may a body whose type a later `case` default or a tag's payload can still change: the checker refuses such a use.
 
 ### types
 
@@ -802,7 +805,6 @@ The checker runs on the prelude and the program before anything executes. It ref
 **What it does *not* catch**
 - Division by zero, out-of-bounds `set`, `nth` or `peek`, and `must` on a `'no` (runtime errors with a message).
 - Recursion depth, memory limits, and other runtime resource exhaustion.
-- `cat` of two closures made in different frames dies at runtime.
 
 ## testing
 
@@ -813,6 +815,12 @@ make status      # every likely failure mode, scored; 1.0 is the minimum pass
 ```
 
 `tests/expect.slap` holds the assertions, `tests/errors.slap` every error a program can hit (each case names the message it must print), and `tests/run_*.py` drive the apps from outside: servers over real sockets, CLIs against real files, codecs against their file formats. `tests/suite.py` runs them all.
+
+`.githooks/pre-commit` runs `make test` before each commit. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
 
 ## building
 
