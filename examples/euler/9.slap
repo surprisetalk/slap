@@ -21,9 +21,9 @@
     pyth?
     (
       -- stack: a b
-      over over plus 1000 swap sub
-      -- stack: a b c
-      (mul) dip mul print halt
+      over over over over plus 1000 swap sub
+      -- stack: a b a b c
+      (mul) dip mul print
     ) () if
     1 plus
   )

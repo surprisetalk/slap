@@ -1,0 +1,49 @@
+-- raycast-sdl.slap: the SDL shell for raycast.slap. Walk with W/A/S/D, and
+-- turn with the arrows.
+--
+--   cat examples/raycast.slap examples/raycast-sdl.slap | ./slap-sdl
+
+-- state: [px py angle fwd strafe turn] as one flat list, threaded on the stack
+-- All six slots are floats: a list is homogeneous, so the three input flags
+-- ride along as -1.0/0.0/1.0 rather than forcing an itof at every use.
+list PX0 push PY0 push 0.0 push 0.0 push 0.0 push 0.0 push
+
+-- 26 W, 22 S, 4 A, 7 D, 1073741903 right, 1073741904 left
+('k let 'st let
+ k 26 eq (1.0) (k 22 eq (-1.0) (0.0) if) if 'f let
+ k 4 eq (-1.0) (k 7 eq (1.0) (0.0) if) if 'sX let
+ k 1073741903 eq (1.0) (k 1073741904 eq (-1.0) (0.0) if) if 'tn let
+ st 3 f set must 4 sX set must 5 tn set must) 'apply-key let
+
+'keydown (apply-key) on
+'keyup (drop 3 0.0 set must 4 0.0 set must 5 0.0 set must) on
+
+'tick (drop
+  dup 0 peek must 'px let 1 peek must 'py let 2 peek must 'ang let
+  3 peek must 'f let 4 peek must 'sX let 5 peek must 'tn let
+  drop
+  ang tn 0.06 mul plus 'na let
+  px na fcos f 0.08 mul mul plus  na pi 2.0 div plus fcos sX 0.08 mul mul plus 'nx let
+  py na fsin f 0.08 mul mul plus  na pi 2.0 div plus fsin sX 0.08 mul mul plus 'ny let
+  'MAP ny ftoi MW mul nx ftoi plus nth must 0 eq 'clear0 let
+  clear0 (nx) (px) if 'fx2 let
+  clear0 (ny) (py) if 'fy2 let
+  0 fx2 set must 1 fy2 set must 2 na set must) on
+
+('st let 0 clear
+  'st 0 nth must 'px let
+  'st 1 nth must 'py let
+  'st 2 nth must 'ang let
+  0 SCRH 2 div SCRW SCRH 2 div 1 fill-rect
+  0 (dup SCRW lt) (
+    'col let
+    col itof SCRW itof div 0.5 sub FOV mul 'off let
+    px py ang off plus cast off fcos mul 'd let
+    d 0.05 lt (0.05) (d) if 'dd let
+    SCRH itof dd div ftoi 'h let
+    h SCRH gt (SCRH) (h) if 'hh let
+    SCRH hh sub 2 div 'top let
+    dd 3.0 lt (3) (dd 6.0 lt (2) (1) if) if 'shade let
+    col top 1 hh shade fill-rect
+    col 1 plus
+  ) while drop) show

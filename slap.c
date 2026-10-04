@@ -520,11 +520,11 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
     default: die("lt: unsupported type %s (only int and float are ordered)", valtag_name(atop.tag)); return 0;
     }
 }
-static uint32_t S_CAT, S_CAT_LEFT, S_CAT_RIGHT, S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_HALT, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_EACH, S_FOLD, S_ON, S_SHOW;
+static uint32_t S_CAT, S_CAT_LEFT, S_CAT_RIGHT, S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_EACH, S_FOLD, S_ON, S_SHOW;
 static void syms_init(void) {
     S_LET=sym_intern("let"); S_EFFECT=sym_intern("effect");
     S_OK=sym_intern("ok"); S_NO=sym_intern("no"); S_NONE=sym_intern("none"); S_CASE=sym_intern("case"); S_MUST=sym_intern("must");
-    S_HALT=sym_intern("halt"); S_TAG=sym_intern("tag"); S_QUOTE=sym_intern("quote");
+    S_TAG=sym_intern("tag"); S_QUOTE=sym_intern("quote");
     S_AT=sym_intern("at"); S_EDIT=sym_intern("edit"); S_INTO=sym_intern("into"); S_KEY=sym_intern("key"); S_VALUE=sym_intern("value");
     S_CAT=sym_intern("cat"); S_CAT_LEFT=sym_intern("cat-left"); S_CAT_RIGHT=sym_intern("cat-right"); S_NTH=sym_intern("nth"); S_EACH=sym_intern("each"); S_FOLD=sym_intern("fold"); S_ON=sym_intern("on"); S_SHOW=sym_intern("show");
 }
@@ -704,7 +704,6 @@ static int ty_unify_at(int a, int b, int depth);
 static int ty_copy_parts(int t);
 static int ty_tag_payload(uint32_t tag);
 static int ty_fixed(int v) { return ty[v].rigid || ty[v].sealed; }
-static int ty_stack_copy(int s);
 /* A compound kind by name, for a message where the full type would read as another type (`int list`
    prints as str). */
 static const char *ty_kind_noun(int k) {
@@ -728,7 +727,6 @@ static int ty_bind(int v, int t) {
         else if (ty[v].kind == K_RVAR) snprintf(ty_why, sizeof ty_why, "a record would have to contain itself: one path adds a field the other has not");
         else { char s[256]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a value would have to contain itself, as %s", s); }
         return 1; }
-    if (ty[v].kind == K_SVAR && (ty[v].prot & P_COPY)) { ty[v].link = t; return ty_stack_copy(t); }
     if ((ty[v].kind == K_VAR || ty[v].kind == K_TVAR) && ty[v].prot) {
         if (ty[t].kind == ty[v].kind && ty_fixed(t) && (ty[v].prot & ~ty[t].prot)) {
             snprintf(ty_why, sizeof ty_why, "the body needs a %s value where the signature allows any type", ty_prot_name(ty[v].prot & ~ty[t].prot)); return 1; }
@@ -751,17 +749,6 @@ static int ty_bind(int v, int t) {
 }
 /* t must be copyable: unify it with a variable that asks so. */
 static int ty_need(int t, int prot) { int w = ty_new(K_VAR, 0, 0, 0); ty[w].prot = (uint8_t)prot; return ty_unify_at(t, w, 0); }
-/* Every value on stack s is copyable, and so is every value its rest later stands for (a stack variable
-   marked copy). A signature's or a sealed rest is a caller's stack, which may hold a box. */
-static int ty_stack_copy(int s) {
-    for (int hops = -ty_n; ; ) {
-        s = ty_find(s);
-        if (ty[s].kind == K_SCONS) { if (ty_need(ty[s].a, P_COPY)) return 1; s = ty_rest(s, &hops); continue; }
-        if (ty[s].kind != K_SVAR || (ty[s].prot & P_COPY)) return 0;
-        if (ty_fixed(s)) { snprintf(ty_why, sizeof ty_why, "the stack below this body is a caller's, which may hold a box or a socket"); return 1; }
-        ty[s].prot |= P_COPY; return 0;
-    }
-}
 /* A result or tag is copyable when every payload it may hold is; an open tag set asks it of the tags it
    gains later. The term's own prot marks it checked, so a tag whose payload holds the same tag ends. */
 static int ty_copy_parts(int t) {
@@ -942,7 +929,7 @@ static const char *TYPES =
     "'eq ( 'a 'a -> int ) 'lt ( 'a ord 'a ord -> int )\n"
     "'itof ( int -> float ) 'ftoi ( float -> int ) 'fsqrt ( float -> float ) 'ffloor ( float -> float ) 'fround ( float -> float )\n"
     "'fexp ( float -> float ) 'flog ( float -> float ) 'fpow ( float float -> float ) 'fatan2 ( float float -> float )\n"
-    "'print ( 'a -> ) 'assert ( int -> ) 'millis ( -> int ) 'datetime ( -> int list ) 'random ( int -> int ) 'halt ( ..s -> ..t ) 'isheadless ( -> int )\n"
+    "'print ( 'a -> ) 'assert ( int -> ) 'millis ( -> int ) 'datetime ( -> int list ) 'random ( int -> int ) 'isheadless ( -> int )\n"
     "'apply ( ..s ( ..s -> ..t ) -> ..t ) 'dip ( ..s 'x ( ..s -> ..t ) -> ..t 'x )\n"
     "'if ( ..s int ( ..s -> ..t ) ( ..s -> ..t ) -> ..t ) 'while ( ..a ( ..a -> ..b int ) ( ..b -> ..a ) -> ..b )\n"
     "'each ( ..s 'a list ( ..!r 'a -> ..!r 'b ) -> ..s 'b list ) 'fold ( ..s 'a list 'b ( ..!r 'b 'a -> ..!r 'b ) -> ..s 'b )\n"
@@ -1449,8 +1436,7 @@ static int ty_value(int b) {
     int g = e ? ty_find(e->rest) : 0;
     if (!g || ty[g].kind != K_SVAR) return tyb[b].ty;
     e->used = 1;
-    int w = ty_new(K_SVAR, 0, 0, 0); ty[w].prot = ty[g].prot;
-    return ty_subst(tyb[b].ty, g, w);
+    return ty_subst(tyb[b].ty, g, ty_new(K_SVAR, 0, 0, 0));
 }
 /* The cases made since `from`, once the word (or {...} literal) holding them is inferred: `word` is its
    type, or 0 at the end of the program. A default runs when the value's set is open to more tags (it
@@ -1638,7 +1624,6 @@ static void ty_range(Token *toks, int i, int end) {
             }
             if (w == S_CASE) { ty_err(line, "case needs its clauses written right before it, as in `x 0 {'ok (…) 'no (…)} case`."); ty_pop(); ty_pop(); ty_pop(); ty_push(ty_new(K_VAR, 0, 0, 0)); break; }
             if (w == S_LEND) { ty_lend(line); break; }
-            if (w == S_HALT && ty_stack_copy(ty_cur)) ty_err(line, "halt ends the program, so a value it leaves on the stack is never freed: %s.", ty_why);
             /* eq and neq on two symbols compare them; they do not make them one type */
             if (w == S_EQ || w == S_NEQ) {
                 int st = ty_find(ty_cur), nx = ty[st].kind == K_SCONS ? ty_find(ty[st].b) : 0;
@@ -1712,7 +1697,8 @@ static void ty_range(Token *toks, int i, int end) {
                 if (ty_body_depth) ty_err(line, "show starts the event loop and never returns, so it runs at the top level, after every handler.");
                 ty_runs("show", line); ty_shown = 1;
                 int render = ty_pop(), below = ty_cur, top = ty_pop(); ty_cur = below;
-                if (ty_need(top, P_COPY)) ty_err(line, "show's render body gets a copy of the top value each frame, so it is copyable: %s.", ty_why);
+                for (int x = ty_find(below), hops = -ty_n; ty[x].kind == K_SCONS; x = ty_rest(x, &hops))
+                    if (ty_need(ty[x].a, P_COPY)) { ty_err(line, "show ends the program when its window closes, so a value it leaves on the stack is never freed: %s.", ty_why); break; }
                 for (int k = 0; k < ty_on_n; k++) {
                     int in = ty_new(K_SCONS, ty_new(K_INT, 0, 0, 0), below, 0);
                     if (ty_on_mouse[k]) in = ty_new(K_SCONS, ty_new(K_INT, 0, 0, 0), in, 0);
@@ -1919,7 +1905,6 @@ static void prim_print(Frame *e){(void)e;if(sp<=0)die("print: stack underflow");
 /* A failed write to stdout must not exit 0. */
 static void stdout_check(void){ if(fflush(stdout)||ferror(stdout)){ fprintf(stderr,"slap: cannot write to stdout: %s\n",strerror(errno)); _exit(1); } }
 static void prim_assert(Frame *e){(void)e;if(!pop_int())die("assertion failed: expected a nonzero int, got 0");}
-static void prim_halt(Frame *e){(void)e;exit(0);}
 /* splitmix64 (Steele, Lea & Flood 2014): 64-bit output, where rand() stops at RAND_MAX. */
 static uint64_t rng_state;
 static uint64_t rng_next(void){ uint64_t z=(rng_state+=0x9E3779B97F4A7C15ull); z=(z^(z>>30))*0xBF58476D1CE4E5B9ull; z=(z^(z>>27))*0x94D049BB133111EBull; return z^(z>>31); }
@@ -3030,7 +3015,7 @@ static void register_prims(void) {
         R(plus,plus),R(sub,sub),R(mul,mul),R(div,div),R(mod,mod),R(divmod,divmod),R(wrap,wrap),
         R(band,band),R(bor,bor),R(bxor,bxor),R(bnot,bnot),R(shl,shl),R(shr,shr),
         R(eq,eq),R(lt,lt),R(and,and),R(or,or),
-        R(print,print),R(assert,assert),R(halt,halt),R(random,random),
+        R(print,print),R(assert,assert),R(random,random),
         R(if,if),R(case,case),R(while,while),
         R(itof,itof),R(ftoi,ftoi),R(fsqrt,fsqrt),
         R(ffloor,ffloor),R(fround,fround),R(fexp,fexp),R(flog,flog),R(fpow,fpow),R(fatan2,fatan2),
@@ -3102,7 +3087,7 @@ int main(int argc, char **argv) {
     if(errors>0){fprintf(stderr,"%d type error(s)\n",errors);return 1;}
     if(check_only){fprintf(stderr,"type check passed\n");return 0;}
     current_loc=LOC_PACK(FID_STDIN,0,0);
-    /* Registered after stdout_check, so it runs first, on halt and die too. */
+    /* Registered after stdout_check, so it runs first, on die too. */
     if(profile){ prof_last=prof_now(); atexit(prof_report); }
     eval(user_tokens,user_tok_count,global);
     return 0;

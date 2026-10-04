@@ -1,8 +1,7 @@
 -- chip8.slap: a CHIP-8 emulator.
 --
---   ./slap-sdl game.ch8 < examples/chip8.slap     -- play a ROM (or no arg: demo)
---   ./slap --headless < examples/chip8.slap        -- run the opcode self-test, print ok, exit
---   ./slap --check    < examples/chip8.slap        -- type-check only
+--   cat examples/chip8.slap examples/chip8-sdl.slap | ./slap-sdl game.ch8  -- play a ROM (or no arg: demo)
+--   ./slap --headless < examples/chip8.slap                               -- run the opcode self-test, print ok
 --
 -- Keypad (CHIP-8 -> keyboard):  1 2 3 C -> 1 2 3 4 ,  4 5 6 D -> Q W E R ,
 --   7 8 9 E -> A S D F ,  A 0 B F -> Z X C V.  Sound timer > 0 flashes a border.
@@ -283,36 +282,5 @@ isheadless (
   blank FONT 80 load-at DEMO-ROM 512 load-at KEY-I 5 plus 1 sm 6 run-n
     DISP-I 14 64 mul plus 28 plus get must 1 eq assert
 
-  "chip8-selftest-ok" print halt
+  "chip8-selftest-ok" print
 ) () if
-
--- ===== SDL shell (play mode; the terminal --headless path halts above) =====
-
-args len 0 gt (args 0 get must read must) (DEMO-ROM) if 'ROM let
-
-blank FONT 80 load-at ROM 512 load-at
-
-'keydown ('ksym let
-  KEYMAP-SDL ksym index-of () {
-    'ok ('kix let KEYMAP-C8 kix get must 'c8k let KEY-I c8k plus 1 set must)
-    'no (drop)
-  } case) on
-
-'keyup ('usym let
-  KEYMAP-SDL usym index-of () {
-    'ok ('uix let KEYMAP-C8 uix get must 'uc8 let KEY-I uc8 plus 0 set must)
-    'no (drop)
-  } case) on
-
-'tick (drop
-  dup DT-I get must 'dtv let dtv 0 gt (DT-I dtv 1 sub set must) () if
-  dup ST-I get must 'stv let stv 0 gt (ST-I stv 1 sub set must) () if
-  10 run-n) on
-
-('sg let
- 0 clear
- 0 (dup 2048 lt) ('pxi let 'sg DISP-I pxi plus nth must 1 eq (
-     pxi 64 mod 10 mul  pxi 64 div 10 mul 80 plus  10 10 3 fill-rect
-   ) () if pxi 1 plus) while drop
- 'sg ST-I nth must 0 gt (0 0 640 6 2 fill-rect  0 474 640 6 2 fill-rect) () if
-) show

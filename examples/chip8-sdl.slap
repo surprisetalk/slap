@@ -1,0 +1,33 @@
+-- chip8-sdl.slap: the SDL shell for chip8.slap. It loads the ROM, maps the
+-- keypad and draws the display.
+--
+--   cat examples/chip8.slap examples/chip8-sdl.slap | ./slap-sdl game.ch8
+
+args len 0 gt (args 0 get must read must) (DEMO-ROM) if 'ROM let
+
+blank FONT 80 load-at ROM 512 load-at
+
+'keydown ('ksym let
+  KEYMAP-SDL ksym index-of () {
+    'ok ('kix let KEYMAP-C8 kix get must 'c8k let KEY-I c8k plus 1 set must)
+    'no (drop)
+  } case) on
+
+'keyup ('usym let
+  KEYMAP-SDL usym index-of () {
+    'ok ('uix let KEYMAP-C8 uix get must 'uc8 let KEY-I uc8 plus 0 set must)
+    'no (drop)
+  } case) on
+
+'tick (drop
+  dup DT-I get must 'dtv let dtv 0 gt (DT-I dtv 1 sub set must) () if
+  dup ST-I get must 'stv let stv 0 gt (ST-I stv 1 sub set must) () if
+  10 run-n) on
+
+('sg let
+ 0 clear
+ 0 (dup 2048 lt) ('pxi let 'sg DISP-I pxi plus nth must 1 eq (
+     pxi 64 mod 10 mul  pxi 64 div 10 mul 80 plus  10 10 3 fill-rect
+   ) () if pxi 1 plus) while drop
+ 'sg ST-I nth must 0 gt (0 0 640 6 2 fill-rect  0 474 640 6 2 fill-rect) () if
+) show

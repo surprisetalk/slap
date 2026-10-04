@@ -174,7 +174,8 @@ def steps(slow):
     )
     for name in ["chip8", "uxn", "maze", "raycast"]:
         out[name] = (
-            f"./slap --headless < examples/{name}.slap",
+            f"cat examples/{name}.slap examples/{name}-sdl.slap | ./slap --check"
+            f" && ./slap --headless < examples/{name}.slap",
             lambda o, n=name: f"{n}-selftest-ok" in o,
         )
     for name in ["icn", "chr", "nmt", "tga", "gly", "ulz"]:

@@ -1,0 +1,17 @@
+-- maze-sdl.slap: the SDL shell for maze.slap. It draws a maze, and any key
+-- builds another.
+--
+--   cat examples/maze.slap examples/maze-sdl.slap | ./slap-sdl
+
+build
+
+'keydown (drop drop build) on
+
+('st let 0 clear
+  0 (dup GN lt) (
+    'i let
+    'st i nth must 'v let
+    v 1 eq (0) (v 2 eq (3) (1) if) if 'col let
+    i GW mod S mul OX plus  i GW div S mul OY plus  S S col fill-rect
+    i 1 plus
+  ) while drop) show

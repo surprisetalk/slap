@@ -13,17 +13,15 @@
 ('st let "/dev/stdout" st LF cat write must drop) 'say let
 
 args len 2 lt (
-  "usage: PORT COMMAND [ARGS...]" say
-  "  cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-client.slap | ./slap 4321 get greeting" say
-  halt) () if
+  "kv-client: expected PORT COMMAND [ARGS...], as in `cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-client.slap | ./slap 4321 get greeting`" no must
+) () if
 
 args 0 get must ok parse-int must len 0 eq assert dup 0 gt over 65536 lt and assert 'PORT let
 args 1 drop-n " " str-join 'LINE let
 
 LINE (32 lt) filter len 0 gt (
-  "kv-client: command arguments must not contain control characters" say
-  "  the protocol is one line per command, so a newline or tab would split it" say
-  halt) () if
+  "kv-client: command arguments contain a control character; the protocol is one line per command, so a newline or tab would split it" no must
+) () if
 
 ('hs let hs LF str-find () {'ok (drop 1) 'no (drop 0)} case) 'has-lf let
 

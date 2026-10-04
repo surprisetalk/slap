@@ -1,8 +1,7 @@
 -- uxn.slap: a Uxn/Varvara emulator.
 --
---   ./slap-sdl game.rom < examples/uxn.slap    -- run a ROM (or no arg: demo)
---   ./slap --headless   < examples/uxn.slap    -- run the opcode self-test, print ok, exit
---   ./slap --check      < examples/uxn.slap    -- type-check only
+--   cat examples/uxn.slap examples/uxn-sdl.slap | ./slap-sdl game.rom  -- run a ROM (or no arg: demo)
+--   ./slap --headless < examples/uxn.slap                              -- run the opcode self-test, print ok
 --   ./slap --headless game.rom [frames] < examples/uxn.slap
 --       boot a ROM with no window and write the composited canvas to stdout,
 --       one digit (palette index) per pixel after a `UXNDUMP` line, preceded by
@@ -736,10 +735,10 @@ isheadless args len 0 eq and (
   130 32 dev!   32 dev2 60000 run-at
   9 gm 61 eq assert                                                    -- down moves py
 
-  "uxn-selftest-ok" print halt
+  "uxn-selftest-ok" print
 ) () if
 
--- ===== SDL shell =====
+-- ===== the ROM =====
 
 args len 0 gt (args 0 get must read must) (DEMO-ROM) if 'ROM let
 ROM load-rom
@@ -759,7 +758,7 @@ ROM load-rom
 -- after the input. These ROMs animate, so the count is part of the comparison,
 -- not a budget: at 2 frames screen.rom renders the reference image shifted two
 -- pixels, which looks exactly like an off-by-two in Screen/sprite.
-isheadless (
+isheadless args len 0 gt and (
   args len 1 gt (args 1 get must 0 ('c let 10 mul c 48 sub plus) fold) (60) if 'FRAMES let
 
   -- A compute-heavy reset vector (mandelbrot draws the whole set before its
@@ -818,56 +817,4 @@ isheadless (
         x 1 plus) while drop
      print
      y 1 plus) while drop
-  halt
 ) () if
-
--- SDL keysym -> Varvara Controller button bit
---   up down left right  z=A x=B lshift=select return=start
-[1073741906 1073741905 1073741904 1073741903 122 120 1073742049 13] 'KEY-SDL let
-[16         32          64          128         1   2   4          8] 'KEY-BIT let
-
-('k let KEY-SDL k index-of () {
-   'ok ('i let 'KEY-BIT i nth must 'bit let
-        130 dev 'b let 130 b bit bor dev!
-        128 dev2 60000 run-at)
-   'no (drop k 0 gt (131 k 255 band dev!  128 dev2 60000 run-at  131 0 dev!) () if)
- } case) 'key-down let
-
-'keydown (key-down) on
-'keyup ('k let KEY-SDL k index-of () {
-   'ok ('i let 'KEY-BIT i nth must 'bit let
-        130 dev 'b let 130 b bit bnot band 255 band dev!
-        128 dev2 60000 run-at)
-   'no (drop)
- } case) on
-
-'mousemove ('y let 'x let
-  146 x 2 div 65535 band dev2!  148 y 2 div 65535 band dev2!
-  144 dev2 60000 run-at) on
-'mousedown ('y let 'x let x drop y drop
-  150 1 dev!  144 dev2 60000 run-at) on
-'mouseup ('y let 'x let x drop y drop
-  150 0 dev!  144 dev2 60000 run-at) on
-
--- The tick handler owns the real machine, so the dirty box is reset here; the
--- render body only ever sees a copy and cannot clear it.
-'tick (drop
-  DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!
-  32 dev2 60000 run-at) on
-
--- The render body gets a COPY of the machine, so anything written here is
--- discarded -- which is why the dirty box is reset in the tick handler above.
--- The canvas persists between frames, so only the changed rectangle is redrawn.
-( DX0-I cell 'x0 let DY0-I cell 'y0 let DX1-I cell 'x1 let DY1-I cell 'y1 let
-  RY-I y0 cell!
-  (RY-I cell y1 le) (
-    RX-I x0 cell!
-    (RX-I cell x1 le) (
-      RX-I cell 'x let RY-I cell 'y let
-      FG-B y SCR-W mul plus x plus cell 'fg let
-      fg 0 neq (fg) (BG-B y SCR-W mul plus x plus cell) if 'ci let
-      SHADE-I ci plus cell 'sh let
-      x 2 mul y 2 mul 2 2 sh fill-rect
-      RX-I cell 1 plus 'nx let RX-I nx cell!) while
-    RY-I cell 1 plus 'ny let RY-I ny cell!) while
-  drop) show
