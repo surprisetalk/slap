@@ -19,5 +19,5 @@ ufx-data ufx-decode must
   'glyphs at len 1 eq assert
 ufx-data ufx-decode must ufx-encode ufx-data eq assert
 "fonts/atari8.uf1" read must dup ufx-decode must ufx-encode eq assert
-[1 2 3] ufx-decode () {'ok (drop "") 'no ()} case "ufx: shorter than the 256-byte width table" eq assert
-ufx-data 1 push ufx-decode () {'ok (drop "") 'no ()} case "ufx: glyph data is not a whole number of 8-byte tiles" eq assert
+[1 2 3] ufx-decode {'ok (drop "") 'no ()} case "ufx: shorter than the 256-byte width table" eq assert
+ufx-data 1 push ufx-decode {'ok (drop "") 'no ()} case "ufx: glyph data is not a whole number of 8-byte tiles" eq assert

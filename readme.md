@@ -148,8 +148,8 @@ foo                   -- (1 2 3) on stack
 -- if: condition then two branches
 10 dup 5 lt (2 mul) (3 mul) if    -- 30
 
--- case: multi-way conditional with default (also dispatches on tagged values)
-10 0 {(5 lt) (2 mul) (20 lt) (3 mul)} case  -- 30
+-- case: one clause per tag (see tagged unions)
+5 'big tag {'big (2 mul) 'small (3 mul)} case  -- 10
 
 -- while: loop
 1 (dup 100 lt) (2 mul) while  -- 128
@@ -305,8 +305,8 @@ Tag a value with a symbol to create a sum type. Use `ok`/`no` for result types, 
 42 'custom tag                  -- 42 'custom tagged
 
 -- pattern matching with case on a tagged value
-123 'foo tag 0 {'foo (1 plus) 'bar (2 mul)} case  -- 124
-123 'zzz tag 0 {'foo (1 plus) 'bar (2 mul)} case  -- 0 (default fires; unmatched tag)
+123 'foo tag {'foo (1 plus) 'bar (2 mul)} case  -- 124
+123 'zzz tag {'foo (1 plus) '_ (drop 0)} case   -- 0: '_ takes any other tag
 
 -- monadic chaining with then/default
 ('d let 'n let
@@ -316,6 +316,8 @@ Tag a value with a symbol to create a sum type. Use `ok`/`no` for result types, 
 10 2 safe-div (3 mul ok) then -1 default   -- 15
 10 0 safe-div (3 mul ok) then -1 default   -- -1
 ```
+
+A `case` has a clause for every tag its value may carry, and the checker proves it at the case. A clause runs on its tag's payload. A last `'_` clause runs on the tagged value itself, for every tag the other clauses do not name. Without `'_`, every tag the value may carry needs a clause, and a value that may carry another tag is refused. A value whose tags are still open takes the clauses' tags as its own. So a word whose case has no `'_` takes only those tags, and a caller that passes another tag is refused at the call. A result case has an `'ok` and a `'no` clause, or a `'_` clause.
 
 `then` runs its body on an `'ok` payload and passes anything else through; the body returns the next tagged value:
 
@@ -358,7 +360,7 @@ A box stays on the stack from `box` to `free`: it cannot be bound with `let`, st
 
 All code is type-checked before it runs. Types are inferred, so a program needs no annotations. The checker unifies types, as ML and Haskell do; when it cannot prove a program safe, it refuses the program.
 
-A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, and the rest of the stack stays as it was. A word defined from a body is generic: `(dup) 'twin let` works on any value it can copy. A value bound with `let` has one type, but a bound body the program made may run at any stack depth. A caller's body may not, since it may read below its inputs, and neither may a body whose type a later `case` default or a tag's payload can still change: the checker refuses such a use.
+A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, and the rest of the stack stays as it was. A word defined from a body is generic: `(dup) 'twin let` works on any value it can copy. A value bound with `let` has one type, but a bound body the program made may run at any stack depth. A caller's body may not, since it may read below its inputs, and neither may a body whose type a tag's payload can still change: the checker refuses such a use.
 
 ### types
 
@@ -791,7 +793,7 @@ The checker runs on the prelude and the program before anything executes. It ref
 - `at` or `edit` on a key the record may lack. The checker follows records through `let`, stack words, calls, branches, loops, lists and tag payloads.
 - A list whose values differ in type, and `if` branches or `case` clauses that leave different types.
 - A tag used with two payload types.
-- A `case` that may meet a tag it does not name, when its default is not of the clauses' type. The checker infers which tags a value can carry from `ok`, `no`, `'x tag`, `then`, `pthen` and declared `either` types.
+- A `case` that may meet a tag no clause names, unless a last `'_` clause takes it. The checker infers which tags a value can carry from `ok`, `no`, `'x tag`, `then`, `pthen`, declared `either` types and the other cases on it.
 - A body that breaks its declared signature for some type the signature allows.
 - Code that takes more values than the stack holds.
 - A word used before its definition without `'name [sig] effect`, and a declared word never defined.
@@ -803,7 +805,7 @@ The checker runs on the prelude and the program before anything executes. It ref
 
 **Literals**
 - A `[...]` or `{...}` literal is built once, when the program is read. Its code sees only what is written inside it and the prelude. Build such a value at runtime instead: `list x push`, `rec x 'key into`.
-- A `{...}` literal is a record when its values pair up as `'key value`, and a tuple otherwise; `{}` is the empty record. Right before `case`, a `{...}` literal is a clause list, and every clause body is `(...)`: write `(drop 1)`, not `1`.
+- A `{...}` literal is a record: each value follows its `'key`, and `{}` is the empty record. For code that pushes values, write a body: `(1 2)`. Right before `case`, a `{...}` literal is a clause list of `'tag (body)` pairs: write `(drop 1)`, not `1`.
 
 **What it does *not* catch**
 - Division by zero, out-of-bounds `set`, `nth` or `peek`, and `must` on a `'no` (runtime errors with a message).

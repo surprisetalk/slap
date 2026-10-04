@@ -32,7 +32,7 @@ DICT = 'dict "k" 1 insert'
 # The box program runs 1,000,000 passes: a box's own header is 16 bytes.
 STEADY = [
     "('x let (x)) 'mk let 0 (dup 100000 lt) (dup mk drop 1 plus) while 100000 eq assert",
-    "('x let x 0 {(0 gt) (drop 1)} case) 'f let 0 100000 (drop 5 f) repeat drop",
+    "('x let x 'a tag {'a (x plus)} case) 'f let 0 100000 (drop 5 f) repeat drop",
     f"0 1000000 (drop {DICT} box free 0) repeat drop",
     f"0 100000 (drop {{'b {DICT}}} drop 0) repeat drop",
     f"0 100000 (drop ({{'b {DICT}}} drop) (0) cat apply) repeat drop",

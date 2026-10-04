@@ -36,7 +36,7 @@ args 2 drop-n 'REST let
 ("items" "done" jd-bool jd-field jd-list jd-field) 'dec-dones let
 
 ('what let 'res let
- res () {'ok (drop "") 'no ()} case 'msg let
+ res {'ok (drop "") 'no ()} case 'msg let
  msg len 0 gt (
    "todo: " FILE cat " is not a todo file" cat LF cat
    "  " cat what cat ": " cat msg cat LF cat
@@ -44,7 +44,7 @@ args 2 drop-n 'REST let
  res must) 'or-die let
 
 FILE read 'RD let
-RD () {'ok () 'no (drop "{\"items\":[]}")} case 'RAW let
+RD {'ok () 'no (drop "{\"items\":[]}")} case 'RAW let
 
 RAW dec-texts jd-run "text"  or-die 'TEXTS let
 RAW dec-dones jd-run "done"  or-die 'DONES let

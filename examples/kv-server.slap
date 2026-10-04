@@ -27,11 +27,11 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 
 ('vk let vk len 1 ge vk len 64 le and vk ('kc let kc 33 ge kc 126 le and) filter len vk len eq and) 'valid-key let
 
-('hs let hs LF str-find () {'ok (drop 1) 'no (drop 0)} case) 'has-lf let
+('hs let hs LF str-find {'ok (drop 1) 'no (drop 0)} case) 'has-lf let
 
 -- take the bytes before the LF, then drop a single trailing CR (CRLF clients).
 -- An embedded CR is left in place so it surfaces as invalid input, not silently eaten.
-('lh let lh lh LF str-find () {'ok (take-n) 'no (drop)} case
+('lh let lh lh LF str-find {'ok (take-n) 'no (drop)} case
  dup len 0 gt (dup dup len 1 sub get must 13 eq (dup len 1 sub take-n) () if) () if) 'line-head let
 
 -- no space: the whole line is the head and drop-n clamps the rest to empty
@@ -49,10 +49,10 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 -- was corrupted or a prior save was torn mid-write; refuse to load rather than
 -- silently drop the pair (and then overwrite it on the next save). Missing file
 -- is the normal first-run case: start empty.
-(dict SNAP read () {
+(dict SNAP read {
    'no (drop)
    'ok ('sr let sr LF str-split (len 0 gt) filter 'lines let
-        lines (TAB str-find () {'ok (drop 1) 'no (drop 0)} case) filter len lines len eq (
+        lines (TAB str-find {'ok (drop 1) 'no (drop 0)} case) filter len lines len eq (
           lines
           (dup len 0 gt) (
             dup 0 get must 'sl let 1 drop-n swap
@@ -70,7 +70,7 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 ('cl let cl split-first 'rest let upper 'cmd let
  cmd "PING" eq ("PONG") (
  cmd "GET" eq (
-   rest valid-key (rest of () {'ok ('gv let "VALUE " gv cat) 'no (drop "NIL")} case) (bad-key) if) (
+   rest valid-key (rest of {'ok ('gv let "VALUE " gv cat) 'no (drop "NIL")} case) (bad-key) if) (
  cmd "SET" eq (
    rest split-first 'sval let 'skey let
    skey valid-key (
@@ -80,8 +80,8 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
  cmd "DEL" eq (
    rest valid-key (rest remove "OK") (bad-key) if) (
  cmd "KEYS" eq (dict-keys " " str-join "KEYS " swap cat) (
- cmd "SAVE" eq (save-snapshot () {'ok (drop "OK") 'no (drop "ERR save failed: snapshot not writable")} case) (
- cmd "SHUTDOWN" eq (save-snapshot () {'ok (drop "BYE") 'no (drop "ERR save failed: snapshot not writable; still running")} case) (
+ cmd "SAVE" eq (save-snapshot {'ok (drop "OK") 'no (drop "ERR save failed: snapshot not writable")} case) (
+ cmd "SHUTDOWN" eq (save-snapshot {'ok (drop "BYE") 'no (drop "ERR save failed: snapshot not writable; still running")} case) (
  cmd len 0 eq ("ERR empty command; try PING")
               ("ERR unknown command: " cmd cat "; try SET GET DEL KEYS SAVE PING SHUTDOWN" cat) if
  ) if) if) if) if) if) if) if
@@ -89,7 +89,7 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 
 -- ===== connection =====
 
-(list (swap 4096 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+(list (swap 4096 tcp-recv {'ok () 'no (drop list)} case 'ch let
        swap ch cat
        dup has-lf not
        ch len 0 gt and
@@ -97,7 +97,7 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 
 -- A socket stays on the stack: each word that uses it hands it on or closes it.
 ('rtext let
- rtext LF cat tcp-send () {'ok (drop) 'no (drop)} case tcp-close) 'reply-close let
+ rtext LF cat tcp-send {'ok (drop) 'no (drop)} case tcp-close) 'reply-close let
 
 -- stack: store client -> store continue?
 (recv-line 'rline let

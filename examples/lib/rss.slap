@@ -19,7 +19,7 @@
 -- ========== RSS 2.0 ==========
 
 -- _rss-link: (-- dec).  The text of the first <link>, or none when it is missing or empty.
-("link" xd-text xd-child xd-maybe (() {'ok (dup "" eq (drop none) (ok) if) 'no (drop none)} case) xd-map) '_rss-link let
+("link" xd-text xd-child xd-maybe ({'ok (dup "" eq (drop none) (ok) if) 'no (drop none)} case) xd-map) '_rss-link let
 -- Each record is built one field at a time: xd-map2 runs a field's decoder and
 -- puts its value into the record.
 
@@ -47,10 +47,10 @@
 ("rel" xd-attr xd-maybe ("" default) xd-map
    ('r let r "" eq r "alternate" eq or)
    xd-map
-   ('alt let alt ("href" xd-attr xd-maybe (() {'ok (_x-trim dup "" eq (drop none) (ok) if) 'no (drop none)} case) xd-map)
+   ('alt let alt ("href" xd-attr xd-maybe ({'ok (_x-trim dup "" eq (drop none) (ok) if) 'no (drop none)} case) xd-map)
      (none xd-succeed) if) xd-and-then) '_atom-link-href let
 ("link" _atom-link-href xd-children
-   (none ('o let 'acc let acc () {'ok (ok) 'no (drop o)} case) fold) xd-map) '_atom-link let
+   (none ('o let 'acc let acc {'ok (ok) 'no (drop o)} case) fold) xd-map) '_atom-link let
 
 (rec xd-succeed
    "title" _rss-opt-text ('title into) xd-map2
@@ -101,7 +101,7 @@
 ('item let
   list
   "title"       item rss-item-title     _rss-text-elem push
-  item rss-item-link () {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
+  item rss-item-link {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
   "description" item rss-item-summary   _rss-text-elem push
   "pubDate"     item rss-item-published _rss-text-elem push
   "guid"        item rss-item-id        _rss-text-elem push
@@ -112,7 +112,7 @@
 ('feed let
   list
   "title"       feed rss-title       _rss-text-elem push
-  feed rss-link () {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
+  feed rss-link {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
   "description" feed rss-description _rss-text-elem push
   feed rss-items (_rss-make-item) each cat
   'kids let
@@ -134,7 +134,7 @@
 ('item let
   list
   "title"     item rss-item-title     _rss-text-elem push
-  item rss-item-link () {'ok (_atom-link-elem push) 'no (drop)} case
+  item rss-item-link {'ok (_atom-link-elem push) 'no (drop)} case
   "summary"   item rss-item-summary   _rss-text-elem push
   "published" item rss-item-published _rss-text-elem push
   "id"        item rss-item-id        _rss-text-elem push
@@ -145,7 +145,7 @@
 ('feed let
   list
   "title"    feed rss-title       _rss-text-elem push
-  feed rss-link () {'ok (_atom-link-elem push) 'no (drop)} case
+  feed rss-link {'ok (_atom-link-elem push) 'no (drop)} case
   "subtitle" feed rss-description _rss-text-elem push
   feed rss-items (_atom-make-entry) each cat
   'kids let

@@ -14,7 +14,7 @@
 -- input it binds as '_jin by name, not a caller's.
 ('_jin let
   -- _jc: (i -- c).  The byte at i, or -1 past the end.
-  ('_jin swap nth () {'ok () 'no (drop -1)} case) '_jc let
+  ('_jin swap nth {'ok () 'no (drop -1)} case) '_jc let
 
   -- _jws: (i -- i').  Skips JSON whitespace.
   ((dup _jc 'c let c 32 eq c 9 eq or c 10 eq or c 13 eq or) (1 plus) while) '_jws let
@@ -76,7 +76,7 @@
   ((dup _jc 'jd let jd 48 ge jd 57 le and) ('jdi let 10 mul jdi _jc 48 sub plus jdi 1 plus) while) '_jdigits let
 
   -- _jexp: (f st -- f' st').  Applies an exponent (e/E, sign, digits) if one follows.
-  (() {'ok ('jxi let 'jxf let
+  ({'ok ('jxi let 'jxf let
      jxi _jc 'jxc let jxc 101 eq jxc 69 eq or (
        jxi 1 plus _jc 'jxs let
        jxs 45 eq (-1 jxi 2 plus) (jxs 43 eq (1 jxi 2 plus) (1 jxi 1 plus) if) if 'jxj let 'jxg let
@@ -164,7 +164,7 @@
 
 -- _type-name: (jv -- jv name-str).
 (dup
-  "" {'int   (drop "int")
+  {'int   (drop "int")
    'float (drop "float")
    'str   (drop "string")
    'bool  (drop "bool")
@@ -175,22 +175,24 @@
 -- _jwant: (jv want -- jv err).  The error a decoder gives when jv is not a want.
 ('w let _type-name 'tn let ": expected " w cat ", got " cat tn cat no) '_jwant let
 
-(("int"    _jwant {'int (ok)} case)) 'jd-int let
-(("float"  _jwant {'float (ok)} case)) 'jd-float let
-(("string" _jwant {'str (ok)} case)) 'jd-str let
-(("bool"   _jwant {'bool (ok)} case)) 'jd-bool let
-(("null"   _jwant {'null (ok)} case)) 'jd-null let
+(({'int (ok) '_ ("int" _jwant nip)} case)) 'jd-int let
+(({'float (ok) '_ ("float" _jwant nip)} case)) 'jd-float let
+(({'str (ok) '_ ("string" _jwant nip)} case)) 'jd-str let
+(({'bool (ok) '_ ("bool" _jwant nip)} case)) 'jd-bool let
+(({'null (ok) '_ ("null" _jwant nip)} case)) 'jd-null let
 
 -- jd-list: (dec -- dec').  The first failing item wins, and its index is the
 -- count of items decoded before it: "[1]: ...".
-('d let ("array" _jwant {'arr (
-   list ok ('x let (x d apply () {'ok (push ok) 'no ('m let len int-str "[" swap cat "]" cat m cat no)} case) then) fold)} case)) 'jd-list let
+('d let ({'arr (
+   list ok ('x let (x d apply {'ok (push ok) 'no ('m let len int-str "[" swap cat "]" cat m cat no)} case) then) fold)
+   '_ ("array" _jwant nip)} case)) 'jd-list let
 
 -- jd-field: (key dec -- dec').  The first entry with the key wins.
-('d let 'k let ("object" _jwant {'obj ('es let
+('d let 'k let ({'obj ('es let
    es ('key at) each k index-of
-   () {'ok ('i let 'es i nth must 'value at d apply () {'ok (ok) 'no ("." k cat swap cat no)} case)
-       'no (drop ": missing field \"" k cat "\"" cat no)} case)} case)) 'jd-field let
+   {'ok ('i let 'es i nth must 'value at d apply {'ok (ok) 'no ("." k cat swap cat no)} case)
+       'no (drop ": missing field \"" k cat "\"" cat no)} case)
+   '_ ("object" _jwant nip)} case)) 'jd-field let
 
 -- jd-at: (keys dec -- dec').  Fields nested along keys: ["a" "b"] reads $.a.b.
 (swap reverse swap (swap jd-field) fold) 'jd-at let
@@ -204,11 +206,11 @@
 -- jd-one-of: (decs -- dec).  The first decoder that succeeds wins.
 ('ds let ('jv let
    ds ": oneOf: no decoders matched" no
-   ('dd let () {'ok (ok) 'no (drop jv dd apply)} case) fold
-   () {'ok (ok) 'no (drop ": oneOf: no decoders matched" no)} case)) 'jd-one-of let
+   ('dd let {'ok (ok) 'no (drop jv dd apply)} case) fold
+   {'ok (ok) 'no (drop ": oneOf: no decoders matched" no)} case)) 'jd-one-of let
 
 -- jd-maybe: (dec -- dec').  value ok ok, or none ok when dec fails.
-('d let (d apply () {'ok (ok ok) 'no (drop none ok)} case)) 'jd-maybe let
+('d let (d apply {'ok (ok ok) 'no (drop none ok)} case)) 'jd-maybe let
 
 ('v let (drop v ok)) 'jd-succeed let
 ('m let (drop ": " m cat no)) 'jd-fail let
@@ -216,7 +218,7 @@
 -- ========== Public entry ==========
 
 -- jd-run: (source dec -- value ok | msg no).
-('d let _json-parse (d apply () {'ok (ok) 'no ("$" swap cat no)} case) then) 'jd-run let
+('d let _json-parse (d apply {'ok (ok) 'no ("$" swap cat no)} case) then) 'jd-run let
 
 -- jd-eval: (source (-- dec) -- value ok | msg no).  Builds the decoder, then runs it.
 (apply jd-run) 'jd-eval let
@@ -266,7 +268,7 @@
 -- ========== Tests ==========
 
 -- jerr: (result -- msg).  The error, or "" on success.
-(() {'ok (drop "") 'no ()} case) 'jerr let
+({'ok (drop "") 'no ()} case) 'jerr let
 
 -- Primitives
 "42" jd-int jd-run 42 ok eq assert

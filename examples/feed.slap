@@ -41,7 +41,7 @@ args len 0 gt (args 0 get must) ("examples/feeds/sample.xml") if 'SRC let
 ('iv let iv len 0 gt ("    " iv squeeze cat LF cat) ("") if) 'field let
 
 -- A feed or item without a link prints no link line.
-(() {'ok (field) 'no (drop "")} case) 'link-field let
+({'ok (field) 'no (drop "")} case) 'link-field let
 
 -- item-block: (item -- text).  Everything after the item's number.
 ('it let it rss-item-title squeeze LF cat
@@ -56,7 +56,7 @@ SRC read must 'RAW let
 
 RAW rss-parse 'PARSED let
 
-PARSED () {'ok (drop "") 'no ()} case 'PERR let
+PARSED {'ok (drop "") 'no ()} case 'PERR let
 PERR len 0 gt ("feed: " SRC cat " is not a feed -- " cat PERR cat die) () if
 
 PARSED must 'FEED let

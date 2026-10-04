@@ -9,7 +9,7 @@
 [1073741906 1073741905 1073741904 1073741903 122 120 1073742049 13] 'KEY-SDL let
 [16         32          64          128         1   2   4          8] 'KEY-BIT let
 
-('k let KEY-SDL k index-of () {
+('k let KEY-SDL k index-of {
    'ok ('i let 'KEY-BIT i nth must 'bit let
         130 dev 'b let 130 b bit bor dev!
         128 dev2 60000 run-at)
@@ -17,7 +17,7 @@
  } case) 'key-down let
 
 'keydown (key-down) on
-'keyup ('k let KEY-SDL k index-of () {
+'keyup ('k let KEY-SDL k index-of {
    'ok ('i let 'KEY-BIT i nth must 'bit let
         130 dev 'b let 130 b bit bnot band 255 band dev!
         128 dev2 60000 run-at)

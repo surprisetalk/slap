@@ -61,7 +61,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
        p len 512 le and
        p 0 get must 47 eq and
        p (path-char) filter len p len eq and
-       p ".." str-find () {'ok (drop 0) 'no (drop 1)} case and) 'safe-path let
+       p ".." str-find {'ok (drop 0) 'no (drop 1)} case and) 'safe-path let
 
 ('n let n lower 'ln let
  ln ".html" ends-with ("text/html; charset=utf-8") (
@@ -92,7 +92,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
 -- resolve against /sub for a request to /sub and against /sub/ for /sub/, so
 -- half the links in a listing would be wrong depending on how it was reached.
 ('ip let ip "/" ends-with (ip) (ip "/" cat) if 'base let
- ROOT base cat ls () {
+ ROOT base cat ls {
    'no (drop 404 "text/html; charset=utf-8"
         "<p>No such file or directory.</p>" "404" swap layout)
    'ok ('entries let
@@ -129,15 +129,15 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
  "Content-Length: " cat rbody len int-str cat crlf cat
  "Connection: close" cat crlf cat crlf cat
  rhead () (rbody cat) if
- tcp-send () {'ok (drop) 'no (drop)} case) 'respond let
+ tcp-send {'ok (drop) 'no (drop)} case) 'respond let
 
 -- Only GET and HEAD are served and neither carries a body, so a request is
 -- complete at the header terminator. A POST body is never read; the connection
 -- is closed after the 405 either way.
-('rr let rr crlf crlf cat str-find () {'ok (drop 1) 'no (drop 0)} case) 'req-complete let
+('rr let rr crlf crlf cat str-find {'ok (drop 1) 'no (drop 0)} case) 'req-complete let
 
 (list
- (swap 4096 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+ (swap 4096 tcp-recv {'ok () 'no (drop list)} case 'ch let
   swap ch cat
   dup req-complete not
   ch len 0 gt and
@@ -146,7 +146,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
 -- (request -- [method path] ok | message no). The pair goes in a list because
 -- `ok` tags exactly one value; tagging them separately would leave the method
 -- loose under the tag. The query string is dropped.
-('pq let pq crlf str-find () {
+('pq let pq crlf str-find {
    'no (drop "bad request: no request line" no)
    'ok ('plp let
         pq plp take-n " " str-split 'parts let
@@ -154,7 +154,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
           "bad request: malformed request line" no
         ) (
           list parts 0 get must push
-               parts 1 get must dup "?" str-find () {'ok (take-n) 'no (drop)} case push
+               parts 1 get must dup "?" str-find {'ok (take-n) 'no (drop)} case push
           ok
         ) if)
  } case) 'parse-request let
@@ -172,7 +172,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
    -- which one it is up front: try the file, and fall through to the listing.
    -- index-page answers 404 when `ls` will not open it either, which is the
    -- genuinely-missing case.
-   ROOT path cat read () {
+   ROOT path cat read {
      'ok ('bytes let 200 path mime bytes rhead)
      'no (drop path index-page rhead)
    } case
@@ -205,8 +205,8 @@ tr 1 get must "/a" eq assert          -- the query string is dropped
 "HEAD /x HTTP/1.0" crlf cat crlf cat parse-request must 'tr2 let
 tr2 0 get must "HEAD" eq assert
 tr2 1 get must "/x" eq assert
-"junk" crlf cat crlf cat parse-request () {'ok (drop 0) 'no (drop 1)} case assert
-"nolinebreak" parse-request () {'ok (drop 0) 'no (drop 1)} case assert
+"junk" crlf cat crlf cat parse-request {'ok (drop 0) 'no (drop 1)} case assert
+"nolinebreak" parse-request {'ok (drop 0) 'no (drop 1)} case assert
 "GET / HTTP/1.0" crlf cat crlf cat req-complete assert
 "GET / HTTP/1.0" crlf cat req-complete not assert
 
@@ -226,7 +226,7 @@ tr2 1 get must "/x" eq assert
        "<p>Request too large: 8192 byte cap.</p>" "413" swap layout 0 respond tcp-close
      ) (tcp-close) if
    ) (
-     rq parse-request () {
+     rq parse-request {
        'no ('bmsg let 400 "text/html; charset=utf-8"
             "<p>" bmsg cat "</p>" cat "400" swap layout 0 respond tcp-close)
        'ok ('pr let pr 0 get must 'rm let pr 1 get must 'rp let

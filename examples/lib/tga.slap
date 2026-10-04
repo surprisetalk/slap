@@ -24,6 +24,6 @@ tga-data tga-decode must
   dup 'depth at 24 eq assert
   'pixels at len 12 eq assert
 tga-data tga-decode must tga-encode tga-data eq assert
-[0 0 2] tga-decode () {'ok (drop "") 'no ()} case "tga: shorter than the 18-byte header" eq assert
-tga-data 2 take-n 99 push tga-data 3 drop-n cat tga-decode () {'ok (drop "") 'no ()} case "tga: only uncompressed true-colour (type 2) is supported" eq assert
-tga-data 20 take-n tga-decode () {'ok (drop "") 'no ()} case "tga: pixel data is shorter than width x height x depth" eq assert
+[0 0 2] tga-decode {'ok (drop "") 'no ()} case "tga: shorter than the 18-byte header" eq assert
+tga-data 2 take-n 99 push tga-data 3 drop-n cat tga-decode {'ok (drop "") 'no ()} case "tga: only uncompressed true-colour (type 2) is supported" eq assert
+tga-data 20 take-n tga-decode {'ok (drop "") 'no ()} case "tga: pixel data is shorter than width x height x depth" eq assert

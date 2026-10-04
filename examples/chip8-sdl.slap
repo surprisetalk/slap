@@ -8,13 +8,13 @@ args len 0 gt (args 0 get must read must) (DEMO-ROM) if 'ROM let
 blank FONT 80 load-at ROM 512 load-at
 
 'keydown ('ksym let
-  KEYMAP-SDL ksym index-of () {
+  KEYMAP-SDL ksym index-of {
     'ok ('kix let KEYMAP-C8 kix get must 'c8k let KEY-I c8k plus 1 set must)
     'no (drop)
   } case) on
 
 'keyup ('usym let
-  KEYMAP-SDL usym index-of () {
+  KEYMAP-SDL usym index-of {
     'ok ('uix let KEYMAP-C8 uix get must 'uc8 let KEY-I uc8 plus 0 set must)
     'no (drop)
   } case) on

@@ -23,11 +23,11 @@ LINE (32 lt) filter len 0 gt (
   "kv-client: command arguments contain a control character; the protocol is one line per command, so a newline or tab would split it" no must
 ) () if
 
-('hs let hs LF str-find () {'ok (drop 1) 'no (drop 0)} case) 'has-lf let
+('hs let hs LF str-find {'ok (drop 1) 'no (drop 0)} case) 'has-lf let
 
 "127.0.0.1" PORT tcp-connect must
 LINE LF cat tcp-send must drop
-list (swap 4096 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+list (swap 4096 tcp-recv {'ok () 'no (drop list)} case 'ch let
       swap ch cat
       dup has-lf not
       ch len 0 gt and

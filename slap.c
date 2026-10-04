@@ -520,12 +520,12 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
     default: die("lt: unsupported type %s (only int and float are ordered)", valtag_name(atop.tag)); return 0;
     }
 }
-static uint32_t S_CAT, S_CAT_LEFT, S_CAT_RIGHT, S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_ON, S_SHOW;
+static uint32_t S_CAT, S_CAT_LEFT, S_CAT_RIGHT, S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_ON, S_SHOW, S_WILD;
 static void syms_init(void) {
     S_LET=sym_intern("let"); S_EFFECT=sym_intern("effect");
     S_OK=sym_intern("ok"); S_NO=sym_intern("no"); S_NONE=sym_intern("none"); S_CASE=sym_intern("case"); S_MUST=sym_intern("must");
     S_TAG=sym_intern("tag"); S_QUOTE=sym_intern("quote");
-    S_AT=sym_intern("at"); S_EDIT=sym_intern("edit"); S_INTO=sym_intern("into"); S_KEY=sym_intern("key"); S_VALUE=sym_intern("value");
+    S_AT=sym_intern("at"); S_EDIT=sym_intern("edit"); S_INTO=sym_intern("into"); S_KEY=sym_intern("key"); S_VALUE=sym_intern("value"); S_WILD=sym_intern("_");
     S_CAT=sym_intern("cat"); S_CAT_LEFT=sym_intern("cat-left"); S_CAT_RIGHT=sym_intern("cat-right"); S_NTH=sym_intern("nth"); S_ON=sym_intern("on"); S_SHOW=sym_intern("show");
 }
 /* ---- TYPE CHECKER ---- */
@@ -807,6 +807,9 @@ static int ty_unify_chain(int a, int b, int depth) {
             ty[lb].named |= ty[la].named; if (ty[la].level < ty[lb].level) ty[lb].level = ty[la].level;
             ty[la].link = lb; }
         ty[a].link = b; return 0; }
+    /* a closed tag set meets what is left of a set with more tags */
+    if (ty[a].kind == K_TNIL && ty[b].kind == K_TEXT) { snprintf(ty_why, sizeof ty_why, "it may be tagged '%s, which is not one of the tags this takes", sym_name(ty[b].sym)); return 1; }
+    if (ty[a].kind == K_TEXT && ty[b].kind == K_TNIL) { snprintf(ty_why, sizeof ty_why, "this value is never tagged '%s", sym_name(ty[a].sym)); return 1; }
     if (ty[a].kind != ty[b].kind && !(ty[a].kind == K_REXT && ty[b].kind == K_RNIL)) {
         char s1[256], s2[256]; ty_show(s1, sizeof s1, a, 0); ty_show(s2, sizeof s2, b, 0);
         if (ty[a].kind == K_SNIL || ty[b].kind == K_SNIL) snprintf(ty_why, sizeof ty_why, "the stack is shorter than this needs");
@@ -1175,10 +1178,6 @@ static void ty_undefined(int from) {
 /* ---- inference ---- */
 static int ty_cur, ty_errors;
 static int ty_on[16], ty_on_line[16], ty_on_mouse[16], ty_on_n, ty_shown;
-/* The case forms waiting for the tags their value can carry (ty_case_later). */
-typedef struct { int tags, dflt, clauses, line; Token *toks; int open, close, scrut, done; } TyLater;
-static TyLater ty_later[4096]; static int ty_later_n;
-static void ty_cases_settle(int from, int level, int word);
 static void ty_gens_settle(int from, int level, int word);
 /* A let-bound body whose uses each make its stack rest fresh (ty_value): sound only if nothing refines
    the rest after a use. An entry outlives its binding, which its body or word pops first. */
@@ -1221,7 +1220,7 @@ static void ty_range(Token *toks, int i, int end);
 /* A word's own calls inside its body (TyBind.word == 2): each call gets a fresh type, checked against
    the body's once the body is known. */
 /* A call belongs to the word it calls (its binding's index) and is made at that word's body level, so
-   a word or {...} defined inside the body does not generalize it. */
+   a word defined inside the body does not generalize it. */
 static int *ty_rec_call, *ty_rec_line, *ty_rec_owner, ty_rec_n, ty_rec_cap;
 static int ty_self_fn(int b, int line) {
     if (ty_rec_n == ty_rec_cap) { ty_rec_cap = ty_rec_cap ? 2*ty_rec_cap : 256;
@@ -1274,7 +1273,7 @@ static int ty_body(Token *toks, int open, int close, int in) {
 /* `(body) [sig] effect 'name let`: a word. Inside its body the word has one type (or its declared
    one); after, the type generalizes. */
 static void ty_define(Token *toks, int open, int close, int sig_open, int sig_close, uint32_t name, int line) {
-    int cases0 = ty_later_n, gens0 = ty_gen_n;
+    int gens0 = ty_gen_n;
     ty_redefined(name, line, 1);
     if (ty_literal) ty_err(line, "a [...] or {...} literal is built when the program is read, so it cannot bind names: '%s' would be bound for the whole program. Define it outside the literal.", sym_name(name));
     int fwd = tyb_find(name);
@@ -1299,7 +1298,6 @@ static void ty_define(Token *toks, int open, int close, int sig_open, int sig_cl
         if (ty_unify(ty_rec_call[k], inst)) ty_err(ty_rec_line[k], "'%s' calls itself here with a stack its body does not take: %s.", sym_name(name), ty_why);
     }
     ty_rec_n = keep;
-    ty_cases_settle(cases0, ty_level - 1, bt);
     if (want) { char a[512], b[512];
         /* shown before they meet, so the message names each variable once, in the types and in why */
         ty_print_count = 0; ty_show(a, sizeof a, want, 0); ty_show(b, sizeof b, bt, 0);
@@ -1312,71 +1310,56 @@ static void ty_define(Token *toks, int open, int close, int sig_open, int sig_cl
     else if (!scheme) { ty_generalize(bt); scheme = bt; }
     tyb_push(name, scheme, 1, line);
 }
-/* `x default {'tag (…) …} case`: each clause runs on its payload, or on x for a (predicate); clauses
-   leave the same stack; the default takes x's place when no clause matches and some tag may miss. */
-static void ty_case_live(int dflt, int clauses, int line, const char *why, int scrut);
-static void ty_case_later(int tags, int dflt, int clauses, int line, Token *toks, int open, int close, int scrut) {
-    if (ty_later_n == 4096) die("type checker: more than 4096 case forms wait on their tags");
-    ty_later[ty_later_n++] = (TyLater){tags, dflt, clauses, line, toks, open, close, scrut, 0};
-}
+/* `x {'tag (…) … '_ (…)} case`: each clause runs on its tag's payload, and a last '_ clause on x itself.
+   Without '_, every tag x may carry has a clause: an open tag set closes on the clause tags. */
+static int ty_clause_mark[SYM_MAX], ty_clause_stamp;
 static void ty_case(Token *toks, int open, int close, int line) {
     ty_runs("case", line); ty_at_word = "case";
-    int d = ty_pop(), s = ty_pop(), rest = ty_cur, out = ty_new(K_SVAR, 0, 0, 0), tags = 0, preds = 0, okc = 0, noc = 0, res = 0, a = 0, b = 0;
-    int items = 0;
-    for (int j = open + 1; j < close; j += toks[j].span + 1) { if (items % 2 == 0) { if (toks[j].tag == TOK_SYM) tags++; else preds++; } items++; }
-    if (items % 2) { ty_err(line, "case clauses come in pairs, a key and a body, but this list has %d items.", items); ty_cur = out; return; }
-    if (tags && preds) { ty_err(line, "case clauses are all 'tags or all (predicates), not both."); ty_cur = out; return; }
-    if (tags) {
-        res = 1; for (int j = open + 1; j < close; j += toks[j].span + 1, j += toks[j].span + 1) if (toks[j].as.sym != S_OK && toks[j].as.sym != S_NO) res = 0;
-        if (res) { a = ty_new(K_VAR, 0, 0, 0); b = ty_new(K_VAR, 0, 0, 0);
-            if (ty_unify(s, ty_new(K_RES, a, b, 0))) ty_err(line, "case with 'ok/'no clauses takes a result, but this value is not one: %s.", ty_why); }
-        /* a clause gets its tag's payload, one type for the program; the value's own tags decide the default */
-        else if (ty_unify(s, ty_new(K_TAG, ty_new(K_TVAR, 0, 0, 0), 0, 0))) ty_err(line, "case with tag clauses takes a tagged value: %s.", ty_why);
+    int s = ty_pop(), rest = ty_cur, out = ty_new(K_SVAR, 0, 0, 0), stamp = ++ty_clause_stamp, items = 0, tags = 0, wild = 0, res = 1, okc = 0, noc = 0, a = 0, b = 0;
+    uint32_t other = 0;
+    ty_cur = out;
+    for (int j = open + 1; j < close; j += toks[j].span + 1, items++) {
+        if (items % 2) continue;
+        if (toks[j].tag != TOK_SYM) { ty_err(toks[j].line, "a case clause key is a 'tag or '_, not this. Branch on other values with if."); return; }
+        uint32_t tg = toks[j].as.sym;
+        if (wild) { ty_err(toks[j].line, "the '_ clause takes every tag the others do not name, so it comes last."); return; }
+        if (tg == S_WILD) { wild = 1; continue; }
+        if (ty_clause_mark[tg] == stamp) { ty_err(toks[j].line, "this case has two clauses for '%s.", sym_name(tg)); return; }
+        ty_clause_mark[tg] = stamp; tags++;
+        if (tg == S_OK) okc = 1; else if (tg == S_NO) noc = 1; else { res = 0; if (!other) other = tg; }
     }
+    if (items % 2) { ty_err(line, "case clauses come in pairs, a key and a body, but this list has %d items.", items); return; }
+    if (!tags) { ty_err(line, "case needs a clause for at least one tag."); return; }
+    if (other && (okc || noc)) { ty_err(line, "a result is tagged only 'ok or 'no, so this case cannot also name '%s. Match '%s in another case, or use '_.", sym_name(other), sym_name(other)); return; }
+    uint32_t unnamed = 0;
+    if (res) { a = ty_new(K_VAR, 0, 0, 0); b = ty_new(K_VAR, 0, 0, 0);
+        if (ty_unify(ty_new(K_RES, a, b, 0), s)) { ty_err(line, "case with 'ok/'no clauses takes a result, but this value is not one: %s.", ty_why); return; }
+        if (!wild && !(okc && noc)) unnamed = okc ? S_NO : S_OK; }
+    else {
+        int v = ty_find(s), closed = 0;
+        if (!wild && ty[v].kind == K_TAG) {
+            int r = ty_find(ty[v].a);
+            for (int hops = -ty_n; !unnamed && ty[r].kind == K_TEXT; r = ty_rest(r, &hops)) if (ty_clause_mark[ty[r].sym] != stamp) unnamed = ty[r].sym;
+            if (!unnamed && ty[r].kind == K_TVAR && ty_fixed(r)) { ty_err(line, "the value's tags come from a signature that leaves them open, so it may carry a tag no clause names. Add a last '_ clause."); return; }
+            closed = ty[r].kind == K_TNIL; }
+        /* A closed set the clauses cover is left as it is: a clause for a tag it lacks never runs. A clause's
+           payload type is its tag's everywhere, so with '_ the value may carry any tags. */
+        int set = ty_new(wild ? K_TVAR : K_TNIL, 0, 0, 0);
+        for (int j = open + 1; !wild && j < close; j += toks[j].span + 1, j += toks[j].span + 1) { set = ty_new(K_TEXT, 0, 0, set); ty[set].sym = toks[j].as.sym; }
+        if (!unnamed && !closed && ty_unify(ty_new(K_TAG, set, 0, 0), s)) { ty_err(line, "case cannot take this value: %s.", ty_why); return; }
+    }
+    if (unnamed) { ty_err(line, "the value may be tagged '%s, which no clause names. Add a clause for '%s, or a last '_ clause.", sym_name(unnamed), sym_name(unnamed)); return; }
     for (int j = open + 1; j < close; ) {
         int key = j; j += toks[j].span + 1;
         if (j >= close || toks[j].tag != TOK_LPAREN) { ty_err(toks[key].line, "each case clause is a key and a body in parentheses."); break; }
-        int body = ty_body(toks, j, j + toks[j].span, 0); j += toks[j].span + 1;
-        if (toks[key].tag == TOK_SYM) {
-            uint32_t tg = toks[key].as.sym; int p = res ? (tg == S_OK ? a : b) : ty_tag_payload(tg);
-            if (tg == S_OK) okc = 1; if (tg == S_NO) noc = 1;
-            int bf = ty_find(body);
-            ty_print_count = 0;
-            if (ty_unify(ty[bf].a, ty_new(K_SCONS, p, rest, 0))) { char ps[256]; ty_show(ps, sizeof ps, p, 0);
-                ty_err(toks[key].line, "the clause for '%s gets its payload, %s, but its body cannot take it: %s.", sym_name(tg), ps, ty_why); }
-            else if (ty_unify(ty[bf].b, out)) ty_err(toks[key].line, "the clause for '%s does not leave what the other clauses leave: %s.", sym_name(tg), ty_why);
-        } else if (toks[key].tag != TOK_LPAREN) { ty_err(toks[key].line, "a case clause key is a 'tag or a (predicate), not this."); break;
-        } else {
-            int pred = ty_body(toks, key, key + toks[key].span, 0);
-            if (ty_unify(pred, ty_new(K_FN, ty_new(K_SCONS, s, rest, 0), ty_new(K_SCONS, ty_new(K_INT, 0, 0, 0), rest, 0), 0))) ty_err(toks[key].line, "this case predicate does not fit the value: %s.", ty_why);
-            if (ty_unify(body, ty_new(K_FN, ty_new(K_SCONS, s, rest, 0), out, 0))) ty_err(toks[key].line, "this clause does not leave what the other clauses leave: %s.", ty_why);
-        }
+        int body = ty_find(ty_body(toks, j, j + toks[j].span, 0)); j += toks[j].span + 1;
+        uint32_t tg = toks[key].as.sym; int p = tg == S_WILD ? s : res ? (tg == S_OK ? a : b) : ty_tag_payload(tg);
+        ty_print_count = 0;
+        if (ty_unify(ty[body].a, ty_new(K_SCONS, p, rest, 0))) { char ps[256]; ty_show(ps, sizeof ps, p, 0);
+            if (tg == S_WILD) ty_err(toks[key].line, "the '_ clause gets the tagged value, %s, but its body cannot take it: %s.", ps, ty_why);
+            else ty_err(toks[key].line, "the clause for '%s gets its payload, %s, but its body cannot take it: %s.", sym_name(tg), ps, ty_why); }
+        else if (ty_unify(ty[body].b, out)) ty_err(toks[key].line, "the clause for '%s does not leave what the other clauses leave: %s.", sym_name(tg), ty_why);
     }
-    int dflt = ty_new(K_FN, rest, ty_new(K_SCONS, d, rest, 0), 0), clauses = ty_new(K_FN, rest, out, 0);
-    if (preds && ty_need(s, P_COPY)) ty_err(line, "each predicate clause gets a copy of the value, so it is copyable: %s.", ty_why);
-    if (ty_need(d, P_COPY)) ty_err(line, "a clause that matches drops case's default, so the default is copyable: %s.", ty_why);
-    if (tags && !res && ty[ty_find(s)].kind == K_TAG) ty_case_later(ty[ty_find(s)].a, dflt, clauses, line, toks, open, close, s);
-    else if (!(res && okc && noc)) ty_case_live(dflt, clauses, line, "no clause may match", s);
-    ty_cur = out;
-}
-/* The default of a case on the program's own tags runs only if the value may carry a tag no clause
-   names. That is known once the tags the value can carry are: when the word that holds the case is
-   inferred (an open set there generalizes, so callers may pass any tag), or at the end of the program. */
-static void ty_case_live(int dflt, int clauses, int line, const char *why, int scrut) {
-    if (ty_need(scrut, P_COPY)) ty_err(line, "case drops the value it looks at when %s and the default runs, so the value is copyable: %s. Name every tag, or use must.", why, ty_why);
-    ty_print_count = 0;
-    if (ty_unify(dflt, clauses)) { char a[512], b[512]; ty_show(a, sizeof a, dflt, 0); ty_show(b, sizeof b, clauses, 0);
-        ty_err(line, "case pushes its default when %s, so the default must leave what the clauses leave.\n    The default: %s\n    The clauses: %s\n    %s.", why, a, b, ty_why); }
-}
-/* A tag the value may carry that no clause names, or 0. The clauses' tags are marked first, so a large
-   set and a long clause list cost their sum, not their product. */
-static int ty_clause_mark[SYM_MAX], ty_clause_stamp;
-static uint32_t ty_case_unnamed(TyLater *c) {
-    int stamp = ++ty_clause_stamp;
-    for (int j = c->open + 1; j < c->close; j += c->toks[j].span + 1, j += c->toks[j].span + 1) ty_clause_mark[c->toks[j].as.sym] = stamp;
-    int r = ty_find(c->tags);
-    for (int hops = -ty_n; ty[r].kind == K_TEXT; r = ty_rest(r, &hops)) if (ty_clause_mark[ty[r].sym] != stamp) return ty[r].sym;
-    return 0;
 }
 /* t holds variable v somewhere (a pure walk: no levels change). */
 static int ty_contains(int t, int v) {
@@ -1416,8 +1399,8 @@ static int ty_input_holds(int word, int v) {
 /* A body bound with let runs at any stack depth when the stack below it is its own: the body's type
    ends in one stack variable on both sides, and nothing else holds that variable (the stacks being
    checked, another binding, a recursive call). A caller's body, tied to the word's stack, stays as it
-   is: it may read below its inputs. A tag's payload or a waiting case may still tie the variable to
-   more, so ty_gens_settle checks it again. Returns the variable each use makes fresh, or 0. */
+   is: it may read below its inputs. A tag's payload may still tie the variable to more, so
+   ty_gens_settle checks it again. Returns the variable each use makes fresh, or 0. */
 static int ty_bound_rest(int v) {
     int f = ty_find(v);
     if (ty[f].kind != K_FN) return 0;
@@ -1436,29 +1419,7 @@ static int ty_value(int b) {
     e->used = 1;
     return ty_subst(tyb[b].ty, g, ty_new(K_SVAR, 0, 0, 0));
 }
-/* The cases made since `from`, once the word (or {...} literal) holding them is inferred: `word` is its
-   type, or 0 at the end of the program. A default runs when the value's set is open to more tags (it
-   comes from outside the word, or from a caller through the word's type) or names a tag no clause
-   does; a set the word's type cannot reach never leaves the word, so its tags are all it can carry.
-   A default that runs may add a tag to another case's set, so those go first, round after round,
-   and a case is only covered once no default is left to run. */
-static void ty_cases_settle(int from, int level, int word) {
-    for (int rounds = 0;; rounds++) {
-        if (rounds > ty_later_n + 1) die("type checker bug: case forms did not settle in %d rounds", rounds);
-        int progress = 0;
-        for (int k = from; k < ty_later_n; k++) {
-            TyLater *c = &ty_later[k]; if (c->done) continue;
-            int tail = ty_tail(c->tags); uint32_t tag; const char *why = NULL; char buf[160];
-            if (word && ty[tail].kind == K_TVAR && ty[tail].level <= level) why = "the value comes from outside the word, and may carry a tag no clause names";
-            else if (word && ty[tail].kind == K_TVAR && ty_input_holds(word, tail)) why = "the value comes from a caller, who may pass a tag no clause names";
-            else if ((tag = ty_case_unnamed(c))) { snprintf(buf, sizeof buf, "the value may be tagged '%s, which no clause names", sym_name(tag)); why = buf; }
-            if (why) { ty_case_live(c->dflt, c->clauses, c->line, why, c->scrut); c->done = 1; progress = 1; }
-        }
-        if (!progress) break;
-    }
-    ty_later_n = from;
-}
-/* Once a word's cases settle (`word` its type, `level` the level outside it; 0 at the end of the
+/* Once a word is inferred (`word` its type, `level` the level outside it; 0 at the end of the
    program), a freshened rest that is still a bare variable no caller's stack reaches kept the body's type
    final. A rest tied outside the word may still change there, so the scope outside checks it. */
 static void ty_gens_settle(int from, int level, int word) {
@@ -1466,7 +1427,7 @@ static void ty_gens_settle(int from, int level, int word) {
     for (int k = from; k < ty_gen_n; k++) {
         TyGen e = ty_gens[k]; int r = ty_find(e.rest); const char *why;
         if (!e.used) continue;
-        if (ty[r].kind != K_SVAR) why = "a case default or a tag's payload, settled after a use, makes it read more of the stack";
+        if (ty[r].kind != K_SVAR) why = "a tag's payload, settled after a use, makes it read more of the stack";
         else if (word && ty_input_holds(word, r)) why = "a caller's body can take its place, and a caller's body may read below its inputs";
         else if (word && ty[r].level <= level) { ty_gens[keep++] = e; continue; }
         else continue;
@@ -1513,9 +1474,9 @@ static void ty_range(Token *toks, int i, int end) {
                 sig_open = nm; sig_close = nm + toks[nm].span; nm = sig_close + 2; }
             if (nm + 1 < end && toks[nm].tag == TOK_SYM && toks[nm+1].tag == TOK_WORD && toks[nm+1].as.sym == S_LET) {
                 ty_define(toks, i, close, sig_open, sig_close, toks[nm].as.sym, line); i = nm + 1; break; }
-            if (sig_open) { ty_level++; int cases0 = ty_later_n, rmark, want = ty_rigid(ty_scheme_slots(toks, sig_open, sig_close), &rmark), bt = ty_body(toks, i, close, ty[want].a);
+            if (sig_open) { ty_level++; int rmark, want = ty_rigid(ty_scheme_slots(toks, sig_open, sig_close), &rmark), bt = ty_body(toks, i, close, ty[want].a);
                 if (ty_unify(want, bt)) ty_err(line, "this body does not have its declared type: %s.", ty_why);
-                ty_cases_settle(cases0, ty_level - 1, bt); ty_unrigid(rmark); ty_level--; ty_occurs(-1, bt, ty_level); ty_push(bt); i = sig_close + 1; break; }
+                ty_unrigid(rmark); ty_level--; ty_occurs(-1, bt, ty_level); ty_push(bt); i = sig_close + 1; break; }
             ty_push(ty_body(toks, i, close, 0)); i = close; break;
         }
         case TOK_LBRACKET: {
@@ -1542,10 +1503,7 @@ static void ty_range(Token *toks, int i, int end) {
         case TOK_LBRACE: {
             int close = i + t->span;
             if (close + 1 < end && toks[close+1].tag == TOK_WORD && toks[close+1].as.sym == S_CASE) { ty_case(toks, i, close, line); i = close + 1; break; }
-            /* a {...} literal, built when the program is read: a record when its values pair up with
-               symbols below them, as the runtime decides, and a tuple otherwise */
-            int word = close + 2 < end && toks[close+1].tag == TOK_SYM && toks[close+2].tag == TOK_WORD && toks[close+2].as.sym == S_LET, cases0 = ty_later_n;
-            if (word) ty_level++;
+            /* a {...} literal, built when the program is read: a record, each value written after its 'key */
             int saved = ty_cur; ty_cur = ty_new(K_SNIL, 0, 0, 0); ty_literal++;
             c_stack_check("while checking nested literals");
             ty_range(toks, i + 1, close); ty_literal--;
@@ -1560,8 +1518,10 @@ static void ty_range(Token *toks, int i, int end) {
                 for (int k = 0; k < n; k += 2) keys &= ty[ty_find(ty_items[k])].kind == K_SYM;
                 for (int k = 1; k < n; k += 2) vals |= ty[ty_find(ty_items[k])].kind != K_SYM;
                 int l = ty_sym_label(ty_items[0]);
-                if (keys && vals && l) ty_err(line, "record literal: key '%s has no value. Give it one, as in {'%s 0}.", sym_name(ty[l].sym), sym_name(ty[l].sym)); }
-            if (rec) { int row = ty_new(K_RNIL, 0, 0, 0);
+                if (keys && vals && l) { ty_err(line, "record literal: key '%s has no value. Give it one, as in {'%s 0}.", sym_name(ty[l].sym), sym_name(ty[l].sym)); rec = -1; } }
+            if (rec == 0) ty_err(line, "a {...} literal is a record, so each value follows its 'key, as in {'x 1 'y 2}. For code that pushes values, write a body: (1 2).");
+            if (rec != 1) { ty_push(ty_new(K_VAR, 0, 0, 0)); i = close; break; }
+            { int row = ty_new(K_RNIL, 0, 0, 0);
                 for (int k = n - 1; k >= 1; k -= 2) {
                     int l = ty_sym_label(ty_items[k]), twice = 0;
                     if (!l) { ty_err(line, "this {...} literal pairs each value with a symbol, so it is a record, but key %d is a symbol this literal computes. Write each key in the literal, as in {'name 1}.", (n - k) / 2 + 1); continue; }
@@ -1569,17 +1529,7 @@ static void ty_range(Token *toks, int i, int end) {
                     if (twice) { ty_err(line, "this record literal has '%s twice.", sym_name(ty[l].sym)); continue; }
                     row = ty_new(K_REXT, l, ty_new(K_PRE, ty_items[k-1], 0, 0), row);
                 }
-                int rt = ty_new(K_REC, row, 0, 0);
-                if (word) { ty_cases_settle(cases0, ty_level - 1, rt); ty_level--; ty_occurs(-1, rt, ty_level); }
-                ty_push(rt); i = close; break; }
-            /* a tuple of values: a body that pushes them. Written right before its 'name let, it is a word. */
-            int r = ty_new(K_SVAR, 0, 0, 0), s = r; for (int k = n - 1; k >= 0; k--) s = ty_new(K_SCONS, ty_items[k], s, 0);
-            int fn = ty_new(K_FN, r, s, 0);
-            if (word) {
-                if (ty_literal) ty_err(line, "a [...] or {...} literal is built when the program is read, so it cannot bind names: '%s' would be bound for the whole program. Define it outside the literal.", sym_name(toks[close+1].as.sym));
-                ty_cases_settle(cases0, ty_level - 1, fn); ty_level--; ty_generalize(fn);
-                ty_redefined(toks[close+1].as.sym, line, 0); tyb_push(toks[close+1].as.sym, fn, 1, line); i = close + 2; break; }
-            ty_push(fn); i = close; break;
+                ty_push(ty_new(K_REC, row, 0, 0)); i = close; break; }
         }
         case TOK_WORD: {
             uint32_t w = t->as.sym; ty_at_word = sym_name(w);
@@ -1605,6 +1555,7 @@ static void ty_range(Token *toks, int i, int end) {
                 ty_pop(); int p = ty_pop(); uint32_t tg = toks[i-1].as.sym;
                 if (tg == S_OK) ty_push(ty_new(K_RES, p, ty_new(K_VAR, 0, 0, 0), 0));
                 else if (tg == S_NO) ty_push(ty_new(K_RES, ty_new(K_VAR, 0, 0, 0), p, 0));
+                else if (tg == S_WILD) { ty_err(line, "'_ is the key of case's catch-all clause, so it cannot be a tag."); ty_push(ty_new(K_VAR, 0, 0, 0)); }
                 else { if (ty_unify(ty_tag_payload(tg), p)) ty_err(line, "'%s is tagged onto a value unlike its payload elsewhere: %s.", sym_name(tg), ty_why);
                     int row = ty_new(K_TEXT, 0, 0, ty_new(K_TVAR, 0, 0, 0)); ty[row].sym = tg; ty_push(ty_new(K_TAG, row, 0, 0)); }
                 break;
@@ -1620,7 +1571,7 @@ static void ty_range(Token *toks, int i, int end) {
                 else if (ty_unify(tyb[b].ty, ty_new(K_LIST, el, 0, 0))) ty_err(line, "nth reads a list, but '%s is not one: %s.", sym_name(ty[l].sym), ty_why);
                 { int r = ty_new(K_SVAR, 0, 0, 0); ty_push(ty_new(K_RES, el, ty_new(K_FN, r, r, 0), 0)); } break;
             }
-            if (w == S_CASE) { ty_err(line, "case needs its clauses written right before it, as in `x 0 {'ok (…) 'no (…)} case`."); ty_pop(); ty_pop(); ty_pop(); ty_push(ty_new(K_VAR, 0, 0, 0)); break; }
+            if (w == S_CASE) { ty_err(line, "case needs its clauses written right before it, as in `x {'ok (…) 'no (…)} case`."); ty_pop(); ty_pop(); ty_push(ty_new(K_VAR, 0, 0, 0)); break; }
             if (w == S_LEND) { ty_lend(line); break; }
             /* eq and neq on two symbols compare them; they do not make them one type */
             if (w == S_EQ || w == S_NEQ) {
@@ -1785,14 +1736,12 @@ static int infer_program(Token *table, int table_n, Token *toks, int count, int 
     /* after an error the stack's types may be made up, so the end is checked only when nothing failed */
     for (int x = ty_find(ty_cur), hops = -ty_n; !ty_errors && ty[x].kind == K_SCONS; x = ty_rest(x, &hops))
         if (ty_need(ty[x].a, P_COPY)) { ty_err(LOC_LINE(current_loc), "the program ends with a value left on the stack that is never freed: %s.", ty_why); break; }
-    /* at the end a set open to more tags has reached every place it can: its tags are all it carries */
-    ty_cases_settle(0, 0, 0);
     ty_gens_settle(0, 0, 0);
     return ty_errors;
 }
 /* ---- PRIMITIVES ---- */
 /* The aux stack holds what must step aside while code runs: bodies being
-   executed, dip's saved value, case's scrutinee, each/fold's input. It never
+   executed, dip's saved value, case's clauses, each/fold's input. It never
    moves, so a body executes in place from it. eval_body releases whatever a
    primitive staged there when that primitive returns. */
 static Value aux[STACK_MAX];
@@ -1919,52 +1868,18 @@ static void case_body_check(Value *buf, ElemRef key, ElemRef body) {
     die("case: the clause for %s is %s, not a body. A clause runs code on the payload: write (drop %s) instead",
         val_text(buf, key), valtag_name(buf[body.base+body.slots-1].tag), val_text(buf, body));
 }
-/* Tagged scrutinee: find the clause keyed by its tag (record or 'sym (body)
-   pairs); the payload is already in place under the header. Otherwise run
-   (pred) (body) pairs, each predicate on its own copy of the scrutinee. */
-/* The clause list is a literal, built when the program is read; its bodies are code at the case,
-   so they run in the frame that runs case. */
+/* The clause list is a record literal, built when the program is read; its bodies are code at the case,
+   so they run in the frame that runs case. A clause runs on its tag's payload, already in place under the
+   tagged value's header; '_ runs on the tagged value. */
 static void prim_case(Frame *env) {
-    if (sp <= 0) die("case: stack underflow");
-    if (stack[sp-1].tag!=VAL_TUPLE && stack[sp-1].tag!=VAL_RECORD) die("case: expected tuple or record of clauses, got %s", valtag_name(stack[sp-1].tag));
-    POP_VAL(clauses); stage_body(asp-1); int clauses_len=(int)clauses_top.as.compound.len;
-    POP_VAL(def);
-    if (sp <= 0) die("case: stack underflow");
-    Value top = stack[sp-1];
-    /* A clause list keyed by (predicates) tests any value, a tagged one too; 'tag keys match a tag. */
-    int preds = 0;
-    if (clauses_top.tag == VAL_TUPLE && clauses_len > 0) { ElemRef k0 = compound_elem(clauses_buf,clauses_s,clauses_len,0); preds = clauses_buf[k0.base+k0.slots-1].tag == VAL_TUPLE; }
-    if (top.tag == VAL_TAGGED && !preds) {
-        ElemRef br = {0}, kr = {0}; uint32_t tag_sym=top.as.compound.len; int found = 0;
-        if (clauses_top.tag == VAL_RECORD) { br = record_field(clauses_buf,clauses_s,clauses_len,tag_sym,&found); kr = (ElemRef){br.base-1,1}; }
-        else {
-            if(clauses_len%2!=0) die("case: need even number of clauses");
-            for(int i=0;i<clauses_len&&!found;i+=2){
-                ElemRef pr=compound_elem(clauses_buf,clauses_s,clauses_len,i);
-                if(clauses_buf[pr.base].tag==VAL_SYM&&clauses_buf[pr.base].as.sym==tag_sym){ br=compound_elem(clauses_buf,clauses_s,clauses_len,i+1); kr=pr; found=1; }
-            }
-        }
-        if (found) { case_body_check(clauses_buf,kr,br); deep_free_values(def_buf,def_s); sp--; eval_in(&clauses_buf[br.base],br.slots,env); return; }
-        int ts=val_slots(top); deep_free_values(&stack[sp-ts],ts); sp-=ts;
-        SPUSH(def_buf,def_s); return;
-    }
-    if(clauses_top.tag==VAL_RECORD && clauses_len>0)
-        die("case: clause key '%s matches a tag, but the value is %s, not tagged. Tag keys match only a tagged value; test other values with (predicate) keys, as in {(5 lt) (2 mul)}",
-            sym_name(clauses_buf[0].as.sym), valtag_name(top.tag));
-    if(clauses_len%2!=0) die("case: need even number of clauses (pred/body pairs)");
-    POP_VAL(scrut);
-    for(int i=0;i<clauses_len;i+=2){
-        ElemRef pred_ref=compound_elem(clauses_buf,clauses_s,clauses_len,i);
-        if(clauses_buf[pred_ref.base+pred_ref.slots-1].tag!=VAL_TUPLE)
-            die("case: clause key %s is %s, not a (predicate). Tag keys like 'ok match only a tagged value, and this one is %s",
-                val_text(clauses_buf,pred_ref), valtag_name(clauses_buf[pred_ref.base+pred_ref.slots-1].tag), valtag_name(scrut_buf[scrut_s-1].tag));
-        stack_room(scrut_s,"case");
-        deep_copy_values(&stack[sp],scrut_buf,scrut_s); sp+=scrut_s;
-        eval_in(&clauses_buf[pred_ref.base],pred_ref.slots,env);
-        if(pop_int()){ElemRef br=compound_elem(clauses_buf,clauses_s,clauses_len,i+1);
-            case_body_check(clauses_buf,pred_ref,br); deep_free_values(def_buf,def_s); SPUSH(scrut_buf,scrut_s); eval_in(&clauses_buf[br.base],br.slots,env); return;}
-    }
-    deep_free_values(scrut_buf,scrut_s); SPUSH(def_buf,def_s);
+    if (sp <= 0 || stack[sp-1].tag != VAL_RECORD) die("case: expected a record of clauses, got %s", sp > 0 ? valtag_name(stack[sp-1].tag) : "nothing");
+    POP_VAL(clauses); stage_body(asp-1); int clauses_len=(int)clauses_top.as.compound.len, found=0;
+    if (sp <= 0 || stack[sp-1].tag != VAL_TAGGED) die("case: expected a tagged value, got %s", sp > 0 ? valtag_name(stack[sp-1].tag) : "nothing");
+    uint32_t tag_sym=stack[sp-1].as.compound.len;
+    ElemRef br = record_field(clauses_buf,clauses_s,clauses_len,tag_sym,&found);
+    if (found) sp--; else br = record_field(clauses_buf,clauses_s,clauses_len,S_WILD,&found);
+    if (!found) die("case: no clause names '%s, but the checker proved one does. This is a bug in slap's checker: please report it with this program.", sym_name(tag_sym));
+    case_body_check(clauses_buf,(ElemRef){br.base-1,1},br); eval_in(&clauses_buf[br.base],br.slots,env);
 }
 static void prim_tag(Frame *e) {
     (void)e;
@@ -2605,8 +2520,8 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
             int bc=(j+toks[j].span);
             int lb=sp; eval(toks+j+1,bc-j-1,env); int ts=sp-lb,nf=0,ir=1,p=sp;
             while(p>lb){int vs=val_slots(stack[p-1]);p-=vs;if(ir&&p>lb&&stack[p-1].tag==VAL_SYM){p--;nf++;}else ir=0;}
-            if(ir) spush(with_tok(val_compound(VAL_RECORD,nf,ts+1),tt));
-            else{int n=0;p=sp;while(p>lb){p-=val_slots(stack[p-1]);n++;}spush(with_tok(val_compound(VAL_TUPLE,n,ts+1),tt));}
+            if(!ir) die("a {...} literal that does not pair each value with a 'key reached the runtime, but the checker refuses one. This is a bug in slap's checker: please report it with this program.");
+            spush(with_tok(val_compound(VAL_RECORD,nf,ts+1),tt));
             if(vals_hold_dict(&stack[lb],ts)) stack[sp-1].flags|=VF_DICT;
             ec++; j=bc; break;
         }
@@ -2655,7 +2570,7 @@ static const char *PRELUDE =
     "(0 get must) 'first let\n"
     "(dup len 1 sub get must) 'last let\n"
     "(0 (plus) fold) 'sum let\n"
-    "(index-of 0 {'ok (drop 1) 'no (drop 0)} case) 'member let\n"
+    "(index-of {'ok (drop 1) 'no (drop 0)} case) 'member let\n"
     "(list rot push swap push) 'couple let\n"
     "(list (cat) fold) 'flatten let\n"
     "(0.0 swap sub) 'fneg let\n"
@@ -2666,8 +2581,8 @@ static const char *PRELUDE =
     "('ok tag) 'ok let\n"
     "('no tag) 'no let\n"
     "(() no) 'none let\n"
-    "('body let () {'ok (body apply) 'no (no)} case) 'then let\n"
-    "('fb let fb {'ok () 'no (drop fb)} case) 'default let\n"
+    "('body let {'ok (body apply) 'no (no)} case) 'then let\n"
+    "('fb let {'ok () 'no (drop fb)} case) 'default let\n"
     "(list ('dd-x let dup dd-x member (dd-x drop) (dd-x push) if) fold) 'dedup let\n"
     "3.14159265358979323846 'pi let\n"
     "6.28318530717958647692 'tau let\n"

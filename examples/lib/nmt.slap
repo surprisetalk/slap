@@ -12,4 +12,4 @@
   1 get must dup 'addr at 1027 eq assert 'color at 5 eq assert
 [0 1 2  3 4 5] nmt-decode must nmt-encode [0 1 2  3 4 5] eq assert
 [0 0 0] nmt-decode must nmt-encode [0 0 0] eq assert
-[0 1 2 3] nmt-decode () {'ok (drop "") 'no ()} case "nmt: cells are 3 bytes each, and the length is not a multiple of 3" eq assert
+[0 1 2 3] nmt-decode {'ok (drop "") 'no ()} case "nmt: cells are 3 bytes each, and the length is not a multiple of 3" eq assert

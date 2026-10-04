@@ -34,7 +34,7 @@
 -- input it binds as '_xin by name, not a caller's.
 ('_xin let
   -- _xc: (i -- c).  The byte at i, or -1 past the end.
-  ('_xin swap nth () {'ok () 'no (drop -1)} case) '_xc let
+  ('_xin swap nth {'ok () 'no (drop -1)} case) '_xc let
 
   -- _xws: (i -- i')
   ((dup _xc _x-ws?) (1 plus) while) '_xws let
@@ -99,7 +99,7 @@
   ('xei let
    xei (dup _xc 'xec let xec 59 eq not xec 0 ge and) (1 plus) while 'xej let
    xej _xc 59 eq not xej xei sub 32 gt or (list "xml: unterminated entity" no) (
-     xei xej _xslice _x-entity () {'ok (xej 1 plus ok) 'no (list swap no)} case) if) '_xentity let
+     xei xej _xslice _x-entity {'ok (xej 1 plus ok) 'no (list swap no)} case) if) '_xentity let
 
   -- ========== Text and attributes ==========
   -- The loops below keep what they build at the bottom of the stack and a
@@ -136,7 +136,7 @@
   -- ========== Elements ==========
 
   -- _xcdata: (i -- text st).  i is just past "<![CDATA[".
-  ('xci let xci "]]>" _xpast () {'ok ('xck let xci xck 3 sub _xslice xck ok) 'no (list swap no)} case) '_xcdata let
+  ('xci let xci "]]>" _xpast {'ok ('xck let xci xck 3 sub _xslice xck ok) 'no (list swap no)} case) '_xcdata let
 
   -- _xnone: (-- element).  What a failed step leaves in place of an element.
   (rec "" 'name into list 'attrs into list 'children into) '_xnone let
@@ -183,7 +183,7 @@
 
   0 _xprolog _xnone (0 _xelem) pthen
   (_xtrivia) then ('xz let xz _xc 0 lt (0 ok) ("xml: trailing input after the root element" no) if) then
-  () {'ok (drop ok) 'no (swap drop no)} case) '_xml-parse let
+  {'ok (drop ok) 'no (swap drop no)} case) '_xml-parse let
 
 -- ========== Helpers for decoders ==========
 -- Nodes take more than one slot each, so these scan a whole list with `each`,
@@ -191,50 +191,50 @@
 
 -- _x-trim: (s -- s').  Drops leading and trailing whitespace.
 ('xs let
- 0 (dup 'xs swap nth () {'ok (_x-ws?) 'no (drop 0)} case) (1 plus) while 'xa let
- xs len (dup 0 gt (dup 1 sub 'xs swap nth () {'ok (_x-ws?) 'no (drop 0)} case) (0) if) (1 sub) while 'xz let
+ 0 (dup 'xs swap nth {'ok (_x-ws?) 'no (drop 0)} case) (1 plus) while 'xa let
+ xs len (dup 0 gt (dup 1 sub 'xs swap nth {'ok (_x-ws?) 'no (drop 0)} case) (0) if) (1 sub) while 'xz let
  xs xz take-n xa drop-n) '_x-trim let
 
 -- _x-find-attr: (attrs name -- value ok | none).  The first attribute with the name wins.
 ('xfn let 'xfa let
  xfa (0 get must) each xfn index-of
- () {'ok ('xfk let 'xfa xfk nth must 1 get must ok) 'no (drop none)} case) '_x-find-attr let
+ {'ok ('xfk let 'xfa xfk nth must 1 get must ok) 'no (drop none)} case) '_x-find-attr let
 
 -- _x-elems: (children keep -- elements).  The element children whose name keep
 -- accepts: (name -- bool).
-('xk let list (list {'elem ('r let r 'name at xk apply (list r push) (list) if)} case cat) fold) '_x-elems let
+('xk let list ({'elem ('r let r 'name at xk apply (list r push) (list) if) 'text (drop list)} case cat) fold) '_x-elems let
 
 -- _x-collect-text: (children -- text ok | none).  The children's text joined, or
 -- none if any child is an element.
-("" ok (none {'text (ok)} case 'xr let ('xa let xr (xa swap cat ok) then) then) fold) '_x-collect-text let
+("" ok ({'text (ok) 'elem (drop none)} case 'xr let ('xa let xr (xa swap cat ok) then) then) fold) '_x-collect-text let
 
 -- _xa-list: (elements dec -- values ok | msg no).  The first failing element
 -- wins, and its index is the count of elements decoded before it: "[1]...".
-('d let list ok ('x let (x d apply () {'ok (push ok) 'no ('m let len int-str "[" swap cat "]" cat m cat no)} case) then) fold) '_xa-list let
+('d let list ok ('x let (x d apply {'ok (push ok) 'no ('m let len int-str "[" swap cat "]" cat m cat no)} case) then) fold) '_xa-list let
 
 -- ========== Decoders ==========
 -- A decoder is a body (element -- value ok | msg no).  A failure message starts
 -- with the path below the element, and each decoder on the way out puts its own
 -- step in front; xd-run adds the root's name.
 
-(('children at _x-collect-text () {'ok (_x-trim ok) 'no (drop "/text(): element has non-text children" no)} case)) 'xd-text let
-(('children at _x-collect-text () {'ok (ok) 'no (drop "/text(): element has non-text children" no)} case)) 'xd-raw-text let
+(('children at _x-collect-text {'ok (_x-trim ok) 'no (drop "/text(): element has non-text children" no)} case)) 'xd-text let
+(('children at _x-collect-text {'ok (ok) 'no (drop "/text(): element has non-text children" no)} case)) 'xd-raw-text let
 (('name at ok)) 'xd-tag let
 (('attrs at ok)) 'xd-attrs let
 
 -- xd-attr: (name -- dec).
-('n let ('attrs at n _x-find-attr () {'ok (ok) 'no (drop "/@" n cat ": missing attribute" cat no)} case)) 'xd-attr let
+('n let ('attrs at n _x-find-attr {'ok (ok) 'no (drop "/@" n cat ": missing attribute" cat no)} case)) 'xd-attr let
 
 -- xd-child: (name dec -- dec').  The first child element with the name.
 ('d let 'n let ('children at (n eq) _x-elems 0 get
-   () {'ok (d apply () {'ok (ok) 'no ("/" n cat swap cat no)} case)
+   {'ok (d apply {'ok (ok) 'no ("/" n cat swap cat no)} case)
        'no (drop "/" n cat ": no such child" cat no)} case)) 'xd-child let
 
 -- xd-children: (name dec -- dec').  Every child element with the name.
-('d let 'n let ('children at (n eq) _x-elems d _xa-list () {'ok (ok) 'no ("/" n cat swap cat no)} case)) 'xd-children let
+('d let 'n let ('children at (n eq) _x-elems d _xa-list {'ok (ok) 'no ("/" n cat swap cat no)} case)) 'xd-children let
 
 -- xd-all-children: (dec -- dec').  Every child element.
-('d let ('children at (drop 1) _x-elems d _xa-list () {'ok (ok) 'no ("/*" swap cat no)} case)) 'xd-all-children let
+('d let ('children at (drop 1) _x-elems d _xa-list {'ok (ok) 'no ("/*" swap cat no)} case)) 'xd-all-children let
 
 -- xd-at: (names dec -- dec').  Children nested along names: ["b" "c"] reads /b/c.
 (swap reverse swap (swap xd-child) fold) 'xd-at let
@@ -253,11 +253,11 @@
 -- xd-one-of: (decs -- dec).  The first decoder that succeeds wins.
 ('ds let ('e let
    ds ": oneOf: no decoders matched" no
-   ('dd let () {'ok (ok) 'no (drop e dd apply)} case) fold
-   () {'ok (ok) 'no (drop ": oneOf: no decoders matched" no)} case)) 'xd-one-of let
+   ('dd let {'ok (ok) 'no (drop e dd apply)} case) fold
+   {'ok (ok) 'no (drop ": oneOf: no decoders matched" no)} case)) 'xd-one-of let
 
 -- xd-maybe: (dec -- dec').  value ok ok, or none ok when dec fails.
-('d let (d apply () {'ok (ok ok) 'no (drop none ok)} case)) 'xd-maybe let
+('d let (d apply {'ok (ok ok) 'no (drop none ok)} case)) 'xd-maybe let
 
 ('v let (drop v ok)) 'xd-succeed let
 ('m let (drop ": " m cat no)) 'xd-fail let
@@ -269,7 +269,7 @@
 -- ========== Public entry ==========
 
 -- xd-run: (source dec -- value ok | msg no).
-('d let _xml-parse ('root let root d apply () {'ok (ok) 'no ("/" root 'name at cat swap cat no)} case) then) 'xd-run let
+('d let _xml-parse ('root let root d apply {'ok (ok) 'no ("/" root 'name at cat swap cat no)} case) then) 'xd-run let
 
 -- xd-eval: (source (-- dec) -- value ok | msg no).  Builds the decoder, then runs it.
 (apply xd-run) 'xd-eval let
@@ -296,20 +296,20 @@
 (dup 'name at 'nm let dup 'attrs at 'ats let 'children at "<" nm cat ats _xe-render-attrs cat nm) '_xe-open let
 
 -- xml-render: (node -- xml-string).
-("" {'text (_xe-escape-text)
+({'text (_xe-escape-text)
      'elem (_xe-open 'nm let 'st let
-            0 peek 0 {'ok (drop 1)} case 'more let
+            0 peek {'ok (drop 1) 'no (drop 0)} case 'more let
             (xml-render) each flatten 'inner let
             st more (">" cat inner cat "</" cat nm cat ">" cat) ("/>" cat) if)} case) 'xml-render let
 
 -- ========== Pretty-print variant ==========
 
 -- _xe-kids-all-text?: (children -- bool).
-((0 {'elem (drop 1)} case) each 1 index-of 1 {'ok (drop 0)} case) '_xe-kids-all-text? let
+(({'elem (drop 1) 'text (drop 0)} case) each 1 index-of {'ok (drop 0) 'no (drop 1)} case) '_xe-kids-all-text? let
 
 -- xml-render-pretty: (depth node -- string ending in a newline)
 (swap 'xd let
- "" {'text (_xe-escape-text)
+ {'text (_xe-escape-text)
      'elem (_xe-open 'nm let 'st let 'kids let
             list xd 2 mul (32 push) repeat 'ind let
             ind st cat
@@ -327,9 +327,9 @@
 
 -- Test helpers: xerr gives a result's error, or "" on success; node-name and
 -- node-text read a node, or give "" for the other kind.
-(() {'ok (drop "") 'no ()} case) 'xerr let
-("" {'elem ('name at)} case) 'node-name let
-("" {'text ()} case) 'node-text let
+({'ok (drop "") 'no ()} case) 'xerr let
+({'elem ('name at) 'text (drop "")} case) 'node-name let
+({'text () 'elem (drop "")} case) 'node-text let
 
 "<a/>" _xml-parse must 'name at "a" eq assert
 "<a/>" _xml-parse must 'attrs at len 0 eq assert

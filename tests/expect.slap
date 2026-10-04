@@ -63,15 +63,6 @@ answer 42 eq assert
 10 dup 5 lt (2 mul) (3 mul) if 30 eq assert
 3 dup 5 lt (2 mul) (3 mul) if 6 eq assert
 
--- ===== Control Flow: case =====
-10 0 {(5 lt) (2 mul) (20 lt) (3 mul)} case
-30 eq assert
-
--- ===== case replaces match (symbol dispatch via case) =====
-'red -1 {('red eq) (drop 0) ('green eq) (drop 1) ('blue eq) (drop 2)} case
-0 eq assert
-'blue -1 {('red eq) (drop 0) ('green eq) (drop 1) ('blue eq) (drop 2)} case
-2 eq assert
 
 -- ===== Control Flow: while =====
 1 (dup 100 lt) (2 mul) while
@@ -246,13 +237,13 @@ list {'b 1} push (dup drop) each 0 get must 'b at 1 eq assert
 -- default never runs its fallback: a body there is the value
 (1) ok (1 0 div) default apply 1 eq assert
 -- a word that thens its input takes 'ok and 'no values
-((1 plus ok) then) 'then-inc let 5 ok then-inc must 6 eq assert 5 no then-inc 0 {'ok (drop 1) 'no (drop 2)} case 2 eq assert
+((1 plus ok) then) 'then-inc let 5 ok then-inc must 6 eq assert 5 no then-inc {'ok (drop 1) 'no (drop 2)} case 2 eq assert
 -- then leaves the body's payload, keys and all
 {'a 1} ok ('a (1 plus) edit ok) then must 'a at 2 eq assert
 -- a then body reads keys from the ok payload
 {'a 1} ok ('a at ok) then must 1 eq assert
 -- a case default that cannot run need not match the clauses' type
-1 ok "s" {'ok (drop 5) 'no (drop 6)} case 5 eq assert
+1 ok {'ok (drop 5) 'no (drop 6)} case 5 eq assert
 42 box (21 mul) lend 882 eq assert free
 42 box (1 plus) mutate () lend 43 eq assert free
 
@@ -356,9 +347,6 @@ rec rec eq assert
 
 -- record into creates new field
 {'a 1} 2 'b into 'b at 2 eq assert
-
--- case with no match returns default
-100 -1 {(50 lt) (drop 1)} case -1 eq assert
 
 -- while that never executes body
 10 (dup 5 lt) (2 mul) while 10 eq assert
@@ -581,13 +569,6 @@ drop
 1.0 10 (dup 2.0 swap div plus 2.0 div) repeat
 dup dup mul 2.0 sub fabs 0.0001 lt assert drop
 
--- ===== Complex: case in function (replaces match) =====
-(
-  -1 {('red eq) (drop 0) ('green eq) (drop 1) ('blue eq) (drop 2)} case
-) 'color-val let
-'red color-val 0 eq assert
-'blue color-val 2 eq assert
-'green color-val 1 eq assert
 
 -- ===== Complex: cumulative sum via fold =====
 [1 2 3 4 5] [0] ('p let dup last p plus push) fold 1 drop-n [1 3 6 10 15] eq assert
@@ -818,26 +799,33 @@ list "hi" push "--" str-join "hi" eq assert
 -- ===== Tagged Unions (Sum Types) =====
 
 -- basic tag and case
-123 'foo tag () {'foo ()} case 123 eq assert
+123 'foo tag {'foo ()} case 123 eq assert
 
--- case default fires on unhandled tag (A5)
-123 'bar tag 999 {'foo (1 plus)} case 999 eq assert
+-- a '_ clause gets the tagged value itself, a result's too
+5 'wb tag {'wa (drop 0) '_ (5 'wb tag eq)} case assert
+"e" no {'ok (drop 1) '_ ("e" no eq)} case assert
+-- a result case with 'ok and 'no clauses needs no '_
+5 ok {'ok (1 plus) 'no (drop 0)} case 6 eq assert
+-- a case covers a closed tag set when it names every tag the set holds
+( 5 'ca tag ) [{'ca int} either move out] effect 'only-ca let
+only-ca {'ca (drop 1) 'cb (drop 2)} case 1 eq assert
+
+-- a '_ clause runs on a tag no clause names
+123 'bar tag {'foo (1 plus) '_ (drop 999)} case 999 eq assert
 
 -- case unifies case + case
-1 'foo tag 999 {'foo (1 plus) 'bar (2 plus)} case 2 eq assert
-1 'baz tag 999 {'foo (1 plus) 'bar (2 plus)} case 999 eq assert
-5 'unknown {(3 lt) (drop 'small) (10 lt) (drop 'medium)} case 'medium eq assert
-15 'unknown {(3 lt) (drop 'small) (10 lt) (drop 'medium)} case 'unknown eq assert
+1 'foo tag {'foo (1 plus) 'bar (2 plus)} case 2 eq assert
+1 'baz tag {'foo (1 plus) 'bar (2 plus) '_ (drop 999)} case 999 eq assert
 
 -- record clauses
-123 'foo tag () {'foo (1 plus) 'bar (2 plus)} case 124 eq assert
-456 'bar tag () {'foo (1 plus) 'bar (2 plus)} case 458 eq assert
+123 'foo tag {'foo (1 plus) 'bar (2 plus)} case 124 eq assert
+456 'bar tag {'foo (1 plus) 'bar (2 plus)} case 458 eq assert
 
 -- multi-slot payload (tuple)
-(1 2 3) 'triple tag () {'triple ()} case (1 2 3) eq assert
+(1 2 3) 'triple tag {'triple ()} case (1 2 3) eq assert
 
 -- nested tags
-42 'inner tag 'outer tag () {'outer ()} case 42 'inner tag eq assert
+42 'inner tag 'outer tag {'outer ()} case 42 'inner tag eq assert
 
 -- dup/drop/swap on tagged values
 123 ok dup eq assert
@@ -858,7 +846,7 @@ list "hi" push "--" str-join "hi" eq assert
 "x" no (1 plus ok) then (2 mul ok) then 0 default 0 eq assert
 
 -- then preserves non-ok tag and payload
-"fail" no (999 plus ok) then "" {'no ()} case "fail" eq assert
+"fail" no (999 plus ok) then {'ok (drop "") 'no ()} case "fail" eq assert
 
 -- default
 42 ok -1 default 42 eq assert
@@ -888,7 +876,7 @@ list "hi" push "--" str-join "hi" eq assert
 16 safe-sqrt (2 mul ok) then -1 default 8 eq assert
 
 -- case on an open tag: no exhaustiveness check
-42 'foo tag () {'foo (1 plus)} case 43 eq assert
+42 'foo tag {'foo (1 plus)} case 43 eq assert
 
 -- default preserves payload type through then chain
 42 ok (1 plus ok) then (2 mul ok) then -1 default 86 eq assert
@@ -912,23 +900,23 @@ x (2 mul ok) then -1 default 84 eq assert
 
 -- nested tags: unwrap outermost
 1 'a tag 'b tag 'c tag
-  () {'c ()} case
+  {'c ()} case
   1 'a tag 'b tag eq assert
 
 -- nested tags: full 3-level unwrap
 1 'a tag 'b tag 'c tag
-  () {'c ()} case
-  () {'b ()} case
-  () {'a ()} case
+  {'c ()} case
+  {'b ()} case
+  {'a ()} case
   1 eq assert
 
 -- nested tags: two levels of wrapping/unwrapping
 42 'inner tag 'outer tag
-  () {'outer (() {'inner (10 plus)} case)} case
+  {'outer ({'inner (10 plus)} case)} case
   52 eq assert
 
 -- case with body that returns tagged (re-wrapping)
-42 ok () {'ok (2 mul ok) 'no (no)} case -1 default 84 eq assert
+42 ok {'ok (2 mul ok) 'no (no)} case -1 default 84 eq assert
 
 -- then chain: 10 deep
 1 ok
@@ -939,7 +927,7 @@ x (2 mul ok) then -1 default 84 eq assert
 -- no passes through arbitrary then chains
 "err" no
   (1 plus ok) then (2 mul ok) then (3 sub ok) then (4 div ok) then
-  "" {'no ()} case "err" eq assert
+  {'ok (drop "") 'no ()} case "err" eq assert
 
 -- default with body (tuple) as fallback
 42 no 99 default 99 eq assert
@@ -952,19 +940,19 @@ x (2 mul ok) then -1 default 84 eq assert
 [1 2 3] ok must [1 2 3] eq assert
 
 -- tag with empty tuple payload
-() 'unit tag () {'unit (drop 1)} case 1 eq assert
+() 'unit tag {'unit (drop 1)} case 1 eq assert
 
 -- mixed custom tags in case
-42 'ma tag () {'ma (1 plus) 'mb (2 plus) 'mc (3 plus)} case 43 eq assert
-42 'mb tag () {'ma (1 plus) 'mb (2 plus) 'mc (3 plus)} case 44 eq assert
-42 'mc tag () {'ma (1 plus) 'mb (2 plus) 'mc (3 plus)} case 45 eq assert
+42 'ma tag {'ma (1 plus) 'mb (2 plus) 'mc (3 plus)} case 43 eq assert
+42 'mb tag {'ma (1 plus) 'mb (2 plus) 'mc (3 plus)} case 44 eq assert
+42 'mc tag {'ma (1 plus) 'mb (2 plus) 'mc (3 plus)} case 45 eq assert
 
 -- recursive tagged: build a linked list with tags
 ('tl let 'hd let rec hd 'hd into tl 'tl into 'cons tag) 'cons let
 
 (0 'nil tag) 'nil let
-nil 0 {'nil (drop 0) 'cons ('hd at)} case 0 eq assert
-1 2 nil cons cons 0 {'nil (drop 0) 'cons ('hd at)} case 1 eq assert
+nil {'nil (drop 0) 'cons ('hd at)} case 0 eq assert
+1 2 nil cons cons {'nil (drop 0) 'cons ('hd at)} case 1 eq assert
 
 -- ===== Stack Combinators =====
 
@@ -1031,32 +1019,32 @@ rec ok must rec eq assert
 -999 ok -1 default -999 eq assert
 
 -- tag/case roundtrip preserves equality
-42 'x tag dup () {'x ()} case 42 eq assert
+42 'x tag dup {'x ()} case 42 eq assert
 42 'x tag eq assert
 
 -- case with record-style clauses
-42 'ra tag () {'ra (1 plus) 'rb (2 plus)} case 43 eq assert
-42 'rb tag () {'ra (1 plus) 'rb (2 plus)} case 44 eq assert
+42 'ra tag {'ra (1 plus) 'rb (2 plus)} case 43 eq assert
+42 'rb tag {'ra (1 plus) 'rb (2 plus)} case 44 eq assert
 
 -- then on ok with body that changes payload len (int -> tuple)
 42 ok (dup 1 plus couple ok) then must first 42 eq assert
 
 -- default on 3-level nested tags
 1 'a tag 'b tag 'c tag
-  () {'c ()} case
-  () {'b ()} case
-  () {'a ()} case
+  {'c ()} case
+  {'b ()} case
+  {'a ()} case
   1 eq assert
 
 -- then chain where no passes through untouched
 "err" no (1 plus ok) then (2 mul ok) then (3 sub ok) then (4 div ok) then (5 plus ok) then
-  "" {'no ()} case "err" eq assert
+  {'ok (drop "") 'no ()} case "err" eq assert
 
 -- tag, case, re-tag
-42 ok () {'ok (1 plus no) 'no (no)} case -1 default -1 eq assert
+42 ok {'ok (1 plus no) 'no (no)} case -1 default -1 eq assert
 
 -- then on ok preserves tag after body
-42 ok (1 plus ok) then dup 0 {'ok ()} case 43 eq assert drop
+42 ok (1 plus ok) then dup {'ok () 'no (drop 0)} case 43 eq assert drop
 
 -- ===== Adversarial: Record Edit =====
 
@@ -1351,7 +1339,7 @@ none () no eq assert
 "9223372036854775807" ok parse-int must drop 9223372036854775807 eq assert
 "-9223372036854775808" ok parse-int must drop -9223372036854775808 eq assert
 "00000000000000000000009" ok parse-int must drop 9 eq assert
-"9223372036854775808" ok parse-int () {'ok (drop "parsed") 'no ()} case
+"9223372036854775808" ok parse-int {'ok (drop "parsed") 'no ()} case
   "parse-int: expected an int from -9223372036854775808 to 9223372036854775807, got a number outside that range" eq assert 0 eq assert
 
 -- parse-int failure returns no with default 0
@@ -1386,7 +1374,7 @@ none () no eq assert
 "hello=world" ok "=" parse-until must "world" eq assert "hello" eq assert
 "a::b::c" ok "::" parse-until must "b::c" eq assert "a" eq assert
 -- a missing delimiter leaves the same shape: an empty prefix under the error
-"hello" ok "=" parse-until () {'ok (drop "found") 'no (drop "missing")} case "missing" eq assert "" eq assert
+"hello" ok "=" parse-until {'ok (drop "found") 'no (drop "missing")} case "missing" eq assert "" eq assert
 
 -- parse-float (tagged API)
 "3.14" ok parse-float must drop 3.14 eq assert
@@ -1522,16 +1510,16 @@ outer-val 99 eq assert
 
 -- ===== Tagged payloads past 16384 slots =====
 (
-  0 20000 range ok () {'ok (len) 'no (drop -1)} case 20000 eq assert
+  0 20000 range ok {'ok (len) 'no (drop -1)} case 20000 eq assert
 ) 'test-case-big-ok let test-case-big-ok
 
 (
-  0 20000 range no () {'ok (len) 'no (len neg)} case -20000 eq assert
+  0 20000 range no {'ok (len) 'no (len neg)} case -20000 eq assert
 ) 'test-case-big-no let test-case-big-no
 
--- an unmatched tag still falls through to the default, and the big payload goes
+-- an unmatched tag runs the '_ clause, which drops the big payload
 (
-  0 20000 range 'other tag 7 {'big (len)} case 7 eq assert
+  0 20000 range 'other tag {'big (len) '_ (drop 7)} case 7 eq assert
 ) 'test-case-big-default let test-case-big-default
 
 -- the prelude words built on `case`
@@ -1591,9 +1579,8 @@ scope-outer 100 eq assert
 (list 0 (dup 9000 lt) (swap [1] push swap 1 plus) while drop
  0 [1 2] set must dup len 9000 eq assert 0 get must [1 2] eq assert) 'big-set let big-set
 (rec 0 20000 range 'f into 'f (1 push) edit 'f at len 20001 eq assert) 'big-edit let big-edit
-(0 300000 range no 0 (drop 0 1 ok) pthen -1 {'ok (drop -2) 'no (len)} case 300000 eq assert 0 eq assert) 'big-pthen let big-pthen
+(0 300000 range no 0 (drop 0 1 ok) pthen {'ok (drop -2) 'no (len)} case 300000 eq assert 0 eq assert) 'big-pthen let big-pthen
 ([1 2] no "fallback" (drop "x" 1 ok) pthen drop "fallback" eq assert) 'multi-slot-default let multi-slot-default
-(0 20000 range 0 {(len 5 lt) (drop 1) (len 5 gt) (len)} case 20000 eq assert) 'big-scrutinee let big-scrutinee
 (0 'dz tag 100 ('dn tag) repeat print) 'deep-print let deep-print
 -- a box holding a dict: mutate hands the body the contents, lend a copy
 (dict box ("k" 1 insert) mutate ("k" of must 1 eq assert drop) lend free) 'box-dict-mutate let box-dict-mutate
@@ -1627,11 +1614,11 @@ fs-path read must "é" eq assert
 [10 20 30] 4294967298 99 set [] default [] eq assert
 [10 20 30] 'idx-l let 'idx-l 4294967296 nth 0 default 0 eq assert
 -- a missing dict key reports the key
-dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq assert drop
+dict "a" of {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq assert drop
 
 -- ===== parse-http refuses what it cannot read =====
-("HTTP/1.1 OK" crlf cat crlf cat parse-http 0 {'ok (drop 1) 'no (drop 0)} case 0 eq assert) 'http-no-code let http-no-code
-("HTTP/1.1 200 OK" crlf cat "garbage line" cat crlf cat crlf cat parse-http 0 {'ok (drop 1) 'no (drop 0)} case 0 eq assert) 'http-no-colon let http-no-colon
+("HTTP/1.1 OK" crlf cat crlf cat parse-http {'ok (drop 1) 'no (drop 0)} case 0 eq assert) 'http-no-code let http-no-code
+("HTTP/1.1 200 OK" crlf cat "garbage line" cat crlf cat crlf cat parse-http {'ok (drop 1) 'no (drop 0)} case 0 eq assert) 'http-no-colon let http-no-colon
 ("HTTP/1.1 200 OK" crlf cat "Content-Length:5" cat crlf cat crlf cat parse-http must 'headers at 0 get must 'value at "5" eq assert) 'http-tight-colon let http-tight-colon
 
 -- ===== A declared signature is checked against the body itself =====
@@ -1650,14 +1637,14 @@ dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq a
 (dup 0 ge (1 plus) ("neg" no must) if) [int lent in  int move out] effect 'inc-b let 1 inc-b 2 eq assert
 1 0 lt ("unreachable" no must) () if
 -- a case clause may consume values below the scrutinee; its effect is the case's
-('lit let dup lit str-find () {'ok ('p let p lit len plus drop-n) 'no (drop "skip-to: not found" no must)} case) 'skip-to let
+('lit let dup lit str-find {'ok ('p let p lit len plus drop-n) 'no (drop "skip-to: not found" no must)} case) 'skip-to let
 ("abc>def" ">" skip-to) [str move out] effect 'skip-caller let skip-caller "def" eq assert
 -- the checker infers the tags a word emits, so a case covering them never reaches its default
 (dup 0 lt (drop "neg" no) (ok) if) 'sgn-chk let
-(5 swap sgn-chk 0 {'ok (plus) 'no (drop drop -1)} case) [int lent in  int move out] effect 'add5 let 3 add5 8 eq assert -3 add5 -1 eq assert
-(10 swap ok parse-int 0 {'ok (drop plus) 'no (drop drop drop -1)} case) [str lent in  int move out] effect 'p10 let "5" p10 15 eq assert "x" p10 -1 eq assert
+(5 swap sgn-chk {'ok (plus) 'no (drop drop -1)} case) [int lent in  int move out] effect 'add5 let 3 add5 8 eq assert -3 add5 -1 eq assert
+(10 swap ok parse-int {'ok (drop plus) 'no (drop drop drop -1)} case) [str lent in  int move out] effect 'p10 let "5" p10 15 eq assert "x" p10 -1 eq assert
 -- a declared either input tells the body which tags reach its case
-(5 swap 0 {'ok (plus) 'no (drop drop -1)} case) [{'ok int 'no list} either lent in  int move out] effect 'add5-in let 3 ok add5-in 8 eq assert
+(5 swap {'ok (plus) 'no (drop drop -1)} case) [{'ok int 'no list} either lent in  int move out] effect 'add5-in let 3 ok add5-in 8 eq assert
 -- an undeclared recursive word takes its effect from the branch that does not recurse
 ('close let 'acc let dup len 0 eq (acc swap) (1 drop-n acc 1 push close rec-loop) if) 'rec-loop let
 ([1 2 3] list 0 rec-loop drop) [int list move out] effect 'rec-caller let rec-caller [1 1 1] eq assert
@@ -1724,11 +1711,8 @@ dict "a" of "" {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq a
 5 {'f (1 plus)} 'f at apply 6 eq assert
 {'name [72 105] 'inner {'b {'c 1}}} 'inner at 'b at 'c at 1 eq assert
 {} rec eq assert
--- an odd count, or a value in a key's place, makes a tuple
-{'r 'g 'b} apply 'b eq assert 'g eq assert 'r eq assert
-{[1 2] 0 get must} apply 1 eq assert
--- a tuple bound by name runs when looked up, whichever brackets built it
-{1 2 3} 't let t plus plus 6 eq assert
+-- a record literal runs its code when the program is read
+{'k 1 2 plus} {'k 3} eq assert
 
 -- ===== at and edit never fail: the checker proves the key =====
 {'x 10 'y 20} 'x at 10 eq assert
@@ -1755,8 +1739,7 @@ rec 5 'a into 'a at 5 eq assert
 -- a tagged value carries each tag's payload type, through must and into case clauses
 {'x 1} ok must 'x at 1 eq assert
 [{'x 1} {'x 2}] 1 get must 'x at 2 eq assert
-{'x 1} ok 0 {'ok ('x at) 'no (drop 9)} case 1 eq assert
-{'x 1} 0 {('x at 1 eq) ('x at 10 plus)} case 11 eq assert
+{'x 1} ok {'ok ('x at) 'no (drop 9)} case 1 eq assert
 {'x 1} box ('x at) lend 1 eq assert ('x (1 plus) edit) mutate ('x at) lend 2 eq assert free
 -- a word's list input stands for a caller's list: its elements must have the keys the word reads
 (('x at) each) 'xs-of let [{'x 1 'y 5} {'x 2 'y 0}] xs-of [1 2] eq assert
@@ -1792,9 +1775,6 @@ sc-repeat 15 eq assert
 ( 0 get must dup drop drop list ) ['a list own in  {'q int} either list move out] effect 'held-f let
 [1 2] held-f len 0 eq assert
 
--- a predicate clause runs on a tagged value too, and its body gets the whole value
-5 'pa tag 0 {(drop 1) (drop 7)} case 7 eq assert
-
 -- a body bound with let runs at any stack depth
 ('n let (n plus)) 'mk-adder let
 5 mk-adder 'plus5 let 3 plus5 apply 7 plus5 apply 12 eq assert 8 eq assert
@@ -1803,16 +1783,16 @@ sc-repeat 15 eq assert
 (apply plus) [int lent in  ( int -> int int ) own in  int move out] effect 'add-run2 let 1 (2) add-run2 3 eq assert
 
 -- `{| 'r} either` is any tag set, not a result
-( 0 {'a (drop 1)} case ) [{| 'r} either lent in  int move out] effect 'any-tag let
+( {'a (drop 1) '_ (drop 0)} case ) [{| 'r} either lent in  int move out] effect 'any-tag let
 5 'a tag any-tag 1 eq assert
 
 -- neq, like eq, compares two symbols without making them one type
 [1 2] 'nxs let  'nxs 'nk let  nk 0 nth must 1 eq assert  nk 'nys neq assert
 
 -- a tag set that only leaves the word is the word's own: its case covers it
-( 5 'oa tag dup "x" {'oa (drop 1)} case ) 'own-set let
+( 5 'oa tag dup {'oa (drop 1)} case ) 'own-set let
 own-set 1 eq assert drop
-( 5 'oa tag dup "x" {'oa (drop 1)} case ) [{'oa int} either move out  int move out] effect 'own-set2 let
+( 5 'oa tag dup {'oa (drop 1)} case ) [{'oa int} either move out  int move out] effect 'own-set2 let
 own-set2 1 eq assert drop
 
 -- equality is structural: a record's field order and a dict's making do not matter

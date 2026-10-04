@@ -18,4 +18,4 @@
 [0 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] chr-decode must
   dup 0 get must 2 eq assert
   chr-encode [0 0 0 0 0 0 0 0  255 0 0 0 0 0 0 0] eq assert
-[1 2 3] chr-decode () {'ok (drop "") 'no ()} case "chr: a tile is exactly 16 bytes" eq assert
+[1 2 3] chr-decode {'ok (drop "") 'no ()} case "chr: a tile is exactly 16 bytes" eq assert

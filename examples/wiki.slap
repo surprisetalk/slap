@@ -63,11 +63,11 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
 -- turn [PageName] into links (input already escaped, so no stray tags)
 (list swap
  (dup len 0 gt) (
-   dup "[" str-find () {
+   dup "[" str-find {
      'no (drop 'r1 let 'a1 let a1 r1 cat list)
      'ok ('p1 let 'r2 let 'a2 let
           r2 p1 1 plus drop-n 'rest2 let
-          rest2 "]" str-find () {
+          rest2 "]" str-find {
             'no (drop a2 r2 cat list)
             'ok ('p2 let
                  rest2 p2 take-n 'cand let
@@ -97,7 +97,7 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
 
 (400 ctype "<p>Invalid page name: 1-64 letters, digits, dash, underscore.</p>" "Bad Request" swap layout) 'bad-name let
 
-('vn let vn page-path read () {
+('vn let vn page-path read {
    'ok ('vraw let 200 ctype
         vraw render "<p><a href='/edit/" vn cat "'>edit</a></p>" cat cat
         vn swap layout)
@@ -126,35 +126,35 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
 -- {'ok n}: n is 0 when the header is absent; 'no when present but not a number.
 -- Only the pre-terminator block is scanned, anchored to a line start, so a
 -- "content-length:" in the request target or in another header name cannot match.
-('cr let cr crlf crlf cat str-find () {
+('cr let cr crlf crlf cat str-find {
    'no (drop 0 ok)
-   'ok ('che let cr che take-n lower crlf "content-length:" cat str-find () {
+   'ok ('che let cr che take-n lower crlf "content-length:" cat str-find {
      'no (drop 0 ok)
-     'ok ('clp let cr clp 17 plus drop-n ok parse-spaces parse-int () {
+     'ok ('clp let cr clp 17 plus drop-n ok parse-spaces parse-int {
        'ok (drop ok)
        'no (drop drop "bad Content-Length header" no)
      } case)
    } case)
  } case) 'content-length let
 
-('rr let rr crlf crlf cat str-find () {
+('rr let rr crlf crlf cat str-find {
    'no (drop 0)
    'ok ('hp let rr len hp 4 plus rr content-length 0 default plus ge)
  } case) 'req-complete let
 
-('pq let pq crlf crlf cat str-find () {
+('pq let pq crlf crlf cat str-find {
    'no (drop "bad request: no header terminator" no)
    'ok ('phe let
         pq phe take-n 'phead let
-        phead crlf str-find () {'ok ('plp let phead plp take-n) 'no (drop phead)} case
+        phead crlf str-find {'ok ('plp let phead plp take-n) 'no (drop phead)} case
         " " str-split 'pparts let
         pparts len 2 lt (
           "bad request: malformed request line" no
         ) (
-          pq content-length () {
+          pq content-length {
             'no (no)
             'ok ('pcl let
-                 pparts 1 get must dup "?" str-find () {'ok (take-n) 'no (drop)} case 'pp let
+                 pparts 1 get must dup "?" str-find {'ok (take-n) 'no (drop)} case 'pp let
                  pq phe 4 plus drop-n pcl take-n 'pb let
                  list pparts 0 get must push pp push pb push ok)
           } case
@@ -163,7 +163,7 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
 
 -- accumulate one request: until headers + declared body arrive, peer closes, or 12k cap
 (list
- (swap 4096 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+ (swap 4096 tcp-recv {'ok () 'no (drop list)} case 'ch let
   swap ch cat
   dup req-complete not
   ch len 0 gt and
@@ -175,7 +175,7 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
  "Content-Length: " cat rbody len int-str cat crlf cat
  "Connection: close" cat crlf cat crlf cat
  rbody cat
- tcp-send () {'ok (drop) 'no (drop)} case) 'respond let
+ tcp-send {'ok (drop) 'no (drop)} case) 'respond let
 
 -- ===== routing =====
 
@@ -212,7 +212,7 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
        (413 ctype "<p>Request too large: 12000 byte cap.</p>" "Too Large" swap layout respond tcp-close)
        (tcp-close) if
    ) (
-     rq parse-request () {
+     rq parse-request {
        'ok ('prr let
             prr 0 get must 'hm let prr 1 get must 'hp2 let
             hm " " cat hp2 cat print
@@ -252,13 +252,13 @@ treq2 req-complete assert
 -- a "content-length:" in the target or in another header name must not count
 "GET /content-length:9 HTTP/1.0" crlf cat crlf cat req-complete assert
 "GET / HTTP/1.0" crlf cat "X-Content-Length: 50" cat crlf cat crlf cat req-complete assert
-"POST /x HTTP/1.0" crlf cat "Content-Length: abc" cat crlf cat crlf cat parse-request () {'ok (drop 0) 'no (drop 1)} case assert
+"POST /x HTTP/1.0" crlf cat "Content-Length: abc" cat crlf cat crlf cat parse-request {'ok (drop 0) 'no (drop 1)} case assert
 treq2 parse-request must 'tr2 let
 tr2 0 get must "POST" eq assert
 tr2 1 get must "/edit/X" eq assert
 tr2 2 get must "hello" eq assert
 "POST /x HTTP/1.0" crlf cat "Content-Length: 5" cat crlf cat crlf cat "he" cat req-complete not assert
-"junk" parse-request () {'ok (drop 0) 'no (drop 1)} case assert
+"junk" parse-request {'ok (drop 0) 'no (drop 1)} case assert
 
 -- ===== serve =====
 

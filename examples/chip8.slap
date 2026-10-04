@@ -136,7 +136,7 @@
      -- the accumulator and counter sit above the machine; nested dip lifts both
      -- out of the way so peek sees the machine at top of stack
      list 0 (dup 16 lt) (dup 'ki let ((KEY-I ki plus peek must) dip) dip (swap push) dip 1 plus) while drop
-     1 index-of () {
+     1 index-of {
        'ok ('kf let V-I x plus kf set must)
        'no (drop PC-I pc set must)
      } case

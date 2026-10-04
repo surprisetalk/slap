@@ -51,7 +51,7 @@ REQ tcp-send must drop
 -- HTTP/1.0 connection-close: read until the peer hangs up. The cap is a
 -- backstop against a server that never closes, not a content limit.
 list
-(swap 65536 tcp-recv () {'ok () 'no (drop list)} case 'ch let
+(swap 65536 tcp-recv {'ok () 'no (drop list)} case 'ch let
  swap ch cat
  ch len 0 gt
  over len RESP-CAP lt and) () while
@@ -64,7 +64,7 @@ RESP len 0 eq ("fetch: " HOST cat " closed the connection without replying" cat 
 -- here rather than branching on the tagged result keeps the message specific
 -- about which host and path misbehaved, and leaves `must` unable to fire.
 -- str-find's own result is a bare int, so this `case` copies nothing large.
-RESP crlf crlf cat str-find () {'ok (drop 1) 'no (drop 0)} case not (
+RESP crlf crlf cat str-find {'ok (drop 1) 'no (drop 0)} case not (
   "fetch: " HOST cat ":" cat PORT-S cat PATH cat
   " did not send an HTTP response (no header/body separator in "
   cat RESP len int-str cat " bytes)" cat die) () if

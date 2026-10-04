@@ -4,7 +4,7 @@
 -- from ? up holds four vertical pixels in its low bits above 63, and space is blank.
 ('gin let
  gin ('gc let gc 10 eq gc 32 eq or gc 63 ge gc 126 le and or not) each 1 index-of
- () {'ok (drop "gly: a byte outside ? to ~, space and newline" no) 'no (drop
+ {'ok (drop "gly: a byte outside ? to ~, space and newline" no) 'no (drop
    gin "\n" str-split dup len 0 gt (dup dup len 1 sub get must len 0 eq (pop drop) () if) () if
    (('gv let gv 32 eq (0) (gv 63 sub) if) each) each 'rows let
    rows 0 (len max) fold 'w let rows len 'nrows let nrows 4 mul 'h let
@@ -21,4 +21,4 @@
 [68 63] gly-decode must gly-encode [68 63] eq assert
 [72] gly-decode must gly-encode [72] eq assert
 [68 10 72] gly-decode must gly-encode [68 10 72] eq assert
-[68 1 63] gly-decode () {'ok (drop "") 'no ()} case "gly: a byte outside ? to ~, space and newline" eq assert
+[68 1 63] gly-decode {'ok (drop "") 'no ()} case "gly: a byte outside ? to ~, space and newline" eq assert

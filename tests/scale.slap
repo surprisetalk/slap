@@ -2,15 +2,15 @@
 -- every load of a library, so they live here; tests/suite.py runs this file once.
 
 -- json.slap: a string and an array of 30000
-list 34 push 30000 (120 push) repeat 34 push jd-str jd-run () {'ok (len) 'no (drop -1)} case 30000 eq assert
-list 91 push 30000 (49 push 44 push) repeat pop drop 93 push jd-int jd-list jd-run () {'ok (len) 'no (drop -1)} case 30000 eq assert
+list 34 push 30000 (120 push) repeat 34 push jd-str jd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
+list 91 push 30000 (49 push 44 push) repeat pop drop 93 push jd-int jd-list jd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
 -- json.slap: nesting at the limit parses
-list 256 (91 push) repeat 256 (93 push) repeat _json-parse () {'ok (drop 1) 'no (drop 0)} case assert
+list 256 (91 push) repeat 256 (93 push) repeat _json-parse {'ok (drop 1) 'no (drop 0)} case assert
 
 -- xml.slap: 30000 children, a 30000-byte text, and nesting at the limit
-"<a>" 30000 ("<b/>" cat) repeat "</a>" cat "b" xd-tag xd-children xd-run () {'ok (len) 'no (drop -1)} case 30000 eq assert
-"<a>" 30000 (120 push) repeat "</a>" cat xd-raw-text xd-run () {'ok (len) 'no (drop -1)} case 30000 eq assert
-list 256 ("<a>" cat) repeat 256 ("</a>" cat) repeat _xml-parse () {'ok (drop 1) 'no (drop 0)} case assert
+"<a>" 30000 ("<b/>" cat) repeat "</a>" cat "b" xd-tag xd-children xd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
+"<a>" 30000 (120 push) repeat "</a>" cat xd-raw-text xd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
+list 256 ("<a>" cat) repeat 256 ("</a>" cat) repeat _xml-parse {'ok (drop 1) 'no (drop 0)} case assert
 
 -- zip walks each list once, even when elements span several slots
 0 30000 range (int-str) each dup zip len 30000 eq assert
