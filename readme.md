@@ -317,7 +317,7 @@ Tag a value with a symbol to create a sum type. Use `ok`/`no` for result types, 
 10 0 safe-div (3 mul ok) then -1 default   -- -1
 ```
 
-A `case` has a clause for every tag its value may carry, and the checker proves it at the case. A clause runs on its tag's payload. A last `'_` clause runs on the tagged value itself, for every tag the other clauses do not name. Without `'_`, every tag the value may carry needs a clause, and a value that may carry another tag is refused. A value whose tags are still open takes the clauses' tags as its own. So a word whose case has no `'_` takes only those tags, and a caller that passes another tag is refused at the call. A result case has an `'ok` and a `'no` clause, or a `'_` clause.
+A `case` has a clause for every tag its value may carry, and the checker proves it at the case. A clause runs on its tag's payload. A last `'_` clause runs on the tagged value itself, for every tag the other clauses do not name. Without `'_`, every tag the value may carry needs a clause, and a value that may carry another tag is refused. A value whose tags are still open takes the clauses' tags as its own. So a word whose case has no `'_` takes only those tags, and a caller that passes another tag is refused at the call. A result case has an `'ok` and a `'no` clause, or a `'_` clause. When the value's tags are closed, a clause that can never run is refused: one for a tag the value never carries, or a `'_` after a clause for every tag.
 
 `then` runs its body on an `'ok` payload and passes anything else through; the body returns the next tagged value:
 
@@ -793,7 +793,7 @@ The checker runs on the prelude and the program before anything executes. It ref
 - `at` or `edit` on a key the record may lack. The checker follows records through `let`, stack words, calls, branches, loops, lists and tag payloads.
 - A list whose values differ in type, and `if` branches or `case` clauses that leave different types.
 - A tag used with two payload types.
-- A `case` that may meet a tag no clause names, unless a last `'_` clause takes it. The checker infers which tags a value can carry from `ok`, `no`, `'x tag`, `then`, `pthen`, declared `either` types and the other cases on it.
+- A `case` that may meet a tag no clause names, unless a last `'_` clause takes it, and a clause that can never run. The checker infers which tags a value can carry from `ok`, `no`, `'x tag`, `then`, `pthen`, declared `either` types and the other cases on it.
 - A body that breaks its declared signature for some type the signature allows.
 - Code that takes more values than the stack holds.
 - A word used before its definition without `'name [sig] effect`, and a declared word never defined.

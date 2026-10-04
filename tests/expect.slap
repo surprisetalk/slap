@@ -806,9 +806,6 @@ list "hi" push "--" str-join "hi" eq assert
 "e" no {'ok (drop 1) '_ ("e" no eq)} case assert
 -- a result case with 'ok and 'no clauses needs no '_
 5 ok {'ok (1 plus) 'no (drop 0)} case 6 eq assert
--- a case covers a closed tag set when it names every tag the set holds
-( 5 'ca tag ) [{'ca int} either move out] effect 'only-ca let
-only-ca {'ca (drop 1) 'cb (drop 2)} case 1 eq assert
 
 -- a '_ clause runs on a tag no clause names
 123 'bar tag {'foo (1 plus) '_ (drop 999)} case 999 eq assert

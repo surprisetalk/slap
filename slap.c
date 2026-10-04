@@ -1323,7 +1323,7 @@ static void ty_case(Token *toks, int open, int close, int line) {
         if (toks[j].tag != TOK_SYM) { ty_err(toks[j].line, "a case clause key is a 'tag or '_, not this. Branch on other values with if."); return; }
         uint32_t tg = toks[j].as.sym;
         if (wild) { ty_err(toks[j].line, "the '_ clause takes every tag the others do not name, so it comes last."); return; }
-        if (tg == S_WILD) { wild = 1; continue; }
+        if (tg == S_WILD) { wild = j; continue; }
         if (ty_clause_mark[tg] == stamp) { ty_err(toks[j].line, "this case has two clauses for '%s.", sym_name(tg)); return; }
         ty_clause_mark[tg] = stamp; tags++;
         if (tg == S_OK) okc = 1; else if (tg == S_NO) noc = 1; else { res = 0; if (!other) other = tg; }
@@ -1331,24 +1331,35 @@ static void ty_case(Token *toks, int open, int close, int line) {
     if (items % 2) { ty_err(line, "case clauses come in pairs, a key and a body, but this list has %d items.", items); return; }
     if (!tags) { ty_err(line, "case needs a clause for at least one tag."); return; }
     if (other && (okc || noc)) { ty_err(line, "a result is tagged only 'ok or 'no, so this case cannot also name '%s. Match '%s in another case, or use '_.", sym_name(other), sym_name(other)); return; }
-    uint32_t unnamed = 0;
+    /* dead: a clause key whose clause never runs, as a token index */
+    uint32_t unnamed = 0; int dead = 0;
     if (res) { a = ty_new(K_VAR, 0, 0, 0); b = ty_new(K_VAR, 0, 0, 0);
         if (ty_unify(ty_new(K_RES, a, b, 0), s)) { ty_err(line, "case with 'ok/'no clauses takes a result, but this value is not one: %s.", ty_why); return; }
-        if (!wild && !(okc && noc)) unnamed = okc ? S_NO : S_OK; }
+        if (!wild && !(okc && noc)) unnamed = okc ? S_NO : S_OK;
+        if (wild && okc && noc) dead = wild; }
     else {
-        int v = ty_find(s), closed = 0;
-        if (!wild && ty[v].kind == K_TAG) {
+        int v = ty_find(s), closed = 0, missing = 0;
+        if (ty[v].kind == K_TAG) {
             int r = ty_find(ty[v].a);
-            for (int hops = -ty_n; !unnamed && ty[r].kind == K_TEXT; r = ty_rest(r, &hops)) if (ty_clause_mark[ty[r].sym] != stamp) unnamed = ty[r].sym;
-            if (!unnamed && ty[r].kind == K_TVAR && ty_fixed(r)) { ty_err(line, "the value's tags come from a signature that leaves them open, so it may carry a tag no clause names. Add a last '_ clause."); return; }
-            closed = ty[r].kind == K_TNIL; }
-        /* A closed set the clauses cover is left as it is: a clause for a tag it lacks never runs. A clause's
-           payload type is its tag's everywhere, so with '_ the value may carry any tags. */
+            for (int hops = -ty_n; ty[r].kind == K_TEXT; r = ty_rest(r, &hops)) if (ty_clause_mark[ty[r].sym] != stamp) { missing++; if (!wild && !unnamed) unnamed = ty[r].sym; }
+            if (!wild && !unnamed && ty[r].kind == K_TVAR && ty_fixed(r)) { ty_err(line, "the value's tags come from a signature that leaves them open, so it may carry a tag no clause names. Add a last '_ clause."); return; }
+            closed = ty[r].kind == K_TNIL;
+            /* On a closed set, a clause for a tag the set lacks never runs, and neither does '_ once every tag
+               has a clause. An open set takes the clause tags as its own, so it has no dead clause. */
+            if (closed && !unnamed) {
+                int set_stamp = ++ty_clause_stamp;
+                for (int x = ty_find(ty[v].a), hops = -ty_n; ty[x].kind == K_TEXT; x = ty_rest(x, &hops)) ty_clause_mark[ty[x].sym] = set_stamp;
+                for (int j = open + 1; !dead && j < close; j += toks[j].span + 1, j += toks[j].span + 1) if (j != wild && ty_clause_mark[toks[j].as.sym] != set_stamp) dead = j;
+                if (!dead && wild && !missing) dead = wild; } }
+        /* A closed set the clauses cover is left as it is. A clause's payload type is its tag's everywhere,
+           so with '_ the value may carry any tags. */
         int set = ty_new(wild ? K_TVAR : K_TNIL, 0, 0, 0);
         for (int j = open + 1; !wild && j < close; j += toks[j].span + 1, j += toks[j].span + 1) { set = ty_new(K_TEXT, 0, 0, set); ty[set].sym = toks[j].as.sym; }
         if (!unnamed && !closed && ty_unify(ty_new(K_TAG, set, 0, 0), s)) { ty_err(line, "case cannot take this value: %s.", ty_why); return; }
     }
     if (unnamed) { ty_err(line, "the value may be tagged '%s, which no clause names. Add a clause for '%s, or a last '_ clause.", sym_name(unnamed), sym_name(unnamed)); return; }
+    if (dead == wild && dead) { ty_err(toks[dead].line, "the clauses name every tag the value may carry, so the '_ clause never runs. Delete it."); return; }
+    if (dead) { ty_err(toks[dead].line, "the value is never tagged '%s, so the clause for '%s never runs. Delete it.", sym_name(toks[dead].as.sym), sym_name(toks[dead].as.sym)); return; }
     for (int j = open + 1; j < close; ) {
         int key = j; j += toks[j].span + 1;
         if (j >= close || toks[j].tag != TOK_LPAREN) { ty_err(toks[key].line, "each case clause is a key and a body in parentheses."); break; }

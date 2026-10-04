@@ -1,10 +1,3 @@
-- [ ] The checker refuses a `case` clause that can never run.
-  Accepted today: `1 'a tag 'x let x {'a (x {'a (print) 'b (print)} case)} case`, where the inner 'b clause is dead because the outer case closed x's set to {a}; a clause for a tag that a signature's closed set lacks; and a `'_` after a clause for every tag of a closed set.
-  Decided: check closed sets only. A set still open at the case takes the clause tags as its own, so a clause there names a tag the case accepts, as a word's input does. Finding dead clauses on an open set needs the set's final tags, which are known only when the word generalizes: that is the deferral the case entry removed.
-  1. errors.slap first: the program above is refused, and the message names 'b and says the value is never tagged 'b. A closed set with a clause for every tag plus `'_` is refused, and the message says '_ never runs.
-  2. ty_case: when the value's set is closed (`closed` is set), give that message for each clause tag the set lacks. With `'_` on a closed set, walk the set; when every tag has a clause, refuse the `'_`.
-  3. Rewrite any example or library site the check refuses: delete the dead clause.
-
 - [ ] You read a checker message that names the real cause, in the right direction, with one name per variable (code review; silent-failure audit; breaker rounds 14 and 15).
   Decided: keep `box (body) lend` and its sealed stack. `( 'g let 5 box (g apply) lend swap free ) 'w let (1 plus) w` stays refused: lend's output count is unknown until a caller passes g. mutate and each accept such a body only because TYPES fixes their output count.
   1. errors.slap first: pin one message per step below, and check each fails against the old binary.

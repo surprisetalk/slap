@@ -304,6 +304,17 @@ nip
 -- EXPECT: case needs a clause for at least one tag.
 5 'a tag {} case drop
 
+-- EXPECT: the value is never tagged 'b, so the clause for 'b never runs. Delete it.
+-- the outer case closes x's tags to 'a, so the inner 'b clause is dead
+1 'a tag 'x let x {'a (x {'a (print) 'b (print)} case)} case
+
+-- EXPECT: the clauses name every tag the value may carry, so the '_ clause never runs. Delete it.
+( 5 'ca tag ) [{'ca int} either move out] effect 'g let  g {'ca (drop 1) '_ (drop 2)} case drop
+
+-- EXPECT: the clauses name every tag the value may carry, so the '_ clause never runs. Delete it.
+-- a result carries only 'ok and 'no
+5 ok {'ok (drop 1) 'no (drop 2) '_ (drop 3)} case drop
+
 -- EXPECT: a result is tagged only 'ok or 'no, so this case cannot also name 'a. Match 'a in another case, or use '_.
 1 ok {'ok (drop 1) 'a (drop 2)} case drop
 
