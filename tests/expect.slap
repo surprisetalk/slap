@@ -1458,16 +1458,13 @@ dup "a" of 0 default 1 eq assert
 dup "b" of 0 default 20 eq assert
 "c" of 0 default 3 eq assert drop
 
--- each: fmap over dict, body receives {'key k 'value v} and returns the new value
-dict "a" 1 insert "b" 2 insert "c" 3 insert
-('value at 10 mul) each
-dup "a" of 0 default 10 eq assert
-dup "b" of 0 default 20 eq assert
-"c" of 0 default 30 eq assert drop
-
--- fold: reduce over dict, body receives acc + {'key k 'value v}
-dict "a" 1 insert "b" 2 insert "c" 7 insert
-0 ('value at plus) fold 10 eq assert
+-- dict-entries leaves the dict and lists each entry as {'key k 'value v}
+dict "a" 1 insert dict-entries [{'key "a" 'value 1}] eq assert
+"a" of must 1 eq assert
+dict "a" 1 insert "b" 2 insert "c" 7 insert dict-entries 0 ('value at plus) fold 10 eq assert drop
+-- mapping a dict's values is a fold that inserts
+dict "a" 1 insert "b" 2 insert dict-entries nip dict (dup 'key at swap 'value at 10 mul insert) fold
+dup "a" of must 10 eq assert "b" of must 20 eq assert
 
 -- ordinal accessors: first/last
 [10 20 30 40 50 60 70 80 90 100] first 10 eq assert

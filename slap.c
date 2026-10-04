@@ -520,13 +520,13 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
     default: die("lt: unsupported type %s (only int and float are ordered)", valtag_name(atop.tag)); return 0;
     }
 }
-static uint32_t S_CAT, S_CAT_LEFT, S_CAT_RIGHT, S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_EACH, S_FOLD, S_ON, S_SHOW;
+static uint32_t S_CAT, S_CAT_LEFT, S_CAT_RIGHT, S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_ON, S_SHOW;
 static void syms_init(void) {
     S_LET=sym_intern("let"); S_EFFECT=sym_intern("effect");
     S_OK=sym_intern("ok"); S_NO=sym_intern("no"); S_NONE=sym_intern("none"); S_CASE=sym_intern("case"); S_MUST=sym_intern("must");
     S_TAG=sym_intern("tag"); S_QUOTE=sym_intern("quote");
     S_AT=sym_intern("at"); S_EDIT=sym_intern("edit"); S_INTO=sym_intern("into"); S_KEY=sym_intern("key"); S_VALUE=sym_intern("value");
-    S_CAT=sym_intern("cat"); S_CAT_LEFT=sym_intern("cat-left"); S_CAT_RIGHT=sym_intern("cat-right"); S_NTH=sym_intern("nth"); S_EACH=sym_intern("each"); S_FOLD=sym_intern("fold"); S_ON=sym_intern("on"); S_SHOW=sym_intern("show");
+    S_CAT=sym_intern("cat"); S_CAT_LEFT=sym_intern("cat-left"); S_CAT_RIGHT=sym_intern("cat-right"); S_NTH=sym_intern("nth"); S_ON=sym_intern("on"); S_SHOW=sym_intern("show");
 }
 /* ---- TYPE CHECKER ---- */
 /* ==== TYPES: inference by unification ====
@@ -810,7 +810,8 @@ static int ty_unify_chain(int a, int b, int depth) {
     if (ty[a].kind != ty[b].kind && !(ty[a].kind == K_REXT && ty[b].kind == K_RNIL)) {
         char s1[256], s2[256]; ty_show(s1, sizeof s1, a, 0); ty_show(s2, sizeof s2, b, 0);
         if (ty[a].kind == K_SNIL || ty[b].kind == K_SNIL) snprintf(ty_why, sizeof ty_why, "the stack is shorter than this needs");
-        else snprintf(ty_why, sizeof ty_why, "%s is not %s", s2, ty_kind_noun(ty[a].kind) ? ty_kind_noun(ty[a].kind) : s1);
+        else snprintf(ty_why, sizeof ty_why, "%s is not %s%s", s2, ty_kind_noun(ty[a].kind) ? ty_kind_noun(ty[a].kind) : s1,
+                      ty[a].kind == K_LIST && ty[b].kind == K_DICT ? ". Iterate a dict with dict-entries: it leaves the dict and a list of {'key k 'value v}" : "");
         return 1;
     }
     switch (ty[a].kind) {
@@ -945,17 +946,14 @@ static const char *TYPES =
     "'pthen ( ..s {'ok 'a 'no 'b} either 'd copy ( ..s 'a -> ..s 'd {'ok 'c 'no 'b} either ) -> ..s 'd {'ok 'c 'no 'b} either )\n"
     "'box ( 'a -> 'a box ) 'free ( 'a box -> ) 'mutate ( ..s 'a box ( ..!r 'a -> ..!r 'b ) -> ..s 'b box )\n"
     "'dict ( -> 'a dict ) 'insert ( 'a dict str 'a -> 'a dict ) 'of ( 'a dict str -> 'a dict {'ok 'a 'no str} either )\n"
-    "'remove ( 'a dict str -> 'a dict ) 'dict-keys ( 'a dict -> 'a dict str list )\n"
+    "'remove ( 'a dict str -> 'a dict ) 'dict-keys ( 'a dict -> 'a dict str list ) 'dict-entries ( 'a dict -> 'a dict {'key str 'value 'a} list )\n"
     "'read ( str -> {'ok str 'no str} either ) 'write ( str str -> {'ok int 'no str} either ) 'ls ( str -> {'ok str list 'no str} either )\n"
     "'args ( -> str list ) 'parse-http ( str -> {'ok {'status int 'headers {'key str 'value str} list 'body str} 'no str} either )\n"
     /* a socket is its own type: the runtime keeps it in a box, but free, lend and mutate must not reach it */
     "'tcp-connect ( str int -> {'ok socket 'no str} either ) 'tcp-send ( socket str -> socket {'ok int 'no str} either )\n"
     "'tcp-recv ( socket int -> socket {'ok str 'no str} either ) 'tcp-close ( socket -> ) 'tcp-listen ( int -> {'ok socket 'no str} either )\n"
     "'tcp-accept ( socket -> socket {'ok socket 'no str} either )\n"
-    "'clear ( int -> ) 'pixel ( int int int -> ) 'fill-rect ( int int int int int -> )\n"
-    /* each and fold on a dict: the checker picks these when it sees a dict below the body */
-    "'each-dict ( ..s 'a dict ( ..!r {'key str 'value 'a} -> ..!r 'b ) -> ..s 'b dict )\n"
-    "'fold-dict ( ..s 'a dict 'b ( ..!r 'b {'key str 'value 'a} -> ..!r 'b ) -> ..s 'b )\n";
+    "'clear ( int -> ) 'pixel ( int int int -> ) 'fill-rect ( int int int int int -> )\n";
 
 /* ---- signatures ----
    One syntax for the builtin table and for program signatures. Names are per signature: the same 'a
@@ -1176,7 +1174,7 @@ static void ty_undefined(int from) {
 
 /* ---- inference ---- */
 static int ty_cur, ty_errors;
-static int ty_on[16], ty_on_line[16], ty_on_mouse[16], ty_on_n, ty_shown, ty_each_dict, ty_fold_dict;
+static int ty_on[16], ty_on_line[16], ty_on_mouse[16], ty_on_n, ty_shown;
 /* The case forms waiting for the tags their value can carry (ty_case_later). */
 typedef struct { int tags, dflt, clauses, line; Token *toks; int open, close, scrut, done; } TyLater;
 static TyLater ty_later[4096]; static int ty_later_n;
@@ -1723,12 +1721,6 @@ static void ty_range(Token *toks, int i, int end) {
                 else if (tyb[b].word) ty_apply(tyb[b].ty, sym_name(w), line, b >= tyb_prelude); else ty_push(ty_value(b));
                 break;
             }
-            if (w == S_EACH || w == S_FOLD) {
-                /* the collection sits below the body (and below fold's start value) */
-                int st = ty_find(ty_cur);
-                for (int k = w == S_EACH ? 1 : 2; k > 0 && ty[st].kind == K_SCONS; k--) st = ty_find(ty[st].b);
-                if (ty[st].kind == K_SCONS && ty[ty_find(ty[st].a)].kind == K_DICT) { ty_apply(w == S_EACH ? ty_each_dict : ty_fold_dict, sym_name(w), line, 0); break; }
-            }
             if (ty_builtin[w]) { ty_apply(ty_builtin[w], sym_name(w), line, 0); break; }
             { int later = 0;
               for (int j = i + 1; j + 1 < ty_tok_end && !later; j++) if (toks[j].tag == TOK_SYM && toks[j].as.sym == w && toks[j+1].tag == TOK_WORD && toks[j+1].as.sym == S_LET) later = toks[j].line;
@@ -1783,9 +1775,6 @@ static void ty_read_table(Token *toks, int n) {
 static int infer_program(Token *table, int table_n, Token *toks, int count, int user_start) {
     ty_read_table(table, table_n);
     S_LEND = sym_intern("lend"); S_EQ = sym_intern("eq"); S_NEQ = sym_intern("neq");
-    uint32_t ed = sym_intern("each-dict"), fd = sym_intern("fold-dict");
-    ty_each_dict = ty_builtin[ed]; ty_fold_dict = ty_builtin[fd]; ty_builtin[ed] = ty_builtin[fd] = 0;
-    if (!ty_each_dict || !ty_fold_dict) die("type table: each-dict and fold-dict are missing");
     ty_cur = ty_new(K_SNIL, 0, 0, 0);
     ty_tok_end = count;
     ty_in_prelude = 1; ty_range(toks, 0, user_start); ty_in_prelude = 0; tyb_prelude = tyb_n;
@@ -2165,16 +2154,6 @@ static void prim_zip(Frame *e){
 }
 static void prim_range(Frame *e){(void)e;int64_t end=pop_int(),start=pop_int();int count=0;for(int64_t i=start;i<end;i++){spush(val_int(i));count++;}spush(val_compound(VAL_LIST,count,count+1));}
 static void push_string_bytes(const char *buf, int len);
-static void dict_put(DictData *dd, const char *key, int klen, Value *vals, int nvals);
-static Value dict_val(DictData *dd);
-/* An entry is the record {'key k 'value v}. */
-static void dict_push_entry(DictEntry *e, const char *who) {
-    int key_s = e->klen + 1;
-    spush(val_sym(S_KEY)); push_string_bytes(e->key, e->klen);
-    stack_room(e->nvals+2,who); spush(val_sym(S_VALUE));
-    deep_copy_values(&stack[sp], e->vals, e->nvals); sp+=e->nvals;
-    spush(val_compound(VAL_RECORD, 2, 1 + key_s + 1 + e->nvals + 1));
-}
 /* A body given to each/fold/mutate must leave exactly one value where its input began. */
 static void one_value_above(int p0, const char *who, const char *what) {
     if(sp<=p0||sp-val_slots(stack[sp-1])!=p0)
@@ -2182,38 +2161,14 @@ static void one_value_above(int p0, const char *who, const char *what) {
 }
 static void prim_each(Frame *env) {
     POP_BODY(fn,"each");
-    Value top=speek();
-    if(top.tag==VAL_DICT){
-        Value dv=spop(); DictData *dd=(DictData*)dv.as.box;
-        DictData *nd=calloc(1,sizeof(DictData));
-        for(int i=0;i<dd->cap;i++){DictEntry *e=&dd->entries[i]; if(!e->key) continue;
-            int p0=sp; dict_push_entry(e,"each");
-            eval_body(fn_buf,fn_s,env); one_value_above(p0,"each","one entry");
-            Value nt=stack[sp-1]; int ns=val_slots(nt);
-            dict_put(nd,e->key,e->klen,&stack[sp-ns],ns); sp-=ns;
-        }
-        dict_data_free(dd); spush(dict_val(nd)); return;
-    }
-    if(top.tag==VAL_LIST){
-        POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len),rb=sp;
-        for(int i=0;i<len;i++){ int p0=sp; if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); one_value_above(p0,"each","one element"); }
-        spush(val_compound(VAL_LIST,len,sp-rb+1));
-    } else {
-        die("each: expected list or dict, got %s", valtag_name(top.tag));
-    }
+    Value top=speek(); if(top.tag!=VAL_LIST) die("each: expected list, got %s",valtag_name(top.tag));
+    POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len),rb=sp;
+    for(int i=0;i<len;i++){ int p0=sp; if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); one_value_above(p0,"each","one element"); }
+    spush(val_compound(VAL_LIST,len,sp-rb+1));
 }
 static void prim_fold(Frame *env) {
     POP_BODY(fn,"fold"); POP_VAL(init);
-    Value top=speek();
-    if(top.tag==VAL_DICT){
-        Value dv=spop(); DictData *dd=(DictData*)dv.as.box;
-        int p0=sp; SPUSH(init_buf,init_s);
-        for(int i=0;i<dd->cap;i++){DictEntry *e=&dd->entries[i]; if(!e->key) continue;
-            dict_push_entry(e,"fold"); eval_body(fn_buf,fn_s,env); one_value_above(p0,"fold","the accumulator and one entry");
-        }
-        dict_data_free(dd); return;
-    }
-    if(top.tag!=VAL_LIST) die("fold: expected list or dict, got %s",valtag_name(top.tag));
+    Value top=speek(); if(top.tag!=VAL_LIST) die("fold: expected list, got %s",valtag_name(top.tag));
     POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len);
     int p0=sp; SPUSH(init_buf,init_s);
     for(int i=0;i<len;i++){ if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); one_value_above(p0,"fold","the accumulator and one element"); }
@@ -2485,6 +2440,17 @@ static void prim_keys(Frame *e) {
     int rb=sp, count=0;
     for(int i=0;i<dd->cap;i++){DictEntry *ent=&dd->entries[i]; if(!ent->key) continue;
         push_string_bytes(ent->key,ent->klen); count++;}
+    spush(val_compound(VAL_LIST,count,sp-rb+1));
+}
+static void prim_entries(Frame *e) {
+    (void)e; Value dv=speek(); if(dv.tag!=VAL_DICT) die("dict-entries: expected dict, got %s", valtag_name(dv.tag));
+    DictData *dd=(DictData*)dv.as.box;
+    int rb=sp, count=0;
+    for(int i=0;i<dd->cap;i++){DictEntry *ent=&dd->entries[i]; if(!ent->key) continue;
+        int p0=sp; spush(val_sym(S_KEY)); push_string_bytes(ent->key,ent->klen);
+        stack_room(ent->nvals+2,"dict-entries"); spush(val_sym(S_VALUE));
+        deep_copy_values(&stack[sp],ent->vals,ent->nvals); sp+=ent->nvals;
+        spush(val_compound(VAL_RECORD,2,sp-p0+1)); count++;}
     spush(val_compound(VAL_LIST,count,sp-rb+1));
 }
 static void dict_data_free(DictData *dd) {
@@ -3026,7 +2992,7 @@ static void register_prims(void) {
         R(at,at),R(rec,rec),R(into,into),R(edit,edit),
         R(millis,millis),R(datetime,datetime),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),
         R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),
-        {"dict-keys",prim_keys,NULL},
+        {"dict-keys",prim_keys,NULL},{"dict-entries",prim_entries,NULL},
         R(tag,tag),R(must,must),R(pthen,pthen),
         R(read,read),R(write,write),R(ls,ls),
         M("str-find",strfind),{"str-split",prim_str_split,NULL},{"parse-http",prim_parse_http,NULL},

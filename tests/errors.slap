@@ -624,10 +624,15 @@ dict "k" 1 insert "j" "two" insert
 -- insert expects dict
 42 "k" 1 insert
 
--- EXPECT: 'each' takes 'a copyable dict
--- EXPECT: this body must turn its inputs into one value and cannot reach the stack below them.
--- each's body on a dict gets one entry and must leave one value
-dict (drop) each drop
+-- EXPECT: 'each' takes
+-- EXPECT: int dict is not a list. Iterate a dict with dict-entries
+-- each takes only lists
+dict "a" 1 insert (drop 0) each drop
+
+-- EXPECT: 'cnt' takes
+-- EXPECT: int dict is not a list. Iterate a dict with dict-entries
+-- a word that folds its input takes only lists
+(0 (drop 1 plus) fold) 'cnt let  dict "a" 1 insert cnt drop
 
 -- EXPECT: the clause for 'ok gets its payload, int box, but its body cannot take it
 -- case on tagged box (branches can leak)
@@ -1268,8 +1273,8 @@ rec 5 'c 3 (drop 'a) repeat into 'c at
 {'z 1} (drop {'a 1}) (drop {'b 1}) cat apply 'a at
 
 -- EXPECT: TYPE ERROR
--- each over a dict
-dict "k" {'a 1} insert (drop {'b 1}) each "k" of must nip 'zzz at
+-- dict-entries keeps the value type
+dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 
 -- EXPECT: TYPE ERROR
 -- a body that reads keys leaves through a fold
@@ -1958,9 +1963,8 @@ f1 drop  f2 drop  "s" f2 drop drop
 
 -- EXPECT: done-sig-guides
 -- a signature's inputs are known while the body is checked
-( 0 (drop 1 plus) fold ) [int dict own in  int move out] effect 'cnt let  dict "a" 1 insert cnt drop
-'cnt2 [int dict own in  int move out] effect ( 0 (drop 1 plus) fold ) 'cnt2 let  dict "a" 1 insert cnt2 drop
 ( cat ) [{'a int} own in  {'b int} own in  {'a int 'b int} move out] effect 'rc let  {'a 1} {'b 2} rc 'b at drop
+'rc2 [{'a int} own in  {'b int} own in  {'a int 'b int} move out] effect ( cat ) 'rc2 let  {'a 1} {'b 2} rc2 'b at drop
 "done-sig-guides" no must
 
 -- EXPECT: tag 'q holds

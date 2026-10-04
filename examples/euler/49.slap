@@ -74,7 +74,7 @@ drop
 ) 'scan-group let
 
 -- Fold over dict entries; acc carries first answer found (0 = not yet).
-0 (
+dict-entries nip 0 (
   'value at 'fb-g let
   dup 0 gt () (
     drop

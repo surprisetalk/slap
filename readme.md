@@ -278,9 +278,10 @@ Maps from strings to values of one type.
 dict "a" 1 insert "b" 2 insert  -- a dict of ints
 "a" of must                     -- 1, with the dict still under it
 drop "b" remove dict-keys       -- the dict and ["a"]
+drop dict-entries               -- the dict and [{'key "a" 'value 1}]
 ```
 
-`of` gives `value ok`, or `key no` for a key the dict does not have. `each` and `fold` give the body each entry as the record `{'key str 'value v}`, in no set order: `('value at 10 mul) each` maps the values, and `0 ('value at plus) fold` sums them. A bound dict is copied by each lookup, so two names never share one.
+`of` gives `value ok`, or `key no` for a key the dict does not have. `each` and `fold` take only lists. Iterate a dict with `dict-entries`: it leaves the dict and a list of its entries as records `{'key str 'value v}`, in no set order. `dict-entries nip 0 ('value at plus) fold` sums the values. To map the values, fold the entries into a new dict: `dict-entries nip dict (dup 'key at swap 'value at 10 mul insert) fold`. A bound dict is copied by each lookup, so two names never share one.
 
 ### strings
 
