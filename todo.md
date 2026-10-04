@@ -1,7 +1,69 @@
+- [ ] You cannot run a recursive word whose calls take more of the stack than its type shows (soundness probe).
+  `(plus f) 'f let "s" 1 2 3 f` passes the checker, then dies with "plus: type mismatch, got list and int". `(drop drop 1 outer) 'outer let 1 2 3 outer` underflows. Cause: ty_define builds `inst` with the body's input rest `tin` replaced by a fresh variable, but the recursive call's own input holds `tin`, so `ty_unify(ty_rec_call[k], inst)` binds `tin` itself and the body's type grows after `inst` was made. Only a word with no returning path reaches it: a branch that returns ties the output rest to `tin`, and the occurs check refuses the program.
+  Decided: hold `tin` and `tout` rigid while that unify runs. A scratch build refuses both programs and keeps every example, library, expect.slap and scale.slap passing.
+  1. errors.slap first: both programs, `-- EXPECT: calls itself here`. Check both fail against the current binary, which accepts them.
+  2. ty_define: set `ty[tin].rigid` (and `ty[tout].rigid` when it differs) around `ty_unify(ty_rec_call[k], inst)`, and clear them after.
+  3. The refusal then reads "...than the signature declares", which is ty_bind's text for a signature. Give this case its own why: "each call would need more values below it than the call before".
+
+- [ ] You read from a socket with any length, get up to that many bytes, and no length makes slap allocate more than one fixed buffer (soundness probe).
+  prim_tcp_recv mallocs the length it is given and never checks the result. Under ASan, `1099511627776 tcp-recv` aborts. The release build returns `"Invalid argument" no` on macOS, and a length that malloc accepts, such as 2^30, allocates that much on every call. recv(2) already returns fewer bytes than asked, and every caller loops until it has enough; the examples pass 1024, 4096 or 65536.
+  1. expect.slap first: in tcp-roundtrip, `1099511627776 tcp-recv must "hello" eq assert`. Check it fails against the old binary.
+  2. prim_tcp_recv reads into one static 64 KiB buffer, at most the smaller of n and 65536 bytes. No malloc.
+  3. readme networking section: tcp-recv gives up to n bytes, and at most 64 KiB per call.
+
+- [ ] You pass a path or host with a NUL byte to read, write, ls or tcp-connect and get 'no, as for every other path or host they cannot use (soundness probe).
+  Today pop_string_path dies with "read: the path contains a NUL byte", and tcp-connect says "path" about a host. The fallible-operations table in claude.md promises `path no`. No app crashes on it today: serve.slap's byte allowlist refuses a NUL first.
+  1. Move the errors.slap case "contains a NUL byte" to expect.slap: `"a\0b" read {'ok (drop 0) 'no (drop 1)} case assert`, and the same for write, ls and `"a\0b" 80 tcp-connect`. Check each fails against the old binary.
+  2. pop_string_path returns NULL on a NUL byte. read, write and ls then push the path's original bytes as their 'no payload, as their other failures push the path; the C string would stop at the NUL. tcp-connect pushes "tcp-connect: the host contains a NUL byte".
+  3. When the I/O-failure task below gives each 'no a reason, this case's reason is "contains a NUL byte".
+
+- [ ] You learn before anything runs that your program uses a word this build lacks (soundness probe).
+  `0 clear`, `'tick (drop 0) on` and `0 (drop) show` pass the terminal build's checker, then die mid-run with "unknown word: clear". TYPES and the on/show forms exist in every build, but register_prims adds the SDL words only under SLAP_SDL, and the wasm build leaves out tcp-*. `--check` keeps accepting these words, so the suite and make status still check SDL programs on the terminal build.
+  1. errors.slap first: `0 clear` and `0 (drop) show` say "'clear' needs the SDL build" (and "'show' ..."). Check both fail against the old binary.
+  2. main: after the check passes, and only on a run, scan user_tokens for a word that has a TYPES entry (or is `on` or `show`) and no prim_fns entry. Die at the first one: "'clear' needs the SDL build, but this is the terminal build. Build it with make slap-sdl and run ./slap-sdl." In the wasm build, the message says that tcp-* is not in the wasm build. Nothing runs first.
+  3. readme CLI section and claude.md "Build and run": one sentence each.
+
+- [ ] You read one rule per word: cat and len take lists, a body bound with let runs at one stack depth, and quote and pthen are not in C (simplification review).
+  Decided: no program uses body cat, record cat, len on a record or dict, or a let-bound body at two depths; only their own tests and the readme's make-adder sample do. A scratch checker without fresh rests for let-bound bodies fails only expect.slap and that sample. pthen as a prelude word passes every check, and json, rss and expect.slap print the same output. `'_` stays: it is the decoder idiom in json.slap.
+  1. errors.slap first, each failing against the old binary: `(1) (2) cat`, `{'a 1} {'b 2} cat`, `{'a 1} len`, `dict len`, `(1 plus) 'f let 'f quote`, and `[(1 plus)] first 'f let 1 f apply 2 f apply`. The last one's message names the let: "a body bound with let runs at one stack depth".
+  2. TYPES: `'cat ( 'a list 'a list -> 'a list )` and `'len ( 'a list -> int )`. Delete ty_range's body and record cat branches, the runtime cat of tuples and records with its `cat-left`/`cat-right` frame, len of dicts and records, and P_SIZED, P_SEMI and their words in ty_prot_word.
+  3. Delete ty_bound_rest, the substitution in ty_value, TyGen with ty_gens and ty_gen_add, ty_gens_settle and its calls (ty_define, infer_program, the prelude check), ty_input_holds, ty_env with ty_env_push, ty_contains, and TyBind.gen. ty_stack_tail and ty_subst stay: ty_define uses them.
+  4. Delete quote: its ty_range form, its prim, and S_QUOTE in ty_reserved and build_tuple. parse.slap:30 writes `pred` for `'pred quote`: pred is a value binding, so its lookup pushes the body.
+  5. pthen: add `('pf let 'pd let {'ok (pf apply) 'no (no pd swap)} case) 'pthen let` after default in PRELUDE; delete its TYPES entry, `R(pthen,pthen)` and prim_pthen.
+  6. ty_case: without `'_`, unify the value with the closed clause set whether its set is open or closed, and drop the separate closed/dead/missing scan. Unify already says "this value is never tagged 'x" and "it may be tagged 'x". Keep the `'_` path and the result path.
+  7. Delete the expect.slap and errors.slap cases of what goes. readme: the Semigroup and Sized rows, body composition, quote, and "a bound body the program made may run at any stack depth" (now: a value bound with let has one type, so a body the program made runs at one stack depth); make-adder applies add5 at one depth: `3 add5 apply print 7 add5 apply print`. claude.md: the Checker, Records and Frames paragraphs.
+
+- [ ] You end a program with your own message from any stack, and `[1 2] 0 chunks` says that chunks needs a size of at least 1 (code review; simplification review).
+  Decided: `fail ( ..a str -> ..b )` in TYPES. It dies with its text, so any stack may follow, and it replaces the `x no must` / `none must` special case in ty_range. Today chunks dies with the generic must text at its prelude line.
+  1. errors.slap first: `[1 2] 0 chunks` names chunks; `("bad" fail) (1 2) if` passes the checker and dies with "bad". Check both fail against the old binary.
+  2. prim_fail dies with the text. Delete the special case (the S_MUST branch after `no`/`none`). The examples' 5 `no must` sites become fail where a branch needs the free stack.
+  3. chunks: `n 1 lt (n "chunks: the size must be at least 1" fail) () if`; die's stack summary shows n. die reports current_loc, which is chunks' prelude line: report the nearest call outside the prelude instead, for example the location dispatch_word saved when it entered the prelude word.
+  4. readme and claude.md list fail with the primitives and in "Fallible operations".
+
+- [ ] You read a bound list with `i 'xs nth`, and every symbol has one type, sym (breaker rounds 14 and 15; simplification review).
+  Decided: nth reads its name from the symbol written right before it, as at, into and edit read their keys. Symbol types lose their labels: no K_LVAR, no `named`, no widening, and no eq/neq special case. Then `[1 2] 'xs let 'xs 'k let [k 'ys] drop` and `k 'ys member` pass, which nth refuses today. Tradeoff: nth's name can no longer come from a let-bound symbol; no example does this.
+  1. expect.slap first: `[1 2] 'xs let 1 'xs nth must 2 eq assert`, and both programs above. errors.slap: `'xs 1 nth` says that nth needs the list's name written right before it.
+  2. ty_range: S_NTH reads toks[i-1] as S_AT does. prim_nth pops the name, then the index.
+  3. K_SYM unifies like K_INT. Record literal keys and `on`'s event read the symbol of the token that pushed them: the K_SYM a TOK_SYM makes keeps it in `ty[t].sym`, and unify ignores it. Test `{'kind 'atom}`, a symbol as a value. Delete K_LVAR, ty_label_var, `named`, the label branch in ty_unify_chain, the eq/neq special case, and the LVAR branches in ty_copy and ty_parse.
+  4. Migrate the ~130 nth sites; the checker refuses each old one. `'g i nth` → `i 'g nth`; `'g swap nth` → `'g nth`; `'g over nth` → `dup 'g nth`; `'g x 10 mod nth` → `x 10 mod 'g nth`. readme (life example) and claude.md (Invariants) follow.
+
+- [ ] You do float math with f-words, and the only protocol left is copy (simplification review).
+  Decided: as in OCaml, `fplus fsub fmul fdiv flt` take floats, and `plus sub mul div lt sort` take ints. With the task above that limits cat and len to lists, num, ord, sized and semigroup all go, and a type variable carries one bit: copyable or linear.
+  1. errors.slap first: `1.0 2.0 plus` says "float is not int". expect.slap: `1.0 2.0 fplus 3.0 eq assert`, `1.0 2.0 flt assert`.
+  2. TYPES as decided, with `'sort ( int list -> int list )`. The f-prims reuse prim_plus, prim_sub, prim_mul, prim_div and prim_lt. Prelude: fneg uses fsub, fabs uses flt. max, min, abs, sqr, clamp, sign, gt, ge and le become int-only; add an f-variant only where a program needs it.
+  3. Migrate: the checker refuses each site. A scratch build counts about 185: raycast 101, plasma 42, zoom 15, the libraries 18, uxn 2, and euler/44 and euler/45 3 each.
+  4. Delete P_NUM and P_ORD, their words in ty_prot_word, and the protocol names in ty_prot_name. readme: arithmetic, floats, and the protocol table become one sentence on copy. claude.md follows.
+
+- [ ] You choose between read-time and runtime literals from a measured cost (simplification review).
+  Today a `[...]` or `{...}` literal is built once, when the program is read, so it cannot use a name bound at runtime: `[i i] insert` and `[ 1 mk ]` are refused. Runtime literals delete ty_literal, ty_lit_depth, tyb_visible, the VF_DICT copy and about 8 messages; `{'x x 'y y}` works, so into can be replace-only and the PRE/ABS fields and rec go. The cost is speed: a constant literal in a hot loop is built on every pass.
+  1. In a scratch copy, evaluate a literal when it is reached. Build a literal that holds only constants once, if speed needs it.
+  2. Time make status (the 600 KB feed and sort.slap), make bench-uxn and make test-slow against the current binary: interleave the runs and take the minimum, since the machine runs other loads.
+  3. Write the numbers into this task, then decide.
+
 - [ ] You read a checker message that names the real cause, in the right direction, with one name per variable (code review; silent-failure audit; breaker rounds 14 and 15).
   Decided: keep `box (body) lend` and its sealed stack. `( 'g let 5 box (g apply) lend swap free ) 'w let (1 plus) w` stays refused: lend's output count is unknown until a caller passes g. mutate and each accept such a body only because TYPES fixes their output count.
   1. errors.slap first: pin one message per step below, and check each fails against the old binary.
-  2. Mismatches read backwards where the actual type is passed first: `[1] 'xs let 'xs "a" nth` says "int is not a list", `5 (drop) lend` says "'a box is not int", `{'a 1} len {'a 1} cat` says "{| ..a} is not int". Call `ty_unify(expected, actual)` at nth, lend's box and cat, as `ty_apply` and `ty_case` do.
+  2. Mismatches read backwards where the actual type is passed first: nth with a str index says "int is not a list", and `5 (drop) lend` says "'a box is not int". Call `ty_unify(expected, actual)` at nth and lend's box, as `ty_apply` and `ty_case` do. cat goes through ty_apply once it takes only lists.
   3. `'apply' takes ( ..a -> ..b ) / but the stack has ... / <why>`: the "takes" line shows a fresh copy of the word's type, so the why line uses other names. In ty_apply, print the instance and the stack top before `ty_unify`, with `ty_print_count` reset once. It is the hottest path: print only when a cheap pre-check fails, or keep a copy of the instance and print it after. ty_define and the case messages already do this.
   4. Inside a `[...]` literal, `1 [drop]` says "'drop' takes 'a copyable / but the stack has nothing": say that a literal's code starts from an empty stack.
   5. ty_lend: when `out` ends in a stack variable that is not `below`, say the body's output count is unknown at the lend and point to mutate or a body written in place. Otherwise keep "may not take values below". After an underflow, push only the box's place, not two fresh values, so later errors stay real.
@@ -33,25 +95,15 @@
 
 ## Blocked on you
 
-- [ ] `chunks` with size 0 dies with a message that names chunks, the size it got and the caller's line (code review).
-  Today it dies with the generic must text at chunks' line in the prelude.
-  Decide: how prelude code fails with its own text (a `fail ( str -> )` primitive, or a must variant that takes a message).
-  1. errors.slap first: `[1 2] 0 chunks` names chunks and 0.
-
 - [ ] A closure stored in an outer frame's binding is freed when nothing reaches it (code review).
   A cycle is never freed: a closure made by a nested body and stored in an outer frame's binding keeps that frame, which keeps the closure's frame. `( 'k let ( k apply 1 plus) ) 'wr let 0 100000 (drop (0 plus) 3 (wr) repeat 'c let 0) repeat drop` reaches 201 MB: `(0 plus)` closes over the outer body's frame, and the chain ends in that frame's binding `c`. With `(0 plus)` bound at the top level it stays at 4.5 MB.
   Decide: weak parent links, or a collector.
   1. Tests first: a loop that makes such a cycle each pass holds steady memory.
 
-- [ ] You apply a body while a copy of it is on the stack, and `cat` bodies in a word (breaker round 15 b1, b2).
-  `(5) dup apply print drop` is refused: `dup` gives both copies one type, and applying one changes the depth below the other. This caused nearly all of the 145 refusals among 66,000 generated well-typed programs. `( cat ) 'c let (1 plus) (2 mul) c` is refused, though the readme lists body as a Semigroup; making cat generic over bodies as it stands would be unsound.
-  Decide: let `dup` (and every copy of a body value) give the copy its own stack rest when nothing else holds it, as `let` does now; and type `cat` on bodies as composition in the word's own type, or drop body from the readme's Semigroup row.
-  1. Tests first for the choice: both programs above.
-
-- [ ] You put a symbol that `nth` used into a list with other symbols (breaker rounds 14 and 15).
-  `[1 2] 'xs let 'xs 'k let k 0 nth must drop [k 'ys] drop` is refused: nth fixes k's type to exactly 'xs, and a list of symbols widens its element type to sym. `k 'ys member` is refused the same way. eq and neq compare without widening, so they pass.
-  Decide: keep the refusal (nth by a symbol read from a list is rare), or let a symbol type carry both its exact label for nth and a widened copy for containers.
-  1. If widened: expect.slap first, both programs pass.
+- [ ] You apply a body while a copy of it is on the stack (breaker round 15 b1).
+  `(5) dup apply print drop` is refused: `dup` gives both copies one type, and applying one changes the depth below the other. This caused nearly all of the 145 refusals among 66,000 generated well-typed programs. Body cat goes in the task above, so only dup remains.
+  Decide: keep the refusal (a let-bound body now runs at one depth too), or give each copy of a body value its own stack rest when nothing else holds it, which brings back the machinery the task above deletes.
+  1. Tests first for the choice: the program above.
 
 - [ ] The example apps report every I/O failure and keep the data they do not change (silent-failure audit, critical; breaker round 15).
   `read` gives `path no` for every failure, so a directory, a mode-000 file or an I/O error reads as "no file": todo.slap lists nothing and exits 0, and with a write-only file `add` replaces the items. kv-server's boot `save-snapshot` then writes the empty store back. todo.slap rewrites only text/done and "items", dropping other fields and keys. kv-server: a recv error reads as EOF; send errors vanish; SAVE always says "snapshot not writable"; a torn last snapshot line loads as a short value; a client that connects and sends nothing blocks every other client. feed.slap cuts text by bytes, which can split a UTF-8 sequence.
