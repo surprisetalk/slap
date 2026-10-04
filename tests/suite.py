@@ -35,7 +35,6 @@ STEADY = [
     "('x let x 'a tag {'a (x plus)} case) 'f let 0 100000 (drop 5 f) repeat drop",
     f"0 1000000 (drop {DICT} box free 0) repeat drop",
     f"0 100000 (drop {{'b {DICT}}} drop 0) repeat drop",
-    f"0 100000 (drop ({{'b {DICT}}} drop) (0) cat apply) repeat drop",
     f"0 100000 (drop list {DICT} push dup print len) repeat drop",
     f"0 100000 (drop list {DICT} push list {DICT} push eq) repeat drop",
     f"0 100000 (drop list {DICT} push {DICT} push dup 0 get must drop 5 get drop 0) repeat drop",
@@ -147,7 +146,7 @@ def steps(slow):
             "steady memory": (steady, None),
             "profile": (profile, None),
             "deep closure chain": (
-                "echo \"(0) 100000 ('c let (c apply 1 plus) 'g let 'g quote) repeat drop\" | ./slap",
+                "echo \"(0) 100000 ('c let (c apply 1 plus)) repeat drop\" | ./slap",
                 None,
             ),
             "deep value error prints once": (

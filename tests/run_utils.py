@@ -90,6 +90,8 @@ for name, path in PATHS.items():
 
 r = slap("cat", os.path.join(tmp, "missing.txt"))
 check("cat missing file", r.returncode == 1 and b"cannot read" in r.stderr and b"missing.txt" in r.stderr, r.stderr.decode()[-600:])
+r = subprocess.run(["./slap"], input=open(LIBS[0], "rb").read() + b"0 arg-bytes drop", capture_output=True, timeout=60)
+check("arg-bytes no argument", r.returncode == 1 and b"must:" not in r.stderr and b"expected a file name as argument" in r.stderr, r.stderr.decode()[-600:])
 r = slap("cat")
 check("cat no argument", r.returncode == 1 and b"expected 1 argument(s): FILE" in r.stderr, r.stderr.decode()[-600:])
 r = slap("cat", PATHS["blank"], PATHS["blank"])

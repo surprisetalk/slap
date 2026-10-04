@@ -68,7 +68,7 @@
     rot drop
   ) (
     drop prev-perm not (
-      "euler/41: every 7-digit pandigital is composite; search 4 digits next" no must
+      "euler/41: every 7-digit pandigital is composite; search 4 digits next" fail
     ) (
       swap
     ) if

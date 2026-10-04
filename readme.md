@@ -43,6 +43,8 @@ slap [--check] [--headless] [--profile] [args...] < file.slap
   --profile    at exit, print one `word;word;word nanoseconds` line per call path to stderr
 ```
 
+A run (not `--check`) dies before anything executes if the program names a word this build lacks: the SDL words in the terminal build, `tcp-*` in the wasm build. The scan reads every token, so a word in a branch that never runs is refused too.
+
 `--profile` output is folded stacks. Recursion folds into one frame, and primitives are frames, so time spent in a body that `each` or `if` runs goes to the words in that body. Draw it with [FlameGraph](https://github.com/brendangregg/FlameGraph):
 
 ```bash
@@ -135,13 +137,6 @@ A word whose body is a body pushes that body when it runs:
 foo                   -- (1 2 3) on stack
 ```
 
-`quote` pushes a word's body without running it:
-
-```slap
-(1 plus) 'inc1 let
-'inc1 quote           -- (1 plus), pushed without running it
-```
-
 ### control flow
 
 ```slap
@@ -178,13 +173,13 @@ Functions capture their defining scope:
 ('n let (n plus)) 'make-adder let
 
 5 make-adder 'add5 let  -- a body made at runtime: a value
-3 add5 apply           -- 8
-7 add5 apply           -- 12
+3 add5 apply print     -- 8
+7 add5 apply print     -- 12
 
 ('lo let 'hi let (dup lo le not swap hi lt and)) 'make-between let
 10 1 make-between 'in-range let
-5 in-range apply       -- 1
-15 in-range apply      -- 0
+5 in-range apply print   -- 1
+15 in-range apply print  -- 0
 ```
 
 A body passed as an input is a value: `apply` runs it, and the name passes it on as it is:
@@ -193,20 +188,6 @@ A body passed as an input is a value: `apply` runs it, and the name passes it on
 ('pred let dup 0 gt (dup pred apply drop 1 sub pred countdown) () if) 'countdown let
 5 (iseven) countdown    -- applies pred at each step, terminates at 0
 ```
-
-### composition
-
-`cat` joins two tuples into one body:
-
-```slap
-(2 mul) (1 plus) cat
-3 swap apply              -- 7
-
-(1 plus) (2 mul) cat (3 sub) cat (sqr) cat
-5 swap apply              -- 81
-```
-
-Two closures made in different frames join too. The joined body runs the first closure, then the second, and each one looks its names up in its own frame.
 
 ## data types
 
@@ -248,11 +229,10 @@ list 10 push 20 push            -- [10 20]
 
 ### tuples
 
-Parenthesized code blocks. `apply` runs one; `cat` joins two into one.
+Parenthesized code blocks. `apply` runs one.
 
 ```slap
 (10 20 30) apply             -- pushes 10 20 30
-3 (1 plus) (2 mul) cat apply -- 8
 ```
 
 ### records
@@ -265,10 +245,9 @@ Key-value maps keyed by symbols.
 {'x 10 'y 20} 'x (1 plus) edit  -- {'x 11 'y 20}
 {'x 10 'y 20} 30 'x into     -- {'x 30 'y 20}
 rec 10 'x into 20 'y into    -- {'x 10 'y 20}
-{'x 10 'y 20} {'x 5} cat     -- {'x 5 'y 20}
 ```
 
-`at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. A record's type names its keys and the type of each value, `{'x int 'y int}`. `into` adds a key, or replaces the value of a key the record has. `cat` puts each field of the right record into the left one. A word that reads `'k` from its input takes any record that has `'k`, so every caller must pass one. Records in one list, or left by the two branches of an `if`, have the same keys. The key is written as a literal right before `at`, `into` or `edit`; for keys that are data, use a dict.
+`at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. A record's type names its keys and the type of each value, `{'x int 'y int}`. `into` adds a key, or replaces the value of a key the record has. A word that reads `'k` from its input takes any record that has `'k`, so every caller must pass one. Records in one list, or left by the two branches of an `if`, have the same keys. The key is written as a literal right before `at`, `into` or `edit`; for keys that are data, use a dict.
 
 ### dicts
 
@@ -360,7 +339,7 @@ A box stays on the stack from `box` to `free`: it cannot be bound with `let`, st
 
 All code is type-checked before it runs. Types are inferred, so a program needs no annotations. The checker unifies types, as ML and Haskell do; when it cannot prove a program safe, it refuses the program.
 
-A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, and the rest of the stack stays as it was. A word defined from a body is generic: `(dup) 'twin let` works on any value it can copy. A value bound with `let` has one type, but a bound body the program made may run at any stack depth. A caller's body may not, since it may read below its inputs, and neither may a body whose type a tag's payload can still change: the checker refuses such a use.
+A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, and the rest of the stack stays as it was. A word defined from a body is generic: `(dup) 'twin let` works on any value it can copy. A value bound with `let` has one type, so a body the program made runs at one stack depth.
 
 ### types
 
@@ -411,8 +390,6 @@ Built-in protocols group types by capability. Use them in signatures, as in `['a
 |----------|---------|-------|------------|
 | Num | `num` | int, float | `plus`, `sub`, `mul`, `div` |
 | Ord | `ord` | int, float | `lt`, `sort` |
-| Sized | `sized` | list, record, dict | `len` |
-| Semigroup | `semigroup` | list, record, body | `cat` |
 | Copy | `copy` | every type without a box or socket | `let`, `dup`, `drop`, `eq` |
 
 Symbols are comparable with `eq` but not orderable.
@@ -487,6 +464,7 @@ Definitions written in slap itself, loaded at startup.
 | `tag` | x 'sym → tagged | `1 'foo tag` → `1 'foo tagged` |
 | `then` | tagged body → tagged | `42 ok (inc ok) then` → `43 'ok tagged` |
 | `default` | tagged fallback → value | `42 ok -1 default` → `42` |
+| `fail` | ..a text → ..b | `n "bad size" fail` ends the program with the text; any stack may follow |
 
 ### float math
 
@@ -579,7 +557,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 
 ### networking / http
 
-Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http`. `http-request` lives in `examples/lib/strings.slap`.
+Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http`. `tcp-recv` gives up to n bytes, and at most 64 KiB per call. `http-request` lives in `examples/lib/strings.slap`.
 
 | Word | Effect |
 |------|--------|

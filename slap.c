@@ -464,10 +464,10 @@ static void print_stack_summary(FILE *out) {
     if(pos>0){int rem=0;while(pos>0){pos-=val_slots(stack[pos-1]);rem++;}fprintf(out,"      ... %d more\n",rem);}
 }
 static DictEntry *dict_get(DictData *dd, const char *key, int klen);
-static uint32_t S_NTH, S_QUOTE;
-/* A body that looks a name up at runtime: a word that is not a primitive, or `nth` or `quote`, which read the name written before them. */
+static uint32_t S_NTH;
+/* A body that looks a name up at runtime: a word that is not a primitive, or `nth`, which reads the name written before it. */
 static int body_reads_names(Value *v, int slots) {
-    for (int i = 0; i < slots; i++) if (v[i].tag == VAL_XT && (!prim_fns[v[i].as.xt.sym] || v[i].as.xt.sym == S_NTH || v[i].as.xt.sym == S_QUOTE)) return 1;
+    for (int i = 0; i < slots; i++) if (v[i].tag == VAL_XT && (!prim_fns[v[i].as.xt.sym] || v[i].as.xt.sym == S_NTH)) return 1;
     return 0;
 }
 /* Structural equality, element by element: a record by its keys, whatever order they were written in, a
@@ -520,13 +520,13 @@ static int val_less(Value *a, int aslots, Value *b, int bslots) {
     default: die("lt: unsupported type %s (only int and float are ordered)", valtag_name(atop.tag)); return 0;
     }
 }
-static uint32_t S_CAT, S_CAT_LEFT, S_CAT_RIGHT, S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_ON, S_SHOW, S_WILD;
+static uint32_t S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_ON, S_SHOW, S_WILD;
 static void syms_init(void) {
     S_LET=sym_intern("let"); S_EFFECT=sym_intern("effect");
     S_OK=sym_intern("ok"); S_NO=sym_intern("no"); S_NONE=sym_intern("none"); S_CASE=sym_intern("case"); S_MUST=sym_intern("must");
-    S_TAG=sym_intern("tag"); S_QUOTE=sym_intern("quote");
+    S_TAG=sym_intern("tag");
     S_AT=sym_intern("at"); S_EDIT=sym_intern("edit"); S_INTO=sym_intern("into"); S_KEY=sym_intern("key"); S_VALUE=sym_intern("value"); S_WILD=sym_intern("_");
-    S_CAT=sym_intern("cat"); S_CAT_LEFT=sym_intern("cat-left"); S_CAT_RIGHT=sym_intern("cat-right"); S_NTH=sym_intern("nth"); S_ON=sym_intern("on"); S_SHOW=sym_intern("show");
+    S_NTH=sym_intern("nth"); S_ON=sym_intern("on"); S_SHOW=sym_intern("show");
 }
 /* ---- TYPE CHECKER ---- */
 /* ==== TYPES: inference by unification ====
@@ -547,7 +547,7 @@ enum { K_VAR, K_INT, K_FLOAT, K_SYM, K_LIST, K_DICT, K_BOX, K_SOCK, K_FN, K_REC,
 /* What a value variable must be: protocols a word asks of its inputs. */
 /* copy: the value may be copied, dropped, bound or stored. A box is not, nor a result or tag that
    holds one; the stack carries it from the word that makes it to the word that frees it. */
-enum { P_NUM = 1, P_ORD = 2, P_SIZED = 8, P_SEMI = 16, P_COPY = 32 };
+enum { P_NUM = 1, P_ORD = 2, P_COPY = 4 };
 /* rigid: a signature's variable while a body is checked against it. sealed: the stack below a body
    that must not reach it (`each`, `edit`); instances keep it. */
 /* named: a label variable whose name nth read a list by; it may not meet another symbol. */
@@ -595,13 +595,11 @@ static int ty_prot_of(int k) {
     switch (k) {
     case K_INT: case K_FLOAT: return P_NUM | P_ORD | P_COPY;
     case K_SYM: case K_FN: return P_COPY;
-    case K_LIST: return P_SIZED | P_SEMI | P_COPY;
-    case K_DICT: return P_SIZED | P_COPY;
-    case K_REC: return P_SIZED | P_SEMI | P_COPY;
+    case K_LIST: case K_DICT: case K_REC: return P_COPY;
     default: return 0;
     }
 }
-static const char *ty_prot_name(int p) { return p & P_NUM ? "num" : p & P_ORD ? "ord" : p & P_SIZED ? "sized" : p & P_SEMI ? "semigroup" : "copyable"; }
+static const char *ty_prot_name(int p) { return p & P_NUM ? "num" : p & P_ORD ? "ord" : "copyable"; }
 
 /* ---- printing, for messages ---- */
 static int ty_print_names[64], ty_print_count;
@@ -710,20 +708,25 @@ static const char *ty_kind_noun(int k) {
     switch (k) { case K_LIST: return "a list"; case K_DICT: return "a dict"; case K_BOX: return "a box"; case K_REC: return "a record";
     case K_FN: return "a body"; case K_TAG: return "a tagged value"; case K_RES: return "a result"; default: return 0; }
 }
+static int ty_rigid_rest;
+/* The last failed unify met two stacks of different depths. */
+static int ty_depth_why;
 static int ty_bind(int v, int t) {
     if (ty[v].sealed && ty[t].kind == K_SVAR && ty[t].sealed && !ty[v].rigid && !ty[t].rigid) { ty[v].link = t; return 0; }
     if (ty_fixed(v) && !(ty_isvar(ty[t].kind) && !ty_fixed(t))) {
         if (ty[v].sealed || (ty_isvar(ty[t].kind) && ty[t].sealed)) { snprintf(ty_why, sizeof ty_why, "this body must turn its inputs into one value and cannot reach the stack below them"); return 1; }
-        if (ty[v].kind == K_SVAR && (ty[t].kind == K_SCONS || ty[t].kind == K_SNIL)) { snprintf(ty_why, sizeof ty_why, "the body takes or leaves a different number of values than the signature declares"); return 1; }
+        if (ty[v].kind == K_SVAR && (ty[t].kind == K_SCONS || ty[t].kind == K_SNIL)) { snprintf(ty_why, sizeof ty_why, "the body takes or leaves a different number of values than the signature declares"); ty_rigid_rest = 1; return 1; }
         if (ty[v].kind == K_RVAR && (ty[t].kind == K_REXT || ty[t].kind == K_RNIL)) { char s[256]; ty_show(s, sizeof s, t, 0);
             snprintf(ty_why, sizeof ty_why, "the signature's open record ends in keys the caller chooses, but here the body needs them to be %s", ty[t].kind == K_RNIL ? "none" : s); return 1; }
+        if (ty[v].kind == K_TVAR && (ty[t].kind == K_TEXT || ty[t].kind == K_TNIL)) { char s[256]; ty_show(s, sizeof s, t, 0);
+            snprintf(ty_why, sizeof ty_why, "the signature's open tag set ends in tags the caller chooses, but here the body needs them to be %s", ty[t].kind == K_TNIL ? "none" : s); return 1; }
         char s[256]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a type the signature leaves open is %s here", s); return 1; }
     if (ty_fixed(v)) { int x = v; v = t; t = x; }
     int occ = ty_occurs(v, t, ty[v].level);
     if (occ == 2) { snprintf(ty_why, sizeof ty_why, "a type the signature leaves open would have to be a type from outside the body"); return 1; }
     if (occ) {
         int n = 0; for (int x = ty_find(t); ty[x].kind == K_SCONS && n < ty_n; x = ty_find(ty[x].b)) n++;
-        if (ty[v].kind == K_SVAR && n) snprintf(ty_why, sizeof ty_why, "one path leaves %d more value%s on the stack than the other, so a branch, clause, loop pass or recursive call changes the stack's depth", n, n == 1 ? "" : "s");
+        if (ty[v].kind == K_SVAR && n) ty_depth_why = 1, snprintf(ty_why, sizeof ty_why, "one path leaves %d more value%s on the stack than the other, so a branch, clause, loop pass or recursive call changes the stack's depth", n, n == 1 ? "" : "s");
         else if (ty[v].kind == K_RVAR) snprintf(ty_why, sizeof ty_why, "a record would have to contain itself: one path adds a field the other has not");
         else { char s[256]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a value would have to contain itself, as %s", s); }
         return 1; }
@@ -812,7 +815,7 @@ static int ty_unify_chain(int a, int b, int depth) {
     if (ty[a].kind == K_TEXT && ty[b].kind == K_TNIL) { snprintf(ty_why, sizeof ty_why, "this value is never tagged '%s", sym_name(ty[a].sym)); return 1; }
     if (ty[a].kind != ty[b].kind && !(ty[a].kind == K_REXT && ty[b].kind == K_RNIL)) {
         char s1[256], s2[256]; ty_show(s1, sizeof s1, a, 0); ty_show(s2, sizeof s2, b, 0);
-        if (ty[a].kind == K_SNIL || ty[b].kind == K_SNIL) snprintf(ty_why, sizeof ty_why, "the stack is shorter than this needs");
+        if (ty[a].kind == K_SNIL || ty[b].kind == K_SNIL) ty_depth_why = 1, snprintf(ty_why, sizeof ty_why, "the stack is shorter than this needs");
         else snprintf(ty_why, sizeof ty_why, "%s is not %s%s", s2, ty_kind_noun(ty[a].kind) ? ty_kind_noun(ty[a].kind) : s1,
                       ty[a].kind == K_LIST && ty[b].kind == K_DICT ? ". Iterate a dict with dict-entries: it leaves the dict and a list of {'key k 'value v}" : "");
         return 1;
@@ -846,7 +849,7 @@ static int ty_unify_chain(int a, int b, int depth) {
     }
   }
 }
-static int ty_unify(int a, int b) { ty_why[0] = 0; return ty_unify_at(a, b, 0); }
+static int ty_unify(int a, int b) { ty_why[0] = 0; ty_depth_why = 0; return ty_unify_at(a, b, 0); }
 /* Row r without its most recent field `label`: that field's type and the rest. An open row gains it. */
 static int ty_row_take(int r, uint32_t label, int *field, int *rest, int depth) {
     if (depth > 4096) die("type checker: a record has more than %d fields", depth);
@@ -938,14 +941,14 @@ static const char *TYPES =
     "'if ( ..s int ( ..s -> ..t ) ( ..s -> ..t ) -> ..t ) 'while ( ..a ( ..a -> ..b int ) ( ..b -> ..a ) -> ..b )\n"
     "'each ( ..s 'a list ( ..!r 'a -> ..!r 'b ) -> ..s 'b list ) 'fold ( ..s 'a list 'b ( ..!r 'b 'a -> ..!r 'b ) -> ..s 'b )\n"
     "'filter ( ..s 'a list ( ..!r 'a -> ..!r int ) -> ..s 'a list )\n"
-    "'list ( -> 'a list ) 'len ( 'a sized -> int ) 'push ( 'a list 'a -> 'a list ) 'pop ( 'a list -> 'a list {'ok 'a 'no ()} either )\n"
+    "'list ( -> 'a list ) 'len ( 'a list -> int ) 'push ( 'a list 'a -> 'a list ) 'pop ( 'a list -> 'a list {'ok 'a 'no ()} either )\n"
     "'get ( 'a list int -> {'ok 'a 'no ()} either ) 'peek ( 'a list int -> 'a list {'ok 'a 'no ()} either )\n"
-    "'set ( 'a list int 'a -> {'ok 'a list 'no ()} either ) 'cat ( 'a semigroup 'a semigroup -> 'a semigroup ) 'reverse ( 'a list -> 'a list )\n"
+    "'set ( 'a list int 'a -> {'ok 'a list 'no ()} either ) 'cat ( 'a list 'a list -> 'a list ) 'reverse ( 'a list -> 'a list )\n"
     "'take-n ( 'a list int -> 'a list ) 'drop-n ( 'a list int -> 'a list ) 'range ( int int -> int list ) 'sort ( 'a ord list -> 'a ord list )\n"
     "'index-of ( 'a list 'a -> {'ok int 'no ()} either ) 'zip ( 'a list 'a list -> 'a list list )\n"
     "'str-find ( str str -> {'ok int 'no ()} either ) 'str-split ( str str -> str list )\n"
     "'rec ( -> {} )\n"
-    "'must ( {'ok 'a 'no 'b} either -> 'a )\n"
+    "'must ( {'ok 'a 'no 'b} either -> 'a ) 'fail ( ..a str -> ..b )\n"
     "'pthen ( ..s {'ok 'a 'no 'b} either 'd copy ( ..s 'a -> ..s 'd {'ok 'c 'no 'b} either ) -> ..s 'd {'ok 'c 'no 'b} either )\n"
     "'box ( 'a -> 'a box ) 'free ( 'a box -> ) 'mutate ( ..s 'a box ( ..!r 'a -> ..!r 'b ) -> ..s 'b box )\n"
     "'dict ( -> 'a dict ) 'insert ( 'a dict str 'a -> 'a dict ) 'of ( 'a dict str -> 'a dict {'ok 'a 'no str} either )\n"
@@ -971,8 +974,8 @@ static int ty_word_is(Token *t, const char *w) { return t->tag == TOK_WORD && st
 static int ty_prot_word(Token *t) {
     if (t->tag != TOK_WORD) return 0;
     const char *w = sym_name(t->as.sym);
-    /* every num, ord, sized or semigroup value is copyable */
-    int p = !strcmp(w, "num") ? P_NUM : !strcmp(w, "ord") ? P_ORD : !strcmp(w, "sized") ? P_SIZED : !strcmp(w, "semigroup") ? P_SEMI : !strcmp(w, "copy") ? P_COPY : 0;
+    /* every num or ord value is copyable */
+    int p = !strcmp(w, "num") ? P_NUM : !strcmp(w, "ord") ? P_ORD : !strcmp(w, "copy") ? P_COPY : 0;
     return p ? p | P_COPY : 0;
 }
 static int ty_parse_fn(Token *toks, int open, int close, TyNames *nm, int rest);
@@ -1114,9 +1117,8 @@ static void ty_unrigid(int mark) { while (ty_rigid_n > mark) ty[ty_rigid_vars[--
 
 /* ---- names ---- */
 /* word: 0 a value, 1 a word, 2 the word whose body is being checked. declared: `'name [sig] effect`
-   without its body yet. depth: how many bodies deep the name was bound (0: the top level). gen: for a
-   bound body whose stack rest each use makes fresh (see ty_bound_rest), its ty_gens index plus 1, or 0. */
-typedef struct { uint32_t sym; int ty, word, line, declared, depth, gen; } TyBind;
+   without its body yet. depth: how many bodies deep the name was bound (0: the top level). */
+typedef struct { uint32_t sym; int ty, word, line, declared, depth; } TyBind;
 static TyBind *tyb; static int tyb_n, tyb_cap, tyb_prelude;
 static int ty_builtin[SYM_MAX], ty_tagpay[SYM_MAX];
 static int ty_tag_payload(uint32_t tag) { if (!ty_tagpay[tag]) { int l = ty_level; ty_level = 0; ty_tagpay[tag] = ty_new(K_VAR, 0, 0, 0); ty_level = l; } return ty_tagpay[tag]; }
@@ -1124,7 +1126,7 @@ static int tyb_find(uint32_t sym) { for (int k = tyb_n - 1; k >= 0; k--) if (tyb
 static int ty_body_depth;
 static void tyb_push(uint32_t sym, int t, int word, int line) {
     if (tyb_n == tyb_cap) { tyb_cap = tyb_cap ? 2*tyb_cap : 1024; tyb = realloc(tyb, (size_t)tyb_cap * sizeof(TyBind)); if (!tyb) die("type checker: out of memory for %d names", tyb_cap); }
-    tyb[tyb_n++] = (TyBind){sym, t, word, line, 0, ty_body_depth, 0};
+    tyb[tyb_n++] = (TyBind){sym, t, word, line, 0, ty_body_depth};
 }
 /* A body inside a [...] or {...} literal is built when the program is read, so the names it sees are
    the top level's and its own: none bound in the bodies around the literal (ty_lit_depth deep). */
@@ -1137,7 +1139,7 @@ static uint32_t S_LEND, S_EQ, S_NEQ;
 static void ty_err(int line, const char *fmt, ...);
 /* Words the runtime reads as forms, not bindings. */
 static int ty_reserved(uint32_t sym) {
-    return sym == S_LET || sym == S_EFFECT || sym == S_TAG || sym == S_CASE || sym == S_QUOTE || sym == S_NTH
+    return sym == S_LET || sym == S_EFFECT || sym == S_TAG || sym == S_CASE || sym == S_NTH
         || sym == S_LEND || sym == S_ON || sym == S_SHOW || sym == S_AT || sym == S_INTO || sym == S_EDIT;
 }
 /* Forward declarations waiting for their body, per body depth: code that runs in that scope before the
@@ -1178,15 +1180,6 @@ static void ty_undefined(int from) {
 /* ---- inference ---- */
 static int ty_cur, ty_errors;
 static int ty_on[16], ty_on_line[16], ty_on_mouse[16], ty_on_n, ty_shown;
-static void ty_gens_settle(int from, int level, int word);
-/* A let-bound body whose uses each make its stack rest fresh (ty_value): sound only if nothing refines
-   the rest after a use. An entry outlives its binding, which its body or word pops first. */
-typedef struct { int rest, ty, line, used; uint32_t sym; } TyGen;
-static TyGen *ty_gens; static int ty_gen_n, ty_gen_cap;
-static int ty_gen_add(int rest, int t, int line, uint32_t sym) {
-    if (ty_gen_n == ty_gen_cap) { ty_gen_cap = ty_gen_cap ? 2*ty_gen_cap : 256; ty_gens = realloc(ty_gens, (size_t)ty_gen_cap * sizeof(TyGen)); if (!ty_gens) die("type checker: out of memory for %d bound bodies", ty_gen_cap); }
-    ty_gens[ty_gen_n] = (TyGen){rest, t, line, 0, sym}; return ++ty_gen_n;
-}
 static void ty_err(int line, const char *fmt, ...) {
     ty_errors++; int fid = LOC_FID(current_loc); const char *f = src_files[fid];
     va_list ap; va_start(ap, fmt);
@@ -1202,6 +1195,12 @@ static int ty_pop(void) {
     if (ty_unify(ty_cur, ty_new(K_SCONS, v, r, 0))) { ty_err(LOC_LINE(current_loc), "'%s' takes more values than the stack holds here.", ty_at_word); return v; }
     ty_cur = r; return v;
 }
+/* The stack variable a stack type ends in. */
+static int ty_stack_tail(int s) {
+    s = ty_find(s);
+    for (int hops = 0; ty[s].kind == K_SCONS; hops++) { if (hops == ty_n) die("type checker bug: a stack links in a cycle"); s = ty_find(ty[s].b); }
+    return s;
+}
 static void ty_apply(int scheme, const char *who, int line, int user) {
     int f = ty_find(ty_instantiate(scheme)), body = user;
     for (int x = ty_find(ty[f].a), hops = -ty_n; !body && ty[x].kind == K_SCONS; x = ty_rest(x, &hops)) body = ty[ty_find(ty[x].a)].kind == K_FN;
@@ -1211,7 +1210,15 @@ static void ty_apply(int scheme, const char *who, int line, int user) {
         char want[512], before[512]; int g = ty_find(ty_instantiate(scheme)), n = 0;
         for (int x = ty_find(ty[g].a); ty[x].kind == K_SCONS && n < ty_n; x = ty_find(ty[x].b)) n++;
         ty_print_count = 0; ty_show_top(want, sizeof want, ty[g].a, n); ty_show_top(before, sizeof before, ty_cur, n);
-        ty_err(line, "'%s' takes %s\n    but the stack has %s\n    %s.", who, n ? want : "nothing", before, ty_why);
+        /* A value bound with let has one type, so once a use fixes a bound body's stack depth, it runs only there. */
+        char hint[512] = "";
+        for (int x = ty_find(ty_cur), k = ty_depth_why ? n : 0; !hint[0] && k-- > 0 && ty[x].kind == K_SCONS; x = ty_find(ty[x].b)) {
+            int v = ty_find(ty[x].a);
+            if (ty[v].kind != K_FN || ty[ty_stack_tail(ty[v].a)].kind == K_SVAR) continue;
+            for (int b = tyb_n - 1; b >= 0; b--) if (!tyb[b].word && ty_find(tyb[b].ty) == v) {
+                snprintf(hint, sizeof hint, "\n    '%s' is a body bound with let, and a body bound with let runs at one stack depth. Bound with its body written in place, `(...) '%s let`, it is a word, which runs at any depth.", sym_name(tyb[b].sym), sym_name(tyb[b].sym)); break; }
+        }
+        ty_err(line, "'%s' takes %s\n    but the stack has %s\n    %s.%s", who, n ? want : "nothing", before, ty_why, hint);
         ty_cur = ty[f].b; return;
     }
     ty_cur = ty[f].b;
@@ -1245,35 +1252,19 @@ static int ty_subst_at(int t, int v, int w, int stamp, int depth) {
     ty_mark[t] = stamp; ty_to[t] = r; return r;
 }
 static int ty_subst(int t, int v, int w) { return ty_subst_at(t, v, w, ++ty_stamp, 0); }
-/* The stack variable a stack type ends in. */
-static int ty_stack_tail(int s) {
-    s = ty_find(s);
-    for (int hops = 0; ty[s].kind == K_SCONS; hops++) { if (hops == ty_n) die("type checker bug: a stack links in a cycle"); s = ty_find(ty[s].b); }
-    return s;
-}
 /* in: the stack a signature says the body takes, or 0 for any. */
-/* The stacks each body being checked started from, and the stacks around it: what a bound body's rest
-   may be tied to. */
-static int *ty_env, ty_env_n, ty_env_cap;
-static void ty_env_push(int t) {
-    if (ty_env_n == ty_env_cap) { ty_env_cap = ty_env_cap ? 2*ty_env_cap : 256; ty_env = realloc(ty_env, (size_t)ty_env_cap * sizeof(int)); if (!ty_env) die("type checker: out of memory for %d nested bodies", ty_env_cap); }
-    ty_env[ty_env_n++] = t;
-}
 static int ty_body(Token *toks, int open, int close, int in) {
     /* a body inside a literal runs later, so it may use names bound when the program runs: the top level's */
     int saved = ty_cur, mark = tyb_n, lit = ty_literal, lit_depth = ty_lit_depth; ty_cur = in ? in : ty_new(K_SVAR, 0, 0, 0); in = ty_cur;
     c_stack_check("while checking nested bodies");
     if (lit) ty_lit_depth = ty_body_depth;
-    ty_env_push(in); ty_env_push(saved);
     ty_body_depth++; ty_literal = 0; ty_range(toks, open + 1, close); ty_literal = lit; ty_body_depth--; ty_lit_depth = lit_depth;
-    ty_env_n -= 2;
     ty_undefined(mark);
     int fn = ty_new(K_FN, in, ty_cur, 0); ty_cur = saved; tyb_n = mark; return fn;
 }
 /* `(body) [sig] effect 'name let`: a word. Inside its body the word has one type (or its declared
    one); after, the type generalizes. */
 static void ty_define(Token *toks, int open, int close, int sig_open, int sig_close, uint32_t name, int line) {
-    int gens0 = ty_gen_n;
     ty_redefined(name, line, 1);
     if (ty_literal) ty_err(line, "a [...] or {...} literal is built when the program is read, so it cannot bind names: '%s' would be bound for the whole program. Define it outside the literal.", sym_name(name));
     int fwd = tyb_find(name);
@@ -1295,7 +1286,19 @@ static void ty_define(Token *toks, int open, int close, int sig_open, int sig_cl
         int inst = bt, tin = ty_stack_tail(ty[bt].a), tout = ty_stack_tail(ty[bt].b);
         if (ty[tin].kind == K_SVAR && ty[tin].level > ty_level - 1) inst = ty_subst(inst, tin, ty_new(K_SVAR, 0, 0, 0));
         if (tout != tin && ty[tout].kind == K_SVAR && ty[tout].level > ty_level - 1) inst = ty_subst(inst, tout, ty_new(K_SVAR, 0, 0, 0));
-        if (ty_unify(ty_rec_call[k], inst)) ty_err(ty_rec_line[k], "'%s' calls itself here with a stack its body does not take: %s.", sym_name(name), ty_why);
+        /* A call must not bind the body's own stack rests: that would grow the body's type after inst was made.
+           A body with a returning path ties its output rest to its input rest, and the occurs check refuses a call that changes the depth. */
+        int ret = ty_find(tin) == ty_find(tout), call = ty_rec_call[k], bad;
+        uint8_t rin = ty[tin].rigid, rout = ty[tout].rigid;
+        if (ret) bad = ty_unify(call, inst);
+        else {
+            if (ty[tin].kind == K_SVAR) ty[tin].rigid = 1;
+            if (ty[tout].kind == K_SVAR) ty[tout].rigid = 1;
+            ty_rigid_rest = 0; bad = ty_unify(ty[call].a, ty[inst].a);
+            if (bad && ty_rigid_rest) snprintf(ty_why, sizeof ty_why, "each call would need more values below it than the call before");
+            else if (!bad && (ty_rigid_rest = 0, bad = ty_unify(ty[call].b, ty[inst].b)) && ty_rigid_rest) snprintf(ty_why, sizeof ty_why, "each call leaves a different number of values than the body leaves, so the body's output changes with every call");
+            ty[tout].rigid = rout; ty[tin].rigid = rin; }
+        if (bad) ty_err(ty_rec_line[k], "'%s' calls itself here with a stack its body does not take: %s.", sym_name(name), ty_why);
     }
     ty_rec_n = keep;
     if (want) { char a[512], b[512];
@@ -1303,7 +1306,6 @@ static void ty_define(Token *toks, int open, int close, int sig_open, int sig_cl
         ty_print_count = 0; ty_show(a, sizeof a, want, 0); ty_show(b, sizeof b, bt, 0);
         if (ty_unify(want, bt)) {
             ty_err(line, "'%s' declares %s, but its body is %s: %s.", sym_name(name), a, b, ty_why); want = 0; } }
-    ty_gens_settle(gens0, ty_level - 1, bt);
     ty_level--; tyb_n = mark;
     ty_unrigid(rmark);
     if (want) { ty_generalize(want); scheme = want; }
@@ -1337,25 +1339,21 @@ static void ty_case(Token *toks, int open, int close, int line) {
         if (ty_unify(ty_new(K_RES, a, b, 0), s)) { ty_err(line, "case with 'ok/'no clauses takes a result, but this value is not one: %s.", ty_why); return; }
         if (!wild && !(okc && noc)) unnamed = okc ? S_NO : S_OK;
         if (wild && okc && noc) dead = wild; }
+    else if (!wild) {
+        int set = ty_new(K_TNIL, 0, 0, 0), tagged = ty[ty_find(s)].kind == K_TAG;
+        for (int j = open + 1; j < close; j += toks[j].span + 1, j += toks[j].span + 1) { set = ty_new(K_TEXT, 0, 0, set); ty[set].sym = toks[j].as.sym; }
+        if (ty_unify(ty_new(K_TAG, set, 0, 0), s)) { ty_err(line, "case cannot take this value: %s.%s", ty_why, tagged ? " A case without a last '_ clause names every tag the value may carry, and only those; a last '_ clause takes the rest." : ""); return; }
+    }
     else {
-        int v = ty_find(s), closed = 0, missing = 0;
-        if (ty[v].kind == K_TAG) {
-            int r = ty_find(ty[v].a);
-            for (int hops = -ty_n; ty[r].kind == K_TEXT; r = ty_rest(r, &hops)) if (ty_clause_mark[ty[r].sym] != stamp) { missing++; if (!wild && !unnamed) unnamed = ty[r].sym; }
-            if (!wild && !unnamed && ty[r].kind == K_TVAR && ty_fixed(r)) { ty_err(line, "the value's tags come from a signature that leaves them open, so it may carry a tag no clause names. Add a last '_ clause."); return; }
-            closed = ty[r].kind == K_TNIL;
-            /* On a closed set, a clause for a tag the set lacks never runs, and neither does '_ once every tag
-               has a clause. An open set takes the clause tags as its own, so it has no dead clause. */
-            if (closed && !unnamed) {
-                int set_stamp = ++ty_clause_stamp;
-                for (int x = ty_find(ty[v].a), hops = -ty_n; ty[x].kind == K_TEXT; x = ty_rest(x, &hops)) ty_clause_mark[ty[x].sym] = set_stamp;
-                for (int j = open + 1; !dead && j < close; j += toks[j].span + 1, j += toks[j].span + 1) if (j != wild && ty_clause_mark[toks[j].as.sym] != set_stamp) dead = j;
-                if (!dead && wild && !missing) dead = wild; } }
-        /* A closed set the clauses cover is left as it is. A clause's payload type is its tag's everywhere,
-           so with '_ the value may carry any tags. */
-        int set = ty_new(wild ? K_TVAR : K_TNIL, 0, 0, 0);
-        for (int j = open + 1; !wild && j < close; j += toks[j].span + 1, j += toks[j].span + 1) { set = ty_new(K_TEXT, 0, 0, set); ty[set].sym = toks[j].as.sym; }
-        if (!unnamed && !closed && ty_unify(ty_new(K_TAG, set, 0, 0), s)) { ty_err(line, "case cannot take this value: %s.", ty_why); return; }
+        /* A clause's payload type is its tag's everywhere, so with '_ the value may carry any tags. On a closed
+           set, a clause for a tag the set lacks never runs, and neither does '_ once every tag has a clause. */
+        int v = ty_find(s);
+        if (ty[v].kind == K_TAG && ty[ty_tail(ty[v].a)].kind == K_TNIL) {
+            int missing = 0, set_stamp = ++ty_clause_stamp;
+            for (int x = ty_find(ty[v].a), hops = -ty_n; ty[x].kind == K_TEXT; x = ty_rest(x, &hops)) { missing += ty_clause_mark[ty[x].sym] != stamp; ty_clause_mark[ty[x].sym] = set_stamp; }
+            for (int j = open + 1; !dead && j < close; j += toks[j].span + 1, j += toks[j].span + 1) if (j != wild && ty_clause_mark[toks[j].as.sym] != set_stamp) dead = j;
+            if (!dead && !missing) dead = wild; }
+        else if (ty_unify(ty_new(K_TAG, ty_new(K_TVAR, 0, 0, 0), 0, 0), s)) { ty_err(line, "case cannot take this value: %s.", ty_why); return; }
     }
     if (unnamed) { ty_err(line, "the value may be tagged '%s, which no clause names. Add a clause for '%s, or a last '_ clause.", sym_name(unnamed), sym_name(unnamed)); return; }
     if (dead == wild && dead) { ty_err(toks[dead].line, "the clauses name every tag the value may carry, so the '_ clause never runs. Delete it."); return; }
@@ -1372,85 +1370,7 @@ static void ty_case(Token *toks, int open, int close, int line) {
         else if (ty_unify(ty[body].b, out)) ty_err(toks[key].line, "the clause for '%s does not leave what the other clauses leave: %s.", sym_name(tg), ty_why);
     }
 }
-/* t holds variable v somewhere (a pure walk: no levels change). */
-static int ty_contains(int t, int v) {
-    int n = 0, stamp = ++ty_stamp; ty_work_push(&n, t);
-    while (n) {
-        int x = ty_find(ty_work[--n]);
-        if (x == v) return 1;
-        if (ty_mark[x] == stamp) continue;
-        ty_mark[x] = stamp;
-        if (ty[x].a) ty_work_push(&n, ty[x].a);
-        if (ty[x].b) ty_work_push(&n, ty[x].b);
-        if (ty[x].c) ty_work_push(&n, ty[x].c);
-    }
-    return 0;
-}
-/* v sits where a caller supplies the value: in the word's inputs, in the outputs of a body input, and so on,
-   each body type flipping which side is the caller's. A set that only leaves the word is copied fresh at
-   each use, so a caller's tags never flow back into it. Marks: base (seen as input), base+1 (as output),
-   base+2 (both). */
-static int ty_input_holds(int word, int v) {
-    int base = ty_stamp + 1, n = 0; ty_stamp += 3;
-    word = ty_find(word);
-    ty_work_push(&n, ty[word].a * 2 + 1); ty_work_push(&n, ty[word].b * 2);
-    while (n) {
-        int e = ty_work[--n], x = ty_find(e >> 1), in = e & 1, m = ty_mark[x];
-        if (m == base + 2 || m == base + !in) continue;
-        ty_mark[x] = m == base + in ? base + 2 : base + !in;
-        if (x == v && in) return 1;
-        if (ty_isvar(ty[x].kind)) continue;
-        if (ty[x].kind == K_FN) { ty_work_push(&n, ty[x].a * 2 + !in); ty_work_push(&n, ty[x].b * 2 + in); continue; }
-        if (ty[x].a) ty_work_push(&n, ty[x].a * 2 + in);
-        if (ty[x].b) ty_work_push(&n, ty[x].b * 2 + in);
-        if (ty[x].c) ty_work_push(&n, ty[x].c * 2 + in);
-    }
-    return 0;
-}
-/* A body bound with let runs at any stack depth when the stack below it is its own: the body's type
-   ends in one stack variable on both sides, and nothing else holds that variable (the stacks being
-   checked, another binding, a recursive call). A caller's body, tied to the word's stack, stays as it
-   is: it may read below its inputs. A tag's payload may still tie the variable to more, so
-   ty_gens_settle checks it again. Returns the variable each use makes fresh, or 0. */
-static int ty_bound_rest(int v) {
-    int f = ty_find(v);
-    if (ty[f].kind != K_FN) return 0;
-    int r = ty_stack_tail(ty[f].a);
-    if (r != ty_stack_tail(ty[f].b) || ty[r].kind != K_SVAR || ty_fixed(r) || ty_contains(ty_cur, r)) return 0;
-    for (int k = 0; k < ty_env_n; k++) if (ty_contains(ty_env[k], r)) return 0;
-    for (int k = 0; k < tyb_n; k++) if (tyb[k].word != 2 && ty_contains(tyb[k].ty, r)) return 0;
-    for (int k = 0; k < ty_rec_n; k++) if (ty_contains(ty_rec_call[k], r)) return 0;
-    return r;
-}
-/* A value binding's type for one use. */
-static int ty_value(int b) {
-    TyGen *e = tyb[b].gen ? &ty_gens[tyb[b].gen - 1] : NULL;
-    int g = e ? ty_find(e->rest) : 0;
-    if (!g || ty[g].kind != K_SVAR) return tyb[b].ty;
-    e->used = 1;
-    return ty_subst(tyb[b].ty, g, ty_new(K_SVAR, 0, 0, 0));
-}
-/* Once a word is inferred (`word` its type, `level` the level outside it; 0 at the end of the
-   program), a freshened rest that is still a bare variable no caller's stack reaches kept the body's type
-   final. A rest tied outside the word may still change there, so the scope outside checks it. */
-static void ty_gens_settle(int from, int level, int word) {
-    int keep = from;
-    for (int k = from; k < ty_gen_n; k++) {
-        TyGen e = ty_gens[k]; int r = ty_find(e.rest); const char *why;
-        if (!e.used) continue;
-        if (ty[r].kind != K_SVAR) why = "a tag's payload, settled after a use, makes it read more of the stack";
-        else if (word && ty_input_holds(word, r)) why = "a caller's body can take its place, and a caller's body may read below its inputs";
-        else if (word && ty[r].level <= level) { ty_gens[keep++] = e; continue; }
-        else continue;
-        char t[512]; ty_print_count = 0; ty_show(t, sizeof t, e.ty, 0);
-        ty_err(e.line, "'%s' was bound to a body whose type was not final at the let: %s.\n"
-               "    Its type is now %s.\n"
-               "    A let-bound body runs at each use's own stack depth only when its type is final where it is bound.\n"
-               "    Write the body in place before '%s let, or apply it where it is made.", sym_name(e.sym), why, t, sym_name(e.sym));
-    }
-    ty_gen_n = keep;
-}
-/* Values collected from a stack type, for literals, lend and record cat. Nothing between filling and
+/* Values collected from a stack type, for literals and lend. Nothing between filling and
    reading it collects again. */
 static int *ty_items, ty_items_cap;
 static void ty_item(int k, int t) {
@@ -1549,18 +1469,8 @@ static void ty_range(Token *toks, int i, int end) {
                 if (ty_literal) ty_err(line, "a [...] or {...} literal is built when the program is read, so it cannot bind names: a let inside it would bind '%s for the whole program. Bind it outside the literal.", sym_name(toks[i-1].as.sym));
                 ty_pop(); int v = ty_pop();
                 if (ty_need(v, P_COPY)) ty_err(line, "'%s' cannot be let-bound: %s. Keep it on the stack.", sym_name(toks[i-1].as.sym), ty_why);
-                int gen = ty_bound_rest(v);
-                ty_redefined(toks[i-1].as.sym, line, 0); tyb_push(toks[i-1].as.sym, v, 0, line);
-                tyb[tyb_n-1].gen = gen ? ty_gen_add(gen, v, line, toks[i-1].as.sym) : 0; break;
+                ty_redefined(toks[i-1].as.sym, line, 0); tyb_push(toks[i-1].as.sym, v, 0, line); break;
             }
-            if (w == S_QUOTE && i > 0 && toks[i-1].tag == TOK_SYM) {
-                int b = tyb_find(toks[i-1].as.sym); ty_pop();
-                if (b >= 0 && ty_literal && b >= tyb_prelude) ty_err(line, "'%s' is bound when the program runs, but a [...] or {...} literal is built when it is read.", sym_name(toks[i-1].as.sym));
-                if (b >= 0 && tyb[b].declared && tyb[b].depth == ty_body_depth) ty_err(line, "quote reads '%s here, but '%s is declared on line %d and not defined yet. Define it first.", sym_name(toks[i-1].as.sym), sym_name(toks[i-1].as.sym), tyb[b].line);
-                if (b < 0 || !tyb_visible(b)) { ty_err(line, b < 0 ? "quote reads a name, but '%s is not bound here." : "quote reads '%s, but a body inside a [...] or {...} literal is built when the program is read, so it sees only top-level names and its own.", sym_name(toks[i-1].as.sym)); ty_push(ty_new(K_VAR, 0, 0, 0)); break; }
-                ty_push(tyb[b].word == 2 ? ty_self_fn(b, line) : tyb[b].word ? ty_instantiate(tyb[b].ty) : ty_value(b)); break;
-            }
-            if (w == S_QUOTE) { ty_err(line, "quote needs the name it reads written right before it, as in `'x quote`."); ty_pop(); ty_push(ty_new(K_VAR, 0, 0, 0)); break; }
             if (w == S_TAG) {
                 if (i == 0 || toks[i-1].tag != TOK_SYM) { ty_err(line, "tag needs its tag written before it, as in `5 'n tag`."); break; }
                 ty_pop(); int p = ty_pop(); uint32_t tg = toks[i-1].as.sym;
@@ -1617,29 +1527,6 @@ static void ty_range(Token *toks, int i, int end) {
                 }
                 ty_apply(ty_new(K_FN, in, out, 0), sym_name(w), line, 0); break;
             }
-            if (w == S_CAT) {
-                /* two bodies compose: the first's output is the second's input */
-                int y = ty_find(ty_pop()), x = ty_find(ty_pop());
-                if (ty[x].kind == K_FN || ty[y].kind == K_FN) {
-                    int a = ty_new(K_SVAR, 0, 0, 0), b = ty_new(K_SVAR, 0, 0, 0), c = ty_new(K_SVAR, 0, 0, 0);
-                    if (ty_unify(x, ty_new(K_FN, a, b, 0)) || ty_unify(y, ty_new(K_FN, b, c, 0))) ty_err(line, "cat joins two bodies into one when the first leaves what the second takes: %s.", ty_why);
-                    ty_push(ty_new(K_FN, a, c, 0)); break;
-                }
-                /* two records: the right one's fields over the left's, as `into` sets them one by one */
-                if (ty[x].kind == K_REC || ty[y].kind == K_REC) {
-                    int row = ty[y].kind == K_REC ? ty_find(ty[y].a) : 0, n = 0;
-                    if (ty[y].kind == K_REC) for (int hops = -ty_n; ty[row].kind == K_REXT; row = ty_rest(row, &hops)) { ty_item(2*n, ty[row].a); ty_item(2*n+1, ty[row].b); n++; }
-                    if (ty[y].kind != K_REC || ty[row].kind != K_RNIL) { ty_err(line, "cat joins two records only when it knows every field of the right one, but %s.", ty[y].kind == K_REC ? "the right one may have more fields than it names" : ty[y].kind == K_VAR ? "the right one is a value whose fields this word cannot see, such as an input" : "the right one is not a record"); ty_push(ty_new(K_VAR, 0, 0, 0)); break; }
-                    int r = ty_new(K_RVAR, 0, 0, 0);
-                    if (ty_unify(x, ty_new(K_REC, r, 0, 0))) { ty_err(line, "cat joins a record with a record: %s.", ty_why); ty_push(ty_new(K_VAR, 0, 0, 0)); break; }
-                    for (int k = n - 1; k >= 0; k--) {
-                        int f, rest; if (ty_row_take(r, ty[ty_items[2*k]].sym, &f, &rest, 0)) { ty_err(line, "cat: %s.", ty_why); break; }
-                        r = ty_new(K_REXT, ty_items[2*k], ty_items[2*k+1], rest);
-                    }
-                    ty_push(ty_new(K_REC, r, 0, 0)); break;
-                }
-                ty_push(x); ty_push(y);
-            }
             if (w == S_ON) {
                 int h = ty_pop(), ev = ty_find(ty_pop()), l = ty_sym_label(ev);
                 if (!l) { ty_err(line, "on needs its event written before the handler, as in `'tick (…) on`."); break; }
@@ -1673,14 +1560,12 @@ static void ty_range(Token *toks, int i, int end) {
                 if (ty[st].kind == K_SCONS && ty_unify(ty_new(K_RES, ty_new(K_VAR, 0, 0, 0), ty_new(K_VAR, 0, 0, 0), 0), ty[st].a)) {
                     ty_err(line, "%s never fails: the checker proves the record has the key, so it gives %s, and %s. Drop must.", sym_name(toks[i-1].as.sym), toks[i-1].as.sym == S_AT ? "the value" : "the record", ty_why);
                     break; } }
-            /* `x no must` and `none must` always die, so the code after them never runs: any stack may follow. */
-            if (w == S_MUST && i > 0 && toks[i-1].tag == TOK_WORD && (toks[i-1].as.sym == S_NO || toks[i-1].as.sym == S_NONE) && (ty_in_prelude || tyb_find(toks[i-1].as.sym) < tyb_prelude)) { ty_pop(); ty_cur = ty_new(K_SVAR, 0, 0, 0); break; }
             int b = tyb_find(w);
             if (b >= 0) {
                 if (!tyb_visible(b)) { ty_err(line, "'%s' is bound in the word around this literal, but a body inside a [...] or {...} literal is built when the program is read, so it sees only top-level names and its own.", sym_name(w)); ty_cur = ty_new(K_SVAR, 0, 0, 0); break; }
                 if (ty_literal && b >= tyb_prelude) ty_err(line, "'%s' is bound when the program runs, but a [...] or {...} literal is built when it is read.", sym_name(w));
                 if (tyb[b].word == 2) ty_apply(ty_self_fn(b, line), sym_name(w), line, 1);
-                else if (tyb[b].word) ty_apply(tyb[b].ty, sym_name(w), line, b >= tyb_prelude); else ty_push(ty_value(b));
+                else if (tyb[b].word) ty_apply(tyb[b].ty, sym_name(w), line, b >= tyb_prelude); else ty_push(tyb[b].ty);
                 break;
             }
             if (ty_builtin[w]) { ty_apply(ty_builtin[w], sym_name(w), line, 0); break; }
@@ -1740,14 +1625,12 @@ static int infer_program(Token *table, int table_n, Token *toks, int count, int 
     ty_cur = ty_new(K_SNIL, 0, 0, 0);
     ty_tok_end = count;
     ty_in_prelude = 1; ty_range(toks, 0, user_start); ty_in_prelude = 0; tyb_prelude = tyb_n;
-    if (ty_gen_n) die("type checker: the prelude binds %d computed bodies with let; ty_gens_settle would report them against the user's program. Define each with a body written in place.", ty_gen_n);
     ty_cur = ty_new(K_SNIL, 0, 0, 0);
     ty_range(toks, user_start, count);
     ty_undefined(tyb_prelude);
     /* after an error the stack's types may be made up, so the end is checked only when nothing failed */
     for (int x = ty_find(ty_cur), hops = -ty_n; !ty_errors && ty[x].kind == K_SCONS; x = ty_rest(x, &hops))
         if (ty_need(ty[x].a, P_COPY)) { ty_err(LOC_LINE(current_loc), "the program ends with a value left on the stack that is never freed: %s.", ty_why); break; }
-    ty_gens_settle(0, 0, 0);
     return ty_errors;
 }
 /* ---- PRIMITIVES ---- */
@@ -1816,12 +1699,6 @@ static void prim_dip(Frame *env) {
     SPUSH(saved_buf,saved_s);
 }
 static void prim_apply(Frame *env) { POP_BODY(body,"apply"); eval_body(body_buf,body_s,env); }
-static void prim_quote(Frame *env) {
-    uint32_t sym=pop_sym(); Lookup lu=frame_lookup(env,sym);
-    if(!lu.bind) die("quote: unknown binding '%s'",sym_name(sym));
-    Binding *b=lu.bind;
-    if(b->heap){ stack_room(b->slots,"quote"); deep_copy_values(&stack[sp],b->vals,b->slots); sp+=b->slots; } else { SPUSH(b->vals,b->slots); if(b->tuples) vals_retain(b->vals,b->slots); }
-}
 /* Integer plus/sub/mul wrap at 64 bits: computed in uint64_t, where overflow is defined. */
 #define ARITH2(nm,iop,fop) static void prim_##nm(Frame *e){(void)e;Value b=spop(),a=spop(); \
     if(a.tag==VAL_INT&&b.tag==VAL_INT) spush(val_int((int64_t)((uint64_t)a.as.i iop (uint64_t)b.as.i))); \
@@ -1930,13 +1807,9 @@ FLOAT1(ffloor,floor) FLOAT1(fround,round) FLOAT1(fexp,exp) FLOAT1(flog,log)
 #define FLOAT2(nm,fn) static void prim_##nm(Frame *e){(void)e;double b=pop_float(),a=pop_float();spush(val_float(fn(a,b)));}
 FLOAT2(fpow,pow) FLOAT2(fatan2,atan2)
 static void dict_data_free(DictData *dd);
-#define COMPOUND_GUARD(v, who, tagmsg) do{ if((v).tag==VAL_TAGGED) die(who ": " tagmsg); \
-    if(!is_compound((v).tag)) die(who ": expected compound, got %s",valtag_name((v).tag)); }while(0)
 #define SEQ_GUARD(v, who) do{ if((v).tag!=VAL_LIST) die(who ": expected list, got %s",valtag_name((v).tag)); }while(0)
 static void prim_size(Frame *e) {
-    (void)e; Value top=speek();
-    if(top.tag==VAL_DICT){ int n=((DictData*)top.as.box)->len; dict_data_free((DictData*)top.as.box); sp--; spush(val_int(n)); return; }
-    if(top.tag!=VAL_LIST&&top.tag!=VAL_RECORD) die("len: expected list, record or dict, got %s",valtag_name(top.tag));
+    (void)e; Value top=speek(); SEQ_GUARD(top,"len");
     int s=val_slots(top); deep_free_values(&stack[sp-s],s); sp-=s; spush(val_int((int)top.as.compound.len));
 }
 static void prim_push_op(Frame *e) {
@@ -1997,29 +1870,13 @@ static inline void prim_set_impl(Frame *e, int tagged) {
     if(tagged) push_ok();
 }
 MUST_PAIR(set)
-static void rec_put(uint32_t key, const char *who);
 static void prim_concat(Frame *e) {
     (void)e; if(sp<2) die("cat: stack underflow");
-    Value t2=stack[sp-1]; COMPOUND_GUARD(t2, "cat", "cannot cat tagged values");
+    Value t2=stack[sp-1]; SEQ_GUARD(t2,"cat");
     int s2=val_slots(t2),b2=sp-s2; if(b2<1) die("cat: stack underflow");
-    Value t1=stack[b2-1]; if(t1.tag!=t2.tag) die("cat: cannot join a %s and a %s",valtag_name(t1.tag),valtag_name(t2.tag));
-    if(t2.tag==VAL_RECORD){
-        /* the right record's fields replace the left's, as the checker types it */
-        POP_VAL(r); int n=(int)r_top.as.compound.len,*st=elem_starts(r_buf,r_s,2*n);
-        for(int i=0;i<n;i++){ int k=st?st[2*i]:2*i,v=k+1,ve=st?st[2*i+2]:2*i+2; SPUSH(&r_buf[v],ve-v); rec_put(r_buf[k].as.sym,"cat"); }
-        return;
-    }
-    Frame *e1=t1.as.compound.env,*e2=t2.as.compound.env;
-    if(e1&&e2&&e1!=e2){
-        /* Each closure looks its names up in its own frame, so the join runs them as two words of a frame that holds both. */
-        Frame *f=frame_acquire(NULL); int s1=val_slots(t1);
-        frame_bind(f,S_CAT_RIGHT,&stack[b2],s2,1); frame_bind(f,S_CAT_LEFT,&stack[b2-s1],s1,1); sp=b2-s1;
-        spush(val_xt(S_CAT_LEFT,NULL)); spush(val_xt(S_CAT_RIGHT,NULL));
-        Value h=val_compound(VAL_TUPLE,2,3); h.as.compound.env=f; spush(h); return;
-    }
+    Value t1=stack[b2-1]; SEQ_GUARD(t1,"cat");
     memmove(&stack[b2-1],&stack[b2],(size_t)(s2-1)*sizeof(Value)); sp--;
-    t2.as.compound.len+=t1.as.compound.len; t2.as.compound.slots=(uint32_t)(val_slots(t1)+s2-1); t2.as.compound.env=e2?e2:e1; t2.loc=0;
-    if(t1.tag==VAL_TUPLE){ t2.flags|=t1.flags&(VF_BINDS|VF_DICT); if(e1&&e2) frame_drop(e1); }
+    t2.as.compound.len+=t1.as.compound.len; t2.as.compound.slots=(uint32_t)(val_slots(t1)+s2-1); t2.loc=0;
     stack[sp-1]=t2;
 }
 static inline void prim_nth_impl(Frame *env, int tagged) {
@@ -2314,18 +2171,26 @@ static DictData *dict_clone(DictData *orig) {
     }
     return c;
 }
-static int pop_string_bytes(const char *who, char **out, int *out_len) {
+static int pop_string_bytes(const char *who, const char *what, char **out, int *out_len) {
     Value top=speek();
     if(top.tag!=VAL_LIST) die("%s: expected string (list of int), got %s", who, valtag_name(top.tag));
     int s=val_slots(top), len=(int)top.as.compound.len, base=sp-s;
-    if(s != len+1) die("%s: key must be a simple string (list of int)", who);
+    if(s != len+1) die("%s: %s must be a simple string (list of int)", who, what);
     char *buf=malloc(len?len:1);
     for(int i=0;i<len;i++){
-        if(stack[base+i].tag!=VAL_INT) die("%s: key string contains non-int at position %d", who, i);
-        int64_t c=stack[base+i].as.i; if(c<0||c>255) die("%s: key byte %d is %lld, outside 0-255", who, i, (long long)c);
+        if(stack[base+i].tag!=VAL_INT) die("%s: %s string contains non-int at position %d", who, what, i);
+        int64_t c=stack[base+i].as.i; if(c<0||c>255) die("%s: %s byte %d is %lld, outside 0-255", who, what, i, (long long)c);
         buf[i]=(char)c;
     }
     sp=base; *out=buf; *out_len=len; return len;
+}
+static uint64_t user_loc;
+static void prim_fail(Frame *e) {
+    (void)e; char *msg; int n, s0=sp; pop_string_bytes("fail","text", &msg, &n);
+    if(!n){ sp=s0; die("fail: the text is empty; expected a message"); }
+    for(int i=0;i<n;i++) if(!msg[i]){ sp=s0; die("fail: the text holds a NUL byte at offset %d; expected text without NUL bytes", i); }
+    if(LOC_FID(current_loc)==FID_PRELUDE) current_loc=user_loc;
+    die("%.*s", n, msg);
 }
 static void push_byte_list(const unsigned char *buf, size_t len) {
     for (size_t i = 0; i < len; i++) spush(val_int(buf[i]));
@@ -2337,14 +2202,14 @@ static void push_fail(const char *msg) { push_c_string(msg); push_no(); }
 static Value dict_val(DictData *dd){Value v={0};v.tag=VAL_DICT;v.loc=0;v.as.box=dd;return v;}
 static void prim_dict(Frame *e){(void)e;DictData *dd=calloc(1,sizeof(DictData));dicts_made=1;spush(dict_val(dd));}
 static void prim_insert(Frame *e) {
-    (void)e; POP_VAL(val); char *key; int klen; pop_string_bytes("insert",&key,&klen);
+    (void)e; POP_VAL(val); char *key; int klen; pop_string_bytes("insert","key",&key,&klen);
     Value dv=speek(); if(dv.tag!=VAL_DICT) die("insert: expected dict, got %s", valtag_name(dv.tag));
     DictData *dd=(DictData*)dv.as.box;
     dict_put(dd,key,klen,val_buf,val_s);
     free(key);
 }
 static void prim_of(Frame *e) {
-    (void)e; char *key; int klen; pop_string_bytes("of",&key,&klen);
+    (void)e; char *key; int klen; pop_string_bytes("of","key",&key,&klen);
     Value dv=speek(); if(dv.tag!=VAL_DICT) die("of: expected dict, got %s", valtag_name(dv.tag));
     DictData *dd=(DictData*)dv.as.box;
     DictEntry *ent=dict_get(dd,key,klen);
@@ -2355,7 +2220,7 @@ static void prim_of(Frame *e) {
     deep_copy_values(&stack[sp],ent->vals,ent->nvals); sp+=ent->nvals; push_ok();
 }
 static void prim_remove(Frame *e) {
-    (void)e; char *key; int klen; pop_string_bytes("remove",&key,&klen);
+    (void)e; char *key; int klen; pop_string_bytes("remove","key",&key,&klen);
     Value dv=speek(); if(dv.tag!=VAL_DICT) die("remove: expected dict, got %s", valtag_name(dv.tag));
     DictData *dd=(DictData*)dv.as.box;
     dict_del(dd,key,klen); free(key);
@@ -2430,6 +2295,7 @@ static inline __attribute__((always_inline)) void dispatch_word(uint32_t sym, Fr
     Binding *b=lu.bind; Value *v=b->vals; int s=b->slots;
     if(!b->word){ if(b->heap){ stack_room(s,sym_name(sym)); deep_copy_values(&stack[sp],v,s); sp+=s; } else { SPUSH(v,s); if(b->tuples) vals_retain(v,s); } return; }
     Frame *f=lu.frame; int bi=(int)(b-f->bindings);
+    if(LOC_FID(current_loc)!=FID_PRELUDE) user_loc=current_loc;
     b->pinned++; eval_body(v,s,env); f->bindings[bi].pinned--;
 }
 /* Under --profile, build_tuple leaves primitives unresolved, so every word arrives here.
@@ -2600,7 +2466,7 @@ static const char *PRELUDE =
     "(255 band) 'byte-mask let\n"
     "('b let 0 8 range (7 swap sub b swap shr 1 band) each) 'byte-bits let\n"
     "(0 (swap 1 shl bor) fold) 'bits-byte let\n"
-    "('n let n 1 lt (\"chunks: the size must be at least 1\" no must) () if list swap (dup len 0 eq not) (dup n take-n swap (push) dip n drop-n) while drop) 'chunks let\n"
+    "('n let n 1 lt (n \"chunks: the size must be at least 1\" fail) () if list swap (dup len 0 eq not) (dup n take-n swap (push) dip n drop-n) while drop) 'chunks let\n"
 
 ;
 /* ---- SDL ---- */
@@ -2738,13 +2604,18 @@ static unsigned char *pop_byte_list_buf(const char *who, int *out_len) {
         if(v.as.i<0||v.as.i>255)die("%s: byte %d out of range (got %lld)",who,i,(long long)v.as.i);buf[i]=(unsigned char)v.as.i;}
     sp-=len;*out_len=len;return buf;
 }
-static char *pop_string_path(const char *who) {
-    int len; unsigned char *raw = pop_byte_list_buf(who, &len);
-    if (memchr(raw, 0, len)) die("%s: the path contains a NUL byte", who);
-    char *buf = realloc(raw, len + 1); buf[len] = '\0'; return buf;
+static char *pop_string_path(const char *who, int *len) {
+    unsigned char *raw = pop_byte_list_buf(who, len);
+    char *buf = realloc(raw, *len + 1); buf[*len] = '\0'; return buf;
+}
+/* A C string stops at a NUL, so a path with one cannot name a file. The 'no payload keeps every byte. */
+static int path_has_nul(const char *path, int len) {
+    if (!memchr(path, 0, len)) return 0;
+    push_byte_list((const unsigned char*)path, len); push_no(); return 1;
 }
 static void prim_read(Frame *e) {
-    (void)e; char *path=pop_string_path("read");
+    (void)e; int plen;char *path=pop_string_path("read",&plen);
+    if(path_has_nul(path,plen)){free(path);return;}
     FILE *f=fopen(path,"rb");
     if(!f) { push_fail(path); free(path); return; }
     size_t n=0,cap=65536,got; unsigned char *buf=malloc(cap);
@@ -2755,7 +2626,8 @@ static void prim_read(Frame *e) {
     push_byte_list(buf,n);free(buf);free(path); push_ok();
 }
 static void prim_write(Frame *e) {
-    (void)e; int len;unsigned char *buf=pop_byte_list_buf("write",&len);char *path=pop_string_path("write");
+    (void)e; int len;unsigned char *buf=pop_byte_list_buf("write",&len);int plen;char *path=pop_string_path("write",&plen);
+    if(path_has_nul(path,plen)){free(buf);free(path);return;}
     /* Opening /dev/stdout again would skip what print still buffers, and on Linux it truncates a
        file the shell redirected stdout to. Write through the process's own streams instead. */
     FILE *std=strcmp(path,"/dev/stdout")==0?stdout:strcmp(path,"/dev/stderr")==0?stderr:NULL;
@@ -2766,7 +2638,8 @@ static void prim_write(Frame *e) {
     free(buf);free(path); spush(val_int(1)); push_ok();
 }
 static void prim_ls(Frame *e) {
-    (void)e; char *path=pop_string_path("ls");
+    (void)e; int plen;char *path=pop_string_path("ls",&plen);
+    if(path_has_nul(path,plen)){free(path);return;}
     DIR *d=opendir(path); if(!d) { push_fail(path); free(path); return; }
     struct dirent *ent; int base=sp,count=0;
     while((ent=readdir(d))!=NULL){if(strcmp(ent->d_name,".")==0||strcmp(ent->d_name,"..")==0)continue;
@@ -2802,10 +2675,11 @@ static void push_socket_box(int fd) {
     Value v;v.tag=VAL_BOX;v.loc=0;v.as.box=bd;spush(v);
 }
 static void prim_tcp_connect(Frame *e) {
-    (void)e; int64_t port=pop_int(); char *host=pop_string_path("tcp-connect");
+    (void)e; int64_t port=pop_int(); int hlen;char *host=pop_string_path("tcp-connect",&hlen);
+    if(port<0||port>65535) die("tcp-connect: port %lld is outside 0-65535",(long long)port);
+    if(memchr(host,0,hlen)){free(host);push_fail("tcp-connect: the host contains a NUL byte");return;}
     struct addrinfo hints={0},*res; hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
     char ps[16]; snprintf(ps,sizeof(ps),"%lld",(long long)port);
-    if(port<0||port>65535) die("tcp-connect: port %lld is outside 0-65535",(long long)port);
     char msg[512]; int err=getaddrinfo(host,ps,&hints,&res);
     if(err){snprintf(msg,sizeof msg,"tcp-connect: cannot resolve %s: %s",host,gai_strerror(err));free(host);push_fail(msg);return;}
     int fd=-1;
@@ -2825,9 +2699,9 @@ static void prim_tcp_send(Frame *e) {
 static void prim_tcp_recv(Frame *e) {
     (void)e; int64_t maxlen = pop_int(); if (maxlen < 1) die("tcp-recv: length must be at least 1, got %lld", (long long)maxlen);
     int fd = pop_socket_fd("tcp-recv"); push_socket_box(fd);
-    unsigned char *buf = malloc(maxlen); ssize_t n = recv(fd, buf, maxlen, 0);
-    if (n < 0) { free(buf); push_fail(strerror(errno)); return; }
-    push_byte_list(buf, n); free(buf); push_ok();
+    static unsigned char buf[65536]; ssize_t n = recv(fd, buf, maxlen < (int64_t)sizeof buf ? (size_t)maxlen : sizeof buf, 0);
+    if (n < 0) { push_fail(strerror(errno)); return; }
+    push_byte_list(buf, n); push_ok();
 }
 static void prim_tcp_close(Frame *e) { (void)e; int fd=pop_socket_fd("tcp-close"); if(close(fd)) die("tcp-close: closing socket %d failed: %s", fd, strerror(errno)); }
 static void prim_tcp_listen(Frame *e) {
@@ -2903,7 +2777,7 @@ PRIM(take_n, prim_slice_n(1)) PRIM(drop_n, prim_slice_n(0))
 #define M(n,f) {n,prim_##f,prim_##f##_must}
 static void register_prims(void) {
     static struct{const char*n;PrimFn f,m;} t[]={
-        R(dup,dup),R(drop,drop),R(swap,swap),R(over,over),R(rot,rot),R(dip,dip),R(apply,apply),R(quote,quote),
+        R(dup,dup),R(drop,drop),R(swap,swap),R(over,over),R(rot,rot),R(dip,dip),R(apply,apply),
         R(plus,plus),R(sub,sub),R(mul,mul),R(div,div),R(mod,mod),R(divmod,divmod),R(wrap,wrap),
         R(band,band),R(bor,bor),R(bxor,bxor),R(bnot,bnot),R(shl,shl),R(shr,shr),
         R(eq,eq),R(lt,lt),R(and,and),R(or,or),
@@ -2922,7 +2796,7 @@ static void register_prims(void) {
         R(tag,tag),R(must,must),R(pthen,pthen),
         R(read,read),R(write,write),R(ls,ls),
         M("str-find",strfind),{"str-split",prim_str_split,NULL},{"parse-http",prim_parse_http,NULL},
-        R(args,args),R(isheadless,isheadless),
+        R(args,args),R(fail,fail),R(isheadless,isheadless),
 #ifndef SLAP_WASM
         {"tcp-connect",prim_tcp_connect,NULL},{"tcp-send",prim_tcp_send,NULL},{"tcp-recv",prim_tcp_recv,NULL},
         {"tcp-close",prim_tcp_close,NULL},{"tcp-listen",prim_tcp_listen,NULL},{"tcp-accept",prim_tcp_accept,NULL},
@@ -2978,6 +2852,15 @@ int main(int argc, char **argv) {
     int errors=infer_program(table,table_count,combined,cpos,user_start);
     if(errors>0){fprintf(stderr,"%d type error(s)\n",errors);return 1;}
     if(check_only){fprintf(stderr,"type check passed\n");return 0;}
+    for(int i=0;i<user_tok_count;i++){Token*t=&user_tokens[i]; uint32_t w=t->as.sym;
+        if(t->tag!=TOK_WORD||prim_fns[w]||!(ty_builtin[w]||w==S_ON||w==S_SHOW)) continue;
+        current_loc=LOC_PACK(t->fid,t->line,t->col);
+#ifdef SLAP_WASM
+        die("'%s' is not in the wasm build: a browser has no TCP sockets. Remove the tcp-* words from this program.",sym_name(w));
+#else
+        die("'%s' needs the SDL build, but this is the terminal build. Build it with make slap-sdl and run ./slap-sdl.",sym_name(w));
+#endif
+    }
     current_loc=LOC_PACK(FID_STDIN,0,0);
     /* Registered after stdout_check, so it runs first, on die too. */
     if(profile){ prof_last=prof_now(); atexit(prof_report); }

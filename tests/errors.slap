@@ -62,8 +62,8 @@ false assert
 -- EXPECT: peek: index 5 out of bounds
 [1 2 3] 5 peek must
 
--- EXPECT: 'len' takes 'a sized
--- EXPECT: int is not sized.
+-- EXPECT: 'len' takes 'a copyable list
+-- EXPECT: int is not a list.
 1 len
 
 -- EXPECT: 'push' takes 'a copyable list 'a copyable
@@ -141,10 +141,6 @@ nonexistent_word_xyz
 -- EXPECT: int is not a result.
 123 -1 default
 
--- EXPECT: 'len' takes 'a sized
--- EXPECT: {'ok int 'no 'a copyable} either is not sized.
-1 'ok tag len
-
 -- EXPECT: 'over' takes 'a copyable 'b
 -- EXPECT: but the stack has only 1 value: int
 1 over
@@ -160,11 +156,6 @@ over
 -- EXPECT: 'rot' takes 'a 'b 'c
 -- EXPECT: but the stack has nothing
 rot
-
--- EXPECT: 'apply' takes ( ..a -> ..b )
--- EXPECT: the stack is shorter than this needs.
--- a quoted body that takes more than there is
-(drop drop) 'dd let 'dd quote apply
 
 -- EXPECT: 'nip' takes 'a copyable 'b
 -- EXPECT: but the stack has only 1 value: int
@@ -276,7 +267,7 @@ nip
 -- EXPECT: case clauses come in pairs, a key and a body
 1 'ok tag {'ok} case
 
--- EXPECT: the value may be tagged 'b, which no clause names. Add a clause for 'b, or a last '_ clause.
+-- EXPECT: case cannot take this value: it may be tagged 'b, which is not one of the tags this takes.
 -- a case names every tag its value may carry
 0 (5 'a tag) (6 'b tag) if {'a (drop 1)} case drop
 
@@ -304,7 +295,7 @@ nip
 -- EXPECT: case needs a clause for at least one tag.
 5 'a tag {} case drop
 
--- EXPECT: the value is never tagged 'b, so the clause for 'b never runs. Delete it.
+-- EXPECT: case cannot take this value: this value is never tagged 'b.
 -- the outer case closes x's tags to 'a, so the inner 'b clause is dead
 1 'a tag 'x let x {'a (x {'a (print) 'b (print)} case)} case
 
@@ -604,11 +595,6 @@ nip
 -- peek's either output binds the payload tvar, so default must match
 [1 2 3] 0 peek 'sym default
 
--- EXPECT: 'cat' takes 'a semigroup 'a semigroup
--- EXPECT: tagged 'x .. is not semigroup.
--- cat on tagged
-[1] 1 'x tag cat
-
 -- EXPECT: 'plus' takes 'a num 'a num
 -- EXPECT: {'ok int 'no 'a} either is not int.
 -- arithmetic on tagged
@@ -876,8 +862,8 @@ dict [256] 1 insert drop
 -- EXPECT: tcp-listen: port 70000 is outside 0-65535
 70000 tcp-listen must tcp-close
 
--- EXPECT: contains a NUL byte
-"a\0b" read drop
+-- EXPECT: tcp-connect: port 99999 is outside 0-65535
+"x\0" 99999 tcp-connect {'ok (tcp-close 0) 'no (drop 1)} case drop
 
 -- EXPECT: 'plus' takes 'a num 'a num
 -- EXPECT: str is not int.
@@ -1132,10 +1118,6 @@ dict [256] 1 insert drop
 rec 5 'c 3 (drop 'a) repeat into 'c at
 
 -- EXPECT: TYPE ERROR
--- quote keeps the body's reads
-('a at) 'f let {'b 1} 'f quote apply
-
--- EXPECT: TYPE ERROR
 -- a body taken out of a tagged value
 {'b 1} (drop {'c 1}) ok must apply 'b at
 
@@ -1148,16 +1130,8 @@ rec 5 'c 3 (drop 'a) repeat into 'c at
 (apply) [tuple own in] effect 'run let {'a 1} (drop {'b 1}) run 'a at
 
 -- EXPECT: TYPE ERROR
--- an input meets a record literal
-(dup {'a 1} cat drop 'a at) 'f let {'b 1} f
-
--- EXPECT: TYPE ERROR
 -- an input meets a loop's record
 (dup 0 (drop {'a 1}) repeat 'a at nip) 'f let {'b 1} f
-
--- EXPECT: TYPE ERROR
--- an unknown value meets a record literal
-{'b 1} ok must dup {'a 1} cat drop 'a at
 
 -- EXPECT: TYPE ERROR
 -- an unknown value meets a loop's record
@@ -1201,32 +1175,28 @@ rec 5 'c 3 (drop 'a) repeat into 'c at
 (('a at) 1) 'mk let {'b 1} mk drop apply
 
 -- EXPECT: TYPE ERROR
--- quote inside a body
-('a at) 'f let {'b 1} ('f quote) apply apply
-
--- EXPECT: TYPE ERROR
 -- a fold's initial value is a body that reads a key
 {'b 1} [1] ('a at) (drop) fold apply
 
 -- EXPECT: TYPE ERROR
 -- a while whose cond is not written in place
-('cond let {'b 0} 'cond quote ('a (1 plus) edit) while) 'run let (1) run
+('cond let {'b 0} cond ('a (1 plus) edit) while) 'run let (1) run
 
 -- EXPECT: TYPE ERROR
 -- an edit body that applies unknown code
-('bd let {'a 1} {'k 0} 'k ('bd quote apply) edit drop 'a at) 'run let (drop drop drop {'b 1} {'k 0} 0) run
+('bd let {'a 1} {'k 0} 'k (bd apply) edit drop 'a at) 'run let (drop drop drop {'b 1} {'k 0} 0) run
 
 -- EXPECT: one record has 'b and the other has not.
 -- a value of unknown type meets a record literal
 ('k at 1 () (drop {'b 1}) if 'b at) 'f let {'k {'z 1}} f
 
 -- EXPECT: TYPE ERROR
--- a quoted record of unknown shape meets a record literal
-{'z 1} 'r let 1 ('r quote) ({'b 1}) if 'b at
+-- a bound record of unknown shape meets a record literal
+{'z 1} 'r let 1 (r) ({'b 1}) if 'b at
 
 -- EXPECT: TYPE ERROR
 -- a declared word calling itself forgets the records below its inputs
-('n let 'body let n 0 eq (body) ('body quote {'a 1} rot rot n 1 sub g swap 'a at drop) if) [rec own in  tuple own in  int own in  rec move out] effect 'g let {'z 1} (drop drop {'b 1} {'c 1}) 1 g
+('n let 'body let n 0 eq (body) (body {'a 1} rot rot n 1 sub g swap 'a at drop) if) [rec own in  tuple own in  int own in  rec move out] effect 'g let {'z 1} (drop drop {'b 1} {'c 1}) 1 g
 
 -- EXPECT: TYPE ERROR
 -- a filter predicate reaches below its element
@@ -1285,10 +1255,6 @@ rec 5 'c 3 (drop 'a) repeat into 'c at
 {'a 1} 'r let (r 'a at) 'h let (0 (r) {'b 1} if) 'r let h
 
 -- EXPECT: TYPE ERROR
--- cat of two bodies
-{'z 1} (drop {'a 1}) (drop {'b 1}) cat apply 'a at
-
--- EXPECT: TYPE ERROR
 -- dict-entries keeps the value type
 dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 
@@ -1313,16 +1279,12 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 (apply) 'ap let {'b 1} 0 ((drop {'a 1})) (('a at) (0 drop) ap) if apply
 
 -- EXPECT: TYPE ERROR
--- a body without a type variable merges with another body
-{'z 1} 0 ((drop {'a 1})) ((drop {'b 1}) () cat) if apply 'a at
-
--- EXPECT: TYPE ERROR
 -- a recursive call's outputs are what the word leaves
 (dup 0 eq (drop {'a 1} {'b 2}) (1 sub f swap) if) 'f let 1 f 'b at
 
 -- EXPECT: TYPE ERROR
 -- a declared name bound to a body the checker did not see written
-'g [int own in  int move out] effect (swap drop {'b 1} swap) 'x let 'x quote 'g let {'a 1} 5 g drop 'a at
+'g [int own in  int move out] effect [(swap drop {'b 1} swap)] first 'g let {'a 1} 5 g drop 'a at
 
 -- EXPECT: TYPE ERROR
 -- a list whose elements the checker cannot see meets a record: flatten
@@ -1334,7 +1296,7 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 
 -- EXPECT: TYPE ERROR
 -- a declared output type variable that no input binds
-(drop {'b 1}) ['a own in  'b move out] effect 'f let 1 f dup {'a 1} cat drop 'a at
+(drop {'b 1}) ['a own in  'b move out] effect 'f let 1 f drop
 
 -- EXPECT: TYPE ERROR
 -- default on a payload the checker does not track
@@ -1441,10 +1403,6 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 [1] {'b 1} each
 
 -- EXPECT: TYPE ERROR
--- cat of two records has only the keys of both
-{'a 1} {'b 1} cat 'z at
-
--- EXPECT: TYPE ERROR
 -- then passes a 'no payload through: it may be the result
 {'b 1} no (drop {'a 1} ok) then {'no ('a at) 'ok ('a at)} case
 
@@ -1499,14 +1457,6 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- EXPECT: TYPE ERROR
 -- each on a list push built
 list {'b 1} push () each 0 (drop [{'a 1}]) () if first 'a at
-
--- EXPECT: TYPE ERROR
--- cat of a record with keys the checker cannot see
-(5 'q into {'a {'x 1}} swap cat 'a at 'x at) 'f let {'a {'y 1}} f
-
--- EXPECT: TYPE ERROR
--- cat of a met record
-{'b {'x 1}} {'b {'y 1}} 0 (drop {'a 1}) () if cat 'b at 'x at
 
 -- EXPECT: TYPE ERROR
 -- a then body that leaves two values
@@ -1614,10 +1564,6 @@ list {'b 1} push () each 0 (drop [{'a 1}]) () if first 'a at
 -- EXPECT: this record literal has 'a twice.
 {'a 1 'a 2} drop
 
--- EXPECT: 'len' takes
--- record cat keeps every field of a right record with more than 256 fields
-{'k0 "str"} {'k0 0 'k1 1 'k2 2 'k3 3 'k4 4 'k5 5 'k6 6 'k7 7 'k8 8 'k9 9 'k10 10 'k11 11 'k12 12 'k13 13 'k14 14 'k15 15 'k16 16 'k17 17 'k18 18 'k19 19 'k20 20 'k21 21 'k22 22 'k23 23 'k24 24 'k25 25 'k26 26 'k27 27 'k28 28 'k29 29 'k30 30 'k31 31 'k32 32 'k33 33 'k34 34 'k35 35 'k36 36 'k37 37 'k38 38 'k39 39 'k40 40 'k41 41 'k42 42 'k43 43 'k44 44 'k45 45 'k46 46 'k47 47 'k48 48 'k49 49 'k50 50 'k51 51 'k52 52 'k53 53 'k54 54 'k55 55 'k56 56 'k57 57 'k58 58 'k59 59 'k60 60 'k61 61 'k62 62 'k63 63 'k64 64 'k65 65 'k66 66 'k67 67 'k68 68 'k69 69 'k70 70 'k71 71 'k72 72 'k73 73 'k74 74 'k75 75 'k76 76 'k77 77 'k78 78 'k79 79 'k80 80 'k81 81 'k82 82 'k83 83 'k84 84 'k85 85 'k86 86 'k87 87 'k88 88 'k89 89 'k90 90 'k91 91 'k92 92 'k93 93 'k94 94 'k95 95 'k96 96 'k97 97 'k98 98 'k99 99 'k100 100 'k101 101 'k102 102 'k103 103 'k104 104 'k105 105 'k106 106 'k107 107 'k108 108 'k109 109 'k110 110 'k111 111 'k112 112 'k113 113 'k114 114 'k115 115 'k116 116 'k117 117 'k118 118 'k119 119 'k120 120 'k121 121 'k122 122 'k123 123 'k124 124 'k125 125 'k126 126 'k127 127 'k128 128 'k129 129 'k130 130 'k131 131 'k132 132 'k133 133 'k134 134 'k135 135 'k136 136 'k137 137 'k138 138 'k139 139 'k140 140 'k141 141 'k142 142 'k143 143 'k144 144 'k145 145 'k146 146 'k147 147 'k148 148 'k149 149 'k150 150 'k151 151 'k152 152 'k153 153 'k154 154 'k155 155 'k156 156 'k157 157 'k158 158 'k159 159 'k160 160 'k161 161 'k162 162 'k163 163 'k164 164 'k165 165 'k166 166 'k167 167 'k168 168 'k169 169 'k170 170 'k171 171 'k172 172 'k173 173 'k174 174 'k175 175 'k176 176 'k177 177 'k178 178 'k179 179 'k180 180 'k181 181 'k182 182 'k183 183 'k184 184 'k185 185 'k186 186 'k187 187 'k188 188 'k189 189 'k190 190 'k191 191 'k192 192 'k193 193 'k194 194 'k195 195 'k196 196 'k197 197 'k198 198 'k199 199 'k200 200 'k201 201 'k202 202 'k203 203 'k204 204 'k205 205 'k206 206 'k207 207 'k208 208 'k209 209 'k210 210 'k211 211 'k212 212 'k213 213 'k214 214 'k215 215 'k216 216 'k217 217 'k218 218 'k219 219 'k220 220 'k221 221 'k222 222 'k223 223 'k224 224 'k225 225 'k226 226 'k227 227 'k228 228 'k229 229 'k230 230 'k231 231 'k232 232 'k233 233 'k234 234 'k235 235 'k236 236 'k237 237 'k238 238 'k239 239 'k240 240 'k241 241 'k242 242 'k243 243 'k244 244 'k245 245 'k246 246 'k247 247 'k248 248 'k249 249 'k250 250 'k251 251 'k252 252 'k253 253 'k254 254 'k255 255 'k256 256 'k257 257 'k258 258 'k259 259} cat 'k0 at len
-
 -- EXPECT: 'zz
 -- a message that shows a record of 35 fields
 rec 0 'k0 into 1 'k1 into 2 'k2 into 3 'k3 into 4 'k4 into 5 'k5 into 6 'k6 into 7 'k7 into 8 'k8 into 9 'k9 into 10 'k10 into 11 'k11 into 12 'k12 into 13 'k13 into 14 'k14 into 15 'k15 into 16 'k16 into 17 'k17 into 18 'k18 into 19 'k19 into 20 'k20 into 21 'k21 into 22 'k22 into 23 'k23 into 24 'k24 into 25 'k25 into 26 'k26 into 27 'k27 into 28 'k28 into 29 'k29 into 30 'k30 into 31 'k31 into 32 'k32 into 33 'k33 into 34 'k34 into 'zz at
@@ -1662,10 +1608,6 @@ f print
 -- a literal's own code runs when the program is read, before any let
 5 'v let
 { (v) apply } apply print
-
--- EXPECT: bound when the program runs
-5 'v let
-{ 'v quote } apply 1 plus print
 
 -- EXPECT: bound when the program runs
 ( 'x let [ 'x 0 nth ] ) 'mk let
@@ -1750,12 +1692,12 @@ dict "k" 1 insert 'd let
 d "k" 2 insert drop
 d "k" of must 1 eq assert
 d "k" of must 1 eq assert
-"done-dict" no must
+"done-dict" fail
 
 -- EXPECT: done-box
 -- a result holding a box goes through a case that names both tags
 42 box ok {'ok (free 1) 'no (drop 2)} case 1 eq assert
-"done-box" no must
+"done-box" fail
 
 -- EXPECT: nth takes an int index
 [1 2] 'xs let
@@ -1788,12 +1730,6 @@ g
 ( dup 'xs eq drop 0 nth must ) 'rd let
 'ys rd 1 plus print
 
--- EXPECT: not defined yet
-'f [int own in  int move out] effect
-'f quote 'g let
-(1 plus) 'f let
-5 g apply print
-
 -- EXPECT: copyable value
 -- a signature's tagged value may hold a box, so its body may not drop it
 'f [tagged own in] effect
@@ -1814,14 +1750,11 @@ g
 -- EXPECT: case cannot take this value: int is not a tagged value.
 5 {'a ()} case drop
 
--- EXPECT: cat
-{'a 1} 5 cat drop
-
 -- EXPECT: done-fp1
 -- one body value may serve two each calls: neither reaches below its element
 ( 'g let  [1 2] g each drop  [3 4] g each drop ) 'twice let
 (1 plus) twice
-"done-fp1" no must
+"done-fp1" fail
 
 -- EXPECT: done-fp2
 -- a signature's list, dict and box contents are copyable, as the table's are
@@ -1829,7 +1762,7 @@ g
 [1 2] fst print
 (box) ['a own in  'a box move out] effect 'bx let
 5 bx free
-"done-fp2" no must
+"done-fp2" fail
 
 -- EXPECT: lend's body
 -- lend's body gets a copy of the contents and cannot reach the stack below it, even through a branch
@@ -1851,8 +1784,7 @@ g
 ( drop 0 ) [tagged lent in  int move out] effect 'f1 let  5 'a tag f1 drop
 ( drop ) [{'ok 'a 'no 'b} either lent in] effect 'f2 let  5 ok f2
 ( 0 get must drop ) [tagged list own in] effect 'f3 let  [5 'a tag] f3
-( len ) ['a sized own in  int move out] effect 'f4 let  [1] f4 drop
-"done-copyable" no must
+"done-copyable" fail
 
 -- EXPECT: done-tagged-in
 -- a case on a caller's tagged value types each clause by its tag's payload; '_ takes the rest
@@ -1860,21 +1792,21 @@ g
 5 'a tag f5 drop
 (sort) ['a ord seq own in  'a ord seq move out] effect 'my-sort let
 [3 1 2] my-sort drop
-"done-tagged-in" no must
+"done-tagged-in" fail
 
 -- EXPECT: done-local-tags
 -- a tag set made inside a word has only the tags the word gave it
 ( 5 box 'bx tag {'bx (free 1)} case ) 'w1 let  w1 drop
 ( 5 'a tag {'a (drop 1)} case ) 'w2 let  w2 drop
 {'f (5 'a tag {'a (drop 1)} case)} 'r let  ( 1 ) 'w3 let  r 'f at apply drop
-"done-local-tags" no must
+"done-local-tags" fail
 
 -- EXPECT: done-eq
 -- comparing a symbol does not change it
 [1 2] 'xs let  'xs 'k let  k 0 nth must drop  k 'ys eq drop
-"done-eq" no must
+"done-eq" fail
 
--- EXPECT: the value's tags come from a signature that leaves them open, so it may carry a tag no clause names. Add a last '_ clause.
+-- EXPECT: the signature's open tag set ends in tags the caller chooses, but here the body needs them to be none
 -- `| 'r` in an either leaves the set open, so a case without '_ cannot take it
 ( drop 0 ) [{'a int | 'r} either own in  int move out] effect 'f6 let
 ( {'a (drop 1)} case ) [{'a int | 'r} either own in  int move out] effect 'f7 let
@@ -1895,13 +1827,7 @@ g
 ( 'xs eq ) 'isxs let
 'xs dup isxs drop 0 nth must drop
 'ys isxs drop
-"done-symword" no must
-
--- EXPECT: done-sig-guides
--- a signature's inputs are known while the body is checked
-( cat ) [{'a int} own in  {'b int} own in  {'a int 'b int} move out] effect 'rc let  {'a 1} {'b 2} rc 'b at drop
-'rc2 [{'a int} own in  {'b int} own in  {'a int 'b int} move out] effect ( cat ) 'rc2 let  {'a 1} {'b 2} rc2 'b at drop
-"done-sig-guides" no must
+"done-symword" fail
 
 -- EXPECT: tag 'q holds
 -- EXPECT: at line 2
@@ -1915,9 +1841,6 @@ g
 
 -- EXPECT: but 'b follows the type
 ( drop ) [ 'a 'b own in ] effect 'f let
-
--- EXPECT: quote needs the name it reads written right before it, as in `'x quote`.
-1 'v let 'v dup drop quote drop
 
 -- EXPECT: '
 -- EXPECT: {'b 'a copyable | ..
@@ -1942,23 +1865,30 @@ g
 -- EXPECT: str is not int.
 ('f let 1 f apply drop "s" f apply) 'w let (1 plus) w
 
--- EXPECT: was not final at the let
--- the body comes out of a tag's payload, which a caller's body joins after w ends
-(1 plus) 'k tag drop
-( ( ( {'k () '_ (drop (1 plus))} case ) 'unk let unk ) apply 'f let  "s" 5 f apply print drop ) 'w let
-( 'g let  7 g apply drop  g 'k tag w ) 'v let
-1 (swap 1 plus swap) v drop
-
--- EXPECT: was not final at the let
--- p is a tag's payload, which the caller's (drop 5) joins after w ends
-( 'x let  (x {'n ('p let 1 (p apply) () if 0)} case) 0 drop 'h let  h apply drop ) 'w let
-(drop 5) 'n tag w
-
 -- EXPECT: {'ok ... 'no ...} either is a result, which holds only 'ok and 'no: drop | 'r
 ( drop 0 ) [{'ok int | 'r} either lent in  int move out] effect 'f let
 
 -- EXPECT: chunks: the size must be at least 1
-[1 2 3] 0 chunks
+-- EXPECT-LINE: 1
+-- EXPECT-COL: 9
+[1 2] 0 chunks
+
+-- EXPECT: bad
+-- EXPECT-LINE: 1
+-- EXPECT-COL: 10
+1 ("bad" fail) (1 2) if
+
+-- EXPECT: fail: the text holds a NUL byte at offset 1
+"a\0b" fail
+
+-- EXPECT: fail: text byte 0 is 300, outside 0-255
+[300] fail
+
+-- EXPECT: fail: the text is empty; expected a message
+"" fail
+
+-- EXPECT: 0: [104 0 105]
+[104 0 105] fail
 
 -- EXPECT: type annotation: 'a appears twice in one record or either type
 ( drop 0 ) [{'a int 'a int} lent in  int move out] effect 'f let
@@ -1968,3 +1898,56 @@ g
 
 -- EXPECT: the signature's open record ends in keys the caller chooses, but here the body needs them to be {'b
 ( 5 'b into ) [{'a int | 'r} own in  {'a int 'b int | 'r} move out] effect 'f let
+
+-- EXPECT: 'f' calls itself here
+-- EXPECT: each call would need more values below it than the call before
+-- the call takes a value below the body's inputs, and the body never returns
+(plus f) 'f let "s" 1 2 3 f
+
+-- EXPECT: 'outer' calls itself here
+-- EXPECT: each call would need more values below it than the call before
+(drop drop 1 outer) 'outer let 1 2 3 outer
+
+-- EXPECT: 'ag' calls itself here
+-- EXPECT: each call leaves a different number of values than the body leaves
+(ag 1) 'ag let ag
+
+-- EXPECT: 'g' calls itself here
+-- EXPECT: one path leaves 1 more value on the stack than the other
+(0 eq (1) (g) if) 'g let 3 g
+
+-- EXPECT: 'clear' needs the SDL build
+0 clear
+
+-- EXPECT: 'show' needs the SDL build
+0 (drop) show
+
+-- EXPECT: 'on' needs the SDL build
+'tick (drop 0) on
+
+-- EXPECT: fail: the text is empty
+"" fail
+
+-- EXPECT: fail: the text holds a NUL byte
+"a\0b" fail
+
+-- EXPECT: 'g' calls itself here with a stack its body does not take: each call leaves a different number of values than the body leaves
+(g 7) 'g let g
+
+-- EXPECT: 'cat' takes 'a copyable list 'a copyable list
+(1) (2) cat
+
+-- EXPECT: 'cat' takes 'a copyable list 'a copyable list
+{'a 1} {'b 2} cat
+
+-- EXPECT: 'len' takes 'a copyable list
+{'a 1} len
+
+-- EXPECT: 'len' takes 'a copyable list
+dict len
+
+-- EXPECT: unknown word 'quote'
+(1 plus) 'f let 'f quote
+
+-- EXPECT: 'f' is a body bound with let, and a body bound with let runs at one stack depth
+[(1 plus)] first 'f let 1 f apply 2 f apply

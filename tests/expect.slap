@@ -71,18 +71,6 @@ answer 42 eq assert
 -- ===== Apply =====
 (2 3 plus) apply 5 eq assert
 
--- ===== cat on tuples composes code =====
-(2 mul) (1 plus) cat
-3 swap apply 7 eq assert
-
--- cat on records: the right field replaces the left one
-{'a 1 'b 2} {'a 5} cat {'a 5 'b 2} eq assert
-{'a 1 'b 2} {'a 5} cat len 2 eq assert
-
--- cat on closures made by two calls of one word joins them
-( 'cc-n let (cc-n) ) 'cc-mk let
-1 cc-mk 2 cc-mk cat apply 2 eq assert 1 eq assert
-
 -- ===== Lists: creation =====
 list [] eq assert
 [0 1 2] len 3 eq assert
@@ -214,20 +202,15 @@ list dict "k" 7 insert push (drop 1) filter 0 get must "k" of must 7 eq assert d
 -- one. 'n is read back each time; `at` walks from the header, so it only finds
 -- 'n if the big field's slot count is right.
 rec 1 'n into 0 20000 range 'big into
-  dup len 2 eq assert
   dup 'n at 1 eq assert
   0 30000 range 'big into
-  dup len 2 eq assert
   dup 'n at 1 eq assert
   5 'big into
-  dup len 2 eq assert
   dup 'big at 5 eq assert
   'n at 1 eq assert
 
 -- ===== Box =====
 42 box free
--- cat of two records has the keys of both; the right one wins
-{'a 1 'c 3} {'a 2 'b 1} cat dup 'a at 2 eq assert dup 'b at 1 eq assert 'c at 3 eq assert
 -- a body taken out of a list keeps its effect
 {'b 1} [({'a 1})] first apply 'a at 1 eq assert 'b at 1 eq assert
 -- each over a list push built
@@ -326,10 +309,6 @@ list len 0 eq assert
 [1 2 2 3 3 3] dedup [1 2 3] eq assert
 [1 1 1] dedup [1] eq assert
 [] dedup [] eq assert
-
--- cat chains
-(1 plus) (2 mul) cat (3 plus) cat
-0 swap apply 5 eq assert
 
 -- box with list
 [1 2 3] box
@@ -578,10 +557,6 @@ dup dup mul 2.0 sub fabs 0.0001 lt assert drop
 0 1 10 (swap over plus) repeat drop 55 eq assert
 0 1 20 (swap over plus) repeat drop 6765 eq assert
 
--- ===== Complex: cat chain =====
-(1 plus) (2 mul) cat (3 sub) cat (sqr) cat
-5 swap apply 81 eq assert
-
 -- ===== Complex: mutual recursion depth =====
 10 even? assert
 11 odd? assert
@@ -735,7 +710,7 @@ list "hi" push "--" str-join "hi" eq assert
 (
   19201 open-pair
   "hello" tcp-send must drop swap
-  1024 tcp-recv must "hello" eq assert
+  1099511627776 tcp-recv must "hello" eq assert
   "world" tcp-send must drop swap
   1024 tcp-recv must "world" eq assert
   tcp-close tcp-close tcp-close
@@ -753,6 +728,12 @@ list "hi" push "--" str-join "hi" eq assert
   list tcp-send must drop
   tcp-close tcp-close tcp-close
 ) 'tcp-empty-send let tcp-empty-send
+
+-- a NUL byte in a path or host is a 'no that carries the original bytes
+"a\0b" read {'ok (drop 0) 'no ("a\0b" eq assert 1)} case 1 eq assert
+"a\0b" "x" write {'ok (drop 0) 'no ("a\0b" eq assert 1)} case 1 eq assert
+"a\0b" ls {'ok (drop 0) 'no ("a\0b" eq assert 1)} case 1 eq assert
+"a\0b" 80 tcp-connect {'ok (tcp-close 0) 'no ("tcp-connect: the host contains a NUL byte" eq assert 1)} case 1 eq assert
 
 -- recv-all: (socket -- socket bytes).  Reads until the peer closes.
 (list (swap 4096 tcp-recv must 'ch let swap ch cat ch len 0 gt) () while) 'recv-all let
@@ -1317,9 +1298,6 @@ none () no eq assert
 -- ===== Side-effect iteration pattern =====
 [1 2 3] (1 plus) each drop
 
--- ===== Semigroup: cat on tuples =====
-(1 2) (3 4) cat (1 2 3 4) eq assert
-
 -- ===== Parser combinators =====
 
 -- parse-int (tagged API)
@@ -1395,9 +1373,9 @@ none () no eq assert
 -- combined: parse key=value
 "name=alice" ok "=" parse-until must "alice" eq assert "name" eq assert
 
--- ===== Dict (stackable; dup to keep across `len`) =====
+-- ===== Dict (stackable; dict-keys len counts the entries) =====
 -- empty dict
-dict len 0 eq assert
+dict dict-keys len 0 eq assert drop
 
 -- insert + of (hit)
 dict "name" "alice" insert "name" of "missing" default "alice" eq assert drop
@@ -1406,14 +1384,14 @@ dict "x" 1 insert "y" of 42 default 42 eq assert drop
 
 -- overwrite preserves len, updates value
 dict "k" 1 insert "k" 2 insert
-dup len 1 eq assert
+dict-keys len 1 eq assert
 "k" of 0 default 2 eq assert drop
 
 -- remove existing decreases len; removing absent is no-op
 dict "a" 1 insert "b" 2 insert "c" 3 insert "b" remove
-dup len 2 eq assert
+dict-keys len 2 eq assert
 dup "b" of 0 default 0 eq assert
-"nope" remove len 2 eq assert
+"nope" remove dict-keys len 2 eq assert drop
 
 -- dict-keys snapshot (hash order is undefined, so check the length)
 dict "x" 1 insert "y" 2 insert "z" 3 insert
@@ -1421,15 +1399,15 @@ dict-keys len 3 eq assert drop
 
 -- dup independence (dicts are stackable; dup deep-clones)
 dict "a" 1 insert dup "b" 2 insert
-dup len 2 eq assert drop
-len 1 eq assert
+dict-keys len 2 eq assert drop
+dict-keys len 1 eq assert drop
 
 -- grow path (>8 entries)
 dict
 "a" 1 insert "b" 2 insert "c" 3 insert "d" 4 insert
 "e" 5 insert "f" 6 insert "g" 7 insert "h" 8 insert
 "i" 9 insert "j" 10 insert "k" 11 insert "l" 12 insert
-dup len 12 eq assert
+dict-keys len 12 eq assert
 dup "h" of 0 default 8 eq assert
 "z" of 999 default 999 eq assert drop
 
@@ -1581,7 +1559,7 @@ scope-outer 100 eq assert
 (0 'dz tag 100 ('dn tag) repeat print) 'deep-print let deep-print
 -- a box holding a dict: mutate hands the body the contents, lend a copy
 (dict box ("k" 1 insert) mutate ("k" of must 1 eq assert drop) lend free) 'box-dict-mutate let box-dict-mutate
-(dict "a" 1 insert box (len drop) lend ("a" of must 1 eq assert drop) lend free) 'box-dict-lend let box-dict-lend
+(dict "a" 1 insert box (dict-keys len drop drop) lend ("a" of must 1 eq assert drop) lend free) 'box-dict-lend let box-dict-lend
 -- set out of bounds consumes the list
 (1 [1 2 3] 5 99 set [] default drop 1 eq assert) 'set-miss let set-miss
 
@@ -1631,10 +1609,10 @@ dict "a" of {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq asse
 (apply plus) 'add-run let 1 (2) add-run 3 eq assert
 (if) 'if-in let 1 () () if-in
 -- a branch that never returns agrees with any branch, in either position
-(dup 0 ge (1 plus) ("neg" no must) if) [int lent in  int move out] effect 'inc-b let 1 inc-b 2 eq assert
-1 0 lt ("unreachable" no must) () if
+(dup 0 ge (1 plus) ("neg" fail) if) [int lent in  int move out] effect 'inc-b let 1 inc-b 2 eq assert
+1 0 lt ("unreachable" fail) () if
 -- a case clause may consume values below the scrutinee; its effect is the case's
-('lit let dup lit str-find {'ok ('p let p lit len plus drop-n) 'no (drop "skip-to: not found" no must)} case) 'skip-to let
+('lit let dup lit str-find {'ok ('p let p lit len plus drop-n) 'no (drop "skip-to: not found" fail)} case) 'skip-to let
 ("abc>def" ">" skip-to) [str move out] effect 'skip-caller let skip-caller "def" eq assert
 -- the checker infers the tags a word emits, so a case covering them never reaches its default
 (dup 0 lt (drop "neg" no) (ok) if) 'sgn-chk let
@@ -1743,9 +1721,9 @@ rec 5 'a into 'a at 5 eq assert
 [{'k 3}] 'kl let kl 0 get must 'k at 3 eq assert kl ('k at) each [3] eq assert
 
 -- a literal that holds a dict is a value: each run gets its own copy, which the binding owns and frees
-( {'m dict} 'st let  st 'm at "k" 1 insert len 1 eq assert ) 'fresh-dict let
+( {'m dict} 'st let  st 'm at "k" 1 insert dict-keys len 1 eq assert drop ) 'fresh-dict let
 fresh-dict fresh-dict fresh-dict
-( [dict] 'sts let  sts 0 get must "k" 1 insert len 1 eq assert ) 'fresh-dicts let
+( [dict] 'sts let  sts 0 get must "k" 1 insert dict-keys len 1 eq assert drop ) 'fresh-dicts let
 fresh-dicts fresh-dicts fresh-dicts
 
 -- ===== Lexical scope: a name a body binds is that body's alone =====
@@ -1774,7 +1752,7 @@ sc-repeat 15 eq assert
 
 -- a body bound with let runs at any stack depth
 ('n let (n plus)) 'mk-adder let
-5 mk-adder 'plus5 let 3 plus5 apply 7 plus5 apply 12 eq assert 8 eq assert
+5 mk-adder 'plus5 let 3 plus5 apply 8 eq assert 7 plus5 apply 12 eq assert
 -- a body type in a slot runs on the word's own stack below its declared inputs
 (apply) [( -> int ) own in  int move out] effect 'run-in2 let (3) run-in2 3 eq assert
 (apply plus) [int lent in  ( int -> int int ) own in  int move out] effect 'add-run2 let 1 (2) add-run2 3 eq assert
@@ -1800,9 +1778,8 @@ dict "k" 1 insert dict "k" 2 insert eq not assert
 -- two closures are equal only when they share code and frame
 ('n let (n plus)) 'mk-add-eq let 1 mk-add-eq 2 mk-add-eq eq not assert
 (1 plus) (1 plus) eq assert
--- closures that read different lists by nth or quote are unequal
-('xs let ('xs 0 nth must)) 'mk-nth let [1] mk-nth 'a-nth let [2] mk-nth 'b-nth let 'a-nth quote 'b-nth quote eq not assert
-('xs let ('xs quote)) 'mk-q let [1] mk-q 'a-q let [2] mk-q 'b-q let 'a-q quote 'b-q quote eq not assert
+-- closures that read different lists by nth are unequal
+('xs let ('xs 0 nth must)) 'mk-nth let [1] mk-nth 'a-nth let [2] mk-nth 'b-nth let a-nth b-nth eq not assert
 
 -- ===== Done =====
 "All tests passed!" print
