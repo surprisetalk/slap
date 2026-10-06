@@ -36,7 +36,7 @@ slap-wasm: slap.c shell.html
 clean:
 	rm -f slap slap-sdl *.wasm *.js
 	@find . -maxdepth 1 -name '*.html' ! -name 'shell.html' -delete
-test: slap
+test: slap slap-sdl
 	@python3 tests/suite.py
 # Euler problems that take seconds each; the list is SLOW_EULER in tests/suite.py.
 test-slow: slap

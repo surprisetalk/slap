@@ -35,7 +35,7 @@ drop
 (
   -- stack: found n
   dup 'n let
-  n iseven
+  n 2 mod 0 eq
     (n 2 div n inc)
     (n n inc 2 div)
   if

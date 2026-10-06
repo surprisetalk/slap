@@ -9,3 +9,5 @@ slap-sdl
 tests/.uxn-refs/
 __pycache__/
 plasma.tga
+slap-asan
+slap-asan.dSYM/

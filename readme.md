@@ -70,6 +70,8 @@ Values go on a stack. Words consume and produce values.
 15 4 mod             -- 3
 ```
 
+A number is digits, with an optional leading `-` and `.digits`. It ends at a space or a bracket, so `5incr` and `0x10` are errors.
+
 Stack manipulation:
 
 ```slap
@@ -186,7 +188,7 @@ A body passed as an input is a value: `apply` runs it, and the name passes it on
 
 ```slap
 ('pred let dup 0 gt (dup pred apply drop 1 sub pred countdown) () if) 'countdown let
-5 (iseven) countdown    -- applies pred at each step, terminates at 0
+5 (2 mod 0 eq) countdown  -- applies pred at each step, terminates at 0
 ```
 
 ## data types
@@ -413,7 +415,6 @@ Definitions written in slap itself, loaded at startup.
 | Word | Effect | Example |
 |------|--------|---------|
 | `inc` | int → int+1 | `5 inc` → `6` |
-| `dec` | int → int-1 | `5 dec` → `4` |
 | `neg` | int → -int (`fneg` for floats) | `5 neg` → `-5` |
 | `abs` | n → \|n\| | `-3 abs` → `3` |
 | `sqr` | n → n\*n | `5 sqr` → `25` |
@@ -430,12 +431,6 @@ Definitions written in slap itself, loaded at startup.
 | `gt` | a b → a>b | `5 3 gt` → `1` |
 | `ge` | a b → a>=b | `3 3 ge` → `1` |
 | `le` | a b → a<=b | `3 5 le` → `1` |
-
-### predicates
-
-| Word | Effect | Example |
-|------|--------|---------|
-| `iseven` | n → even? | `4 iseven` → `1` |
 
 ### list utilities
 
@@ -798,6 +793,8 @@ make status      # every likely failure mode, scored; 1.0 is the minimum pass
 ```
 
 `tests/expect.slap` holds the assertions, `tests/errors.slap` every error a program can hit (each case names the message it must print), and `tests/run_*.py` drive the apps from outside: servers over real sockets, CLIs against real files, codecs against their file formats. `tests/suite.py` runs them all.
+
+`make test` builds `slap-sdl` too, since one check runs it headless, so it needs SDL2.
 
 `.githooks/pre-commit` runs `make test` before each commit. Enable it once per clone:
 

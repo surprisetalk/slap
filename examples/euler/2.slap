@@ -6,7 +6,7 @@ rec 0 'total into 1 'a into 1 'b into
 (dup 'a at 4000000 le)
 (
   dup 'a at 'a let
-  a iseven ('total (a plus) edit) () if
+  a 2 mod 0 eq ('total (a plus) edit) () if
   dup 'b at 'nb let
   'a (drop nb) edit 'b (a plus) edit
 )

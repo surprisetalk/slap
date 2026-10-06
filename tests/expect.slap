@@ -232,7 +232,6 @@ list {'b 1} push (dup drop) each 0 get must 'b at 1 eq assert
 
 -- ===== Prelude: arithmetic =====
 5 inc 6 eq assert
-5 dec 4 eq assert
 5 neg -5 eq assert
 -3 abs 3 eq assert
 5 sqr 25 eq assert
@@ -241,9 +240,6 @@ list {'b 1} push (dup drop) each 0 get must 'b at 1 eq assert
 3 5 neq assert
 5 3 gt assert
 3 5 le assert
-
--- ===== Prelude: predicates =====
-4 iseven assert
 
 -- ===== Prelude: list helpers =====
 [1 2 3] sum 6 eq assert
@@ -1556,6 +1552,9 @@ scope-outer 100 eq assert
 (rec 0 20000 range 'f into 'f (1 push) edit 'f at len 20001 eq assert) 'big-edit let big-edit
 (0 300000 range no 0 (drop 0 1 ok) pthen {'ok (drop -2) 'no (len)} case 300000 eq assert 0 eq assert) 'big-pthen let big-pthen
 ([1 2] no "fallback" (drop "x" 1 ok) pthen drop "fallback" eq assert) 'multi-slot-default let multi-slot-default
+(5 'k let
+ [1 2] no k (drop k k ok) pthen {'ok (drop -1) 'no (len k plus)} case swap k eq assert 7 eq assert
+ [3] ok 0 (len k plus 9 swap ok) pthen must 6 eq assert 9 eq assert) 'pthen-local let pthen-local
 (0 'dz tag 100 ('dn tag) repeat print) 'deep-print let deep-print
 -- a box holding a dict: mutate hands the body the contents, lend a copy
 (dict box ("k" 1 insert) mutate ("k" of must 1 eq assert drop) lend free) 'box-dict-mutate let box-dict-mutate

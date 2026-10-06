@@ -146,11 +146,51 @@ def steps(slow):
             "steady memory": (steady, None),
             "profile": (profile, None),
             "deep closure chain": (
-                "echo \"(0) 100000 ('c let (c apply 1 plus)) repeat drop\" | ./slap",
+                'echo "(0) 100000 (\'c let (c apply 1 plus)) repeat drop" | ./slap',
                 None,
             ),
             "deep value error prints once": (
                 "test $(echo \"[] 'n tag 20000 (list swap push 'n tag) repeat print\" | ./slap 2>&1 | grep -c 'C stack exhausted') -eq 1",
+                None,
+            ),
+            # Inputs errors.slap cannot hold: a NUL byte, a 3 MB literal, a small C stack, an SDL build.
+            "NUL byte in the program": (
+                "out=$(printf '1 print\\0 2 print\\n' | ./slap 2>&1); test $? -eq 1 && grep -q 'NUL byte at offset 7' <<<\"$out\"",
+                None,
+            ),
+            # A file one byte past the limit, never an endless one: a read without the bound
+            # allocates until the disk fills with swap, since macOS ignores ulimit -v.
+            "read past the stack": (
+                f"head -c 2097151 /dev/zero > {SCRATCH}/big.bin; out=$(echo '\"{SCRATCH}/big.bin\" read must len print' | ./slap 2>&1);"
+                " test $? -eq 1 && grep -q 'holds more than 2097150 bytes' <<<\"$out\"",
+                None,
+            ),
+            "program past 16 MiB": (
+                "out=$(head -c 16777217 /dev/zero | tr '\\0' ' ' | ./slap 2>&1); test $? -eq 1 && grep -q 'larger than 16 MiB' <<<\"$out\"",
+                None,
+            ),
+            "unreadable stdin": (
+                "out=$(./slap < / 2>&1); test $? -eq 1 && grep -q 'cannot read the program' <<<\"$out\"",
+                None,
+            ),
+            # Two dips hold 1.9M slots on the aux stack, so swap has no room to park a run there.
+            "swap with a full aux stack": (
+                "echo '0 950000 range 0 950000 range ((0 250000 range 0 250000 range swap len print len print) dip) dip len print len print' | ./slap",
+                lambda out: out == "250000\n250000\n950000\n950000\n",
+            ),
+            "string literal past the stack": (
+                "out=$(python3 -c \"print('\\\"' + 'a' * 3000000 + '\\\" len print')\" | ./slap 2>&1); test $? -eq 1 && grep -q 'a string literal: stack overflow' <<<\"$out\"",
+                None,
+            ),
+            "small C stack": (
+                "(ulimit -s 4096; out=$(python3 -c \"print('[ ' * 20000 + ' ] ' * 20000)\" | ./slap 2>&1); test $? -eq 1 && grep -q 'C stack exhausted' <<<\"$out\")"
+                " && (ulimit -s 1024; out=$(echo '1 print' | ./slap 2>&1); test $? -eq 1 && grep -q 'ulimit -s 8192' <<<\"$out\")",
+                None,
+            ),
+            "fill-rect clips a huge rect": (
+                "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
+                ' out=$(echo "0 \'tick (drop 0 0 1000000000 1000000000 3 fill-rect \\"drew\\" fail) on (drop) show" | ./slap-sdl --headless 2>&1);'
+                ' test $? -eq 1 && grep -q drew <<<"$out"',
                 None,
             ),
             "closed stdout": ("echo '42 print' | ./slap >&-; test $? -eq 1", None),

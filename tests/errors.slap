@@ -124,10 +124,10 @@ nonexistent_word_xyz
 -- EXPECT: 'x is not int.
 "foo.txt" ['x] write
 
--- EXPECT: write: byte 0 out of range
+-- EXPECT: write: byte 0 is 256, outside 0-255
 "foo.txt" [256] write
 
--- EXPECT: write: byte 0 out of range
+-- EXPECT: write: byte 0 is -1, outside 0-255
 "foo.txt" [-1] write
 
 -- EXPECT: must: expected 'ok tagged
@@ -1881,7 +1881,7 @@ g
 -- EXPECT: fail: the text holds a NUL byte at offset 1
 "a\0b" fail
 
--- EXPECT: fail: text byte 0 is 300, outside 0-255
+-- EXPECT: fail: byte 0 is 300, outside 0-255
 [300] fail
 
 -- EXPECT: fail: the text is empty; expected a message
@@ -1951,3 +1951,21 @@ dict len
 
 -- EXPECT: 'f' is a body bound with let, and a body bound with let runs at one stack depth
 [(1 plus)] first 'f let 1 f apply 2 f apply
+
+-- EXPECT: `5incr` at line 1 starts like a number
+(1 plus) 'incr let 5incr print
+
+-- EXPECT: `0x10` at line 1 starts like a number
+0x10 print
+
+-- EXPECT: float literal at line 1 does not fit in 64 bits
+1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111.0 print
+
+-- EXPECT: range: 0 to 4294967299 makes 4294967299 ints
+0 4294967299 range len print
+
+-- EXPECT: boxes and dicts nest more than 512 deep
+0 'leaf tag 20000 (dict swap "k" swap insert 'node tag) repeat drop
+
+-- EXPECT: float literal at line 1 is too small for 64 bits
+0.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001 print

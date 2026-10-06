@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #ifndef SLAP_WASM
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -43,13 +44,11 @@ __attribute__((noreturn)) static void die(const char *fmt, ...);
 typedef struct { char *key; int klen; Value *vals; int nvals; } DictEntry;
 typedef struct DictData { DictEntry *entries; int cap; int len; } DictData;
 static int is_compound(ValTag tag) { return tag == VAL_TUPLE || tag == VAL_LIST || tag == VAL_RECORD || tag == VAL_TAGGED; }
-static const char *valtag_name(ValTag t) {
-    const char *names[] = {"int","float","symbol","xt","tuple","list","record","box","tagged","dict"};
-    return (t <= VAL_DICT) ? names[t] : "?";
-}
 static int val_slots(Value v) {
     if (is_compound(v.tag)) {
         int s = (int)v.as.compound.slots;
+        /* The checker makes this unreachable, but deleting it slows the 600 KB feed by 12%:
+           the compiler then lays out val_slots' hot callers differently. */
         if (s < 1) die("corrupt value: compound with %d slots", s);
         return s;
     }
@@ -196,8 +195,16 @@ static void lex(const char *src, int fid) {
                 LEX_ADVANCE();
                 while (isdigit((unsigned char)*p)) LEX_ADVANCE();
                 t->tag = TOK_FLOAT; t->as.f = strtod(start, NULL);
+                if (!isfinite(t->as.f)) die("float literal at line %d does not fit in 64 bits: its magnitude is past 1.8e308", t->line);
+                if (t->as.f == 0) for (const char *q = start; q < p; q++) if (*q >= '1' && *q <= '9')
+                    die("float literal at line %d is too small for 64 bits: it reads as 0.0. Write 0.0 if you mean zero.", t->line);
             } else { errno = 0; t->tag = TOK_INT; t->as.i = strtoll(start, NULL, 10);
                 if (errno == ERANGE) die("integer literal at line %d does not fit in 64 bits", t->line); }
+            if (*p && !isspace((unsigned char)*p) && !strchr("()[]{}", *p)) {
+                const char *e = p; while (*e && !isspace((unsigned char)*e) && !strchr("()[]{}", *e)) e++;
+                die("`%.*s` at line %d starts like a number, but a number ends at a space or a bracket, and slap has no hex, "
+                    "exponent or digit-separator syntax. Write a space after the number, or start the word with a letter.", (int)(e - start), start, t->line);
+            }
             tok_count++; continue;
         }
         { const char *start = p;
@@ -333,7 +340,6 @@ static void frame_drop(Frame *f) {
         if (hops > FRAME_CHAIN_MAX) die("frame_drop: expected a chain of parent frames to reach the global frame, but it ran past %ld links.\n"
                                         "  The frames form a cycle, which is an interpreter bug. Report the program.", hops);
         if (--f->refs > 0) break;
-        if (f->refs < 0) die("frame_drop: a frame lost more references than it had (internal)");
         Frame *p = f->parent; f->parent = pending; pending = f; f = p;
     }
     if (busy || !pending) return;
@@ -375,9 +381,9 @@ static inline void eval_in(Value *body, int slots, Frame *ee) {
 static inline void dispatch_word(uint32_t sym, Frame *env);
 /* Primitives by symbol id; the second table holds the fused `X must` variant. */
 static PrimFn prim_fns[SYM_MAX], prim_must_fns[SYM_MAX];
-static int64_t pop_int(void) { Value v=spop(); if(v.tag==VAL_INT) return v.as.i; die("expected int, got %s",valtag_name(v.tag)); }
-static double pop_float(void) { Value v=spop(); if(v.tag==VAL_FLOAT) return v.as.f; die("expected float, got %s",valtag_name(v.tag)); }
-static uint32_t pop_sym(void) { Value v=spop(); if(v.tag==VAL_SYM) return v.as.sym; die("expected symbol, got %s",valtag_name(v.tag)); }
+static int64_t pop_int(void) { return spop().as.i; }
+static double pop_float(void) { return spop().as.f; }
+static uint32_t pop_sym(void) { return spop().as.sym; }
 typedef struct { int base; int slots; } ElemRef;
 static ElemRef compound_elem(Value *data, int total_slots, int len, int64_t index) {
     if (index < 0 || index >= len) { ElemRef ref = { -1, 0 }; return ref; }
@@ -393,8 +399,6 @@ static ElemRef record_field(Value *data, int total_slots, int len, uint32_t key,
         int lp = elem_end - 1; Value last = data[lp];
         int vsize = val_slots(last);
         int val_base = elem_end - vsize, key_pos = val_base - 1;
-        if (key_pos < 0) die("malformed record (len=%d, total_slots=%d)", len, total_slots);
-        if (data[key_pos].tag != VAL_SYM) die("record key must be symbol, got %s", valtag_name(data[key_pos].tag));
         if (data[key_pos].as.sym == key) { ref.base = val_base; ref.slots = vsize; *found = 1; return ref; }
         elem_end = key_pos;
     }
@@ -402,15 +406,15 @@ static ElemRef record_field(Value *data, int total_slots, int len, uint32_t key,
 }
 static int eval_depth = 0;
 #define EVAL_DEPTH_MAX 10000
-/* 7 MiB of the 8 MiB main-thread stack, leaving room for die() to report. */
-#define C_STACK_MAX (7*1024*1024)
+/* Set at startup: the stack limit less 1 MiB, which leaves room for die() to report, and at most 7 MiB. */
+static long c_stack_max;
 static char *c_stack_base = NULL;
 static void c_stack_check(const char *what) {
     char probe; long used = !c_stack_base ? 0 : &probe > c_stack_base ? &probe - c_stack_base : c_stack_base - &probe;
-    if(used > C_STACK_MAX)
+    if(used > c_stack_max)
         die("C stack exhausted %s -- %ld KB used, limit %ld KB.\n"
             "  Each nested word call or nesting level keeps a C frame alive. Rewrite deep recursion\n"
-            "  as a `while` loop, or flatten the data.", what, used/1024, (long)(C_STACK_MAX/1024));
+            "  as a `while` loop, or flatten the data.", what, used/1024, c_stack_max/1024);
 }
 static void val_print(Value *data, int slots, FILE *out);
 /* Error reports show at most this many elements per compound; 0 means all. */
@@ -513,12 +517,7 @@ static int val_equal(Value *a, int aslots, Value *b, int bslots) {
 }
 static int val_less(Value *a, int aslots, Value *b, int bslots) {
     Value atop = a[aslots - 1], btop = b[bslots - 1];
-    if (atop.tag != btop.tag) die("lt: type mismatch, got %s and %s", valtag_name(atop.tag), valtag_name(btop.tag));
-    switch (atop.tag) {
-    case VAL_INT: return atop.as.i < btop.as.i;
-    case VAL_FLOAT: return atop.as.f < btop.as.f;
-    default: die("lt: unsupported type %s (only int and float are ordered)", valtag_name(atop.tag)); return 0;
-    }
+    return atop.tag == VAL_INT ? atop.as.i < btop.as.i : atop.as.f < btop.as.f;
 }
 static uint32_t S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_ON, S_SHOW, S_WILD;
 static void syms_init(void) {
@@ -1645,7 +1644,6 @@ static Value *aux_reserve(int n) {
     Value *p = &aux[asp]; asp += n; return p;
 }
 static Value *aux_take(int n) {
-    if (n > sp) die("stack underflow: need %d slots, have %d", n, sp);
     Value *p = aux_reserve(n); VCPY(p, &stack[sp-n], n); sp -= n; return p;
 }
 /* Element starts of a compound, staged on aux; NULL when every element is one slot. */
@@ -1656,7 +1654,6 @@ static int *elem_starts(Value *data, int slots, int len) {
     return st;
 }
 #define POP_VAL(name) \
-    if (sp <= 0) die("stack underflow"); \
     Value name##_top = stack[sp-1]; int name##_s = val_slots(name##_top); Value *name##_buf = aux_take(name##_s)
 /* The bodies a running primitive took, by aux index of their header: eval_run frees them when the
    primitive returns. */
@@ -1665,45 +1662,50 @@ static inline void stage_body(int at) {
     if (staged_n == staged_cap) { staged_cap = staged_cap ? 2*staged_cap : 256; staged = realloc(staged, (size_t)staged_cap*sizeof(int)); if (!staged) die("out of memory: %d staged bodies", staged_cap); }
     staged[staged_n++] = at;
 }
-#define POP_BODY(name, label) if (sp<=0) die(label ": stack underflow"); if (stack[sp-1].tag != VAL_TUPLE) die(label ": expected tuple, got %s", valtag_name(stack[sp-1].tag)); POP_VAL(name); stage_body(asp-1)
+#define POP_BODY(name) POP_VAL(name); stage_body(asp-1)
 static void deep_copy_values(Value *dst, const Value *src, int slots);
-static void prim_dup(Frame *e) { (void)e; if (sp<=0) die("dup: stack underflow"); Value top=stack[sp-1]; if(top.tag<=VAL_XT){spush(top);return;} int s=val_slots(top); stack_room(s,"dup"); deep_copy_values(&stack[sp],&stack[sp-s],s); sp+=s; }
-static void prim_drop(Frame *e) { (void)e; if (sp<=0) die("drop: stack underflow"); Value top=stack[sp-1]; if(top.tag<=VAL_XT){sp--;return;} int s=val_slots(top); deep_free_values(&stack[sp-s],s); sp-=s; }
+static void prim_dup(Frame *e) { (void)e; Value top=stack[sp-1]; if(top.tag<=VAL_XT){spush(top);return;} int s=val_slots(top); stack_room(s,"dup"); deep_copy_values(&stack[sp],&stack[sp-s],s); sp+=s; }
+static void prim_drop(Frame *e) { (void)e; Value top=stack[sp-1]; if(top.tag<=VAL_XT){sp--;return;} int s=val_slots(top); deep_free_values(&stack[sp-s],s); sp-=s; }
 static void slot_reverse(Value *a,int n){for(int i=0,j=n-1;i<j;i++,j--){Value t=a[i];a[i]=a[j];a[j]=t;}}
-/* Exchange the adjacent runs [base, base+n1) and [base+n1, base+n1+n2) in place. */
-static void swap_blocks(int base,int n1,int n2){slot_reverse(&stack[base],n1+n2);slot_reverse(&stack[base],n2);slot_reverse(&stack[base+n2],n1);}
+/* Exchange the adjacent runs [base, base+n1) and [base+n1, base+n1+n2): the shorter run waits on the
+   aux stack while one memmove shifts the longer. With no room on the aux stack, three reversals do the
+   same in place, more slowly. */
+static void swap_blocks(int base,int n1,int n2){
+    int a0=asp;
+    if(asp+(n1<n2?n1:n2)>STACK_MAX){ slot_reverse(&stack[base],n1+n2); slot_reverse(&stack[base],n2); slot_reverse(&stack[base+n2],n1); return; }
+    if(n1<=n2){ Value *t=aux_reserve(n1); VCPY(t,&stack[base],n1); memmove(&stack[base],&stack[base+n1],(size_t)n2*sizeof(Value)); VCPY(&stack[base+n2],t,n1); }
+    else { Value *t=aux_reserve(n2); VCPY(t,&stack[base+n1],n2); memmove(&stack[base+n2],&stack[base],(size_t)n1*sizeof(Value)); VCPY(&stack[base],t,n2); }
+    asp=a0;
+}
 /* Where the value ending at slot `end` starts. */
-static int val_start(int end, const char *who) {
-    int b = end > 0 ? end - val_slots(stack[end-1]) : -1;
-    if (b < 0) die("%s: stack underflow", who);
-    return b;
+static int val_start(int end) {
+    return end - val_slots(stack[end-1]);
 }
 static void prim_swap(Frame *e) {
     (void)e;
     if(sp>=2&&stack[sp-1].tag<=VAL_XT&&stack[sp-2].tag<=VAL_XT){Value t=stack[sp-1];stack[sp-1]=stack[sp-2];stack[sp-2]=t;return;}
-    int b=val_start(sp,"swap"),a=val_start(b,"swap"); swap_blocks(a,b-a,sp-b);
+    int b=val_start(sp),a=val_start(b); swap_blocks(a,b-a,sp-b);
 }
 static void prim_over(Frame *e) {
-    (void)e; int b=val_start(sp,"over"),a=val_start(b,"over");
+    (void)e; int b=val_start(sp),a=val_start(b);
     stack_room(b-a,"over");
     deep_copy_values(&stack[sp],&stack[a],b-a); sp+=b-a;
 }
 /* a b c -- b c a */
 static void prim_rot(Frame *e) {
-    (void)e; int c=val_start(sp,"rot"),b=val_start(c,"rot"),a=val_start(b,"rot");
+    (void)e; int c=val_start(sp),b=val_start(c),a=val_start(b);
     swap_blocks(a,b-a,sp-b);
 }
 static void prim_dip(Frame *env) {
-    if(sp<2)die("dip: need body and value"); POP_BODY(body,"dip");
+    POP_BODY(body);
     POP_VAL(saved); eval_body(body_buf,body_s,env);
     SPUSH(saved_buf,saved_s);
 }
-static void prim_apply(Frame *env) { POP_BODY(body,"apply"); eval_body(body_buf,body_s,env); }
+static void prim_apply(Frame *env) { POP_BODY(body); eval_body(body_buf,body_s,env); }
 /* Integer plus/sub/mul wrap at 64 bits: computed in uint64_t, where overflow is defined. */
 #define ARITH2(nm,iop,fop) static void prim_##nm(Frame *e){(void)e;Value b=spop(),a=spop(); \
     if(a.tag==VAL_INT&&b.tag==VAL_INT) spush(val_int((int64_t)((uint64_t)a.as.i iop (uint64_t)b.as.i))); \
-    else if(a.tag==VAL_FLOAT&&b.tag==VAL_FLOAT) spush(val_float(a.as.f fop b.as.f)); \
-    else die(#nm ": type mismatch, got %s and %s", valtag_name(a.tag), valtag_name(b.tag));}
+    else spush(val_float(a.as.f fop b.as.f));}
 ARITH2(plus,+,+) ARITH2(sub,-,-) ARITH2(mul,*,*)
 static void int_div_check(const char *who,int64_t a,int64_t b){
     if(b==0) die("%s: division by zero",who);
@@ -1711,8 +1713,7 @@ static void int_div_check(const char *who,int64_t a,int64_t b){
 }
 static void prim_div(Frame *e) { (void)e; Value b=spop(),a=spop();
     if(a.tag==VAL_INT&&b.tag==VAL_INT){int_div_check("div",a.as.i,b.as.i);spush(val_int(a.as.i/b.as.i));}
-    else if(a.tag==VAL_FLOAT&&b.tag==VAL_FLOAT)spush(val_float(a.as.f/b.as.f));
-    else die("div: type mismatch, got %s and %s", valtag_name(a.tag), valtag_name(b.tag)); }
+    else spush(val_float(a.as.f/b.as.f)); }
 static void prim_mod(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();int_div_check("mod",a,b);spush(val_int(a%b));}
 static void prim_divmod(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();int_div_check("divmod",a,b);spush(val_int(a%b));spush(val_int(a/b));}
 /* Result takes the sign of m. */
@@ -1723,10 +1724,10 @@ static void prim_wrap(Frame *e){(void)e;int64_t m=pop_int(),v=pop_int();if(m==0)
 INTOP2(band,a&b) INTOP2(bor,a|b) INTOP2(bxor,a^b) INTOP2(shl,SHIFT_OK(shl)?(int64_t)((uint64_t)a<<b):0) INTOP2(shr,SHIFT_OK(shr)?(int64_t)((uint64_t)a>>b):0)
 INTOP2(and,(a&&b)?1:0) INTOP2(or,(a||b)?1:0)
 static void prim_bnot(Frame *e){(void)e;int64_t a=pop_int();spush(val_int(~a));}
-#define CMP2(nm,expr) static void prim_##nm(Frame *e){(void)e;int b=val_start(sp,#nm),a=val_start(b,#nm),r=(expr);deep_free_values(&stack[a],sp-a);sp=a;spush(val_int(r?1:0));}
+#define CMP2(nm,expr) static void prim_##nm(Frame *e){(void)e;int b=val_start(sp),a=val_start(b),r=(expr);deep_free_values(&stack[a],sp-a);sp=a;spush(val_int(r?1:0));}
 CMP2(eq, val_equal(&stack[a],b-a,&stack[b],sp-b))
 CMP2(lt, val_less(&stack[a],b-a,&stack[b],sp-b))
-static void prim_print(Frame *e){(void)e;if(sp<=0)die("print: stack underflow");Value top=stack[sp-1];int s=val_slots(top);val_print(&stack[sp-s],s,stdout);printf("\n");deep_free_values(&stack[sp-s],s);sp-=s;
+static void prim_print(Frame *e){(void)e;Value top=stack[sp-1];int s=val_slots(top);val_print(&stack[sp-s],s,stdout);printf("\n");deep_free_values(&stack[sp-s],s);sp-=s;
     if(ferror(stdout)) die("print: cannot write to stdout: %s", strerror(errno));}
 /* A failed write to stdout must not exit 0. */
 static void stdout_check(void){ if(fflush(stdout)||ferror(stdout)){ fprintf(stderr,"slap: cannot write to stdout: %s\n",strerror(errno)); _exit(1); } }
@@ -1740,61 +1741,44 @@ static void push_ok(void) { spush(val_compound(VAL_TAGGED,S_OK,val_slots(stack[s
 static void push_no(void) { spush(val_compound(VAL_TAGGED,S_NO,val_slots(stack[sp-1])+1)); }
 static void push_none(void) { spush(val_compound(VAL_TUPLE,0,1)); spush(val_compound(VAL_TAGGED,S_NO,2)); }
 static void prim_if(Frame *env) {
-    POP_BODY(el,"if"); POP_BODY(then,"if");
-    Value cond=spop(); if(cond.tag!=VAL_INT) die("if: condition must be int, got %s",valtag_name(cond.tag));
+    POP_BODY(el); POP_BODY(then);
+    Value cond=spop();
     if(cond.as.i) eval_body(then_buf,then_s,env); else eval_body(el_buf,el_s,env);
-}
-/* Text of a value for a message that dies. */
-static char *val_text(Value *buf, ElemRef r) {
-    char *txt = NULL; size_t n = 0; FILE *f = open_memstream(&txt, &n);
-    if (!f) die("out of memory formatting a value for an error message");
-    val_print(&buf[r.base], r.slots, f); fclose(f); return txt;
-}
-/* A clause body must be code: a value would land above the payload instead of replacing it. */
-static void case_body_check(Value *buf, ElemRef key, ElemRef body) {
-    if (buf[body.base+body.slots-1].tag == VAL_TUPLE) return;
-    die("case: the clause for %s is %s, not a body. A clause runs code on the payload: write (drop %s) instead",
-        val_text(buf, key), valtag_name(buf[body.base+body.slots-1].tag), val_text(buf, body));
 }
 /* The clause list is a record literal, built when the program is read; its bodies are code at the case,
    so they run in the frame that runs case. A clause runs on its tag's payload, already in place under the
    tagged value's header; '_ runs on the tagged value. */
-static void prim_case(Frame *env) {
-    if (sp <= 0 || stack[sp-1].tag != VAL_RECORD) die("case: expected a record of clauses, got %s", sp > 0 ? valtag_name(stack[sp-1].tag) : "nothing");
-    POP_VAL(clauses); stage_body(asp-1); int clauses_len=(int)clauses_top.as.compound.len, found=0;
-    if (sp <= 0 || stack[sp-1].tag != VAL_TAGGED) die("case: expected a tagged value, got %s", sp > 0 ? valtag_name(stack[sp-1].tag) : "nothing");
-    uint32_t tag_sym=stack[sp-1].as.compound.len;
-    ElemRef br = record_field(clauses_buf,clauses_s,clauses_len,tag_sym,&found);
-    if (found) sp--; else br = record_field(clauses_buf,clauses_s,clauses_len,S_WILD,&found);
-    if (!found) die("case: no clause names '%s, but the checker proved one does. This is a bug in slap's checker: please report it with this program.", sym_name(tag_sym));
-    case_body_check(clauses_buf,(ElemRef){br.base-1,1},br); eval_in(&clauses_buf[br.base],br.slots,env);
+static void case_run(Value *clauses, int n, Frame *env) {
+    int len=(int)clauses[n-1].as.compound.len, found=0; uint32_t tag_sym=stack[sp-1].as.compound.len;
+    ElemRef br = record_field(clauses,n,len,tag_sym,&found);
+    if (found) sp--; else br = record_field(clauses,n,len,S_WILD,&found);
+    eval_in(&clauses[br.base],br.slots,env);
 }
+static void prim_case(Frame *env) { POP_VAL(clauses); stage_body(asp-1); case_run(clauses_buf,clauses_s,env); }
 static void prim_tag(Frame *e) {
     (void)e;
     uint32_t tag_sym=pop_sym();
-    if(sp<=0) die("tag: need a payload value");
     Value payload_top=stack[sp-1];
     int payload_s=val_slots(payload_top);
     spush(val_compound(VAL_TAGGED,tag_sym,payload_s+1));
 }
 static void prim_must(Frame *e) {
     (void)e; Value top=speek();
-    if(top.tag!=VAL_TAGGED) die("must: expected tagged value, got %s", valtag_name(top.tag));
     if(top.as.compound.len==S_OK) { sp--; return; }
     die("must: expected 'ok tagged, got '%s tagged (its payload is on top of the stack below)", sym_name(top.as.compound.len));
 }
-/* tagged default (body) pthen: on 'ok run body on the payload, else leave default under the tagged, re-tagged 'no. */
-static void prim_pthen(Frame *env) {
-    POP_BODY(body,"pthen"); POP_VAL(def);
-    if(sp<=0) die("pthen: stack underflow");
+/* tagged default (body) pthen: on 'ok run body on the payload in env, else leave default under the tagged,
+   re-tagged 'no. */
+static void pthen_run(Value *body, int n, Frame *env) {
+    POP_VAL(def);
     Value top=stack[sp-1];
-    if(top.tag!=VAL_TAGGED) die("pthen: expected tagged, got %s",valtag_name(top.tag));
-    if(top.as.compound.len==S_OK){ deep_free_values(def_buf,def_s); sp--; eval_body(body_buf,body_s,env); return; }
+    if(top.as.compound.len==S_OK){ deep_free_values(def_buf,def_s); sp--; eval_in(body,n,env); return; }
     stack[sp-1].as.compound.len=S_NO;
     int ts=val_slots(top); SPUSH(def_buf,def_s); swap_blocks(sp-def_s-ts,ts,def_s);
 }
+static void prim_pthen(Frame *env) { POP_BODY(body); Frame *f=body_buf[body_s-1].as.compound.env; pthen_run(body_buf,body_s,f?f:env); }
 static void prim_while(Frame *env) {
-    POP_BODY(body,"while"); POP_BODY(pred,"while");
+    POP_BODY(body); POP_BODY(pred);
     for(;;){eval_body(pred_buf,pred_s,env);if(!pop_int())break;eval_body(body_buf,body_s,env);}
 }
 static void prim_itof(Frame *e){(void)e;spush(val_float((double)pop_int()));}
@@ -1807,23 +1791,22 @@ FLOAT1(ffloor,floor) FLOAT1(fround,round) FLOAT1(fexp,exp) FLOAT1(flog,log)
 #define FLOAT2(nm,fn) static void prim_##nm(Frame *e){(void)e;double b=pop_float(),a=pop_float();spush(val_float(fn(a,b)));}
 FLOAT2(fpow,pow) FLOAT2(fatan2,atan2)
 static void dict_data_free(DictData *dd);
-#define SEQ_GUARD(v, who) do{ if((v).tag!=VAL_LIST) die(who ": expected list, got %s",valtag_name((v).tag)); }while(0)
 static void prim_size(Frame *e) {
-    (void)e; Value top=speek(); SEQ_GUARD(top,"len");
+    (void)e; Value top=speek();
     int s=val_slots(top); deep_free_values(&stack[sp-s],s); sp-=s; spush(val_int((int)top.as.compound.len));
 }
 static void prim_push_op(Frame *e) {
-    (void)e; int vb=val_start(sp,"push"),vs=sp-vb; if(vb<1) die("push: stack underflow");
-    Value h=stack[vb-1]; SEQ_GUARD(h,"push");
+    (void)e; int vb=val_start(sp),vs=sp-vb;
+    Value h=stack[vb-1];
     memmove(&stack[vb-1],&stack[vb],(size_t)vs*sizeof(Value));
     h.as.compound.len++; h.as.compound.slots+=(uint32_t)vs; h.loc=0; stack[sp-1]=h;
 }
 #define MUST_PAIR(nm) static void prim_##nm(Frame *e) { prim_##nm##_impl(e,1); } \
     static void prim_##nm##_must(Frame *e) { prim_##nm##_impl(e,0); }
 static inline void prim_pop_impl(Frame *e, int tagged) {
-    (void)e; Value top=speek(); SEQ_GUARD(top,"pop");
+    (void)e; Value top=speek();
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
-    if(len==0) { if(tagged) push_none(); else die("pop: empty %s",valtag_name(top.tag)); return; }
+    if(len==0) { if(tagged) push_none(); else die("pop: empty list"); return; }
     ElemRef last=compound_elem(&stack[base],s,len,len-1);
     memmove(&stack[base+last.base+1],&stack[base+last.base],(size_t)last.slots*sizeof(Value));
     top.as.compound.len--; top.as.compound.slots-=(uint32_t)last.slots; top.loc=0; stack[base+last.base]=top;
@@ -1831,7 +1814,7 @@ static inline void prim_pop_impl(Frame *e, int tagged) {
 }
 MUST_PAIR(pop)
 static inline void prim_get_impl(Frame *e, int tagged) {
-    (void)e; int64_t idx=pop_int(); Value top=speek(); SEQ_GUARD(top,"get");
+    (void)e; int64_t idx=pop_int(); Value top=speek();
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,idx);
     if(ref.base<0) { deep_free_values(&stack[base],s); sp=base; if(tagged) push_none(); else die("get: index %lld out of bounds (len %d)",(long long)idx,len); return; }
@@ -1841,9 +1824,8 @@ static inline void prim_get_impl(Frame *e, int tagged) {
 }
 MUST_PAIR(get)
 static inline void prim_peek_impl(Frame *e, int tagged) {
-    (void)e; int64_t idx=pop_int(); Value top=speek(); SEQ_GUARD(top,"peek");
+    (void)e; int64_t idx=pop_int(); Value top=speek();
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
-    if(base<0) die("peek: stack underflow: need %d slots, have %d", s, sp);
     ElemRef ref=compound_elem(&stack[base],s,len,idx);
     if(ref.base<0) { if(tagged) push_none(); else die("peek: index %lld out of bounds (len %d)",(long long)idx,len); return; }
     stack_room(ref.slots,"peek");
@@ -1860,7 +1842,7 @@ static void replace_run(int old_base,int os,int vs){
     swap_blocks(old_base,rest,vs);
 }
 static inline void prim_set_impl(Frame *e, int tagged) {
-    (void)e; POP_VAL(v); int64_t idx=pop_int(); Value top=speek(); SEQ_GUARD(top,"set");
+    (void)e; POP_VAL(v); int64_t idx=pop_int(); Value top=speek();
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef old=compound_elem(&stack[base],s,len,idx);
     if(old.base<0) { deep_free_values(v_buf,v_s); deep_free_values(&stack[base],s); sp=base; if(tagged) push_none(); else die("set: index %lld out of bounds (len %d)",(long long)idx,len); return; }
@@ -1871,19 +1853,19 @@ static inline void prim_set_impl(Frame *e, int tagged) {
 }
 MUST_PAIR(set)
 static void prim_concat(Frame *e) {
-    (void)e; if(sp<2) die("cat: stack underflow");
-    Value t2=stack[sp-1]; SEQ_GUARD(t2,"cat");
-    int s2=val_slots(t2),b2=sp-s2; if(b2<1) die("cat: stack underflow");
-    Value t1=stack[b2-1]; SEQ_GUARD(t1,"cat");
+    (void)e;
+    Value t2=stack[sp-1];
+    int s2=val_slots(t2),b2=sp-s2;
+    Value t1=stack[b2-1];
     memmove(&stack[b2-1],&stack[b2],(size_t)(s2-1)*sizeof(Value)); sp--;
     t2.as.compound.len+=t1.as.compound.len; t2.as.compound.slots=(uint32_t)(val_slots(t1)+s2-1); t2.loc=0;
     stack[sp-1]=t2;
 }
 static inline void prim_nth_impl(Frame *env, int tagged) {
     int64_t idx=pop_int(); uint32_t sym=pop_sym();
-    Lookup lu=frame_lookup(env,sym); if(!lu.bind) die("nth: unknown word: %s",sym_name(sym));
+    Lookup lu=frame_lookup(env,sym);
     Value *data=lu.bind->vals; int s=lu.bind->slots;
-    Value top=data[s-1]; if(!is_compound(top.tag)) die("nth: expected compound (tuple/list/record) bound to '%s, got %s", sym_name(sym), valtag_name(top.tag));
+    Value top=data[s-1];
     int len=(int)top.as.compound.len;
     ElemRef ref=compound_elem(data,s,len,idx);
     if(ref.base<0) { if(tagged) push_none(); else die("nth: index %lld out of bounds (len %d)",(long long)idx,len); return; }
@@ -1895,9 +1877,7 @@ MUST_PAIR(nth)
 static void prim_slice_n(int take) {
     int64_t n=pop_int(); Value top=speek();
     const char *label=take?"take-n":"drop-n";
-    if(top.tag!=VAL_LIST) die("%s: expected list, got %s", label, valtag_name(top.tag));
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
-    if(base<0) die("%s: stack underflow: need %d slots, have %d", label, s, sp);
     if(n<0) die("%s: count %lld is negative", label, (long long)n);
     if(n>len) n=len;
     int start=take?0:(int)n, end_i=take?(int)n:len;
@@ -1912,7 +1892,7 @@ static void prim_slice_n(int take) {
 /* Reverse every slot, which also reverses each element; then flip each element
    back. Its header, now first, gives its size. */
 static void prim_reverse(Frame *e){
-    (void)e; Value top=speek(); if(top.tag!=VAL_LIST) die("reverse: expected list, got %s",valtag_name(top.tag));
+    (void)e; Value top=speek();
     int s=val_slots(top),len=(int)top.as.compound.len,p=sp-s;
     slot_reverse(&stack[p],s-1);
     for(int i=0;i<len;i++){ int n=val_slots(stack[p]); slot_reverse(&stack[p],n); p+=n; }
@@ -1921,9 +1901,7 @@ static void prim_reverse(Frame *e){
    reading element i by index walks a list whose elements span several slots. */
 static void prim_zip(Frame *e){
     (void)e;
-    for(int k=1;k<=2;k++) if(sp<k||stack[sp-1].tag!=VAL_LIST) die("zip: expected two lists, got %s", sp>=1?valtag_name(stack[sp-1].tag):"an empty stack");
     POP_VAL(b);
-    if(sp<=0||stack[sp-1].tag!=VAL_LIST) die("zip: expected two lists, got %s under the second list", sp>0?valtag_name(stack[sp-1].tag):"nothing");
     POP_VAL(a);
     int la=(int)a_top.as.compound.len,lb=(int)b_top.as.compound.len,n=la<lb?la:lb,p0=sp;
     int *sa=elem_starts(a_buf,a_s,la),*sb=elem_starts(b_buf,b_s,lb);
@@ -1935,56 +1913,49 @@ static void prim_zip(Frame *e){
     if(lb>n) deep_free_values(&b_buf[sb?sb[n]:n],(sb?sb[lb]:lb)-(sb?sb[n]:n));
     spush(val_compound(VAL_LIST,n,sp-p0+1));
 }
-static void prim_range(Frame *e){(void)e;int64_t end=pop_int(),start=pop_int();int count=0;for(int64_t i=start;i<end;i++){spush(val_int(i));count++;}spush(val_compound(VAL_LIST,count,count+1));}
+static void prim_range(Frame *e){(void)e;int64_t end=pop_int(),start=pop_int();
+    uint64_t n=end>start?(uint64_t)end-(uint64_t)start:0;
+    if(n>=(uint64_t)(STACK_MAX-sp)) die("range: %lld to %lld makes %llu ints, but the stack has room for %d more: a list lives on the %d-slot stack. Make a smaller range.",(long long)start,(long long)end,(unsigned long long)n,STACK_MAX-sp-1,STACK_MAX);
+    for(int64_t i=start;i<end;i++) stack[sp++]=val_int(i);
+    spush(val_compound(VAL_LIST,(int)n,(int)n+1));}
 static void push_string_bytes(const char *buf, int len);
-/* A body given to each/fold/mutate must leave exactly one value where its input began. */
-static void one_value_above(int p0, const char *who, const char *what) {
-    if(sp<=p0||sp-val_slots(stack[sp-1])!=p0)
-        die("%s: the body must turn %s into one value, but the stack moved from %d slots to %d", who, what, p0, sp);
-}
 static void prim_each(Frame *env) {
-    POP_BODY(fn,"each");
-    Value top=speek(); if(top.tag!=VAL_LIST) die("each: expected list, got %s",valtag_name(top.tag));
+    POP_BODY(fn);
     POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len),rb=sp;
-    for(int i=0;i<len;i++){ int p0=sp; if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); one_value_above(p0,"each","one element"); }
+    for(int i=0;i<len;i++){ if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); }
     spush(val_compound(VAL_LIST,len,sp-rb+1));
 }
 static void prim_fold(Frame *env) {
-    POP_BODY(fn,"fold"); POP_VAL(init);
-    Value top=speek(); if(top.tag!=VAL_LIST) die("fold: expected list, got %s",valtag_name(top.tag));
+    POP_BODY(fn); POP_VAL(init);
     POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len);
-    int p0=sp; SPUSH(init_buf,init_s);
-    for(int i=0;i<len;i++){ if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); one_value_above(p0,"fold","the accumulator and one element"); }
+    SPUSH(init_buf,init_s);
+    for(int i=0;i<len;i++){ if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); }
 }
 /* The predicate takes a copy of each element; the list keeps the element when it leaves a nonzero int. */
 static void prim_filter(Frame *env) {
-    POP_BODY(fn,"filter");
-    if(sp<=0||stack[sp-1].tag!=VAL_LIST) die("filter: expected list, got %s",sp>0?valtag_name(stack[sp-1].tag):"nothing");
+    POP_BODY(fn);
     POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len),rb=sp,kept=0;
     for(int i=0;i<len;i++){
-        int b=st?st[i]:i,n=st?st[i+1]-st[i]:1,p0=sp;
+        int b=st?st[i]:i,n=st?st[i+1]-st[i]:1;
         stack_room(n,"filter"); deep_copy_values(&stack[sp],&list_buf[b],n); sp+=n;
-        eval_body(fn_buf,fn_s,env); one_value_above(p0,"filter","one element");
-        Value keep=spop(); if(keep.tag!=VAL_INT) die("filter: the body must leave an int, got %s",valtag_name(keep.tag));
+        eval_body(fn_buf,fn_s,env);
+        Value keep=spop();
         if(keep.as.i){ SPUSH(&list_buf[b],n); kept++; } else deep_free_values(&list_buf[b],n);
     }
     spush(val_compound(VAL_LIST,kept,sp-rb+1));
 }
 static int val_cmp(const Value *va, const Value *vb) {
-    if(va->tag==VAL_INT&&vb->tag==VAL_INT) return(va->as.i>vb->as.i)-(va->as.i<vb->as.i);
-    if(va->tag==VAL_FLOAT&&vb->tag==VAL_FLOAT) return(va->as.f>vb->as.f)-(va->as.f<vb->as.f);
-    die("sort: mismatched or unsupported element types (got %s and %s)", valtag_name(va->tag), valtag_name(vb->tag)); return 0;
+    if(va->tag==VAL_INT) return(va->as.i>vb->as.i)-(va->as.i<vb->as.i);
+    return(va->as.f>vb->as.f)-(va->as.f<vb->as.f);
 }
 static int sort_cmp(const void *a,const void *b) { return val_cmp((const Value*)a,(const Value*)b); }
 static void prim_sort(Frame *e){
-    (void)e; Value top=speek(); if(top.tag!=VAL_LIST) die("sort: expected list, got %s",valtag_name(top.tag));
+    (void)e; Value top=speek();
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
-    if(s!=len+1){ValTag bad=VAL_INT;for(int i=0;i<len;i++){ElemRef r=compound_elem(&stack[base],s,len,i);if(r.slots>1){bad=stack[base+r.base+r.slots-1].tag;break;}}
-        die("sort: elements must be int or float, got %s",valtag_name(bad));}
     qsort(&stack[base],len,sizeof(Value),sort_cmp);
 }
 static inline void prim_indexof_impl(Frame *e, int tagged) {
-    (void)e; POP_VAL(val); Value top=speek(); if(top.tag!=VAL_LIST) die("index-of: expected list, got %s",valtag_name(top.tag));
+    (void)e; POP_VAL(val); Value top=speek();
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s,r=-1,*st=elem_starts(&stack[base],s,len);
     for(int i=0;i<len&&r<0;i++){int b=st?st[i]:i,n=st?st[i+1]-st[i]:1;if(val_equal(&stack[base+b],n,val_buf,val_s))r=i;}
     deep_free_values(&stack[base],s); deep_free_values(val_buf,val_s); sp=base;
@@ -1992,30 +1963,22 @@ static inline void prim_indexof_impl(Frame *e, int tagged) {
     else { spush(val_int(r)); if(tagged) push_ok(); }
 }
 MUST_PAIR(indexof)
-/* The checker proves every key `at` or `edit` reads, so a missing key is a checker bug. */
-#define KEY_MISSING(who) die(who ": this record has no '%s, but the checker proved it has. This is a bug in slap's checker: please report it with this program.",sym_name(key))
 static void prim_at(Frame *env) {
     (void)env; uint32_t key=pop_sym();
-    if(sp<=0) die("at: stack underflow"); Value next=stack[sp-1];
-    if(next.tag!=VAL_RECORD) die("at: expected record, got %s",valtag_name(next.tag));
+    Value next=stack[sp-1];
     int s=val_slots(next),len=(int)next.as.compound.len,base=sp-s;
     int found; ElemRef ref=record_field(&stack[base],s,len,key,&found);
-    if(!found) KEY_MISSING("at");
     deep_free_values(&stack[base],ref.base); deep_free_values(&stack[base+ref.base+ref.slots],s-ref.base-ref.slots);
     memmove(&stack[base],&stack[base+ref.base],ref.slots*sizeof(Value));
     sp=base+ref.slots;
 }
-#define REC_PREAMBLE(who) Value rec_top=speek();if(rec_top.tag!=VAL_RECORD)die(who ": expected record, got %s",valtag_name(rec_top.tag));int rec_s=val_slots(rec_top),rec_len=(int)rec_top.as.compound.len,rec_base=sp-rec_s
+#define REC_PREAMBLE Value rec_top=speek();int rec_s=val_slots(rec_top),rec_len=(int)rec_top.as.compound.len,rec_base=sp-rec_s
 /* [rec][value] -> [rec'] with value under key. Appending turns the old header
    slot into the key; replacing moves the value over the old field. */
-static void rec_put(uint32_t key, const char *who) {
-    if(sp<=0) die("%s: stack underflow", who);
+static void rec_put(uint32_t key) {
     int v_s=val_slots(stack[sp-1]),v_base=sp-v_s;
-    if(v_base<1) die("%s: stack underflow: value needs %d slots, have %d",who,v_s,sp);
     Value rec_top=stack[v_base-1];
-    if(rec_top.tag!=VAL_RECORD) die("%s: expected record, got %s",who,valtag_name(rec_top.tag));
     int rec_s=val_slots(rec_top),rec_len=(int)rec_top.as.compound.len,rec_base=v_base-rec_s;
-    if(rec_base<0) die("%s: stack underflow: record needs %d slots, have %d",who,rec_s,v_base);
     int found; ElemRef ex=record_field(&stack[rec_base],rec_s,rec_len,key,&found);
     rec_top.loc=0;
     if(!found) {
@@ -2028,51 +1991,48 @@ static void rec_put(uint32_t key, const char *who) {
     replace_run(old_base,os,v_s);
     rec_top.as.compound.slots=(uint32_t)(rec_s-os+v_s); stack[sp-1]=rec_top;
 }
-static void prim_into(Frame *e) { (void)e; rec_put(pop_sym(),"into"); }
+static void prim_into(Frame *e) { (void)e; rec_put(pop_sym()); }
 static void prim_edit(Frame *env) {
-    POP_BODY(fn,"edit"); uint32_t key=pop_sym(); REC_PREAMBLE("edit");
+    POP_BODY(fn); uint32_t key=pop_sym(); REC_PREAMBLE;
     int found; ElemRef ref=record_field(&stack[rec_base],rec_s,rec_len,key,&found);
-    if(!found) KEY_MISSING("edit");
     stack_room(ref.slots,"edit");
     deep_copy_values(&stack[sp],&stack[rec_base+ref.base],ref.slots); sp+=ref.slots;
     eval_body(fn_buf,fn_s,env);
-    rec_put(key,"edit");
+    rec_put(key);
 }
 typedef struct BoxData { Value *data; int slots; } BoxData;
 static void prim_box(Frame *e){(void)e;Value top=speek();int s=val_slots(top);BoxData *bd=malloc(sizeof(BoxData));bd->data=malloc(s*sizeof(Value));bd->slots=s;VCPY(bd->data,&stack[sp-s],s);sp-=s;Value v;v.tag=VAL_BOX;v.loc=0;v.as.box=bd;spush(v);}
 static void prim_free(Frame *e){
     (void)e;Value v=spop();
-    if(v.tag==VAL_BOX){BoxData *bd=(BoxData*)v.as.box;deep_free_values(bd->data,bd->slots);free(bd->data);free(bd);return;}
-    die("free: expected box, got %s", valtag_name(v.tag));
+    BoxData *bd=(BoxData*)v.as.box;deep_free_values(bd->data,bd->slots);free(bd->data);free(bd);
 }
-#define BOX_UNPACK(who) POP_BODY(fn,who); Value box_val=spop(); if(box_val.tag!=VAL_BOX) die(who ": expected box, got %s", valtag_name(box_val.tag)); \
+#define BOX_UNPACK(who) POP_BODY(fn); Value box_val=spop();  \
     BoxData *bd=(BoxData*)box_val.as.box; stack_room(bd->slots,who)
 /* The body reads a deep copy; the box keeps its own. */
 static void prim_lend(Frame *env) {
     BOX_UNPACK("lend"); int sp0=sp;
     deep_copy_values(&stack[sp],bd->data,bd->slots); sp+=bd->slots;
     eval_body(fn_buf,fn_s,env);
-    if(sp<sp0) die("lend: the body consumed %d value(s) from below the box's contents", sp0-sp);
     stack_room(1,"lend");
     memmove(&stack[sp0+1],&stack[sp0],(size_t)(sp-sp0)*sizeof(Value));
     stack[sp0]=box_val; sp++;
 }
 /* The body takes ownership of the contents and returns the replacement. */
 static void prim_mutate(Frame *env) {
-    BOX_UNPACK("mutate"); int p0=sp; SPUSH(bd->data,bd->slots); free(bd->data); bd->data=NULL;
-    eval_body(fn_buf,fn_s,env); one_value_above(p0,"mutate","the contents");
+    BOX_UNPACK("mutate"); SPUSH(bd->data,bd->slots); free(bd->data); bd->data=NULL;
+    eval_body(fn_buf,fn_s,env);
     int ns=val_slots(stack[sp-1]);
     bd->data=malloc((size_t)ns*sizeof(Value)); if(!bd->data) die("mutate: out of memory for %d values", ns);
     bd->slots=ns; VCPY(bd->data,&stack[sp-ns],ns); sp-=ns; spush(box_val);
 }
 static DictData *dict_clone(DictData *orig);
-/* mutate can make a box that contains itself, so both walks are depth-bounded. */
+/* Boxes and dicts nest through their contents, and both walks recurse in C, so both stop at a fixed depth. */
 #define BOX_DEPTH_MAX 512
 static int box_walk_depth = 0;
 static void deep_copy_values(Value *dst, const Value *src, int slots) {
     VCPY(dst,src,slots);
     if(++box_walk_depth > BOX_DEPTH_MAX){ box_walk_depth=0;
-        die("box nesting deeper than %d -- a box that contains itself cannot be copied", BOX_DEPTH_MAX); }
+        die("boxes and dicts nest more than %d deep here, so this value cannot be copied. Flatten the data: keep the items in one list or dict and refer to them by key.", BOX_DEPTH_MAX); }
     for(int i=0;i<slots;i++){
         if(dst[i].tag==VAL_TUPLE) frame_ref(dst[i].as.compound.env);
         else if(dst[i].tag==VAL_BOX){
@@ -2087,7 +2047,7 @@ static void deep_copy_values(Value *dst, const Value *src, int slots) {
 }
 static void deep_free_owned(Value *vals, int slots) {
     if(++box_walk_depth > BOX_DEPTH_MAX){ box_walk_depth=0;
-        die("box nesting deeper than %d -- a box that contains itself cannot be freed", BOX_DEPTH_MAX); }
+        die("boxes and dicts nest more than %d deep here, so this value cannot be freed. Flatten the data: keep the items in one list or dict and refer to them by key.", BOX_DEPTH_MAX); }
     for(int i=0;i<slots;i++){
         if(vals[i].tag==VAL_TUPLE) frame_drop(vals[i].as.compound.env);
         else if(vals[i].tag==VAL_DICT) dict_data_free((DictData*)vals[i].as.box);
@@ -2129,7 +2089,7 @@ static void dict_grow(DictData *dd) {
 /* Takes ownership of vals' boxes and dicts. */
 static void dict_put(DictData *dd, const char *key, int klen, Value *vals, int nvals) {
     if(dd->cap==0 || (dd->len+1)*10 >= dd->cap*7) dict_grow(dd);
-    int i=dict_probe(dd,key,klen); if(i<0) die("dict: probe failed (internal)");
+    int i=dict_probe(dd,key,klen);
     DictEntry *e=&dd->entries[i];
     if(e->key){ deep_free_values(e->vals,e->nvals); free(e->vals); }
     else { e->key=malloc(klen?klen:1); if(klen) memcpy(e->key,key,klen); e->klen=klen; dd->len++; }
@@ -2171,22 +2131,17 @@ static DictData *dict_clone(DictData *orig) {
     }
     return c;
 }
-static int pop_string_bytes(const char *who, const char *what, char **out, int *out_len) {
-    Value top=speek();
-    if(top.tag!=VAL_LIST) die("%s: expected string (list of int), got %s", who, valtag_name(top.tag));
-    int s=val_slots(top), len=(int)top.as.compound.len, base=sp-s;
-    if(s != len+1) die("%s: %s must be a simple string (list of int)", who, what);
-    char *buf=malloc(len?len:1);
-    for(int i=0;i<len;i++){
-        if(stack[base+i].tag!=VAL_INT) die("%s: %s string contains non-int at position %d", who, what, i);
-        int64_t c=stack[base+i].as.i; if(c<0||c>255) die("%s: %s byte %d is %lld, outside 0-255", who, what, i, (long long)c);
-        buf[i]=(char)c;
-    }
-    sp=base; *out=buf; *out_len=len; return len;
+static unsigned char *pop_byte_list_buf(const char *who, int *out_len) {
+    Value top=spop(); int len=(int)top.as.compound.len;
+    unsigned char *buf=malloc(len?len:1);
+    for(int i=0;i<len;i++){ int64_t c=stack[sp-len+i].as.i;
+        if(c<0||c>255) die("%s: byte %d is %lld, outside 0-255",who,i,(long long)c);
+        buf[i]=(unsigned char)c; }
+    sp-=len; *out_len=len; return buf;
 }
 static uint64_t user_loc;
 static void prim_fail(Frame *e) {
-    (void)e; char *msg; int n, s0=sp; pop_string_bytes("fail","text", &msg, &n);
+    (void)e; int n, s0=sp; char *msg=(char*)pop_byte_list_buf("fail",&n);
     if(!n){ sp=s0; die("fail: the text is empty; expected a message"); }
     for(int i=0;i<n;i++) if(!msg[i]){ sp=s0; die("fail: the text holds a NUL byte at offset %d; expected text without NUL bytes", i); }
     if(LOC_FID(current_loc)==FID_PRELUDE) current_loc=user_loc;
@@ -2202,15 +2157,15 @@ static void push_fail(const char *msg) { push_c_string(msg); push_no(); }
 static Value dict_val(DictData *dd){Value v={0};v.tag=VAL_DICT;v.loc=0;v.as.box=dd;return v;}
 static void prim_dict(Frame *e){(void)e;DictData *dd=calloc(1,sizeof(DictData));dicts_made=1;spush(dict_val(dd));}
 static void prim_insert(Frame *e) {
-    (void)e; POP_VAL(val); char *key; int klen; pop_string_bytes("insert","key",&key,&klen);
-    Value dv=speek(); if(dv.tag!=VAL_DICT) die("insert: expected dict, got %s", valtag_name(dv.tag));
+    (void)e; POP_VAL(val); int klen; char *key=(char*)pop_byte_list_buf("insert",&klen);
+    Value dv=speek();
     DictData *dd=(DictData*)dv.as.box;
     dict_put(dd,key,klen,val_buf,val_s);
     free(key);
 }
 static void prim_of(Frame *e) {
-    (void)e; char *key; int klen; pop_string_bytes("of","key",&key,&klen);
-    Value dv=speek(); if(dv.tag!=VAL_DICT) die("of: expected dict, got %s", valtag_name(dv.tag));
+    (void)e; int klen; char *key=(char*)pop_byte_list_buf("of",&klen);
+    Value dv=speek();
     DictData *dd=(DictData*)dv.as.box;
     DictEntry *ent=dict_get(dd,key,klen);
     if(!ent){ push_string_bytes(key,klen); free(key); push_no(); return; }
@@ -2220,13 +2175,13 @@ static void prim_of(Frame *e) {
     deep_copy_values(&stack[sp],ent->vals,ent->nvals); sp+=ent->nvals; push_ok();
 }
 static void prim_remove(Frame *e) {
-    (void)e; char *key; int klen; pop_string_bytes("remove","key",&key,&klen);
-    Value dv=speek(); if(dv.tag!=VAL_DICT) die("remove: expected dict, got %s", valtag_name(dv.tag));
+    (void)e; int klen; char *key=(char*)pop_byte_list_buf("remove",&klen);
+    Value dv=speek();
     DictData *dd=(DictData*)dv.as.box;
     dict_del(dd,key,klen); free(key);
 }
 static void prim_keys(Frame *e) {
-    (void)e; Value dv=speek(); if(dv.tag!=VAL_DICT) die("dict-keys: expected dict, got %s", valtag_name(dv.tag));
+    (void)e; Value dv=speek();
     DictData *dd=(DictData*)dv.as.box;
     int rb=sp, count=0;
     for(int i=0;i<dd->cap;i++){DictEntry *ent=&dd->entries[i]; if(!ent->key) continue;
@@ -2234,7 +2189,7 @@ static void prim_keys(Frame *e) {
     spush(val_compound(VAL_LIST,count,sp-rb+1));
 }
 static void prim_entries(Frame *e) {
-    (void)e; Value dv=speek(); if(dv.tag!=VAL_DICT) die("dict-entries: expected dict, got %s", valtag_name(dv.tag));
+    (void)e; Value dv=speek();
     DictData *dd=(DictData*)dv.as.box;
     int rb=sp, count=0;
     for(int i=0;i<dd->cap;i++){DictEntry *ent=&dd->entries[i]; if(!ent->key) continue;
@@ -2291,7 +2246,6 @@ static void prof_report(void) {
 }
 static inline __attribute__((always_inline)) void dispatch_word(uint32_t sym, Frame *env) {
     Lookup lu=frame_lookup(env,sym);
-    if(!lu.bind) die("unknown word: %s",sym_name(sym));
     Binding *b=lu.bind; Value *v=b->vals; int s=b->slots;
     if(!b->word){ if(b->heap){ stack_room(s,sym_name(sym)); deep_copy_values(&stack[sp],v,s); sp+=s; } else { SPUSH(v,s); if(b->tuples) vals_retain(v,s); } return; }
     Frame *f=lu.frame; int bi=(int)(b-f->bindings);
@@ -2308,7 +2262,7 @@ __attribute__((noinline)) static void prof_dispatch(uint32_t sym, Frame *env) {
     prof_enter(sym); dispatch_word(sym,env); prof_leave();
 }
 static void eval_body(Value *body, int slots, Frame *env) {
-    Value hdr=body[slots-1]; if(hdr.tag!=VAL_TUPLE) die("eval_body: expected tuple, got %s (internal: evaluator received non-tuple header)", valtag_name(hdr.tag));
+    Value hdr=body[slots-1];
     eval_in(body, slots, hdr.as.compound.env?hdr.as.compound.env:env);
 }
 static void eval_run(Value *body, int slots, Frame *ee) {
@@ -2328,8 +2282,8 @@ static void eval_run(Value *body, int slots, Frame *ee) {
             int a1=asp,s0=staged_n;
             if(ep->as.xt.fn) ep->as.xt.fn(ee);
             else if(ep->as.xt.sym==S_LET){
-                uint32_t n=pop_sym(); if(sp<=0) die("let: nothing to bind to '%s", sym_name(n));
-                int ds=val_slots(stack[sp-1]); if(sp-ds<0) die("let: stack underflow: need %d slots, have %d", ds, sp);
+                uint32_t n=pop_sym();
+                int ds=val_slots(stack[sp-1]);
                 /* A body written right before the name makes a word. */
                 int word = stack[sp-1].tag==VAL_TUPLE && k>=2 && body[st?st[k-1]-1:k-2].tag==VAL_TUPLE;
                 sp-=ds; frame_bind(ee,n,&stack[sp],ds,word);
@@ -2342,16 +2296,24 @@ static void eval_run(Value *body, int slots, Frame *ee) {
                 else if(h->tag==VAL_TUPLE) frame_drop(h->as.compound.env); }
             asp=a1;
         } else if(is_compound(ep->tag)){
-            /* `(then) (else) if` written in place: run the chosen branch from this body
-               rather than copy both branches to the stack and then to the aux stack. */
+            /* `{clauses} case`, `(body) pthen`, `(then) (else) if` and `(pred) (body) while` written in
+               place run from this body rather than copy their bodies to the stack and then to the aux
+               stack. A literal's header holds the frame it was built in, so these run in ee. */
+            if(k+1<len){
+                const Value *b1=&body[(st?st[k+2]:k+2)-1];
+                if(b1->tag==VAL_XT && ((ep->tag==VAL_RECORD && b1->as.xt.fn==prim_case) || (ep->tag==VAL_TUPLE && b1->as.xt.fn==prim_pthen))){
+                    if(b1->loc) current_loc=b1->loc;
+                    int a1=asp; if(ep->tag==VAL_RECORD) case_run(&body[eo],es,ee); else pthen_run(&body[eo],es,ee); asp=a1;
+                    k++; continue;
+                }
+            }
             if(ep->tag==VAL_TUPLE && k+2<len){
                 int e2=st?st[k+2]:k+2, s2=st?st[k+3]-st[k+2]:1, e1=st?st[k+1]:k+1, s1=e2-e1;
                 const Value *b2=&body[e2+s2-1];
-                if(b2->tag==VAL_XT && b2->as.xt.fn==prim_if && body[e2-1].tag==VAL_TUPLE){
+                if(b2->tag==VAL_XT && body[e2-1].tag==VAL_TUPLE && (b2->as.xt.fn==prim_if || b2->as.xt.fn==prim_while)){
                     if(b2->loc) current_loc=b2->loc;
-                    if(sp<=0) die("if: stack underflow");
-                    Value c=spop(); if(c.tag!=VAL_INT) die("if: condition must be int, got %s",valtag_name(c.tag));
-                    if(c.as.i) eval_in(&body[eo],es,ee); else eval_in(&body[e1],s1,ee);
+                    if(b2->as.xt.fn==prim_if){ Value c=spop(); if(c.as.i) eval_in(&body[eo],es,ee); else eval_in(&body[e1],s1,ee); }
+                    else for(;;){ eval_in(&body[eo],es,ee); if(!pop_int()) break; eval_in(&body[e1],s1,ee); }
                     k+=2; continue;
                 }
             }
@@ -2383,6 +2345,7 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
             }
             break;
         case TOK_STRING:
+            stack_room(tt->as.str.len+1,"a string literal");
             for(int c=0;c<tt->as.str.len;c++) spush(with_tok(val_int(tt->as.str.codes[c]),tt));
             spush(with_tok(val_compound(VAL_LIST,tt->as.str.len,tt->as.str.len+1),tt)); ec++; break;
         case TOK_LPAREN:{int nc=(j+toks[j].span);build_tuple(toks,j+1,nc,tc,env);stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col);ec++;j=nc;break;}
@@ -2395,9 +2358,8 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
         }
         case TOK_LBRACE:{
             int bc=(j+toks[j].span);
-            int lb=sp; eval(toks+j+1,bc-j-1,env); int ts=sp-lb,nf=0,ir=1,p=sp;
-            while(p>lb){int vs=val_slots(stack[p-1]);p-=vs;if(ir&&p>lb&&stack[p-1].tag==VAL_SYM){p--;nf++;}else ir=0;}
-            if(!ir) die("a {...} literal that does not pair each value with a 'key reached the runtime, but the checker refuses one. This is a bug in slap's checker: please report it with this program.");
+            int lb=sp; eval(toks+j+1,bc-j-1,env); int ts=sp-lb,nf=0,p=sp;
+            while(p>lb){p-=val_slots(stack[p-1])+1;nf++;}
             spush(with_tok(val_compound(VAL_RECORD,nf,ts+1),tt));
             if(vals_hold_dict(&stack[lb],ts)) stack[sp-1].flags|=VF_DICT;
             ec++; j=bc; break;
@@ -2437,7 +2399,6 @@ static const char *PRELUDE =
     "(lt not) 'ge let\n"
     "(swap lt not) 'le let\n"
     "(1 plus) 'inc let\n"
-    "(1 sub) 'dec let\n"
     "(0 swap sub) 'neg let\n"
     "(over over lt (nip) (drop) if) 'max let\n"
     "(over over lt (drop) (nip) if) 'min let\n"
@@ -2454,7 +2415,6 @@ static const char *PRELUDE =
     "(dup 0.0 lt (fneg) () if) 'fabs let\n"
     "(dup 0 lt (drop -1) (dup 0 eq (drop 0) (drop 1) if) if) 'sign let\n"
     "(rot swap min max) 'clamp let\n"
-    "(2 mod 0 eq) 'iseven let\n"
     "('ok tag) 'ok let\n"
     "('no tag) 'no let\n"
     "(() no) 'none let\n"
@@ -2520,13 +2480,20 @@ static void sdl_present(void) {
 }
 static void prim_clear(Frame *e){(void)e;memset(canvas,(int)(pop_int()&3),sizeof(canvas));}
 static void prim_pixel(Frame *e){(void)e;int64_t color=pop_int(),y=pop_int(),x=pop_int();if(x>=0&&x<CANVAS_W&&y>=0&&y<CANVAS_H)canvas[y*CANVAS_W+x]=(uint8_t)(color&3);}
-static void prim_fill_rect(Frame *e){(void)e;int64_t c=pop_int(),h=pop_int(),w=pop_int(),y0=pop_int(),x0=pop_int();uint8_t cv=(uint8_t)(c&3);for(int dy=0;dy<h;dy++)for(int dx=0;dx<w;dx++){int x=x0+dx,y=y0+dy;if(x>=0&&x<CANVAS_W&&y>=0&&y<CANVAS_H)canvas[y*CANVAS_W+x]=cv;}}
+/* Clipped in int64 before it draws, so a rect far off the canvas costs nothing. w and h are positive
+   there, so x+w and y+h can only overflow upward. */
+static void prim_fill_rect(Frame *e){(void)e;int64_t c=pop_int(),h=pop_int(),w=pop_int(),y=pop_int(),x=pop_int(),xe,ye;
+    if(w<=0||h<=0) return;
+    if(__builtin_add_overflow(x,w,&xe)) xe=INT64_MAX;
+    if(__builtin_add_overflow(y,h,&ye)) ye=INT64_MAX;
+    int64_t x0=x<0?0:x, x1=xe<CANVAS_W?xe:CANVAS_W, y0=y<0?0:y, y1=ye<CANVAS_H?ye:CANVAS_H;
+    for(int64_t r=y0;r<y1&&x0<x1;r++) memset(&canvas[r*CANVAS_W+x0],(int)(c&3),(size_t)(x1-x0));}
 static uint32_t sym_tick=0,sym_keydown=0,sym_keyup=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0;
 static void show_intern_syms(void) {
     if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_keyup=sym_intern("keyup");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");}
 }
 static void prim_on(Frame *e) {
-    (void)e; Value fn_top=speek(); if(fn_top.tag!=VAL_TUPLE) die("on: expected tuple handler, got %s", valtag_name(fn_top.tag));
+    (void)e; Value fn_top=speek();
     int fn_s=val_slots(fn_top); if(handler_count>=MAX_HANDLERS) die("on: too many event handlers");
     Value *hb=malloc((size_t)fn_s*sizeof(Value)); if(!hb) die("on: out of memory"); VCPY(hb,&stack[sp-fn_s],fn_s); event_handlers[handler_count].handler_body=hb;
     event_handlers[handler_count].handler_slots=fn_s; sp-=fn_s;
@@ -2564,7 +2531,7 @@ static void show_one_frame(void) {
 }
 #endif
 static void prim_show(Frame *env) {
-    Value fn_top=speek(); if(fn_top.tag!=VAL_TUPLE) die("show: expected tuple render function, got %s", valtag_name(fn_top.tag));
+    Value fn_top=speek();
     render_slots=val_slots(fn_top); render_body=malloc((size_t)render_slots*sizeof(Value)); if(!render_body) die("show: out of memory");
     VCPY(render_body,&stack[sp-render_slots],render_slots); sp-=render_slots;
     show_intern_syms();
@@ -2596,17 +2563,10 @@ static void prim_show(Frame *env) {
 #endif
 }
 #endif
-static unsigned char *pop_byte_list_buf(const char *who, int *out_len) {
-    Value top=spop();if(top.tag!=VAL_LIST)die("%s: expected a byte list, got %s",who,valtag_name(top.tag));
-    int len=(int)top.as.compound.len;if((int)top.as.compound.slots-1!=len)die("%s: list elements must all be single-slot (ints)",who);
-    unsigned char *buf=malloc(len);
-    for(int i=0;i<len;i++){Value v=stack[sp-len+i];if(v.tag!=VAL_INT)die("%s: byte element %d is not an int",who,i);
-        if(v.as.i<0||v.as.i>255)die("%s: byte %d out of range (got %lld)",who,i,(long long)v.as.i);buf[i]=(unsigned char)v.as.i;}
-    sp-=len;*out_len=len;return buf;
-}
 static char *pop_string_path(const char *who, int *len) {
     unsigned char *raw = pop_byte_list_buf(who, len);
-    char *buf = realloc(raw, *len + 1); buf[*len] = '\0'; return buf;
+    char *buf = realloc(raw, *len + 1); if (!buf) die("%s: out of memory for a %d-byte path", who, *len);
+    buf[*len] = '\0'; return buf;
 }
 /* A C string stops at a NUL, so a path with one cannot name a file. The 'no payload keeps every byte. */
 static int path_has_nul(const char *path, int len) {
@@ -2619,11 +2579,13 @@ static void prim_read(Frame *e) {
     FILE *f=fopen(path,"rb");
     if(!f) { push_fail(path); free(path); return; }
     size_t n=0,cap=65536,got; unsigned char *buf=malloc(cap);
-    while(buf&&(got=fread(buf+n,1,cap-n,f))>0){ n+=got; if(n==cap){ cap*=2; buf=realloc(buf,cap); } }
+    while(buf&&(got=fread(buf+n,1,cap-n,f))>0){ n+=got;
+        if(n>STACK_MAX-2) die("read: %s holds more than %d bytes, the most read returns: each byte, the list and its 'ok take one slot of the %d-slot stack. Split the file into smaller files.", path, STACK_MAX-2, STACK_MAX);
+        if(n==cap){ cap*=2; buf=realloc(buf,cap); } }
     if(!buf) die("read: out of memory reading %s", path);
     int bad=ferror(f); fclose(f);
     if(bad) { free(buf); push_fail(path); free(path); return; }
-    push_byte_list(buf,n);free(buf);free(path); push_ok();
+    stack_room((int)n+2,"read"); push_byte_list(buf,n);free(buf);free(path); push_ok();
 }
 static void prim_write(Frame *e) {
     (void)e; int len;unsigned char *buf=pop_byte_list_buf("write",&len);int plen;char *path=pop_string_path("write",&plen);
@@ -2812,6 +2774,15 @@ static void register_prims(void) {
 
 int main(int argc, char **argv) {
     char stack_anchor; c_stack_base = &stack_anchor;
+#ifdef __EMSCRIPTEN__
+    long stack_lim=4L<<20; /* -sSTACK_SIZE in the Makefile */
+#else
+    struct rlimit rl; if(getrlimit(RLIMIT_STACK,&rl)) die("getrlimit: cannot read the C stack limit: %s", strerror(errno));
+    /* Past 8 MiB, RLIM_INFINITY included, the limit changes nothing: c_stack_max stops at 7 MiB. */
+    long stack_lim=rl.rlim_cur>(rlim_t)(8L<<20)?8L<<20:(long)rl.rlim_cur;
+#endif
+    if(stack_lim<2L<<20) die("the C stack limit is %ld KB, and slap needs at least 2048 KB. Raise it with: ulimit -s 8192", stack_lim/1024);
+    c_stack_max=stack_lim-(1L<<20)<7L<<20?stack_lim-(1L<<20):7L<<20;
     rng_state=(uint64_t)time(NULL)^((uint64_t)getpid()<<32); atexit(stdout_check);
     int check_only=0, profile=0;
     cli_args=malloc(argc*sizeof(char*)); cli_argc=0;
@@ -2832,9 +2803,15 @@ int main(int argc, char **argv) {
 #else
     FILE *f=stdin;
 #endif
+    /* stdin may never end (`./slap < /dev/zero`), so the program has a size bound: 16 MiB. */
     long sz=0,cap=4096; char *src=malloc(cap); long n;
-    while((n=fread(src+sz,1,cap-sz,f))>0){sz+=n;if(sz==cap){cap*=2;src=realloc(src,cap);}}
+    while(src&&(n=fread(src+sz,1,cap-sz,f))>0){ sz+=n;
+        if(sz>16L<<20) die("the program is larger than 16 MiB; expected a slap source file. Check what stdin is redirected from.");
+        if(sz==cap){cap*=2;src=realloc(src,cap);} }
+    if(!src) die("out of memory reading the program: %ld bytes", cap);
+    if(ferror(f)) die("cannot read the program from stdin: %s. Check what stdin is redirected from.", strerror(errno));
     src[sz]=0;
+    { char *nul=memchr(src,0,sz); if(nul) die("the program holds a NUL byte at offset %ld; a slap program is text. Remove the byte, or write \\0 inside a string literal.", (long)(nul-src)); }
 #ifdef SLAP_WASM
     fclose(f);
 #endif
