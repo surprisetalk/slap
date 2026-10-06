@@ -1,0 +1,8 @@
+-- The window for zoom.slap.
+-- Run with: cat examples/zoom.slap examples/zoom-sdl.slap | ./slap-sdl
+--
+-- tick draws the whole canvas, so show has nothing to do.
+
+start
+'tick ((pixel) step) on
+(drop) show

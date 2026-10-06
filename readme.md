@@ -657,15 +657,17 @@ Interactive SDL demos in `examples/`:
 | `uxn.slap` | Uxn/Varvara emulator: full 32-opcode CPU with all mode flags, System/Console/Screen/Controller/Mouse |
 | `maze.slap` | Aldous-Broder maze generation and a BFS solve, both on one flat int list |
 | `raycast.slap` | Grid raycaster: DDA per screen column, wall slices drawn as 1-pixel `fill-rect`s |
-| `dots.slap`, `fish.slap`, `gradient.slap`, `zoom.slap` | More graphics demos |
+| `zoom.slap` | Mandelbrot zoom in to 1e5 and back out: reuses the last keyframe's rows and columns, guesses smooth gaps, tweens between keyframes, 8x8 Bayer dither |
+| `dots.slap`, `fish.slap`, `gradient.slap` | More graphics demos |
 
-`chip8`, `uxn`, `maze` and `raycast` each come in two files: `x.slap` holds the machine and its self-test, and `x-sdl.slap` holds the window, keys and drawing. `on` and `show` run only at the top level, and no word ends a program early, so the shell is a separate file.
+`chip8`, `uxn`, `maze`, `raycast` and `zoom` each come in two files: `x.slap` holds the machine and its self-test, and `x-sdl.slap` holds the window, keys and drawing. `on` and `show` run only at the top level, and no word ends a program early, so the shell is a separate file.
 
 ```bash
 make slap-sdl
 cat examples/chip8.slap examples/chip8-sdl.slap | ./slap-sdl roms/pong.ch8   # or no arg for the built-in demo ROM
 ./slap --headless < examples/chip8.slap                                      # run the opcode self-test (no SDL needed)
 cat examples/uxn.slap examples/uxn-sdl.slap | ./slap-sdl game.rom            # likewise for the uxn emulator
+cat examples/zoom.slap examples/zoom-sdl.slap | ./slap-sdl                   # the Mandelbrot zoom
 ```
 
 The whole machine — 4 KB of memory, registers, call stack, keypad, and the 64×32 display — is one flat int list threaded on the stack, with no boxes. `set` is an in-place O(1) store and `peek` an O(1) non-consuming read, so a `cycle` decodes and executes one instruction against the live state without ever copying it. That is what keeps the per-cycle cost independent of how big the machine is. The full opcode set (including the COSMAC shift/`FX55`/`FX65` quirks and `DXYN` sprite collision) is covered by an in-language self-test that runs on the plain terminal build.

@@ -76,6 +76,53 @@
      minimum, since the machine runs other loads.
   3. Write the numbers into this task, then decide.
 
+- [ ] A tight stack loop runs at the cost of its cheapest primitives: `rot`,
+      `if`, `let` and `dip` each cost at most twice `swap` (zoom.slap
+      microbenchmarks, 2026-10-05). Measured per use, minimum of 3 runs of
+      2,000,000 passes of a `while` loop: push, drop, swap, over, int plus and
+      float mul 3-4 ns; a name lookup 8-10 ns; `rot` 17 ns; `if` with branches
+      written in place 20 ns; `let` 15-20 ns per binding; `dip` 40 ns; an empty
+      `while` pass with `body apply` 50 ns. zoom.slap's escape loop spends
+      about 240 ns on the 30 tokens of one iteration, about 60 ns of it in
+      `rot`. Its per-pixel pass (reuse, guess, dither, `pixel`) spends about
+      150 ms on a 640x480 frame, mostly in `let` and `if`. Tradeoff: each fast
+      path is more C to keep correct.
+  1. Benchmark first. Each line below times one construct; subtract the empty
+     loop. Run it before and after each change, interleaved, and take the
+     minimum, since the machine runs other loads:
+     `2000000 'N let ('label let 'body let millis 't0 let 0 (dup N lt) (body apply 1 plus) while drop millis t0 sub 'dt let label print dt print) 'bench let`
+     then for example `() "empty" bench`, `(1.0 2.0 swap drop drop) "swap" bench`,
+     `(1.0 2.0 3.0 rot rot drop drop drop) "rot rot" bench`,
+     `(1 (2) (3) if drop) "if" bench`, `(5 'v let) "let" bench`,
+     `(1 2 (drop) dip drop) "dip" bench`.
+  2. prim_rot: copy prim_swap's fast path. When the top three values are one
+     slot each (tag <= VAL_XT), rotate them in place, with no val_start and no
+     swap_blocks. This is the lowest-hanging fruit.
+  3. `if`, then `let`, then `dip`: profile each with `--profile` and perf on
+     pc, and remove the work that does not depend on the data. Candidates: the
+     branch dispatch of an in-place `if`; the pool frame that the first `let`
+     of a body takes; the POP_BODY and POP_VAL copies of `dip`. `(body) dip`
+     written in place can run from the body itself, as `if` and `while` do.
+  4. Keep a change only if make status's feed time, make bench-uxn and the
+     zoom.slap frame time (`cat examples/zoom.slap` plus a loop of
+     `k (pixel) frame` under millis, in ./slap-sdl) do not get slower.
+
+- [ ] You draw with a color outside 0-3 and the program dies, naming the
+      color and the word (zoom.slap review). Today `clear`, `pixel` and
+      `fill-rect` keep `color & 3`, so a bug that makes color 4 draws black
+      with no message. Decided: die, as every runtime failure does. A pixel
+      off the canvas stays clipped: drawing past an edge is normal.
+      Tradeoff: a program that relied on the mask now dies.
+  1. errors.slap cannot run SDL words, so the test goes in tests/suite.py
+     beside the fill-rect check: `0 'tick (drop 0 0 4 pixel) on (drop) show`
+     under `./slap-sdl --headless` dies with "pixel: color 4 is not 0-3";
+     likewise `4 clear` and `0 0 1 1 -1 fill-rect`.
+  2. prim_clear, prim_pixel and prim_fill_rect: die on a color outside 0-3
+     before they draw.
+  3. Run every SDL example and pair (`grep -l "pixel\|fill-rect\|clear"
+     examples/*.slap`) headless for a few frames; fix any that passed a
+     color past 3. readme's SDL table says the range.
+
 - [ ] You read a checker message that names the real cause, in the right
       direction, with one name per variable (code review; silent-failure audit;
       breaker rounds 14 and 15). Decided: keep `box (body) lend` and its sealed
@@ -368,6 +415,15 @@
       a query language. Decide: which ones the first
       app needs.
   1. Each chosen one: expect.slap first, then TYPES, then a readme section.
+  2. When SIMD, GPU or threads land, revisit examples/zoom.slap: it needs
+     them most. Deep keyframes spend their time in `escape` (about 240 ns
+     an iteration, about 185 iterations a pixel near 1e5), and every pass
+     is data-parallel: pixels in a row and rows in a slice are independent.
+     Candidates: `escape` on several pixels per SIMD lane; a keyframe's rows
+     on threads; the tween's enlarge-and-dither as a GPU pass. Time the
+     ticks first (`cat examples/zoom.slap` plus a loop of `k (pixel) step`
+     under millis, in ./slap-sdl). Then cut the tricks that no longer pay:
+     the guesses, the tweens, the line reuse, the two-steps-per-test unroll.
 
 - [ ] You read a post series on slap.
   - 001 why I built it

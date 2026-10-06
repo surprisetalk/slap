@@ -223,7 +223,7 @@ def steps(slow):
             " nix-shell -p SDL2 pkg-config).",
             file=sys.stderr,
         )
-    for name in ["chip8", "uxn", "maze", "raycast"]:
+    for name in ["chip8", "uxn", "maze", "raycast", "zoom"]:
         out[name] = (
             f"cat examples/{name}.slap examples/{name}-sdl.slap | ./slap --check"
             f" && ./slap --headless < examples/{name}.slap",
@@ -251,7 +251,6 @@ def steps(slow):
         "life",
         "scratch",
         "snake",
-        "zoom",
     ]:
         out[name] = (f"./slap --check < examples/{name}.slap", None)
     return out

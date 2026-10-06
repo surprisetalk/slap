@@ -1,73 +1,280 @@
--- Mandelbrot fractal zoom into Seahorse Valley
--- Run with: ./slap-sdl < examples/zoom.slap
+-- Mandelbrot fractal zoom into Seahorse Valley: the zoom and a self-test.
+-- Run with:  cat examples/zoom.slap examples/zoom-sdl.slap | ./slap-sdl
+-- Self-test: ./slap --headless < examples/zoom.slap
+--
+-- Keyframe n is the view at zoom F^n. As in XaoS, a keyframe keeps each row
+-- and column of the last keyframe that lands within a pixel of a free place.
+-- A new pixel between two computed ones that differ by less than half a gray
+-- level takes their mean, and is marked as a guess; the rest are computed.
+-- A keyframe takes STEPS ticks to build, and each tick draws the last
+-- keyframe enlarged, so the view moves on every tick. The view zooms in to
+-- keyframe DEEP, turns, and zooms back out to 1x, over and over.
 
 640 'W let
 480 'H let
-24 'MAX let
+1.1 'F let
+-- F^120 is about 1e5. There the zoom reaches a minibrot and turns.
+120 'DEEP let
+4 'STEPS let
+-- Levels run 0 to 3, so a guess stored 4.0 higher keeps its level mod 4.
+4.0 'GUESS let
+-- A point on the spiral that the classic deep zooms follow.
+-0.743643887037151 'TX let
+0.131825904205330 'TY let
 
--0.745 'TX let
-0.186 'TY let
+-- 8x8 Bayer thresholds, as fractions in (0, 1)
+[ 0 32  8 40  2 34 10 42
+ 48 16 56 24 50 18 58 26
+ 12 44  4 36 14 46  6 38
+ 60 28 52 20 62 30 54 22
+  3 35 11 43  1 33  9 41
+ 51 19 59 27 49 17 57 25
+ 15 47  7 39 13 45  5 37
+ 63 31 55 23 61 29 53 21] (itof 0.5 plus 64.0 div) each 'BAYER let
 
-0
+-- n -> the width of one pixel at keyframe n
+(itof F swap fpow 3.0 H itof div swap div) 'scale let
 
-'tick (drop 1 plus) on
+-- cx cy lim -> mu: the smooth escape count of c, or -1.0 if c stays bounded
+-- for lim steps. The stack holds zx zy i, and each pass makes two steps but
+-- tests only the first: mu comes out the same from either escaped step.
+-- An escape leaves |z|^2 and i + ESC, which ends the loop.
+1000000000 'ESC let
+('lim let 'cy let 'cx let
+  cx 0.25 sub 'xm let
+  xm xm mul cy cy mul plus 'q let
+  -- the main cardioid and the period-2 bulb never escape
+  q q xm plus mul cy cy mul 0.25 mul lt
+  cx 1.0 plus dup mul cy cy mul plus 0.0625 lt
+  or (-1.0) (
+    0.0 0.0 0
+    (dup lim lt)
+    (rot rot
+     over over mul dup plus cy plus rot rot
+     dup mul swap dup mul swap sub cx plus swap
+     over dup mul over dup mul
+     over over plus 256.0 gt
+     (plus swap drop swap drop swap ESC plus 1 plus 0.0 swap)
+     (sub cx plus rot rot mul dup plus cy plus rot 2 plus)
+     if)
+    while
+    'i let drop 'm2 let
+    i ESC lt (-1.0) (i ESC sub itof 1.0 plus  m2 flog 0.5 mul flog 2.0 flog div  sub) if
+  ) if
+) 'escape let
 
-(
-  'cy let 'cx let 'zy let 'zx let 'i let
-  i MAX lt  zx dup mul zy dup mul plus 4.0 lt  and (
-    zx dup mul zy dup mul sub cx plus
-    2.0 zx mul zy mul cy plus
-    'zy2 let 'zx2 let
-    i 1 plus zx2 zy2 cx cy iterate
-  ) (i) if
-) 'iterate let
+-- mu -> gray level from 0.0 to 3.0: black inside, and a triangle wave in sqrt mu
+-- outside, so the bands widen as the counts grow with depth.
+(dup 0.0 lt (drop 0.0) (fsqrt 0.5 mul dup ffloor sub 2.0 mul 1.0 sub fabs 3.0 mul) if) 'shade let
 
-(
-  'cy2 let 'cy let 'xoff let 'xscl let 'py let 'px let
-  px W lt (
-    px itof xscl mul xoff plus 'cx let
+-- prev t s -> map coords: the lines of one axis, centered on t, s apart.
+-- prev holds the last keyframe's line coordinates. Each old line, in order,
+-- takes the nearest new place right of the last one taken, if that place is
+-- less than a pixel away. Map entry i is the old line at place i, or -1 for
+-- a new line. coords holds the coordinate of each line.
+('s let 't let 'prev let
+  prev len 'count let
+  count 1 sub itof 0.5 mul 'mid let
+  0 count range (drop -1) each 0 -1
+  (over count lt)
+  ('taken let 'k let
+    'prev k nth must t sub s div mid plus 'p let
+    p fround ftoi taken 1 plus max 'r let
+    r count lt  p r itof sub fabs 1.0 lt  and (r k set must r) (taken) if
+    k 1 plus swap)
+  while drop drop 'map let
+  map
+  0 count range ('i let
+    'map i nth must 'k let
+    k 0 lt (i itof mid sub s mul t plus) ('prev k nth must) if
+  ) each
+) 'lines let
 
-    -- cardioid/bulb check
-    cx 0.25 sub 'cxm let
-    cxm cxm mul cy2 plus 'q let
-    q q cxm plus mul cy2 0.25 mul lt
-    cx 1.0 plus dup mul cy2 plus 0.0625 lt
-    or (
-    ) (
-      0 0.0 0.0 cx cy iterate 'it let
-      it MAX neq (
-        px py it 4 mod 1 plus 3 min pixel
-      ) () if
-    ) if
+-- a b x y n -> 1 if a new pixel between neighbours a and b takes their mean:
+-- both are computed, not guesses, and differ by less than half a level, and
+-- the pixel is not one of the 1 in 8 that keyframe n computes anyway, so that
+-- detail both neighbours missed appears. A guess built on guesses drifts
+-- into streaks over the lifetime of a line. 2654435761 is Knuth's
+-- multiplicative hash; bits 29-31 of the product pick the pixels.
+('n let 'y let 'x let 'b let 'a let
+  a GUESS lt b GUESS lt and
+  a b sub fabs 0.5 lt and
+  x y W mul plus n W H mul mul plus 2654435761 mul 29 shr 7 band 0 neq and) 'agree let
 
-    px 1 plus py xscl xoff cy cy2 render-col
-  ) () if
-) 'render-col let
+-- A keyframe is one float list: W column coordinates, H row coordinates,
+-- then the gray level of each pixel, row by row, from P on. A guess is
+-- stored GUESS higher.
+W H plus 'P let
 
-(
-  'yoff let 'yscl let 'xoff let 'xscl let 'py let
-  py H lt (
-    py itof yscl mul yoff plus 'cy let
-    cy cy mul 'cy2 let
+-- t -> the depth of the view at tick t, in keyframes times STEPS: from 0 up
+-- to DEEP STEPS mul and back down, over and over.
+('t let DEEP STEPS mul 'top let
+  t top 2 mul mod 'u let u top gt (top 2 mul u sub) (u) if) 'depth let
 
-    0 py xscl xoff cy cy2 render-col
+-- b -> the keyframe that build b, ticks b STEPS mul on, draws from: the
+-- deepest one that no view of the build is shallower than, so that each
+-- tween only enlarges it. Build b makes keyframe b 1 plus need.
+('b let b STEPS mul depth  b 1 plus STEPS mul 1 sub depth  min STEPS div) 'need let
 
-    py 1 plus xscl xoff yscl yoff render-row
-  ) () if
-) 'render-row let
+-- state t plot -> state: tick t. The state holds keyframe t STEPS div need,
+-- then the rows of the next keyframe built so far, H / STEPS more each tick.
+-- plot (x y level) draws a pixel; level is 0 to 3.
+('plot let 't let 'old let
+  t STEPS mod 'j let
+  t STEPS div need 'k let
+  t STEPS div 1 plus need 'n let
 
-(
-  'frame let
-  0 clear
+  -- Draw keyframe k enlarged to the view's depth: pixel i of an axis shows
+  -- line round((i - mid) / grow + mid). 3 band drops a guess's GUESS.
+  F t depth itof STEPS itof div k itof sub fpow 'grow let
+  ('count let count 1 sub itof 0.5 mul 'mid let
+    0 count range (itof mid sub grow div mid plus fround ftoi) each) 'pull let
+  W pull 'tx let
+  H pull 'ty let
+  0 H range ('y let
+    'ty y nth must W mul P plus 'tbase let
+    y 7 band 8 mul 'brow let
+    0 W range (
+      dup 'tx swap nth must tbase plus 'old swap nth must
+      over 7 band brow plus 'BAYER swap nth must plus ffloor ftoi 3 band
+      y swap plot apply 0
+    ) each drop 0
+  ) each drop
 
-  1.02 frame itof fpow 'zoom let
-  3.0 zoom div 'span let
-  W itof H itof div span mul 'xspan let
+  -- Build the next slice of rows of keyframe n. A build that turns makes the
+  -- same keyframe again, and keeps every line.
+  n scale 's let
+  100 8 n mul plus 'lim let
+  0 W range ('old swap nth must) each TX s lines 'xs let 'cols let
+  W P range ('old swap nth must) each TY s lines 'ys let 'rows let
+  0 W range (dup 0 gt ('cols swap 1 sub nth must) (drop -1) if) each 'left let
+  0 W range (dup W 1 sub lt ('cols swap 1 plus nth must) (drop -1) if) each 'right let
+  ('cy let 'xs swap nth must cy lim escape shade) 'calc let
+  ('cy let 'y let 'x let 'b let 'a let
+    a b x y n agree (a b plus 0.5 mul GUESS plus) (x cy calc) if) 'guess let
 
-  xspan W itof div 'xscale let
-  TX xspan 0.5 mul sub 'xoff let
-  span H itof div 'yscale let
-  TY span 0.5 mul sub 'yoff let
+  old
+  j H mul STEPS div  j 1 plus H mul STEPS div range ('y let
+    'rows y nth must 'r let
+    'ys y nth must 'cy let
+    r W mul P plus 'base let
+    r 0 ge 'kept let
+    y 0 gt ('rows y 1 sub nth must) (-1) if 'up let
+    y H 1 sub lt ('rows y 1 plus nth must) (-1) if 'down let
+    up 0 ge down 0 ge and 'vert let
+    up W mul P plus 'ubase let
+    down W mul P plus 'dbase let
+    -- A kept pixel, most of them, takes one branch and no let.
+    0 W range (
+      dup 'cols swap nth must
+      dup 0 ge kept and ('old swap base plus nth must nip) (
+        'c let 'x let
+        kept (
+          'left x nth must 'lc let
+          'right x nth must 'rc let
+          lc 0 ge rc 0 ge and
+          ('old base lc plus nth must 'old base rc plus nth must x y cy guess)
+          (x cy calc) if
+        ) (
+          vert c 0 ge and
+          ('old ubase c plus nth must 'old dbase c plus nth must x y cy guess)
+          (x cy calc) if
+        ) if
+      ) if
+    ) each
+  ) each flatten cat
+  -- The last slice completes keyframe n, which replaces keyframe k.
+  j STEPS 1 sub eq (P W H mul plus drop-n xs ys cat swap cat) () if
+) 'step let
 
-  0 xscale xoff yscale yoff render-row
-) show
+-- -> state: keyframe 0, ready for tick 0. The build before tick 0 makes it
+-- from coordinates far from every view, 1000.0, so it keeps nothing.
+(0 STEPS range
+ 0 P W H mul plus range (drop 1000.0) each
+ ('j let DEEP 2 mul 1 sub STEPS mul j plus (drop drop drop) step) fold) 'start let
+
+isheadless (
+  -- -0.5 lies in the cardioid, -1 in the bulb, and -2 stays bounded outside
+  -- both. 1 escapes at |z_5| = 677, so mu = 6 - log2(ln 677).
+  [-0.5 -1.0 -2.0] (0.0 100 escape -1.0 eq) each 1 (and) fold assert
+  1.0 0.0 100 escape 3.29556 sub fabs 0.0001 lt assert
+
+  -- Computed levels 0.4 apart agree except at about 1 pixel in 8; 0.6 apart
+  -- never; guesses never.
+  0 800 range (1.0 1.4 rot 3 5 agree) each sum 'yes let
+  yes 650 gt yes 750 lt and assert
+  0 800 range (1.0 1.6 rot 3 5 agree) each sum 0 eq assert
+  0 800 range (GUESS 1.0 plus GUESS 1.2 plus rot 3 5 agree) each sum 0 eq assert
+
+  -- Columns of keyframes 0 to 59, then back out to 40: once the zoom in has
+  -- settled, each keyframe makes at most 80 new ones. The least is
+  -- W (1 - 1/F), in or out; a bug that loses kept lines makes several times
+  -- that. Each kept one stays within a pixel, measured as lines measures it.
+  0 60 range  40 59 range reverse cat 'path let
+  0 W range (drop 1000.0) each
+  0 (dup path len lt) ('i let 'prev let
+    'path i nth must scale 's let
+    prev TX s lines 'xs let 'cols let
+    i 20 gt (cols (0 lt) filter len 80 le assert) () if
+    0 W range ('c let 'xs c nth must TX sub s div W 1 sub itof 0.5 mul plus  c itof sub fabs 1.0 lt) each
+    1 (and) fold assert
+    xs i 1 plus) while drop drop
+
+  -- The view turns at both ends (the list is for DEEP 120), and each tick's
+  -- view is its keyframe enlarged by F^0 to F^1, so no tween shows an edge.
+  [0 119 120 121 239 240 241] (need) each [0 119 119 118 0 0 1] eq assert
+  0 DEEP STEPS mul 2 mul range ('t let
+    t depth t STEPS div need STEPS mul sub 'e let e 0 ge e STEPS le and) each
+  1 (and) fold assert
+
+  -- state lim -> cerr gerr: for every 97th pixel of the keyframe in state,
+  -- how far its level is from the level at its coordinates at lim steps;
+  -- computed and kept pixels in cerr, guesses in gerr.
+  0 W H mul 97 div range (97 mul) each 'probe let
+  ('lim let 'st let
+    probe (W divmod 'y let 'x let 'st x nth must 'st W y plus nth must lim escape shade) each
+    probe (P plus 'st swap nth must) each zip 'pairs let
+    ('pr let 'pr 1 nth must dup GUESS ge (GUESS sub) () if 'pr 0 nth must sub fabs) 'miss let
+    pairs ('pr let 'pr 1 nth must GUESS lt) filter (miss) each
+    pairs ('pr let 'pr 1 nth must GUESS ge) filter (miss) each) 'errors let
+  -- i count t k -> the coordinate of new line i of an axis of keyframe k
+  ('k let 't let 'count let itof count 1 sub itof 0.5 mul sub k scale mul t plus) 'grid let
+
+  -- Ticks 0 to 3 build keyframe 1 from keyframe 0, at 108 steps. A kept or
+  -- computed pixel matches, except where keyframe 0's 100 steps left a pixel
+  -- bounded: at most 1%. Guesses exist, only on new lines (at most 1 - 1/F^2
+  -- of the pixels), and at most 5% of them are off by more than half a
+  -- level. They lie on new columns and on new rows, on keyframe 1's grid.
+  start 0 (dup 4 lt) ('k let k (drop drop drop) step k 1 plus) while drop 'm let
+  m len P W H mul plus eq assert
+  m 108 errors 'gerr let 'cerr let
+  cerr (0.0 gt) filter len 100 mul  cerr len  le assert
+  gerr len 0 gt assert
+  gerr len itof  probe len itof 1.0 1.0 F F mul div sub mul  le assert
+  gerr (0.5 gt) filter len 100 mul  gerr len 5 mul  le assert
+  probe ('p let 'm P p plus nth must GUESS ge  'm p W mod nth must  p W mod W TX 1 grid eq  and) each sum 0 gt assert
+  probe ('p let 'm P p plus nth must GUESS ge  'm W p W div plus nth must  p W div H TY 1 grid eq  and) each sum 0 gt assert
+
+  -- e -> a plot that asserts that a tick draws keyframe 1 enlarged by
+  -- F^(e / STEPS): pixel i of an axis shows line round((i - mid) / grow + mid).
+  ('e let F e itof STEPS itof div fpow 'g let
+    ('lv let 'py let 'px let
+      px itof W 1 sub itof 0.5 mul sub g div W 1 sub itof 0.5 mul plus fround ftoi
+      py itof H 1 sub itof 0.5 mul sub g div H 1 sub itof 0.5 mul plus fround ftoi
+      W mul plus P plus 'm swap nth must
+      'BAYER py 7 band 8 mul px 7 band plus nth must plus ffloor ftoi 3 band
+      lv eq assert)) 'drawn let
+  -- Zooming in, ticks 4 and 6 draw keyframe 1 enlarged by F^0 and F^(1/2).
+  m 4 0 drawn step 5 (drop drop drop) step 6 2 drawn step drop
+
+  -- Zooming out, build 2 DEEP mul 2 sub draws keyframe 1 enlarged by F^1,
+  -- F^(3/4) and so on, and makes keyframe 0 from it. Its kept pixels ran 108
+  -- steps, not 100: at most 1% of computed and kept pixels are off.
+  DEEP 2 mul 2 sub STEPS mul 'b2 let
+  m b2 STEPS drawn step  b2 1 plus (drop drop drop) step
+  b2 2 plus 2 drawn step  b2 3 plus (drop drop drop) step 'o let
+  o 100 errors 'ogerr let 'ocerr let
+  ocerr (0.0 gt) filter len 100 mul  ocerr len  le assert
+  ogerr (0.5 gt) filter len 100 mul  ogerr len 5 mul  le assert
+  "zoom-selftest-ok" print
+) () if
