@@ -1,3 +1,112 @@
+- [ ] A program the lexer cannot read, or a value past a limit, stops with a
+      message that names the cause (audit 2026-10-05, each case reproduced).
+      Today: a NUL byte ends the program silently (`1 print\0 2 print` prints
+      1 and exits 0); `5incr` runs as `5 incr`, and `0x10` says "unknown word
+      'x10'"; a 400-digit float literal reads as inf; `"/dev/zero" read` grows
+      past 8 GB, and a 30 MB file dies with the generic "stack overflow", as
+      `0 4294967299 range` does; under `ulimit -s 4096`, 20,000 nested `[`
+      crash with SIGSEGV; 20,000 `'node` tags nested through dicts die with "a
+      box that contains itself cannot be freed", and no box is involved;
+      fill-rect truncates int64 coordinates to int (x = 2^32 draws at x = 0)
+      and loops over the unclipped rectangle (1e8 x 1e8 never returns).
+  1. errors.slap first, one case per message below; check each fails against
+     the old binary. The ulimit case goes in suite.py, which can set the limit.
+  2. main: refuse a NUL byte in the source, with its offset.
+  3. lex: after a number, the next byte is whitespace, a bracket or the end;
+     else die with the whole glued run and "write a space after a number". No
+     corpus program glues a number to a word (checked). After strtod, refuse
+     a non-finite float, as the int branch refuses ERANGE.
+  4. prim_read stops at STACK_MAX-1 bytes and dies with the path and the
+     limit. range and a string literal call stack_room with their size, so
+     the message names the word and the slots.
+  5. c_stack_check takes its limit from getrlimit(RLIMIT_STACK) at startup:
+     min(7 MiB, cur - 1 MiB). Below 2 MiB, die at startup with "run ulimit -s
+     8192". Delete the C_STACK_MAX macro.
+  6. deep_copy_values and deep_free_owned say "nesting deeper than 512 levels
+     of box, dict or tag payload" and the fix (flatten it); fix the comment
+     above them.
+  7. fill-rect clips in int64 before its loops, then sets each row with one
+     memset. Test: `slap-sdl --headless` runs a tick that draws a 1e8 x 1e8
+     rect and then fails with a text; the text arrives within the timeout.
+     suite.py builds slap-sdl for it (the resize task needs that build too).
+
+- [ ] You read a slap.c that trusts its checker: nothing checks at runtime
+      what the checker proves (audit 2026-10-05). Decided: delete every guard
+      that only catches a checker bug. About 300,000 fuzzed programs under
+      ASan/UBSan, with live box and dict counters, found no checker hole. A
+      prototype measured -9.3 KB and -71 lines, suite green, speed unchanged.
+      Tradeoff: a future checker bug corrupts memory instead of printing a
+      message. Also cut the prelude's `dec` (0 program uses) and `iseven` (2).
+  1. Delete: the ~35 `expected X, got %s` tag checks in primitives (lists,
+     records, dicts, boxes, tuples, tagged values, the ints of if and filter,
+     string bytes); pop_int, pop_float and pop_sym become plain reads; the
+     int/float mismatch branch of plus, sub, mul and div; every stack
+     underflow check (POP_VAL, POP_BODY, val_start, aux_take, dup, drop,
+     print, dip, push, peek, cat, take-n, at, rec_put, let, if, pthen) and
+     `let: nothing to bind`; the default branches of val_less and val_cmp,
+     and sort's element check; case_body_check and val_text; KEY_MISSING;
+     `case: no clause names`; the `{...}` literal pairing check;
+     record_field's key checks; `dict: probe failed`; `unknown word` in
+     dispatch_word and nth; frame_drop's refs < 0; pop_string_bytes' checks;
+     one_value_above and lend's `consumed value(s) from below`. Then delete
+     the parameters that go dead (val_start's who; the names passed to
+     SEQ_GUARD, REC_PREAMBLE and POP_BODY).
+  2. Keep val_slots' corrupt-value check, with a comment: removing it slows
+     the feed 12%, since the compiler lays out its hot callers differently.
+     Keep every real runtime condition: division by zero, shift counts,
+     bounds in the fused must variants, must on 'no, stack_room and aux
+     overflow, recursion and C-stack limits, ftoi range, bytes 0-255, nesting
+     depth.
+  3. Time make status against the old binary: interleave, minimum of 7.
+  4. Prelude: delete dec and iseven, their expect.slap lines and readme rows.
+     euler/2 and euler/12 write `2 mod 0 eq`.
+  5. claude.md: "Every runtime failure exits nonzero" covers what the checker
+     cannot prove. The KEY_MISSING sentence and "Bodies given to each, fold
+     and mutate must leave exactly one value; the runtime checks" say that
+     the checker proves it.
+
+- [ ] The 600 KB feed renders in 0.69 s, not 0.80 s: `{...} case`, `(pred)
+      (body) while` and `(body) pthen` written in place run from the body, as
+      `(then) (else) if` does (audit 2026-10-05). Measured, minimum of 7
+      interleaved: all three 0.69 s and +26 lines; case and while only 0.73
+      s; pthen moved to the prelude with case in place 0.85 s (with lets 0.88
+      s), so pthen stays in C. The feed pushed 70.7M body slots: pthen 35.7M,
+      case 15.0M, while 14.0M. After the change, 21M.
+  1. Split prim_case into POP_VAL plus case_run(clauses, n, env), prim_pthen
+     into POP_BODY plus pthen_run(body, n, env), and prim_while's loop into
+     while_run(pred, ps, body, bs, env).
+  2. eval_run, at element k: a record followed by prim_case, or a tuple
+     followed by prim_pthen, runs case_run or pthen_run on &body[eo] with ee
+     and skips k+1. Two tuples followed by prim_while run while_run and skip
+     two. Skip any element with VF_DICT. Trap: an in-place tuple's header
+     env is the build-time frame. pthen_run runs eval_in with ee, never
+     eval_body; eval_body gave "unknown word: _xws" on the feed. prim_pthen
+     keeps its choice: the header's env, else the caller's.
+  3. Under --profile, primitives stay unresolved (fn is NULL), so the old
+     path runs there and the profile does not change.
+  4. Time make status against the old binary. claude.md's Evaluator
+     paragraph names the four in-place forms.
+
+- [ ] Every network call gives up after a bounded time, and a slap server
+      listens on loopback only (audit 2026-10-05). Today tcp-recv on a silent
+      peer and tcp-connect to a blackhole (10.255.255.1) block forever, and
+      tcp-listen binds INADDR_ANY. Decided: loopback, hardcoded; recv and
+      send time out after 30 s, connect after 10 s; tcp-accept keeps
+      blocking, since a server waits for clients. Tradeoff: a long-poll
+      client must retry, and a LAN server needs a setting, which enters only
+      when a program needs it.
+  1. Tests in `make test-slow`, since each waits out a timeout: tcp-recv on
+     a silent peer gives 'no within 35 s; tcp-connect to 10.255.255.1 gives
+     'no within 15 s. In make test, run_kv.py: a client at the machine's
+     non-loopback address is refused.
+  2. nosigpipe (every socket passes it) sets SO_RCVTIMEO and SO_SNDTIMEO to
+     30 s. recv and send then fail with EAGAIN; the 'no says "timed out
+     after 30 s".
+  3. prim_tcp_connect: a non-blocking connect and poll(10 s) per address,
+     then blocking again. On expiry: 'no "tcp-connect: timed out after 10 s".
+  4. prim_tcp_listen binds INADDR_LOOPBACK. The readme's tcp section states
+     both.
+
 - [ ] You read a bound list with `i 'xs nth`, and every symbol has one type, sym
       (breaker rounds 14 and 15; simplification review). Decided: nth reads its
       name from the symbol written right before it, as at, into and edit read
@@ -38,6 +147,8 @@
   4. Delete P_NUM and P_ORD, their words in ty_prot_word, and the protocol names
      in ty_prot_name. readme: arithmetic, floats, and the protocol table become
      one sentence on copy. claude.md follows.
+  5. This also ends a silent wrong answer: `[1.5 -1.0 fsqrt 0.5] sort` returns
+     the list unsorted, since nan has no order. sort takes ints only.
 
 - [ ] You choose between read-time and runtime literals from a measured cost
       (simplification review). Today a `[...]` or `{...}` literal is built once,
@@ -91,8 +202,10 @@
      `[(1 plus)] first 'f let (f apply) 'g let 1 g 2 3 g`. Tag-set variables
      print as an unnamed `tagged ..`, so "declares X, but its body is X" can
      show two equal types: name them like row variables. "program too long"
-     prints the whole 160 KB source line. `{'a int | 'r | 's}` silently drops
-     'r: refuse a second `|`.
+     prints the whole 160 KB source line, and its location is the prelude's
+     last line: say "the program has N tokens; the limit is M (TOK_MAX minus
+     K for the prelude and builtins)" at <stdin>. `{'a int | 'r | 's}`
+     silently drops 'r: refuse a second `|`.
   8. `'x [strng lent in] effect` reports "at line 1" in the text, with the caret
      at column 1. Pass the annotation's token to the error, as `ty_err` does for
      words; drop the "at line %d" text. errors.slap: EXPECT-COL on an unknown
@@ -107,6 +220,12 @@
       time". errors.slap: merge "a program redefines ok", "a program redefines
       no" and "a word redefined after a word that calls it" into the "already
       defined" block.
+  11. An int list prints as `str`: `('f let (f apply) each) 'm let 5 [1 2]
+      (plus) m` says "the stack has str". A string is an int list with no
+      flag. Print `str` only for a type made by a string literal or a TYPES
+      entry, with a flag on its K_LIST that ty_unify ignores. Printing `int
+      list` everywhere is wrong: it rewrites 20+ pinned messages such as
+      "'read' takes str".
 
 - [ ] The JSON and XML libraries refuse what they cannot read or write, and say
       where (silent-failure audit; breaker round 15). Accepted today: leading
@@ -216,18 +335,6 @@
 
 ## Blocked on you
 
-- [ ] You read pthen in the prelude, not in C, and the 600 KB feed still renders
-      in under a second (simplification review). Measured:
-      `('pf let 'pd let {'ok (pf apply) 'no (no pd swap)} case) 'pthen let`
-      after default in PRELUDE passes make test, but the feed in make status
-      runs about 23% slower than with prim_pthen (best of 5 on one machine: 1.26
-      s against 1.02 s). The feed scored 1.23 with prim_pthen, so the prelude
-      version puts it at the 1.0 line. Decide: keep pthen in C, or move it and
-      win the time back elsewhere (for example, a faster let or case in
-      eval_body).
-  1. If moved: add the prelude line; delete the TYPES entry, `R(pthen,pthen)`
-     and prim_pthen. make status must still pass.
-
 - [ ] A closure stored in an outer frame's binding is freed when nothing reaches
       it (code review). A cycle is never freed: a closure made by a nested body
       and stored in an outer frame's binding keeps that frame, which keeps the
@@ -261,9 +368,8 @@
       which can split a UTF-8 sequence. Decide: `read` reports why (errno text
       in the 'no payload, e.g. "path: not found"), or programs check existence
       with `ls` of the parent. Recommend the errno text: one change in
-      `prim_read`, and every caller can tell. And for kv-server: a
-      per-connection read timeout, or the readme says it serves one client at a
-      time.
+      `prim_read`, and every caller can tell. The network-timeout task above
+      bounds a silent kv-server client to 30 s.
   1. tests/run_todo.py and run_kv first: a directory, a mode-000 file and a
      write-only file each exit nonzero naming the path; the file keeps its
      bytes.
