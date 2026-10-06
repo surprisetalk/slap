@@ -166,47 +166,6 @@
   4. Migrate with a scratchpad script that moves the key past the body, in
      examples, tests, suite.py's FILL_RECT program, readme and claude.md.
 
-- [ ] You write a program signature in the notation of TYPES, inside the
-      brackets: `(2 mul) [int -> int] effect 'double let`, and `copy` after a
-      type marks a value the body may copy or drop (simplification review).
-      Decided: brackets stay, as `[ ins -> outs ] effect`. Inside, the grammar
-      is TYPES' `( ins -> outs )`: bottom first, `..s` names a rest, and a body
-      type with no rest of its own runs on the word's rest. The five slot
-      modes carry one bit, and `copy` and `auto` have no uses: `lent` becomes
-      `copy` on a type variable, and `own`/`move` become nothing. Every type
-      variable has a name: the type words seq, tuple, rec and tagged go, and
-      list, dict and box always follow their element type. Today each of them
-      makes a fresh unnamed variable, so `[tagged own in  tagged move out]`
-      names two tag sets and says "'h' declares ( ..a tagged .. -> ..a tagged
-      .. ), but its body is ( ..a tagged .. -> ..a tagged .. )". Tradeoff:
-      this reopens "the slot modes stay" (2026-10-04); signatures and forward
-      declarations stay. Every signature lives in tests.
-  1. Tests first; check each fails against the old binary. expect.slap:
-     `(2 mul) [int -> int] effect 'double let 5 double 10 eq assert`;
-     `'triple [int -> int] effect (3 mul) 'triple let`;
-     `(dup) ['a copy -> 'a 'a] effect`. errors.slap: `(dup) ['a -> 'a 'a]
-     effect` says the body needs a copyable value; `(free) [int box copy ->]
-     effect` is an annotation error naming the box; `[int own in] effect` says
-     the notation is `[ ins -> outs ]`; `[tagged -> tagged] effect` says to
-     write `{| 't} either`; `['t -> 't]` on `()` passes a tag set through.
-  2. Parse `[...] effect` with ty_parse_fn over the bracket's tokens, with
-     ty_slot_rest set to the word's rest, as ty_parse_slots sets it. ty_parse
-     accepts `copy` after any type and calls ty_mark_copy, which refuses
-     K_BOX and K_SOCK. Delete ty_parse_slots and the words own, lent, move,
-     auto, in and out. ty_parse loses seq, tuple, rec and tagged, and a bare
-     list, dict or box with no type before it; each says what to write
-     instead. The runtime's skip of `[...] effect` stays.
-  3. Migrate every test signature with a one-off script in the scratchpad:
-     `in` slots in order left of `->`, `out` slots right, and `copy` after a
-     `lent` slot's type variable. seq becomes `'a list`, tuple `( ..a -> ..b
-     )`, rec `{| 'r}`, tagged `{| 't} either`, a bare list `'a list`, each
-     with a name not used elsewhere in its signature. Delete errors.slap
-     cases that test slot words; keep the intent of the rest.
-  4. readme: effect annotations and protocol constraints use the new
-     notation. "A bare list means ..." becomes: every type variable has a
-     name, and one name is one type. The "tuples" section becomes "bodies",
-     the word claude.md uses.
-
 - [ ] You tag a value with any payload, and `'ok`/`'no` are ordinary tags: a
       tagged type lists each tag with its payload, as a record type lists each
       key with its value (simplification review). Today every tag but
@@ -219,14 +178,13 @@
       allows. `{'ok int 'no str} either` is a closed tag set. Gains:
       `{'ok (…) 'no (…) 'retry (…)} case` works, and a program's 'int no
       longer collides with json.slap's. Tradeoff: the checker gains cyclic
-      types, and the runtime trusts it. A signature that names a recursive
-      type needs `as 'j`. Do this after the signature task and the
-      runtime-literals decision: if into becomes replace-only, PRE/ABS go, and
-      records and tag sets have one row shape.
+      types, and the runtime trusts it. Do this after the runtime-literals
+      decision: if into becomes replace-only, PRE/ABS go, and records and tag
+      sets have one row shape. The signature task follows this one; a
+      signature names a recursive type there.
   1. Tests first; check each fails against the old binary. expect.slap: the
      three-clause case above; `5 'n tag` and `"x" 'n tag` in two words that
-     never meet; a signature `[ {'cons {'hd int 'tl 'l} 'nil ()} either as 'l
-     -> int ]` on a list-length word. errors.slap: a mismatch on a recursive
+     never meet. errors.slap: a mismatch on a recursive
      type prints it with `as`. errors.slap cases that pin a payload conflict
      ("conflicts with its payload elsewhere", "unlike its payload elsewhere")
      and "a result is tagged only 'ok or 'no" become expect.slap passes.
@@ -242,15 +200,76 @@
      ty_unify_chain remembers each K_TAG pair it is inside and treats a pair
      met again as unified. ty_copy and ty_subst_at record a term's copy in
      ty_to before they recurse into its parts. ty_show prints a term met again
-     on one path as `'j`, and its first visit as `(… as 'j)`. ty_parse reads
-     `{…} either as 'j`.
+     on one path as `'j`, and its first visit as `(… 'j as)`.
   4. json.slap's and xml.slap's self-tests and tests/scale.slap cover
      recursive data. Then run breaker and fuzz rounds on the ASan build: a
      checker hole shows up as memory damage, not as a message.
   5. readme: tagged unions and the type table lose "one payload type in the
-     whole program" and the result row; recursive data gets one example with
-     `as`. claude.md's Checker paragraph (kinds, ty_tag_payload, K_RES)
+     whole program" and the result row; recursive data gets one example. claude.md's Checker paragraph (kinds, ty_tag_payload, K_RES)
      follows.
+
+- [ ] You write a signature as ordinary data: two lists of type values, ins
+      then outs, as in `(2 mul) [int] [int] effect 'double let` and `'triple
+      [int] [int] effect` (simplification review). Prelude words build types
+      as tagged values, so `[int str] 'sig let sig len print` prints 2.
+      Decided:
+      - Base types are words: int, float, sym, str and socket.
+      - Constructors are their tags: `int 'list tag`, `'a var 'dict tag`,
+        `'a var 'box tag`. dict and box already name value words.
+      - A list holds one type, so a type variable is `'a var`, or `'a copy`
+        when the body may copy or drop it.
+      - A body type is `[ins] [outs] fn`; `[] [] fn` is today's `()`. A named
+        stack rest is `'s rest` at the head of a list, and a sealed one
+        `'s sealed`. A body type with no rest runs on the word's rest, as a
+        body type in a slot does today.
+      - A record type and a tag set are dicts of types, keyed by name:
+        `dict "x" int insert rec` and `dict "ok" int insert "no" str insert
+        either`. Key "_" holds an open rest: `dict "x" int insert "_" 'r var
+        insert rec`. rec is `('rec tag)` and either `('either tag)`, both
+        prelude words: a dict holds one type, so no new primitive is needed.
+        The parser refuses a key given twice, where insert would replace it.
+      - A recursive type is `T 'l as`.
+      - TYPES uses the same notation, as `'name [ins] [outs]`, and the same
+        parser. Nothing evaluates TYPES.
+      The checker reads the two literals before effect as types, as at reads
+      its key, and checks them as ordinary literals too; the runtime skips
+      them there, as it skips `[...] effect` today. Every type variable has a
+      name by construction, so today's `[tagged own in  tagged move out]`,
+      which names two tag sets and says "'h' declares ( ..a tagged .. -> ..a
+      tagged .. ), but its body is ( ..a tagged .. -> ..a tagged .. )",
+      cannot be written. Tradeoffs: this reopens "the slot modes stay"
+      (2026-10-04); signatures and forward declarations stay. Signatures grow:
+      `'each ['s rest 'a var 'list tag ['r sealed 'a var] ['r sealed 'b var]
+      fn] ['s rest 'b var 'list tag]`, and each result in TYPES is
+      `dict "ok" 'a var insert "no" 'b var insert either`. Programs bind str
+      3 times and rest
+      once as local names; those sites get new names. Do this after the
+      tag-payload task (under one payload per tag, json's 'int holds an int
+      and the type 'int holds `()`), the f-words task (copy is the only
+      protocol) and the list/rec task (rec becomes the type word).
+  1. Tests first; check each fails against the old binary. expect.slap:
+     `(2 mul) [int] [int] effect 'double let 5 double 10 eq assert`;
+     `'triple [int] [int] effect (3 mul) 'triple let`; `(dup) ['a copy]
+     ['a var 'a var] effect`; `[int str] len 2 eq assert`; a list-length
+     word declared `[dict "cons" dict "hd" int insert "tl" 'l var insert rec
+     insert "nil" [] [] fn insert either 'l as] [int] effect`.
+     errors.slap: `(dup) ['a var] ['a var 'a var] effect` says the body
+     needs a copyable value; `[int own in] effect` says a signature is two
+     lists of types; `['a] [] effect` says a type variable is `'a var`;
+     `[dict "x" int insert "x" str insert rec] [] effect` says "x" is given
+     twice.
+  2. Prelude: the type words, each a `tag` over its payload.
+  3. Checker: one parser for type literals replaces ty_parse, ty_parse_fn and
+     ty_parse_slots. It accepts only the forms above and names the form it
+     expected. Rewrite TYPES in the new notation. Delete own, lent, move,
+     auto, in, out, `->`, `|`, the type words seq, tuple and tagged, and the
+     `{...}` record and either forms; rec and either are now prelude words.
+  4. Runtime: skip `[...] [...] effect` where it skips `[...] effect` today.
+  5. Migrate every test signature with a one-off script in the scratchpad,
+     and rename the str and rest locals.
+  6. readme: a "types are values" section replaces effect annotations and
+     protocol constraints; the "tuples" section becomes "bodies", the word
+     claude.md uses. claude.md's Checker paragraph (TYPES notation) follows.
 
 - [ ] A tight stack loop runs at the cost of its cheapest primitives: `rot`,
       `if`, `let` and `dip` each cost at most twice `swap` (zoom.slap
