@@ -794,7 +794,7 @@ make status      # every likely failure mode, scored; 1.0 is the minimum pass
 
 `tests/expect.slap` holds the assertions, `tests/errors.slap` every error a program can hit (each case names the message it must print), and `tests/run_*.py` drive the apps from outside: servers over real sockets, CLIs against real files, codecs against their file formats. `tests/suite.py` runs them all.
 
-`make test` builds `slap-sdl` too, since one check runs it headless, so it needs SDL2.
+Where SDL2 is installed, `make test` builds `slap-sdl` too and runs one check on it headless. Without SDL2 it skips that check with a warning, and `make status` fails until SDL2 is installed.
 
 `.githooks/pre-commit` runs `make test` before each commit. Enable it once per clone:
 

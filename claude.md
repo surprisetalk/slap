@@ -17,7 +17,7 @@ A plain run refuses a program that names a word this build lacks (SDL words in `
 ## Tests
 
 ```bash
-make test        # tests/suite.py: every check in parallel, a few seconds; builds slap-sdl too
+make test        # tests/suite.py: every check in parallel, a few seconds; builds slap-sdl where SDL2 is installed
 make test-slow   # the Euler problems in SLOW_EULER (tests/suite.py)
 make status      # every likely failure mode, scored; 1.0 is the minimum pass
 ```

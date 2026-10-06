@@ -36,7 +36,8 @@ slap-wasm: slap.c shell.html
 clean:
 	rm -f slap slap-sdl *.wasm *.js
 	@find . -maxdepth 1 -name '*.html' ! -name 'shell.html' -delete
-test: slap slap-sdl
+# slap-sdl only where SDL2 is installed; without it, tests/suite.py warns and make status fails.
+test: slap $(if $(shell command -v sdl2-config),slap-sdl)
 	@python3 tests/suite.py
 # Euler problems that take seconds each; the list is SLOW_EULER in tests/suite.py.
 test-slow: slap

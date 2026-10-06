@@ -27,6 +27,15 @@ def euler(path):
     )
 
 
+# fill-rect exists only in slap-sdl. A rect this large takes minutes unless it is clipped before it draws.
+FILL_RECT = (
+    "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
+    ' out=$(echo "0 \'tick (drop 0 0 1000000000 1000000000 3 fill-rect \\"drew\\" fail) on (drop) show" | ./slap-sdl --headless 2>&1);'
+    ' test $? -eq 1 && grep -q drew <<<"$out"'
+)
+# Without SDL2, make test leaves out the slap-sdl check and says so; make status fails a condition.
+HAS_SDL = shutil.which("sdl2-config") is not None
+
 DICT = 'dict "k" 1 insert'
 # Each program makes and drops a value 100,000 times. A leak of one dict per pass passes 30 MB.
 # The box program runs 1,000,000 passes: a box's own header is 16 bytes.
@@ -187,12 +196,6 @@ def steps(slow):
                 " && (ulimit -s 1024; out=$(echo '1 print' | ./slap 2>&1); test $? -eq 1 && grep -q 'ulimit -s 8192' <<<\"$out\")",
                 None,
             ),
-            "fill-rect clips a huge rect": (
-                "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
-                ' out=$(echo "0 \'tick (drop 0 0 1000000000 1000000000 3 fill-rect \\"drew\\" fail) on (drop) show" | ./slap-sdl --headless 2>&1);'
-                ' test $? -eq 1 && grep -q drew <<<"$out"',
-                None,
-            ),
             "closed stdout": ("echo '42 print' | ./slap >&-; test $? -eq 1", None),
             "stdout reader quits": (
                 "echo '(1) (1 print) while' | ./slap | head -1 >/dev/null; true",
@@ -211,6 +214,15 @@ def steps(slow):
             "utils": ("python3 tests/run_utils.py", None),
         }
     )
+    if HAS_SDL:
+        out["fill-rect clips a huge rect"] = (FILL_RECT, None)
+    else:
+        print(
+            "suite: warning: sdl2-config is not on PATH, so slap-sdl is not built and the fill-rect check"
+            " does not run. make status fails until SDL2 is installed (brew install sdl2, or"
+            " nix-shell -p SDL2 pkg-config).",
+            file=sys.stderr,
+        )
     for name in ["chip8", "uxn", "maze", "raycast"]:
         out[name] = (
             f"cat examples/{name}.slap examples/{name}-sdl.slap | ./slap --check"
@@ -315,6 +327,12 @@ def status():
     )
     score["slap.c compiles with no warnings."] = (
         1.0 if r.returncode == 0 and "warning" not in r.stderr else 0.0
+    )
+    sdl = HAS_SDL and subprocess.run(["make", "-s", "slap-sdl"], capture_output=True).returncode == 0
+    score["slap-sdl builds and draws headless."] = (
+        1.0
+        if sdl and subprocess.run(["bash", "-c", FILL_RECT], capture_output=True, timeout=TIMEOUT).returncode == 0
+        else 0.0
     )
     feed = os.path.join(SCRATCH, "feed.xml")
     with open(feed, "w") as f:
