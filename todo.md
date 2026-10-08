@@ -153,27 +153,6 @@
      zoom.slap self-test time (`./slap-sdl --headless < examples/zoom.slap`)
      do not get slower.
 
-- [ ] You read why a let-bound body fails at a second stack depth, even when a
-      word, dip or if stands between the body and the failure (code review;
-      breaker rounds 14 and 15). The hint "'f' is a body bound with let" fires
-      only when the body is a direct input of the failing word. Through a word,
-      `[(1 plus)] first 'f let (f apply) 'g let 1 g 2 3 g` reads "'g' takes int
-      / but the stack has int / the stack is shorter than this needs", and
-      `(1 g) 'h let (2 3 g) 'i let h i` reads "one path leaves 2 more values
-      ... a branch, clause, loop pass or recursive call" with no branch.
-      Tried and reverted: a match by stack depth and value kinds names the
-      wrong binding (with f2 behind g and an unrelated f1 bound later at the
-      same depth, the hint names f1) and fires on `[(1 plus)] first 'f let f
-      swap`. A match by node fails too: a word's instance shares no node with
-      the let body, since ty_copy rebuilds a term whose child is not its root.
-  1. errors.slap first, each checked against the old binary: the g case names
-     'f; the f1/f2 case names 'f2 and never 'f1; `f swap` gets no hint.
-  2. While a word's body is checked, record each let-bound body it calls,
-     directly or through another word (tyb index). ty_apply hints only a body
-     that the failing word records.
-  3. When the word's input ends in an empty stack (K_SNIL), say "'g' takes
-     exactly 1 value, but the stack holds 3", not "the stack is shorter".
-
 - [ ] You run a pico8 cart headless for N frames and its screen matches a
       reference render. Decided up front: pico8 first; tic80 reuses the
       interpreter later. The screen has 4 greys, so 16 colours rank-map to 4
@@ -199,52 +178,6 @@
      zepto8).
   9. Then tic80 on the same lua.slap; duskos and decker after.
 
-- [ ] You drag a slap window's edge, and the canvas takes the new size. A new
-      window opens at the size of the screen. Decided: the OS sets the size,
-      and no word changes it. A `'resize` handler takes `w h`. show runs it
-      once before the first tick and again after each change. One canvas pixel
-      is one window point. Tradeoff: a program that draws for 640x480 fills
-      only the top-left corner of a large window, since pixel and fill-rect
-      clip.
-  1. errors.slap first: `'resize (drop) on (drop) show` says that the handler
-     must take the event's w and h.
-  2. Checker (`S_ON`): add 'resize to the event list and its message. Its
-     handler takes two ints, as a mouse handler does (`ty_on_mouse`).
-  3. Runtime: the canvas and the pixel buffer become heap blocks sized by
-     `canvas_w` and `canvas_h`. sdl_init opens the window at
-     SDL_GetDisplayUsableBounds. On SDL_WINDOWEVENT_SIZE_CHANGED, reallocate
-     the canvas (cleared to 0), the buffer and the texture, then run the
-     'resize handlers. Delete CANVAS_W, CANVAS_H and SDL_RenderSetLogicalSize.
-  4. Headless runs 'resize once with 640 480 before tick 0. Test: suite.py
-     builds slap-sdl and runs headless a program whose 'resize handler prints
-     w and h and whose 'tick handler ends the run with fail. It expects
-     `640 480` and the fail text.
-  5. wasm: shell.html sizes the canvas to the viewport, not 640x480. Then
-     sdl_init asks for SDL_WINDOW_RESIZABLE on wasm too, and the comment that
-     explains why it does not goes.
-  6. Audit each example that hard-codes the size
-     (`grep -ln '640\|480' examples/*.slap`): it reads the 'resize size or
-     keeps its 640x480 region. The readme's SDL section and slap-wasm
-     paragraph follow.
-
-- [ ] You save a slap value to a file as CBOR and read it back unchanged (the
-      lofi apps store everything in CBOR). Decided: examples/lib/cbor.slap
-      gives encoders (`ce-*`) and decoders (`cd-*`) in the shape of
-      json.slap's `je-*` and `jd-*`, over byte lists. The encoder writes the
-      shortest head for each int and length; floats are always float64. The
-      decoder refuses what the apps never write: tags, indefinite lengths,
-      simple values other than false, true and null, a repeated map key, and
-      trailing bytes. Each refusal is a 'no with the byte offset and the byte
-      found.
-  1. Tests first: RFC 8949 Appendix A lists values beside their hex. Each row
-     in scope becomes two assertions: decode the hex, and encode the value.
-  2. Add `float-bits ( float -> int )` and `bits-float ( int -> float )` to
-     TYPES, a memcpy each: no word gives a float's IEEE bits. The decoder reads
-     float16, float32 and float64.
-  3. An int past the int64 range is a 'no, not a wrapped value.
-  4. suite.py runs cbor.slap's self-test, as it runs the other libraries. The
-     readme gets a section beside json.
-
 - [ ] You type slap at a prompt in the terminal and see the stack after each
       line ("a nice slap shell"). Decided: there are two shells, one in the
       terminal and one in sauce (shell, below). Both run one loop in slap.c,
@@ -255,6 +188,33 @@
      the global frame persist across lines. An error discards only its line.
 
 ## Blocked on you
+
+- [ ] You read why a let-bound body fails at a second stack depth when a
+      word, dip, if or apply stands between the body and the failure (code
+      review; breaker rounds 14 and 15). Done: a word whose input ends in an
+      empty stack says "'g' takes exactly 1 value, but the stack holds 3". The
+      hint "'f' is a body bound with let" still fires only when the body is a
+      direct input of the failing word. Two designs were built and reverted. A
+      match by stack depth named an unrelated binding. A per-word record of the
+      let-bound names a body runs broke three breaker rounds in a row (dip and
+      if, apply on a body, a branch mismatch blamed on the body, a word that
+      takes nothing); it matched message text with sscanf and kept tyb
+      indexes past their scope. The gap underneath: the checker does not
+      record which use bound a stack variable. Decide:
+      - Provenance: when ty_unify binds the input rest of a let-bound body,
+        it records that binding's tyb index on the variable. A depth failure
+        names the binding whose rest it reaches. Cost: one int per Ty node
+        and a rule in ty_bind.
+      - Drop the hint through words: "takes exactly N values" already says
+        the word runs at one depth.
+  1. If provenance: errors.slap first, each checked against the old binary:
+     `[(1 plus)] first 'f let (f apply) 'g let 1 g 2 3 g` names 'f; the
+     f1/f2 program (`[(1 plus)] first 'f2 let (f2 apply) 'g let [(2 plus)]
+     first 'f1 let 1 f1 apply drop 1 g 2 3 g`) names 'f2 and never 'f1;
+     `(1 g) 'h let (2 3 g) 'i let h i`, `1 g 1 2 3 (g) dip`, `1 g 2 3 (g)
+     (g) if` and `(1 g (2 3 g) apply) 'z let z` name 'f; `(dup 0 lt (g)
+     (drop) if) 'r let 1 r` stays a branch error. suite.py already checks
+     that `f swap` gets no hint.
 
 - [ ] A closure stored in an outer frame's binding is freed when nothing reaches
       it (code review). A cycle is never freed: a closure made by a nested body
@@ -289,8 +249,8 @@
       which can split a UTF-8 sequence. Decide: `read` reports why (errno text
       in the 'no payload, e.g. "path: not found"), or programs check existence
       with `ls` of the parent. Recommend the errno text: one change in
-      `prim_read`, and every caller can tell. The network-timeout task above
-      bounds a silent kv-server client to 30 s.
+      `prim_read`, and every caller can tell. tcp-recv times out after 30 s, so
+      a silent kv-server client blocks the others for at most 30 s.
   1. tests/run_todo.py and run_kv first: a directory, a mode-000 file and a
      write-only file each exit nonzero naming the path; the file keeps its
      bytes.
@@ -336,7 +296,7 @@
       working copy; publish sequels, not incremental improvements. Write the
       apps in slap. slap-sdl hosts them first; wasm and an interpreter in
       Swift (slap.swift) that loads the ROMs come later. The notes name the
-      first release "slap 0". The apps store everything in CBOR (task above)
+      first release "slap 0". The apps store everything in CBOR (examples/lib/cbor.slap)
       and share a charmbracelet-like UI. A dir app opens a general thing. A
       file app opens one specific thing, and it is always a viewer and an
       editor. Decide: the first app; what a file app opens with no subject

@@ -48,6 +48,20 @@ BAD_COLOR = (
     ' out=$(echo "0 (drop ${c%%:*}) \'tick on (drop) show" | ./slap-sdl --headless 2>&1);'
     ' test $? -eq 1 && grep -qF "${c#*:}" <<<"$out" || exit 1; done'
 )
+# A headless run sends 'resize 640 480 once before tick 0.
+RESIZE = (
+    "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
+    " e=$(mktemp); trap 'rm -f $e' EXIT;"
+    ' out=$(echo "(swap print print) \'resize on 0 (drop \\"tick\\" fail) \'tick on (drop) show" | ./slap-sdl --headless 2>$e);'
+    ' test $? -eq 1 && test "$(tr "\\n" " " <<<"$out")" = "640 480 " && grep -q tick $e'
+)
+# Drawing before show has no canvas to draw on, so it dies.
+NO_CANVAS = (
+    "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
+    " for c in '0 0 1 pixel:pixel: no canvas yet' '1 clear:clear: no canvas yet' '0 0 1 1 1 fill-rect:fill-rect: no canvas yet'; do"
+    ' out=$(echo "${c%%:*} 0 (drop) \'tick on (drop) show" | ./slap-sdl --headless 2>&1);'
+    ' test $? -eq 1 && grep -qF "${c#*:}" <<<"$out" || exit 1; done'
+)
 # Without SDL2, make test leaves out the slap-sdl check and says so; make status fails a condition.
 HAS_SDL = shutil.which("sdl2-config") is not None
 
@@ -259,9 +273,11 @@ def steps(slow):
             ),
             "writers refuse": (
                 refuses(
-                    ("strings", "parse", "json", "xml", "rss"),
+                    ("strings", "parse", "json", "xml", "rss", "cbor"),
                     [
                         ("""[] {} "a" 'name into 1 je-int 'value into push {} "a" 'name into 2 je-int 'value into push je-obj print""", 'json: je-obj: duplicate key "a"'),
+                        ("""[] {} "a" 'name into 1 ce-int 'value into push {} "a" 'name into 2 ce-int 'value into push ce-map print""", 'cbor: ce-map: duplicate key "a"'),
+                        ("""2 ce-bool print""", 'cbor: ce-bool: expected 0 or 1, got 2'),
                         (""""r" [] {} "x" 'name into "1" 'value into push {} "x" 'name into "2" 'value into push [] xe-elem xml-render print""", 'xml: duplicate attribute "x" in <r>'),
                         (""""r" [] {} "x y" 'name into "1" 'value into push [] xe-elem xml-render print""", 'xml: attribute name "x y" in <r> is not an XML name'),
                         (""""" [] [] xe-elem xml-render print""", 'xml: element name "" is not an XML name'),
@@ -292,6 +308,10 @@ def steps(slow):
             ),
             "a plain underflow through a let-bound body gets no let hint": (
                 "out=$(printf \"[(1 plus)] first 'f let (f apply) 'g let g\\n\" | ./slap 2>&1); test $? -eq 1 && grep -q 'but the stack has nothing' <<<\"$out\" && ! grep -q 'bound with let' <<<\"$out\"",
+                None,
+            ),
+            "a stack swap of a let-bound body gets no let hint": (
+                "out=$(printf \"[(1 plus)] first 'f let f swap\\n\" | ./slap 2>&1); test $? -eq 1 && grep -q \"'swap' takes\" <<<\"$out\" && ! grep -q 'bound with let' <<<\"$out\"",
                 None,
             ),
             "an error's stack dump cuts a long string": (
@@ -341,6 +361,8 @@ def steps(slow):
     if HAS_SDL:
         out["fill-rect clips a huge rect"] = (FILL_RECT, None)
         out["a color outside 0-3 dies"] = (BAD_COLOR, None)
+        out["drawing before show dies"] = (NO_CANVAS, None)
+        out["headless runs 'resize with 640 480 first"] = (RESIZE, None)
     else:
         print(
             "suite: warning: sdl2-config is not on PATH, so slap-sdl is not built and the fill-rect check"
@@ -359,12 +381,13 @@ def steps(slow):
     for combo in [
         ("icn", "ufx"),
         ("strings", "parse", "json"),
+        ("strings", "cbor"),
         ("strings", "http"),
         ("strings", "parse", "xml", "rss"),
     ]:
         out["lib/" + "+".join(combo)] = (f"cat {lib(*combo)} | ./slap", None)
     out["scale"] = (
-        f"cat {lib('strings', 'parse', 'json', 'xml', 'rss', 'http')} tests/scale.slap | ./slap",
+        f"cat {lib('strings', 'parse', 'json', 'xml', 'rss', 'http', 'cbor')} tests/scale.slap | ./slap",
         None,
     )
     for name in [

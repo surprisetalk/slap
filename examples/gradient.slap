@@ -1,26 +1,19 @@
--- Fantasy console: draw a gradient
+-- Fantasy console: a gradient that fills the window
 -- Run with: ./slap-sdl < examples/gradient.slap
 
--- model is just a frame counter
-0
+-- model is the canvas size
+{'w 0 'h 0}
 
--- on tick: increment model
-(drop 1 plus) 'tick on
+-- on resize: keep the new size. show runs this once before the first frame
+-- and again each time the window changes size.
+('rh let 'rw let rw 'w into rh 'h into) 'resize on
 
--- render: draw gradient based on model
-(
-  drop  -- drop the model copy from show's dup
-  0 (dup 480 lt) (
-    0 (dup 640 lt) (
-      -- stack: model y x
-      over over swap    -- model y x | x y
-      over over         -- model y x | x y x y
-      plus 4 mod        -- model y x | x y color
-      pixel             -- model y x
-      1 plus            -- model y x+1
-    ) while
-    drop                -- model y  (drop x=640)
-    1 plus              -- model y+1
-  ) while
-  drop                  -- model  (drop y=480)
+-- render: four diagonal bands, black at the top left to white at the bottom
+-- right. Band c holds the pixels whose x + y falls in [c*B, (c+1)*B), so each
+-- row is four fill-rects; pixel by pixel, a full-screen canvas is too slow.
+('m let m 'w at 'W let m 'h at 'H let
+  W H plus 4 div 1 plus 'B let
+  0 (dup H lt) ('y let
+    0 (dup 4 lt) ('c let c B mul y sub y B 1 c fill-rect c 1 plus) while drop
+    y 1 plus) while drop
 ) show

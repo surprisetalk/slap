@@ -933,7 +933,7 @@ static const char *TYPES =
     "'mod ( int int -> int ) 'band ( int int -> int ) 'bor ( int int -> int ) 'bxor ( int int -> int )\n"
     "'shl ( int int -> int ) 'shr ( int int -> int ) 'and ( int int -> int ) 'or ( int int -> int )\n"
     "'eq ( 'a 'a -> int ) 'lt ( int int -> int ) 'flt ( float float -> int )\n"
-    "'itof ( int -> float ) 'ftoi ( float -> int ) 'fsqrt ( float -> float ) 'ffloor ( float -> float ) 'fround ( float -> float )\n"
+    "'itof ( int -> float ) 'ftoi ( float -> int ) 'float-bits ( float -> int ) 'bits-float ( int -> float ) 'fsqrt ( float -> float ) 'ffloor ( float -> float ) 'fround ( float -> float )\n"
     "'fexp ( float -> float ) 'flog ( float -> float ) 'fpow ( float float -> float ) 'fatan2 ( float float -> float )\n"
     "'print ( 'a -> ) 'assert ( int -> ) 'millis ( -> int ) 'datetime ( -> int list ) 'random ( int -> int ) 'isheadless ( -> int )\n"
     "'apply ( ..s ( ..s -> ..t ) -> ..t ) 'dip ( ..s 'x ( ..s -> ..t ) -> ..t 'x )\n"
@@ -1215,6 +1215,7 @@ static void ty_apply(int scheme, const char *who, int line, int user) {
         char want[512], before[512]; int g = f, n = 0;
         for (int x = ty_find(ty[g].a); ty[x].kind == K_SCONS && n < ty_n; x = ty_find(ty[x].b)) n++;
         ty_show_top(want, sizeof want, ty[g].a, n);
+        int tail = ty[ty_stack_tail(ty[f].a)].kind;
         memcpy(ty + n0, failed, (size_t)n1 * sizeof(Ty)); free(failed); ty_show_top(before, sizeof before, ty_cur, n);
         /* A value bound with let has one type, so once a use fixes a bound body's stack depth, it runs only there. */
         char hint[512] = "";
@@ -1224,8 +1225,14 @@ static void ty_apply(int scheme, const char *who, int line, int user) {
             for (int b = tyb_n - 1; b >= 0; b--) if (!tyb[b].word && ty_find(tyb[b].ty) == v) {
                 snprintf(hint, sizeof hint, "\n    '%s' is a body bound with let, and a body bound with let runs at one stack depth. Bound with its body written in place, `(...) '%s let`, it is a word, which runs at any depth.", sym_name(tyb[b].sym), sym_name(tyb[b].sym)); break; }
         }
+        /* A word whose input ends in an empty stack takes exactly its inputs, so a longer stack fails it too. */
+        int m = 0, exact = 0;
+        for (int x = ty_find(ty_cur); ty[x].kind == K_SCONS && m < ty_n; x = ty_find(ty[x].b)) m++;
+        if (tail == K_SNIL && m > n && !strncmp(ty_why, "the stack is shorter", 20)) { exact = 1;
+            snprintf(ty_why, sizeof ty_why, "'%s' takes exactly %d value%s, but the stack holds %s%d", who, n, n == 1 ? "" : "s", ty[ty_stack_tail(ty_cur)].kind == K_SNIL ? "" : "at least ", m); }
         if (ty_literal && !strncmp(ty_why, "the stack is shorter", 20)) snprintf(ty_why, sizeof ty_why, "the code in a [...] or {...} literal starts from an empty stack, so it cannot take values from below the literal");
         if (n) ty_err(line, "'%s' takes %s\n    but the stack has %s\n    %s.%s", who, want, before, ty_why, hint);
+        else if (exact) ty_err(line, "%s.%s", ty_why, hint);
         else ty_err(line, "'%s' takes nothing\n    %s.%s", who, ty_why, hint);
         ty_cur = ty[f].b; return;
     }
@@ -1516,12 +1523,12 @@ static void ty_range(Token *toks, int i, int end) {
                 int ev = ty_pop(), h = ty_pop(), l = ty_sym_name(ev);
                 if (l < 0) { ty_err(line, "on needs its event written right before it, as in `(…) 'tick on`."); break; }
                 const char *en = sym_name(l);
-                if (strcmp(en, "tick") && strcmp(en, "keydown") && strcmp(en, "keyup") && strcmp(en, "mousedown") && strcmp(en, "mouseup") && strcmp(en, "mousemove")) {
-                    ty_err(line, "on has no event '%s. The events are 'tick 'keydown 'keyup 'mousedown 'mouseup 'mousemove.", en); break; }
+                if (strcmp(en, "tick") && strcmp(en, "keydown") && strcmp(en, "keyup") && strcmp(en, "mousedown") && strcmp(en, "mouseup") && strcmp(en, "mousemove") && strcmp(en, "resize")) {
+                    ty_err(line, "on has no event '%s. The events are 'tick 'keydown 'keyup 'mousedown 'mouseup 'mousemove 'resize.", en); break; }
                 if (ty_body_depth) { ty_err(line, "on registers a handler for the whole program, so it runs at the top level, not inside a body."); break; }
                 if (ty_shown) { ty_err(line, "this handler is registered after show starts the event loop, so it never runs. Register it before show."); break; }
                 if (ty_on_n == 16) die("type checker: more than 16 'on' handlers");
-                ty_on[ty_on_n] = h; ty_on_line[ty_on_n] = line; ty_on_mouse[ty_on_n++] = strncmp(en, "mouse", 5) == 0; break;
+                ty_on[ty_on_n] = h; ty_on_line[ty_on_n] = line; ty_on_mouse[ty_on_n++] = !strcmp(en, "resize") ? 2 : strncmp(en, "mouse", 5) == 0; break;
             }
             if (w == S_SHOW) {
                 /* Every handler and render run on the stack below show: a handler takes the event's ints
@@ -1534,7 +1541,7 @@ static void ty_range(Token *toks, int i, int end) {
                 for (int k = 0; k < ty_on_n; k++) {
                     int in = ty_new(K_SCONS, ty_new(K_INT, 0, 0, 0), below, 0);
                     if (ty_on_mouse[k]) in = ty_new(K_SCONS, ty_new(K_INT, 0, 0, 0), in, 0);
-                    if (ty_unify(ty_on[k], ty_new(K_FN, in, below, 0))) ty_err(ty_on_line[k], "this handler must take the event's %s and leave the stack below show as it was: %s.", ty_on_mouse[k] ? "x and y" : "int", ty_why);
+                    if (ty_unify(ty_on[k], ty_new(K_FN, in, below, 0))) ty_err(ty_on_line[k], "this handler must take the event's %s and leave the stack below show as it was: %s.", ty_on_mouse[k] ? (ty_on_mouse[k] == 2 ? "w and h" : "x and y") : "int", ty_why);
                 }
                 if (ty_unify(render, ty_new(K_FN, ty_new(K_SCONS, top, below, 0), below, 0))) ty_err(line, "show's render body takes a copy of the top value and leaves the stack as it was: %s.", ty_why);
                 ty_cur = ty_new(K_SVAR, 0, 0, 0); break;
@@ -1767,6 +1774,8 @@ static void prim_itof(Frame *e){(void)e;spush(val_float((double)pop_int()));}
 static void prim_ftoi(Frame *e){(void)e;double f=pop_float();
     if(!(f>=-9223372036854775808.0&&f<9223372036854775808.0)) die("ftoi: %g does not fit in an int",f);
     spush(val_int((int64_t)f));}
+static void prim_float_bits(Frame *e){(void)e;double f=pop_float();int64_t b;memcpy(&b,&f,8);spush(val_int(b));}
+static void prim_bits_float(Frame *e){(void)e;int64_t b=pop_int();double f;memcpy(&f,&b,8);spush(val_float(f));}
 #define FLOAT1(nm,fn) static void prim_##nm(Frame *e){(void)e;spush(val_float(fn(pop_float())));}
 FLOAT1(fsqrt,sqrt)
 FLOAT1(ffloor,floor) FLOAT1(fround,round) FLOAT1(fexp,exp) FLOAT1(flog,log)
@@ -2413,27 +2422,31 @@ static const char *PRELUDE =
 #ifdef __APPLE__
 #include <objc/message.h>
 #endif
-#define CANVAS_W 640
-#define CANVAS_H 480
-static uint8_t canvas[CANVAS_W*CANVAS_H];
+static uint8_t *canvas=NULL,*rgb=NULL; static int canvas_w=-1,canvas_h=-1;
 static SDL_Window *sdl_window=NULL; static SDL_Renderer *sdl_renderer=NULL; static SDL_Texture *sdl_texture=NULL;
 #define MAX_HANDLERS 16
 static struct{uint32_t event_sym;Value *handler_body;int handler_slots;} event_handlers[MAX_HANDLERS];
 static int handler_count=0;
 static Value *render_body=NULL; static int render_slots=0;
 static uint8_t gray_lut[4]={0,85,170,255};
+/* A window size of 0 in either axis keeps a 0-pixel canvas: pixel and fill-rect clip against it. */
+static void canvas_alloc(int w,int h) {
+    free(canvas);free(rgb);canvas=rgb=NULL; if(sdl_texture){SDL_DestroyTexture(sdl_texture);sdl_texture=NULL;}
+    if(w<=0||h<=0){canvas_w=canvas_h=0;return;}
+    size_t n=(size_t)w*(size_t)h;
+    canvas=calloc(n,1); rgb=malloc(n*3);
+    if(!canvas||!rgb) die("canvas: out of memory for a %dx%d canvas (%zu bytes)",w,h,n*4);
+    canvas_w=w; canvas_h=h;
+    if(sdl_renderer){
+        sdl_texture=SDL_CreateTexture(sdl_renderer,SDL_PIXELFORMAT_RGB24,SDL_TEXTUREACCESS_STREAMING,w,h);
+        if(!sdl_texture) die("SDL_CreateTexture: %dx%d canvas: %s",w,h,SDL_GetError());
+    }
+}
 static void sdl_init(void) {
     if(sdl_window) return;
     if(SDL_Init(SDL_INIT_VIDEO)<0) die("SDL_Init: %s",SDL_GetError());
-    /* RESIZABLE tells emscripten's SDL2 to track the canvas's CSS box, which is
-       unsized in shell.html — the canvas collapses to 3x3. The web canvas is
-       fixed at CANVAS_W x CANVAS_H anyway, so only ask for it on desktop. */
-#ifdef __EMSCRIPTEN__
-    Uint32 win_flags=SDL_WINDOW_BORDERLESS;
-#else
-    Uint32 win_flags=SDL_WINDOW_BORDERLESS|SDL_WINDOW_RESIZABLE;
-#endif
-    sdl_window=SDL_CreateWindow("slap",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,CANVAS_W,CANVAS_H,win_flags);
+    SDL_Rect ub; if(SDL_GetDisplayUsableBounds(0,&ub)<0) die("SDL_GetDisplayUsableBounds: %s",SDL_GetError());
+    sdl_window=SDL_CreateWindow("slap",ub.x,ub.y,ub.w,ub.h,SDL_WINDOW_BORDERLESS|SDL_WINDOW_RESIZABLE);
     if(!sdl_window) die("SDL_CreateWindow: %s",SDL_GetError());
 #ifdef __APPLE__
     SDL_SysWMinfo wminfo; SDL_VERSION(&wminfo.version);
@@ -2444,31 +2457,31 @@ static void sdl_init(void) {
 #endif
     sdl_renderer=SDL_CreateRenderer(sdl_window,-1,SDL_RENDERER_ACCELERATED);
     if(!sdl_renderer) die("SDL_CreateRenderer: %s",SDL_GetError());
-    SDL_RenderSetLogicalSize(sdl_renderer,CANVAS_W,CANVAS_H);
-    sdl_texture=SDL_CreateTexture(sdl_renderer,SDL_PIXELFORMAT_RGB24,SDL_TEXTUREACCESS_STREAMING,CANVAS_W,CANVAS_H);
-    if(!sdl_texture) die("SDL_CreateTexture: %s",SDL_GetError());
-    memset(canvas,0,sizeof(canvas));
+    int w,h; SDL_GetWindowSize(sdl_window,&w,&h); canvas_alloc(w,h);
 }
 static void sdl_present(void) {
-    static uint8_t pixels[CANVAS_W*CANVAS_H*3];
-    for(int i=0;i<CANVAS_W*CANVAS_H;i++){uint8_t g=gray_lut[canvas[i]&3];pixels[i*3]=pixels[i*3+1]=pixels[i*3+2]=g;}
-    SDL_UpdateTexture(sdl_texture,NULL,pixels,CANVAS_W*3);
-    SDL_RenderClear(sdl_renderer);SDL_RenderCopy(sdl_renderer,sdl_texture,NULL,NULL);SDL_RenderPresent(sdl_renderer);
+    SDL_RenderClear(sdl_renderer);
+    if(sdl_texture){
+        for(int i=0;i<canvas_w*canvas_h;i++){uint8_t g=gray_lut[canvas[i]&3];rgb[i*3]=rgb[i*3+1]=rgb[i*3+2]=g;}
+        SDL_UpdateTexture(sdl_texture,NULL,rgb,canvas_w*3);SDL_RenderCopy(sdl_renderer,sdl_texture,NULL,NULL);}
+    SDL_RenderPresent(sdl_renderer);
 }
 static int64_t pop_color(const char *word){int64_t c=pop_int();if(c<0||c>3)die("%s: color %lld is not 0-3",word,(long long)c);return c;}
-static void prim_clear(Frame *e){(void)e;memset(canvas,(int)pop_color("clear"),sizeof(canvas));}
-static void prim_pixel(Frame *e){(void)e;int64_t color=pop_color("pixel"),y=pop_int(),x=pop_int();if(x>=0&&x<CANVAS_W&&y>=0&&y<CANVAS_H)canvas[y*CANVAS_W+x]=(uint8_t)color;}
+static void canvas_need(const char *w){if(canvas_w<0)die("%s: no canvas yet; the canvas exists once show starts, so draw in show's render body or in a handler",w);}
+static void prim_clear(Frame *e){(void)e;int c=(int)pop_color("clear");canvas_need("clear");if(canvas)memset(canvas,c,(size_t)canvas_w*(size_t)canvas_h);}
+static void prim_pixel(Frame *e){(void)e;int64_t color=pop_color("pixel"),y=pop_int(),x=pop_int();canvas_need("pixel");if(x>=0&&x<canvas_w&&y>=0&&y<canvas_h)canvas[y*canvas_w+x]=(uint8_t)color;}
 /* Clipped in int64 before it draws, so a rect far off the canvas costs nothing. w and h are positive
    there, so x+w and y+h can only overflow upward. */
 static void prim_fill_rect(Frame *e){(void)e;int64_t c=pop_color("fill-rect"),h=pop_int(),w=pop_int(),y=pop_int(),x=pop_int(),xe,ye;
+    canvas_need("fill-rect");
     if(w<=0||h<=0) return;
     if(__builtin_add_overflow(x,w,&xe)) xe=INT64_MAX;
     if(__builtin_add_overflow(y,h,&ye)) ye=INT64_MAX;
-    int64_t x0=x<0?0:x, x1=xe<CANVAS_W?xe:CANVAS_W, y0=y<0?0:y, y1=ye<CANVAS_H?ye:CANVAS_H;
-    for(int64_t r=y0;r<y1&&x0<x1;r++) memset(&canvas[r*CANVAS_W+x0],(int)c,(size_t)(x1-x0));}
-static uint32_t sym_tick=0,sym_keydown=0,sym_keyup=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0;
+    int64_t x0=x<0?0:x, x1=xe<canvas_w?xe:canvas_w, y0=y<0?0:y, y1=ye<canvas_h?ye:canvas_h;
+    for(int64_t r=y0;r<y1&&x0<x1;r++) memset(&canvas[r*canvas_w+x0],(int)c,(size_t)(x1-x0));}
+static uint32_t sym_tick=0,sym_keydown=0,sym_keyup=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0,sym_resize=0;
 static void show_intern_syms(void) {
-    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_keyup=sym_intern("keyup");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");}
+    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_keyup=sym_intern("keyup");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");sym_resize=sym_intern("resize");}
 }
 static void prim_on(Frame *e) {
     (void)e; uint32_t ev=pop_sym(); Value fn_top=speek();
@@ -2476,18 +2489,22 @@ static void prim_on(Frame *e) {
     Value *hb=malloc((size_t)fn_s*sizeof(Value)); if(!hb) die("on: out of memory"); VCPY(hb,&stack[sp-fn_s],fn_s); event_handlers[handler_count].handler_body=hb;
     event_handlers[handler_count].handler_slots=fn_s; sp-=fn_s;
     show_intern_syms();
-    if(ev!=sym_tick&&ev!=sym_keydown&&ev!=sym_keyup&&ev!=sym_mousedown&&ev!=sym_mouseup&&ev!=sym_mousemove)
-        die("on: unknown event '%s; the events are 'tick 'keydown 'keyup 'mousedown 'mouseup 'mousemove",sym_name(ev));
+    if(ev!=sym_tick&&ev!=sym_keydown&&ev!=sym_keyup&&ev!=sym_mousedown&&ev!=sym_mouseup&&ev!=sym_mousemove&&ev!=sym_resize)
+        die("on: unknown event '%s; the events are 'tick 'keydown 'keyup 'mousedown 'mouseup 'mousemove 'resize",sym_name(ev));
     event_handlers[handler_count].event_sym=ev; handler_count++;
 }
+static void run_resize(int64_t w,int64_t h,Frame *env){for(int k=0;k<handler_count;k++)if(event_handlers[k].event_sym==sym_resize){spush(val_int(w));spush(val_int(h));eval_body(event_handlers[k].handler_body,event_handlers[k].handler_slots,env);}}
 static void show_dispatch_event(SDL_Event *ev, Frame *env) {
+    if(ev->type==SDL_WINDOWEVENT&&ev->window.event==SDL_WINDOWEVENT_SIZE_CHANGED){
+        int w,h; SDL_GetWindowSize(sdl_window,&w,&h);
+        if(w!=canvas_w||h!=canvas_h){canvas_alloc(w,h);run_resize(w,h,env);}
+        return;}
     if(ev->type==SDL_KEYDOWN||ev->type==SDL_KEYUP){uint32_t ksym=ev->type==SDL_KEYDOWN?sym_keydown:sym_keyup;for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==ksym){spush(val_int((int64_t)ev->key.keysym.sym));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}}
-    int is_mouse=0; float lx,ly;
+    int is_mouse=0;
     if(ev->type==SDL_MOUSEBUTTONDOWN||ev->type==SDL_MOUSEBUTTONUP||ev->type==SDL_MOUSEMOTION) is_mouse=1;
     if(is_mouse){
         int sx,sy; SDL_GetMouseState(&sx,&sy);
-        SDL_RenderWindowToLogical(sdl_renderer,sx,sy,&lx,&ly);
-        int64_t mx=(int64_t)lx, my=(int64_t)ly;
+        int64_t mx=sx, my=sy;
         uint32_t sym=ev->type==SDL_MOUSEBUTTONDOWN?sym_mousedown:ev->type==SDL_MOUSEBUTTONUP?sym_mouseup:sym_mousemove;
         for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==sym){spush(val_int(mx));spush(val_int(my));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}}
 }
@@ -2514,7 +2531,7 @@ static void prim_show(Frame *env) {
     VCPY(render_body,&stack[sp-render_slots],render_slots); sp-=render_slots;
     show_intern_syms();
     if(headless_mode){
-        int64_t frame=0;
+        int64_t frame=0; canvas_alloc(640,480); run_resize(640,480,env);
         for(;;){
             for(int h=0;h<handler_count;h++)
                 if(event_handlers[h].event_sym==sym_tick){spush(val_int(frame));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
@@ -2524,10 +2541,10 @@ static void prim_show(Frame *env) {
     }
     sdl_init();
 #ifdef __EMSCRIPTEN__
-    show_env=env; show_frame=0;
+    show_env=env; show_frame=0; run_resize(canvas_w,canvas_h,env);
     emscripten_set_main_loop(show_one_frame,0,1);
 #else
-    int64_t frame=0; int running=1;
+    int64_t frame=0; int running=1; run_resize(canvas_w,canvas_h,env);
     while(running){
         SDL_Event ev;
         while(SDL_PollEvent(&ev)){
@@ -2716,7 +2733,7 @@ static void register_prims(void) {
         R(eq,eq),R(lt,lt),{"flt",prim_lt,NULL},R(and,and),R(or,or),
         R(print,print),R(assert,assert),R(random,random),
         R(if,if),R(case,case),R(while,while),
-        R(itof,itof),R(ftoi,ftoi),R(fsqrt,fsqrt),
+        R(itof,itof),R(ftoi,ftoi),{"float-bits",prim_float_bits,NULL},{"bits-float",prim_bits_float,NULL},R(fsqrt,fsqrt),
         R(ffloor,ffloor),R(fround,fround),R(fexp,fexp),R(flog,flog),R(fpow,fpow),R(fatan2,fatan2),
         R(len,size),R(push,push_op),M("pop",pop),
         M("get",get),M("peek",peek),M("nth",nth),M("set",set),R(cat,concat),

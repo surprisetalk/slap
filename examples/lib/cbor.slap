@@ -1,0 +1,392 @@
+-- cbor.slap: CBOR (RFC 8949) decoder and encoder over byte lists.
+-- Requires strings.slap for int-str.  The decoders mirror json.slap's jd-*, the encoders its je-*.
+-- The decoder reads what the lofi apps write and refuses the rest: tags, indefinite lengths, simple
+-- values other than false, true and null, a map key that is not a text string, a repeated key,
+-- an integer past the int64 range, and trailing bytes.
+-- Errors are path-annotated strings: "$.a.b[0].c: expected int, got string".
+
+-- ========== Internal parser: bytes -> tagged value ==========
+-- Tagged shapes: n 'int | f 'float | s 'str (text) | bs 'bytes | 0/1 'bool | () 'null
+--                list 'list | list-of-{'key str 'value cv} 'map
+-- _cbor-parse binds the input as '_cin and every step reads it by index with `nth`,
+-- so no step copies or cuts the input and nothing recurses per byte.
+-- A step's state is `i ok`, or `msg no` from the first failure.
+
+-- _cfloat: (bits ebits mbits bias -- float).  A float16 (5 10 15) or float32 (8 23 127) as a float.
+('fb let 'fm let 'fe let 'fx let
+  fx fm fe plus shr 'fs let
+  fx fm shr 1 fe shl 1 sub band 'fv let
+  fx 1 fm shl 1 sub band 'ff let
+  fv 1 fe shl 1 sub eq (ff 0 eq (1.0 0.0 fdiv) (0.0 0.0 fdiv) if)
+    (fv 0 eq (ff itof 2.0 1 fb sub fm sub itof fpow fmul) (1 fm shl ff plus itof 2.0 fv fb sub fm sub itof fpow fmul) if) if
+  fs 1 eq (-1.0 fmul) () if) '_cfloat let
+
+-- _cbor-parse: (bytes -- cv ok | msg no).  The helpers live inside it, so each reads the input it binds as '_cin.
+('_cin let
+  _cin len '_cn let
+  -- _cc: (i -- c).  The byte at i, or -1 past the end.
+  ('_cin nth {'ok () 'no (drop -1)} case) '_cc let
+
+  -- _cpos: (msg i -- msg').  Appends " at byte i".  _cat: (msg i -- msg').  Also appends the byte found there.
+  (int-str " at byte " swap cat cat) '_cpos let
+  ('cai let cai _cpos cai _cc 'cac let cac 0 lt () (", found byte " cat cac int-str cat) if) '_cat let
+
+  -- _chead: (i -- major arg i' st).  The head at i.  arg is the value or length; for major 7 it is the
+  -- simple value or the raw float bits.  A float64 or a length past 2^63 reads as a negative int.
+  ('chi let chi _cc 'chb let
+   chb 0 lt (0 0 "cbor: unexpected end of input; expected a value" chi _cpos no) (
+   chb 5 shr 'chm let chb 31 band 'cha let
+   cha 24 lt (chm cha chi 1 plus ok) (
+   cha 28 lt (
+     1 cha 24 sub shl 'chn let
+     chi chn plus _cc 0 lt (0 0 "cbor: truncated head" chi _cat no) (
+       chm chi 1 plus dup chn plus range 0 ('chk let 8 shl chk _cc bor) fold chi 1 plus chn plus ok) if
+   ) (0 0 cha 31 eq ("cbor: indefinite length is not supported") ("cbor: reserved additional information") if chi _cat no) if) if) if) '_chead let
+
+  -- _cstr: (n i -- bytes).  The n bytes at i.  The caller checks that the input holds them.
+  ('csi let 'csn let
+   csi csi csn plus range [] ('csk let csk _cc push) fold) '_cstr let
+
+  -- _cv-at: (i depth -- cv st).  One value at i.  A list or map reads each element with _cv-at one level
+  -- deeper; nesting past 256 is refused before it can exhaust the interpreter's recursion limit.
+  -- A map entry is {'key str 'value cv}.
+  ('cd let 'ci let
+   ci _chead
+   {'ok ('cni let 'carg let 'cm let
+      cm 6 eq (() 'null tag "cbor: tags are not supported" ci _cat no) (
+      cm 0 eq (
+        carg 0 lt (() 'null tag "cbor: integer past the int64 range" ci _cat no) (carg 'int tag cni ok) if) (
+      cm 1 eq (
+        carg 0 lt (() 'null tag "cbor: integer past the int64 range" ci _cat no) (-1 carg sub 'int tag cni ok) if) (
+      cm 2 eq cm 3 eq or (
+        carg 0 lt carg _cn cni sub gt or (() 'null tag "cbor: length past the end of the input" ci _cat no) (
+          cm 2 eq (carg cni _cstr 'bytes tag) (carg cni _cstr 'str tag) if cni carg plus ok) if) (
+      cm 4 eq cm 5 eq or (
+        cd 255 gt (() 'null tag "cbor: nested deeper than 256" ci _cpos no) (
+        carg 0 lt carg _cn cni sub gt or (() 'null tag "cbor: length past the end of the input" ci _cat no) (
+          cm 4 eq (
+            [] cni ok carg
+            (dup 0 gt) (
+              1 sub 'ckk let
+              () 'null tag (cd 1 plus _cv-at) pthen (push) dip
+              {'ok (ok ckk) 'no (no 0)} case) while
+            drop swap 'list tag swap) (
+            [] dict cni ok carg
+            (dup 0 gt) (
+              1 sub 'ckk let
+              dup {'ok () 'no (drop 0)} case 'ckp let
+              ('cki let cki _cc 0 lt ("cbor: unexpected end of input; expected a value" cki _cpos no) (cki _cc 5 shr 3 eq (cki ok) ("cbor: map key is not a text string" cki _cat no) if) if) then
+              "" ('cki let cki cd 1 plus _cv-at swap {'str () '_ (drop "cbor: map key is not a text string" fail)} case swap) pthen swap 'cks let
+              (cks of {'ok (drop 1) 'no (drop 0)} case 'cdf let cks 0 insert cdf) dip swap 'cdp let
+              ('cki let cdp ("cbor: duplicate key \"" cks cat "\"" cat ckp _cpos no) (cki ok) if) then
+              () 'null tag (cd 1 plus _cv-at) pthen swap 'cv let
+              (({} cks 'key into cv 'value into push) dip) dip
+              {'ok (ok ckk) 'no (no 0)} case) while
+            drop swap drop swap 'map tag swap) if) if) if) (
+      ci _cc 31 band 'ca let
+      ca 20 eq (0 'bool tag cni ok) (
+      ca 21 eq (1 'bool tag cni ok) (
+      ca 22 eq (() 'null tag cni ok) (
+      ca 25 eq (carg 5 10 15 _cfloat 'float tag cni ok) (
+      ca 26 eq (carg 8 23 127 _cfloat 'float tag cni ok) (
+      ca 27 eq (carg bits-float 'float tag cni ok) (
+        () 'null tag "cbor: only false, true and null are supported as simple values" ci _cat no
+      ) if) if) if) if) if) if) if) if) if) if) if)
+    'no ('cm2 let drop drop () 'null tag cm2 no)} case) '_cv-at let
+
+  -- _cend: (i -- st).  No bytes may follow the value.
+  ('cti let cti _cc 0 lt (0 ok) ("cbor: expected the end of input after the value" cti _cat no) if) '_cend let
+  0 0 _cv-at swap 'cv0 let (_cend) then (drop cv0 ok) then) '_cbor-parse let
+
+-- ========== Decoders ==========
+-- A decoder is a body (cv -- value ok | msg no).  A failure message starts with the path below the
+-- decoder, and each decoder on the way out puts its own step in front, as in json.slap.
+
+(dup
+  {'int   (drop "int")
+   'float (drop "float")
+   'str   (drop "string")
+   'bytes (drop "bytes")
+   'bool  (drop "bool")
+   'null  (drop "null")
+   'list   (drop "list")
+   'map   (drop "map")} case) '_ctype-name let
+
+-- _cwant: (cv want -- cv err).  The error a decoder gives when cv is not a want.
+('w let _ctype-name 'tn let ": expected " w cat ", got " cat tn cat no) '_cwant let
+
+(({'int (ok) '_ ("int" _cwant nip)} case)) 'cd-int let
+(({'float (ok) '_ ("float" _cwant nip)} case)) 'cd-float let
+(({'str (ok) '_ ("string" _cwant nip)} case)) 'cd-str let
+(({'bytes (ok) '_ ("bytes" _cwant nip)} case)) 'cd-bytes let
+(({'bool (ok) '_ ("bool" _cwant nip)} case)) 'cd-bool let
+(({'null (ok) '_ ("null" _cwant nip)} case)) 'cd-null let
+
+-- cd-value: (cv -- cv ok).  Any value, as ce-value takes it.
+((ok)) 'cd-value let
+
+-- cd-list: (dec -- dec').  The first failing item wins, and its index is the count of items decoded before it.
+('d let ({'list (
+   [] ok ('x let (x d apply {'ok (push ok) 'no ('m let len int-str "[" swap cat "]" cat m cat no)} case) then) fold)
+   '_ ("list" _cwant nip)} case)) 'cd-list let
+
+-- cd-field: (key dec -- dec').
+('d let 'k let ({'map ('es let
+   es ('key at) each k index-of
+   {'ok ('i let i 'es nth must 'value at d apply {'ok (ok) 'no ("." k cat swap cat no)} case)
+       'no (drop ": missing field \"" k cat "\"" cat no)} case)
+   '_ ("map" _cwant nip)} case)) 'cd-field let
+
+-- cd-map: (dec f -- dec').  f: (value -- value').
+('f let 'd let (d apply (f apply ok) then)) 'cd-map let
+
+-- cd-one-of: (decs -- dec).  The first decoder that succeeds wins; if none does, the error lists each one's.
+('ds let ('cv let
+   ds {} 0 'n into "" 'msg into no
+   ('dd let {'ok (ok) 'no ('r let cv dd apply {'ok (ok) 'no ('m let
+       {} r 'n at 1 plus 'n into
+          r 'msg at r 'n at 0 gt ("; " cat) () if "[" cat r 'n at int-str cat "] " cat m cat 'msg into no)} case)} case) fold
+   {'ok (ok) 'no ('r let ": oneOf: " r 'n at 0 eq ("no decoders") (r 'msg at) if cat no)} case)) 'cd-one-of let
+
+-- cd-maybe: (dec -- dec').  value ok ok, or none ok when dec fails.
+('d let (d apply {'ok (ok ok) 'no (drop none ok)} case)) 'cd-maybe let
+
+('v let (drop v ok)) 'cd-succeed let
+('m let (drop ": " m cat no)) 'cd-fail let
+
+-- cd-run: (bytes dec -- value ok | msg no).
+('d let _cbor-parse (d apply {'ok (ok) 'no ("$" swap cat no)} case) then) 'cd-run let
+
+-- ========== Encoders (ce-*) ==========
+-- Each ce-* returns a byte list ready to concatenate.
+
+-- _ce-be: (n count -- bytes).  The low count bytes of n, big-endian.
+('cnt let 'cn let 0 cnt range reverse [] ('ck let cn ck 8 mul shr 255 band push) fold) '_ce-be let
+
+-- _ce-head: (major n -- bytes).  The shortest head for n >= 0.
+('hn let 'hm let
+  hm 5 shl 'hb let
+  hn 24 lt ([] hb hn bor push) (
+  hn 256 lt ([] hb 24 bor push hn 1 _ce-be cat) (
+  hn 65536 lt ([] hb 25 bor push hn 2 _ce-be cat) (
+  hn 4294967296 lt ([] hb 26 bor push hn 4 _ce-be cat) (
+    [] hb 27 bor push hn 8 _ce-be cat) if) if) if) if) '_ce-head let
+
+-- ce-int: (n -- bytes).  An int in the int64 range.
+('n let n 0 lt (1 -1 n sub _ce-head) (0 n _ce-head) if) 'ce-int let
+
+-- ce-float: (float -- bytes).  Always float64.
+(float-bits 8 _ce-be [251] swap cat) 'ce-float let
+
+-- ce-str: (s -- bytes).  A text string.  ce-bytes: (bs -- bytes).  A byte string.
+('s let 3 s len _ce-head s cat) 'ce-str let
+('s let 2 s len _ce-head s cat) 'ce-bytes let
+
+-- ce-bool: (0|1 -- bytes).  ce-null: ( -- bytes).
+('b let b 0 eq ([244]) (b 1 eq ([245]) ("cbor: ce-bool: expected 0 or 1, got " b int-str cat fail) if) if) 'ce-bool let
+([246]) 'ce-null let
+
+-- ce-list: (list-of-byte-fragments -- bytes)
+('cits let cits 4 cits len _ce-head (cat) fold) 'ce-list let
+
+-- ce-map: (list-of-{'name key-str 'value value-fragment} -- bytes)
+-- A repeated key dies, since cd-run refuses it.
+('cpairs let
+  cpairs dict ('cq let cq 'name at 'cqk let
+    cqk of {'ok (drop "cbor: ce-map: duplicate key \"" cqk cat "\"; the decoder refuses it" cat fail) 'no (drop)} case cqk 0 insert) fold drop
+  cpairs 5 cpairs len _ce-head ('kv let kv 'name at ce-str cat kv 'value at cat) fold) 'ce-map let
+
+-- ce-value: (cv -- bytes).  Any decoded value, so cd-value then ce-value reads back what it wrote.
+('cv let cv {
+  'int (ce-int)
+  'float (ce-float)
+  'str (ce-str)
+  'bytes (ce-bytes)
+  'bool (ce-bool)
+  'null (drop ce-null)
+  'list ((ce-value) each ce-list)
+  'map (('e let {} e 'key at 'name into e 'value at ce-value 'value into) each ce-map)} case) 'ce-value let
+
+-- ========== Tests ==========
+-- RFC 8949 Appendix A: each row in scope is two assertions, decode the hex and encode the value.
+-- A float16 or float32 row is decode only, since ce-float always writes float64.
+
+-- _hx: (hex -- bytes).  Lowercase hex digits.
+('hc let hc 58 lt (hc 48 sub) (hc 87 sub) if) '_hxd let
+('hs let hs len 2 div 0 swap range [] ('hk let hk 2 mul 'hj let hj 'hs nth must _hxd 16 mul hj 1 plus 'hs nth must _hxd plus push) fold) '_hx let
+
+-- cerr: (result -- msg).  The error, or "" on success.
+({'ok (drop "") 'no ()} case) 'cerr let
+
+-- _dec: (hex cv --).  _enc: (hex cv --).  _row: (hex cv --).
+('cv let _hx (ok) cd-run cv ok eq assert) '_dec let
+('cv let _hx cv ce-value eq assert) '_enc let
+('cv let 'hx let hx cv _dec hx cv _enc) '_row let
+-- _fail: (hex msg --).  The decoder refuses the hex with msg.
+('m let _hx (ok) cd-run cerr m eq assert) '_fail let
+('n let n 'int tag) '_i let
+('v let 'k let {} k 'key into v 'value into) '_ent let
+
+"00" 0 _i _row
+"01" 1 _i _row
+"0a" 10 _i _row
+"17" 23 _i _row
+"1818" 24 _i _row
+"1819" 25 _i _row
+"1864" 100 _i _row
+"1903e8" 1000 _i _row
+"1a000f4240" 1000000 _i _row
+"1b000000e8d4a51000" 1000000000000 _i _row
+"20" -1 _i _row
+"29" -10 _i _row
+"3863" -100 _i _row
+"3903e7" -1000 _i _row
+"1b7fffffffffffffff" 9223372036854775807 _i _row
+"3b7fffffffffffffff" -9223372036854775807 1 sub _i _row
+
+-- The shortest head at each boundary
+"18ff" 255 _i _row
+"190100" 256 _i _row
+"19ffff" 65535 _i _row
+"1a00010000" 65536 _i _row
+"1affffffff" 4294967295 _i _row
+"1b0000000100000000" 4294967296 _i _row
+"38ff" -256 _i _row
+"390100" -257 _i _row
+
+-- Floats: float64 rows both ways, float16 and float32 rows decode only
+"fb3ff199999999999a" 4607632778762754458 bits-float 'float tag _row
+"fb7e37e43c8800759c" 9094988921128908188 bits-float 'float tag _row
+"fbc010666666666666" -4607069828809333146 bits-float 'float tag _row
+"fb7ff0000000000000" 1.0 0.0 fdiv 'float tag _row
+"fbfff0000000000000" -1.0 0.0 fdiv 'float tag _row
+"fb0000000000000000" 0.0 'float tag _row
+"fb8000000000000000" -0.0 'float tag _enc
+"f90000" 0.0 'float tag _dec
+"f93c00" 1.0 'float tag _dec
+"f93e00" 1.5 'float tag _dec
+"f97bff" 65504.0 'float tag _dec
+"fa47c35000" 100000.0 'float tag _dec
+"fa7f7fffff" 5183643170566569984 bits-float 'float tag _dec
+"f90001" 1.0 16777216.0 fdiv 'float tag _dec
+"f90400" 0.00006103515625 'float tag _dec
+"f9c400" -4.0 'float tag _dec
+"fa00000001" 2.0 -149.0 fpow 'float tag _dec
+"f97c00" 1.0 0.0 fdiv 'float tag _dec
+"f9fc00" -1.0 0.0 fdiv 'float tag _dec
+"fa7f800000" 1.0 0.0 fdiv 'float tag _dec
+"faff800000" -1.0 0.0 fdiv 'float tag _dec
+-- -0.0 equals 0.0 under eq, so its sign bit is the check
+"f98000" _hx cd-float cd-run must float-bits -9223372036854775807 1 sub eq assert
+"fb8000000000000000" _hx cd-float cd-run must float-bits -9223372036854775807 1 sub eq assert
+-- NaN is not equal to itself
+"f97e00" _hx cd-float cd-run must dup eq not assert
+"fa7fc00000" _hx cd-float cd-run must dup eq not assert
+"fb7ff8000000000000" _hx cd-float cd-run must dup eq not assert
+
+"f4" 0 'bool tag _row
+"f5" 1 'bool tag _row
+"f6" () 'null tag _row
+
+"40" [] 'bytes tag _row
+"4401020304" [1 2 3 4] 'bytes tag _row
+"60" "" 'str tag _row
+"6161" "a" 'str tag _row
+"6449455446" "IETF" 'str tag _row
+"62225c" "\"\\" 'str tag _row
+"62c3bc" "ü" 'str tag _row
+"63e6b0b4" "水" 'str tag _row
+"64f0908591" "𐅑" 'str tag _row
+
+"80" [] 'list tag _row
+"83010203" [] 1 _i push 2 _i push 3 _i push 'list tag _row
+"8301820203820405" [] 1 _i push [] 2 _i push 3 _i push 'list tag push [] 4 _i push 5 _i push 'list tag push 'list tag _row
+"98190102030405060708090a0b0c0d0e0f101112131415161718181819" [] 1 26 range (_i) each cat 'list tag _row
+
+"a0" [] 'map tag _row
+"a26161016162820203" [] "a" 1 _i _ent push "b" [] 2 _i push 3 _i push 'list tag _ent push 'map tag _row
+"826161a161626163" [] "a" 'str tag push [] "b" "c" 'str tag _ent push 'map tag push 'list tag _row
+"a56161614161626142616361436164614461656145" [] "a" "A" 'str tag _ent push "b" "B" 'str tag _ent push "c" "C" 'str tag _ent push "d" "D" 'str tag _ent push "e" "E" 'str tag _ent push 'map tag _row
+
+-- Refusals, one per skipped kind
+"c074323031332d30332d32315432303a30343a30305a" "cbor: tags are not supported at byte 0, found byte 192" _fail
+"c249010000000000000000" "cbor: tags are not supported at byte 0, found byte 194" _fail
+"d74401020304" "cbor: tags are not supported at byte 0, found byte 215" _fail
+"1bffffffffffffffff" "cbor: integer past the int64 range at byte 0, found byte 27" _fail
+"1b8000000000000000" "cbor: integer past the int64 range at byte 0, found byte 27" _fail
+"3bffffffffffffffff" "cbor: integer past the int64 range at byte 0, found byte 59" _fail
+"5f42010243030405ff" "cbor: indefinite length is not supported at byte 0, found byte 95" _fail
+"7f657374726561646d696e67ff" "cbor: indefinite length is not supported at byte 0, found byte 127" _fail
+"9fff" "cbor: indefinite length is not supported at byte 0, found byte 159" _fail
+"bf6161ff" "cbor: indefinite length is not supported at byte 0, found byte 191" _fail
+"81ff" "cbor: indefinite length is not supported at byte 1, found byte 255" _fail
+"f7" "cbor: only false, true and null are supported as simple values at byte 0, found byte 247" _fail
+"f0" "cbor: only false, true and null are supported as simple values at byte 0, found byte 240" _fail
+"f8ff" "cbor: only false, true and null are supported as simple values at byte 0, found byte 248" _fail
+"a201020304" "cbor: map key is not a text string at byte 1, found byte 1" _fail
+"a1410101" "cbor: map key is not a text string at byte 1, found byte 65" _fail
+"a2616101616102" "cbor: duplicate key \"a\" at byte 4" _fail
+"0000" "cbor: expected the end of input after the value at byte 1, found byte 0" _fail
+"" "cbor: unexpected end of input; expected a value at byte 0" _fail
+"82" "cbor: length past the end of the input at byte 0, found byte 130" _fail
+"8201" "cbor: length past the end of the input at byte 0, found byte 130" _fail
+"a16161" "cbor: unexpected end of input; expected a value at byte 3" _fail
+"a2616100" "cbor: unexpected end of input; expected a value at byte 4" _fail
+"1903" "cbor: truncated head at byte 0, found byte 25" _fail
+"1c" "cbor: reserved additional information at byte 0, found byte 28" _fail
+"5affffffff" "cbor: length past the end of the input at byte 0, found byte 90" _fail
+"9bffffffffffffffff" "cbor: length past the end of the input at byte 0, found byte 155" _fail
+"a1" "cbor: length past the end of the input at byte 0, found byte 161" _fail
+"6261" "cbor: length past the end of the input at byte 0, found byte 98" _fail
+
+-- Nesting: 256 deep reads, 257 deep is refused
+[] 256 (129 push) repeat 0 push (ok) cd-run {'ok (drop 1) 'no (drop 0)} case assert
+[] 257 (129 push) repeat 0 push (ok) cd-run cerr "cbor: nested deeper than 256 at byte 256" eq assert
+[] 257 (161 push 97 push 97 push) repeat 0 push (ok) cd-run cerr "cbor: nested deeper than 256 at byte 768" eq assert
+
+-- Decoders
+"182a" _hx cd-int cd-run 42 ok eq assert
+"3863" _hx cd-int cd-run -100 ok eq assert
+"fb3ff8000000000000" _hx cd-float cd-run 1.5 ok eq assert
+"6568656c6c6f" _hx cd-str cd-run "hello" ok eq assert
+"4401020304" _hx cd-bytes cd-run [1 2 3 4] ok eq assert
+"f5" _hx cd-bool cd-run 1 ok eq assert
+"f6" _hx cd-null cd-run () ok eq assert
+"83010203" _hx cd-int cd-list cd-run [1 2 3] ok eq assert
+"f6" _hx cd-value cd-run () 'null tag ok eq assert
+"81f6" _hx cd-value cd-list cd-run [() 'null tag] ok eq assert
+"a26161016162820203" _hx "b" cd-int cd-list cd-field cd-run [2 3] ok eq assert
+"a26161016162820203" _hx "a" cd-int cd-field cd-run 1 ok eq assert
+"01" _hx 7 cd-succeed cd-run 7 ok eq assert
+"01" _hx "nope" cd-fail cd-run cerr "$: nope" eq assert
+"01" _hx cd-int (1 plus) cd-map cd-run 2 ok eq assert
+"a0" _hx "a" cd-int cd-field cd-maybe cd-run none ok eq assert
+([] cd-str (len) cd-map push cd-int push cd-one-of) 'cbor-len-or-int let
+"01" _hx cbor-len-or-int cd-run 1 ok eq assert
+"6161" _hx cbor-len-or-int cd-run 1 ok eq assert
+"f5" _hx cbor-len-or-int cd-run cerr "$: oneOf: [0] : expected string, got bool; [1] : expected int, got bool" eq assert
+"61" _hx cd-int cd-run cerr "cbor: length past the end of the input at byte 0, found byte 97" eq assert
+"6161" _hx cd-int cd-run cerr "$: expected int, got string" eq assert
+"4161" _hx cd-str cd-run cerr "$: expected string, got bytes" eq assert
+"6161" _hx cd-bytes cd-run cerr "$: expected bytes, got string" eq assert
+"fb3ff8000000000000" _hx cd-int cd-run cerr "$: expected int, got float" eq assert
+"8301f402" _hx cd-int cd-list cd-run cerr "$[1]: expected int, got bool" eq assert
+"a0" _hx "a" cd-int cd-field cd-run cerr "$: missing field \"a\"" eq assert
+"a161616161" _hx "a" cd-int cd-field cd-run cerr "$.a: expected int, got string" eq assert
+
+-- ce-* build bytes; ce-map dies on a repeated key
+"a" ce-str "6161" _hx eq assert
+[1 2] ce-bytes "420102" _hx eq assert
+1 ce-bool "f5" _hx eq assert
+ce-null "f6" _hx eq assert
+-7 ce-int "26" _hx eq assert
+[] 1 ce-int push 2 ce-int push ce-list "820102" _hx eq assert
+[] {} "a" 'name into 1 ce-int 'value into push ce-map "a1616101" _hx eq assert
+[] ce-map "a0" _hx eq assert
+
+-- A value written reads back: strings of every byte, a map in a list
+0 256 range 'cbor-all-bytes let
+cbor-all-bytes 'bytes tag ce-value (ok) cd-run cbor-all-bytes 'bytes tag ok eq assert
+cbor-all-bytes 'str tag ce-value (ok) cd-run cbor-all-bytes 'str tag ok eq assert
+[] "k" [] 1 _i push "x" 'str tag push -5 _i push 1.25 'float tag push () 'null tag push 0 'bool tag push 'list tag _ent push 'map tag 'cbor-rt let
+cbor-rt ce-value (ok) cd-run cbor-rt ok eq assert

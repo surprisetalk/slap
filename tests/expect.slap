@@ -20,6 +20,9 @@ false 0 eq assert
 9.0 fsqrt 3.0 eq assert
 42 itof 42.0 eq assert
 3.7 ftoi 3 eq assert
+1.0 float-bits 4607182418800017408 eq assert
+-0.0 float-bits -9223372036854775808 eq assert
+4607182418800017408 bits-float 1.0 eq assert
 
 -- ===== Stack Manipulation =====
 3 dup eq assert

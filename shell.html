@@ -6,11 +6,7 @@
     <style>
       body {
         margin: 0;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        min-height: 100vh;
+        overflow: hidden;
         font-family: monospace;
       }
       @media (prefers-color-scheme: dark) {
@@ -20,19 +16,24 @@
         body { background: #fff; color: #333; }
       }
       canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
         image-rendering: pixelated;
-        border: 1px solid rgba(128, 128, 128, 0.3);
-        border-radius: 2px;
       }
       pre {
+        position: fixed;
+        top: 0;
+        left: 0;
         max-width: 640px;
         white-space: pre-wrap;
         margin: 1em;
+        pointer-events: none;
       }
     </style>
   </head>
   <body>
-    <canvas id="canvas" width="640" height="480" tabindex="0"></canvas>
+    <canvas id="canvas" tabindex="0"></canvas>
     <pre id="output"></pre>
     <script>
       var c = document.getElementById("canvas");

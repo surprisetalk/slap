@@ -54,9 +54,9 @@
 -- darkest entry lands on canvas 0 and the lightest on canvas 3, with ties kept
 -- tied. A red-on-green ROM renders as grey-on-grey with the right contrast.
 --
--- 320x240 logical, drawn at 2x to fill the 640x480 canvas exactly. Screen/width
+-- 320x240 logical, drawn at 2x into the top-left 640x480 of the canvas. Screen/width
 -- and /height report 320/240 truthfully; writes to them are ignored, since the
--- canvas cannot resize. ROMs that assume the 512x320 default get their right and
+-- drawn region has a fixed size. ROMs that assume the 512x320 default get their right and
 -- bottom edges clipped, which is honest behaviour on a small screen.
 --
 -- ===== the one discipline rule =====
