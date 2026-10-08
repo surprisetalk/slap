@@ -99,7 +99,11 @@ with tempfile.TemporaryDirectory() as d:
     for text in ["bell\x07here", "tab\there"]:
         todo("add", text)
     items = [i["text"] for i in json.load(open(f))["items"]]
-    check("control-bytes-roundtrip", items[-2:] == ["bell\x07here", "tab\there"], repr(items))
+    check(
+        "control-bytes-roundtrip",
+        items[-2:] == ["bell\x07here", "tab\there"],
+        repr(items),
+    )
     check("control-bytes-read-back", "bell\x07here" in todo())
 
     # ---- bad input ----
@@ -107,6 +111,7 @@ with tempfile.TemporaryDirectory() as d:
         (("done", "abc"), "is not an item number"),
         (("done", "12x"), "is not an item number"),
         (("done", "99"), "no item 99"),
+        (("done", "99999999999999999999"), "is not an item number"),
         (("done", "0"), "no item 0"),
         (("done",), "needs exactly one item number"),
         (("done", "1", "2"), "needs exactly one item number"),
@@ -122,20 +127,36 @@ with tempfile.TemporaryDirectory() as d:
 
     # ---- a file that does not decode is refused, not replaced ----
     for label, text, want in [
-        ("wrong-type", '{"items":[{"text":1,"done":false}]}', "expected string, got int"),
+        (
+            "wrong-type",
+            '{"items":[{"text":1,"done":false}]}',
+            "expected string, got int",
+        ),
         ("missing-field", '{"items":[{"text":"a"}]}', 'missing field "done"'),
         ("wrong-root", "[]", "expected object, got array"),
         ("not-json", "this is not json", "json: expected true"),
         ("empty-file", "", "json: unexpected end of input"),
         ("whitespace-only", "  \n\t ", "json: unexpected end of input"),
-        ("truncated-array", '{"items":[{"text":"a","done":false}', "json: unexpected end of input in an array"),
-        ("trailing-garbage", '{"items":[]} nonsense', "json: expected the end of input after the value at byte 13"),
+        (
+            "truncated-array",
+            '{"items":[{"text":"a","done":false}',
+            "json: unexpected end of input in an array",
+        ),
+        (
+            "trailing-garbage",
+            '{"items":[]} nonsense',
+            "json: expected the end of input after the value at byte 13",
+        ),
     ]:
         with open(f, "w") as fh:
             fh.write(text)
         bad, err = fails()
         check(f"refuse-{label}", bad, "must not start from an empty list")
-        check(f"refuse-{label}-says-why", "is not a todo file" in err and want in err, repr(err[:200]))
+        check(
+            f"refuse-{label}-says-why",
+            "is not a todo file" in err and want in err,
+            repr(err[:200]),
+        )
         check(f"refuse-{label}-names-file", f in err, repr(err[:200]))
         check(f"refuse-{label}-untouched", open(f).read() == text, "must not rewrite")
 
@@ -145,5 +166,68 @@ with tempfile.TemporaryDirectory() as d:
     _, err = fails()
     check("error-names-the-path", "$.items[1].text" in err, repr(err[:200]))
     check("error-names-the-types", "expected string, got int" in err, repr(err[:200]))
+
+    # ---- a file it cannot read is refused by path and reason, never replaced ----
+    os.remove(f)
+    os.mkdir(f)
+    bad, err = fails("add", "x")
+    check("dir-refused", bad and f"{f}: Is a directory" in err, repr(err[:200]))
+    os.rmdir(f)
+    if os.geteuid() != 0:
+        text = '{"items":[{"text":"keep me","done":false}]}'
+        for label, mode in [("mode-000", 0), ("write-only", 0o200)]:
+            with open(f, "w") as fh:
+                fh.write(text)
+            os.chmod(f, mode)
+            for argv in [(), ("add", "x")]:
+                bad, err = fails(*argv)
+                check(
+                    f"{label}-refused{argv}",
+                    bad and f"{f}: Permission denied" in err,
+                    repr(err[:200]),
+                )
+            os.chmod(f, 0o644)
+            check(f"{label}-untouched", open(f).read() == text)
+        # read works and write does not
+        with open(f, "w") as fh:
+            fh.write(text)
+        os.chmod(f, 0o444)
+        bad, err = fails("add", "x")
+        os.chmod(f, 0o644)
+        check("read-only-refused", bad and f"cannot write {f}: Permission denied" in err, repr(err[:200]))
+        check("read-only-untouched", open(f).read() == text)
+
+    # ---- keys and fields todo.slap does not use survive every write ----
+    doc = {
+        "version": 2,
+        "items": [
+            {
+                "text": "a",
+                "done": False,
+                "due": 1.5,
+                "tags": ["x", None, True, -0.25, 7, 0.1],
+            }
+        ],
+        "owner": {"name": "té", "ratio": 0.30000000000000004, "big": 1e300},
+    }
+    with open(f, "w") as fh:
+        json.dump(doc, fh)
+    todo("add", "b")
+    want = dict(doc, items=doc["items"] + [{"text": "b", "done": False}])
+    got = json.load(open(f))
+    check("unknown-kept-add", got == want and list(got) == list(doc), repr(got)[:300])
+    check(
+        "unknown-kept-floats",
+        got["owner"]["ratio"] == 0.30000000000000004
+        and got["items"][0]["tags"][5] == 0.1,
+    )
+    todo("done", "1")
+    want["items"][0]["done"] = True
+    check(
+        "unknown-kept-done", json.load(open(f)) == want, repr(json.load(open(f)))[:300]
+    )
+    todo("rm", "2")
+    want["items"].pop()
+    check("unknown-kept-rm", json.load(open(f)) == want, repr(json.load(open(f)))[:300])
 
 print(f"todo: {count[0]} checks passed")

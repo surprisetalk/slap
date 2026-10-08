@@ -9,25 +9,20 @@
 --   undone N          mark item N not done
 --   rm N              delete item N
 --
--- The file is {"items":[{"text":"...","done":false}, ...]}. It is read with
--- jd-* decoders and written with je-* encoders, so json.slap does both halves.
---
--- Items are held as two parallel lists rather than a list of records: every
--- operation here is over one column or the other, and `set` on a flat int list
--- is the O(1) store. Two decoders read the two columns in two passes, which
--- costs a second parse of a file that is small by construction and keeps each
--- decoder a single readable chain.
+-- The file is {"items":[{"text":"...","done":false}, ...]}. Two jd-* decoders
+-- read the text and done columns, which checks the shape and gives the listing.
+-- A command changes the parsed document and writes it back with je-value, so
+-- the values of keys and fields todo.slap does not use survive.
 --
 -- A missing file is the normal first-run case and starts an empty list. A file
--- that exists and does not decode is refused and left untouched -- starting
--- empty instead would silently overwrite the list on the next write.
+-- it cannot read, or that does not decode, is refused and left untouched --
+-- starting empty instead would silently overwrite the list on the next write.
 
 ([] 10 push) 'LF let
 ('st let "/dev/stdout" st LF cat write must drop) 'say let
-('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
 
 args len 0 eq (
-  "todo: usage: FILE [list | add TEXT... | done N | undone N | rm N]" die) () if
+  "todo: usage: FILE [list | add TEXT... | done N | undone N | rm N]" fail) () if
 args 0 get must 'FILE let
 args len 1 gt (args 1 get must) ("list") if 'CMD let
 args 2 drop-n 'REST let
@@ -40,15 +35,17 @@ args 2 drop-n 'REST let
  msg len 0 gt (
    "todo: " FILE cat " is not a todo file" cat LF cat
    "  " cat what cat ": " cat msg cat LF cat
-   "  expected {\"items\":[{\"text\":\"...\",\"done\":false}]}" cat die) () if
+   "  expected {\"items\":[{\"text\":\"...\",\"done\":false}]}" cat fail) () if
  res must) 'or-die let
 
-FILE read 'RD let
-RD {'ok () 'no (drop "{\"items\":[]}")} case 'RAW let
+FILE read {'ok () 'no ('re let
+  re FILE ": No such file or directory" cat eq ("{\"items\":[]}") ("todo: cannot read " re cat fail) if)} case 'RAW let
 
 RAW dec-texts jd-run "text"  or-die 'TEXTS let
 RAW dec-dones jd-run "done"  or-die 'DONES let
 TEXTS len DONES len eq assert
+-- The items as parsed values; dec-texts proved the parse and the array.
+RAW "items" (ok) jd-list jd-field jd-run must 'ITEMS let
 
 -- A bare run of digits. "12x" and "-1" are rejected as input errors here rather
 -- than reaching parse-int, which would read them as 12 and -1 and leave the
@@ -59,48 +56,49 @@ TEXTS len DONES len eq assert
 
 ('n let
  REST len 1 eq not (
-   "todo: " n cat " needs exactly one item number -- try: " cat n cat " 1" cat die) () if
+   "todo: " n cat " needs exactly one item number -- try: " cat n cat " 1" cat fail) () if
  REST 0 get must 'a let
  a isnum not (
-   "todo: " n cat ": \"" cat a cat "\" is not an item number" cat die) () if
- a ok parse-int must len 0 eq assert 'i let
+   "todo: " n cat ": \"" cat a cat "\" is not an item number" cat fail) () if
+ a ok parse-int {'ok (len 0 eq assert)
+   'no (drop drop "todo: " n cat ": \"" cat a cat "\" is not an item number" cat fail)} case 'i let
  i 1 lt i TEXTS len gt or (
    "todo: no item " i int-str cat "; the list holds " cat TEXTS len int-str cat
-   TEXTS len 1 eq (" item") (" items") if cat die) () if
+   TEXTS len 1 eq (" item") (" items") if cat fail) () if
  i) 'one-idx let
 
-CMD "list" eq (TEXTS DONES) (
+-- set-done: (i flag -- items).  ITEMS with item i (from 0) marked flag; dec-dones
+-- proved each item has a bool "done".
+('flag let 'i let
+ ITEMS i get must
+ {'obj ((dup 'key at "done" eq (flag 'bool tag 'value into) () if) each 'obj tag) '_ ()} case 'it let
+ ITEMS i it set must) 'set-done let
+
+CMD "list" eq (ITEMS) (
 CMD "add" eq (
-  REST len 0 eq ("todo: add needs some text -- try: add buy milk" die) () if
-  REST " " str-join 'new let
-  TEXTS new push
-  DONES 0 push) (
-CMD "done" eq (
-  "done" one-idx 'i let
-  TEXTS DONES i 1 sub 1 set must) (
-CMD "undone" eq (
-  "undone" one-idx 'i let
-  TEXTS DONES i 1 sub 0 set must) (
+  REST len 0 eq ("todo: add needs some text -- try: add buy milk" fail) () if
+  ITEMS [] {} "text" 'key into REST " " str-join 'str tag 'value into push
+           {} "done" 'key into 0 'bool tag 'value into push 'obj tag push) (
+CMD "done" eq ("done" one-idx 1 sub 1 set-done) (
+CMD "undone" eq ("undone" one-idx 1 sub 0 set-done) (
 CMD "rm" eq (
   "rm" one-idx 'i let
-  TEXTS i 1 sub take-n TEXTS i drop-n cat
-  DONES i 1 sub take-n DONES i drop-n cat) (
+  ITEMS i 1 sub take-n ITEMS i drop-n cat) (
   "todo: unknown command " CMD cat
-  "; try list, add, done, undone, rm" cat die
-  TEXTS DONES   -- die exits; these only balance the branch for the checker
+  "; try list, add, done, undone, rm" cat fail
 ) if) if) if) if) if
-'DONES2 let 'TEXTS2 let
+'ITEMS2 let
 
--- je-obj takes {'name 'value} records and quotes the names itself, so the values
--- are already-encoded JSON text. That is what lets "true"/"false" go in
--- literally: json.slap has je-int and je-str but no je-bool.
-CMD "list" eq not (
-  0 TEXTS2 len range ('i let
-    [] {} "text" 'name into TEXTS2 i get must je-str 'value into push
-       {} "done" 'name into DONES2 i get must ("true") ("false") if 'value into push
-    je-obj) each je-list 'body let
-  FILE [] {} "items" 'name into body 'value into push je-obj write must drop
-) () if
+-- A command writes the document back with only "items" changed, then lists
+-- what it wrote.
+CMD "list" eq (RAW) (
+  RAW (ok) jd-run must
+  {'obj ((dup 'key at "items" eq (ITEMS2 'arr tag 'value into) () if) each 'obj tag) '_ ()} case
+  je-value 'OUT let
+  FILE OUT write {'ok (drop) 'no ('we let "todo: cannot write " we cat fail)} case
+  OUT) if 'RAW2 let
+RAW2 dec-texts jd-run must 'TEXTS2 let
+RAW2 dec-dones jd-run must 'DONES2 let
 
 TEXTS2 len 0 eq (
   "todo: nothing to do -- try: add buy milk" say

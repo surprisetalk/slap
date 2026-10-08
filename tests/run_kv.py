@@ -3,7 +3,7 @@
 server, drive it through the Slap client, verify persistence survives a
 restart, and confirm hostile input fails safely rather than crashing the loop."""
 
-import os, random, shutil, subprocess, sys, tempfile
+import os, random, re, resource, shutil, socket, struct, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -109,6 +109,13 @@ def main():
                 "early-close-not-misreported",
                 "line too long" not in raw(b"GET greeting", half_close=True),
             )
+            # a client that resets mid-line is a recv error: logged with its
+            # reason (checked after shutdown), and the server keeps serving
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            s.sendall(b"GET gree")
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            s.close()
+            check("reset-survives", client("ping") == "PONG\n")
 
             # SAVE's own on-disk write, verified BEFORE the SHUTDOWN path (which
             # saves independently) so a broken SAVE can't hide behind SHUTDOWN
@@ -131,6 +138,9 @@ def main():
             check("shutdown", client("shutdown") == "BYE\n")
             proc.wait(5)
             check("shutdown-exit-0", proc.returncode == 0, f"(code {proc.returncode})")
+            log = proc.stderr.read()
+            # the reset reaches accept or recv, depending on when it arrives
+            check("reset-logged", re.search(r"kv-server: (accept|recv) failed: \w", log), repr(log[-300:]))
 
             proc = harness.boot("kv", [str(port), snap], server_src, port)
             check("reload-survives", client("get", "greeting") == "VALUE hi\n")
@@ -151,11 +161,20 @@ def main():
             # not crash the whole server (skip when running as root: 000 wouldn't bite)
             if os.geteuid() != 0:
                 os.chmod(snap, 0)
+                saved = client("save")
                 check(
                     "unwritable-save-reports",
-                    client("save").startswith("ERR save failed"),
+                    saved == f"ERR save failed: {snap}: Permission denied\n",
+                    repr(saved),
                 )
                 check("survives-failed-save", client("ping") == "PONG\n")
+                bye = client("shutdown")
+                check(
+                    "unwritable-shutdown-reports",
+                    bye == f"ERR save failed: {snap}: Permission denied; still running\n",
+                    repr(bye),
+                )
+                check("survives-failed-shutdown", client("ping") == "PONG\n")
                 os.chmod(snap, 0o644)
             harness.kill(proc)
 
@@ -179,6 +198,95 @@ def main():
             check(
                 "corrupt-snapshot-untouched",
                 open(snap).read() == "good\tvalue here\nbadline-with-no-tab\n",
+            )
+
+            def boot_refused(label, want, text):
+                try:
+                    r = subprocess.run(
+                        ["./slap", str(port), snap], input=server_src, capture_output=True, text=True, timeout=5
+                    )
+                except subprocess.TimeoutExpired as e:
+                    harness.die("kv", f"{label}: the server started on a snapshot it must refuse:\n{e.stderr}")
+                check(f"{label}-refused", r.returncode != 0 and want in r.stderr, repr(r.stderr[:300]))
+                if text is not None:
+                    check(f"{label}-untouched", open(snap, newline="").read() == text)
+
+            # a torn last line (no LF) is refused like a line with no TAB
+            with open(snap, "w") as f:
+                f.write("good\tvalue here\ntorn\tval")
+            boot_refused("torn", "refusing to load corrupt snapshot", "good\tvalue here\ntorn\tval")
+            # every line must be a valid key, a TAB and a value without control bytes, once per key
+            for label, text, want in [
+                ("blank-line", "a\tb\n\nc\td\n", "line 2: the line is empty"),
+                ("only-newline", "\n", "line 1: the line is empty"),
+                ("empty-key", "\tv\n", "line 1: bad key"),
+                ("key-with-space", "a b\tv\n", "line 1: bad key"),
+                ("cr-in-value", "a\tb\r\n", "line 1: the value holds a control byte"),
+                ("repeated-key", "a\tb\na\tc\n", "line 2: key a appears twice"),
+            ]:
+                with open(snap, "w") as f:
+                    f.write(text)
+                boot_refused(label, f"refusing to load corrupt snapshot {snap} -- {want}", text)
+            # a snapshot it cannot read stops the boot by path and reason
+            if os.geteuid() != 0:
+                for label, mode in [("mode-000", 0), ("write-only", 0o200)]:
+                    with open(snap, "w") as f:
+                        f.write("k\tv\n")
+                    os.chmod(snap, mode)
+                    boot_refused(label, f"{snap}: Permission denied", None)
+                    os.chmod(snap, 0o644)
+                    check(f"{label}-untouched", open(snap).read() == "k\tv\n")
+            os.remove(snap)
+            os.mkdir(snap)
+            boot_refused("dir", f"{snap}: Is a directory", None)
+            os.rmdir(snap)
+
+            # A large snapshot loads in linear time.
+            big = os.path.join(d, "big.snap")
+            for label, lines in [
+                ("many-lines", [f"k{i}\tv{i}\n" for i in range(50000)]),
+                ("big-values", [f"k{i}\t{'v' * 4000}\n" for i in range(300)]),
+            ]:
+                with open(big, "w") as f:
+                    f.write("".join(lines))
+                t0 = time.monotonic()
+                proc = harness.boot("kv", [str(port), big], server_src, port)
+                took = time.monotonic() - t0
+                check(f"{label}-boots-fast", took < 3, f"{took:.1f} s")
+                key, value = lines[-1].rstrip("\n").split("\t")
+                check(f"{label}-loaded", raw(f"GET {key}\n".encode()) == f"VALUE {value}\n")
+                harness.kill(proc)
+
+            # With no free file descriptor, accept fails: on macOS once per
+            # connection, on Linux without end. The server stops after 100
+            # failures in a row.
+            p = subprocess.Popen(
+                ["./slap", str(port), snap],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (4, 4)),
+            )
+            p.stdin.write(server_src)
+            p.stdin.close()
+            for _ in range(300):
+                if p.poll() is not None:
+                    break
+                try:
+                    socket.create_connection(("127.0.0.1", port), timeout=1).close()
+                except OSError:
+                    time.sleep(0.01)
+            try:
+                p.wait(5)
+            except subprocess.TimeoutExpired:
+                harness.kill(p)
+            err = p.stderr.read()
+            check(
+                "accept-failures-bounded",
+                p.returncode not in (0, None, -15, -9)
+                and "accept failed 100 times in a row; the last: Too many open files" in err,
+                f"(code {p.returncode}) {err[-300:]!r}",
             )
         finally:
             harness.kill(proc)

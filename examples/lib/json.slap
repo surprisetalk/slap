@@ -294,6 +294,18 @@
     ) fold
     125 push) if) 'je-obj let
 
+-- je-value: (jv -- json-string).  Writes back the values the parser reads, in
+-- the same key order, so a program can change one field and keep the rest. The
+-- text can differ: 1e2 comes back as 100.0, and -0 as 0. A float that is nan or
+-- inf dies: JSON has no text for it. f - f is 0.0 only for a finite f.
+({'int (int-str)
+  'float ('f let f f fsub 0.0 eq (f float-str) ("json: je-value: " f float-str cat " is not a JSON number" cat fail) if)
+  'str (je-str)
+  'bool (("true") ("false") if)
+  'null (drop "null")
+  'arr ((je-value) each je-list)
+  'obj (('e let {} e 'key at 'name into e 'value at je-value 'value into) each je-obj)} case) 'je-value let
+
 -- ========== Tests ==========
 
 -- jerr: (result -- msg).  The error, or "" on success.
@@ -413,6 +425,10 @@
 [] {} "a" 'name into 1 je-int 'value into push je-obj "{\"a\":1}" eq assert
 [] {} "a" 'name into 1 je-int 'value into push {} "b" 'name into "hi" je-str 'value into push je-obj
   "{\"a\":1,\"b\":\"hi\"}" eq assert
+
+-- je-value writes back what the parser read, floats included
+"{\"a\":[1,-5,2.5,\"x\\n\\\"\\u0001\",true,false,null,{},[]],\"b\":-0.0,\"c\":0.30000000000000004,\"d\":1e+300}" 'jsrc let
+jsrc (ok) jd-run must je-value jsrc eq assert
 
 
 -- ========== Malformed input returns 'no, never a crash ==========

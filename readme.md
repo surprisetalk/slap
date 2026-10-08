@@ -84,13 +84,14 @@ Stack manipulation:
 
 ### floats
 
-`plus`, `sub`, `mul`, `div`, `lt` and `sort` take ints. `fplus`, `fsub`, `fmul`, `fdiv` and `flt` take floats, and `fdiv` follows IEEE (`1.0 0.0 fdiv` is `inf`). `eq` takes any copyable type. `itof` and `ftoi` convert. `float-bits` and `bits-float` convert between a float and its IEEE 754 binary64 bits as an int.
+`plus`, `sub`, `mul`, `div`, `lt` and `sort` take ints. `fplus`, `fsub`, `fmul`, `fdiv` and `flt` take floats, and `fdiv` follows IEEE (`1.0 0.0 fdiv` is `inf`). `eq` takes any copyable type. `itof` and `ftoi` convert. `float-str` gives the shortest of `%.15g`, `%.16g` and `%.17g` that reads back as the same float, with a point or an exponent, or `nan`, `inf` or `-inf`. `float-bits` and `bits-float` convert between a float and its IEEE 754 binary64 bits as an int.
 
 ```slap
 2.0 3.0 fplus        -- 5.0
 9.0 fsqrt            -- 3.0
 42 itof              -- 42.0
 3.7 ftoi             -- 3
+0.1 0.2 fplus float-str  -- "0.30000000000000004"
 1.0 float-bits       -- 4607182418800017408
 4607182418800017408 bits-float  -- 1.0
 2.0 3.0 fpow         -- 8.0
@@ -270,7 +271,7 @@ drop dict-entries               -- the dict and [{'key "a" 'value 1}]
 
 ### strings
 
-Strings are lists of bytes. A literal holds its UTF-8 bytes, which is what `read` and `tcp-recv` return, so a literal equals the same text read from a file. Escapes: `\n \t \\ \" \0`.
+Strings are lists of bytes. A literal holds its UTF-8 bytes, which is what `read` and `tcp-recv` return, so a literal equals the same text read from a file. Escapes: `\n \t \\ \" \0`. `read`, `write` and `ls` fail with the path and the C library's reason: `"todo.json: No such file or directory" no`.
 
 ```slap
 "hello" len                  -- 5
@@ -543,7 +544,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/http.slap` | `parse-http` (requires `strings.slap` for `crlf`) |
 | `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request`, `arg-count`, `arg-bytes`, `stdout-write` |
 
-`jd-run` and `xd-run` return `value ok`, or `msg no` for a syntax error as well as a shape error. A parse error names the byte offset from the start of the input and the byte found there: `json: expected , or ] in an array at byte 3, found '2'`. Neither library recurses per byte or per element, so input size is bounded by memory; nesting deeper than 256 levels is refused. `jd-run` refuses a leading zero (`0123`), a repeated key in one object, and a nonzero number that rounds to 0 or past the float range (`2e308`, `1e-400`; `0e999` is `0.0`); a float is one integer mantissa scaled once by a power of ten, so `0.3` equals the literal `0.3` (for up to 15 digits and a scale within 22; past that it is within a few ulps). `xd-run` refuses a repeated attribute name and a declared encoding other than UTF-8 or US-ASCII; the declaration is `<?xml` and white space, then version, encoding and standalone once each, and any other `<?xml...?>` is a processing instruction. `je-obj` dies on a repeated key, and `xml-render` dies on a repeated attribute name or a name the parser refuses. `jd-one-of` and `xd-one-of` list each alternative's error. Attributes are `{'name 'value}` records, in a parsed element and in `xe-elem`; `je-obj` takes `{'name 'value}` records too. `rss-to-xml` gives `xml ok`, or `msg no` for a kind other than `"rss"` or `"atom"`. `jd-str` decodes `\u` escapes, surrogate pairs included, to UTF-8 and refuses a raw control byte; `je-str` escapes every byte under 0x20, so anything it writes reads back.
+`jd-run` and `xd-run` return `value ok`, or `msg no` for a syntax error as well as a shape error. A parse error names the byte offset from the start of the input and the byte found there: `json: expected , or ] in an array at byte 3, found '2'`. Neither library recurses per byte or per element, so input size is bounded by memory; nesting deeper than 256 levels is refused. `jd-run` refuses a leading zero (`0123`), a repeated key in one object, and a nonzero number that rounds to 0 or past the float range (`2e308`, `1e-400`; `0e999` is `0.0`); a float is one integer mantissa scaled once by a power of ten, so `0.3` equals the literal `0.3` (for up to 15 digits and a scale within 22; past that it is within a few ulps). `xd-run` refuses a repeated attribute name and a declared encoding other than UTF-8 or US-ASCII; the declaration is `<?xml` and white space, then version, encoding and standalone once each, and any other `<?xml...?>` is a processing instruction. `je-obj` dies on a repeated key, and `xml-render` dies on a repeated attribute name or a name the parser refuses. `jd-one-of` and `xd-one-of` list each alternative's error. Attributes are `{'name 'value}` records, in a parsed element and in `xe-elem`; `je-obj` takes `{'name 'value}` records too. `je-value` writes back what `jd-run` reads with the decoder `(ok)`: the same values in the same key order, so a program can change one field and keep the rest. The text can differ: `1e2` comes back as `100.0`, and `-0` as `0`. `rss-to-xml` gives `xml ok`, or `msg no` for a kind other than `"rss"` or `"atom"`. `jd-str` decodes `\u` escapes, surrogate pairs included, to UTF-8 and refuses a raw control byte; `je-str` escapes every byte under 0x20, so anything it writes reads back.
 
 `cbor.slap` reads and writes the CBOR the lofi apps store. It follows json: `cd-run` (`bytes dec -- value ok | msg no`) runs the decoders `cd-int`, `cd-float`, `cd-str`, `cd-bytes`, `cd-bool`, `cd-null`, `cd-value` (any value), `cd-list`, `cd-field`, `cd-map`, `cd-one-of`, `cd-maybe`, `cd-succeed` and `cd-fail`. A value is a tagged `'int`, `'float`, `'str` (text string), `'bytes`, `'bool`, `'null`, `'list` or `'map`; a map is a list of `{'key str 'value cv}` records and a key must be a text string. `ce-int`, `ce-float`, `ce-str`, `ce-bytes`, `ce-bool`, `ce-null`, `ce-list`, `ce-map` (a list of `{'name 'value}` records, as `je-obj`) and `ce-value` (any decoded value) give byte lists. The encoder writes the shortest head for each int and length, and a float is always float64 (`float-bits`). The decoder reads float16, float32 and float64, and refuses what the apps never write: tags, indefinite lengths, simple values other than false, true and null, an integer past the int64 range, a repeated map key and trailing bytes. A refusal is a `msg no` with the byte offset and the byte found: `cbor: tags are not supported at byte 0, found byte 192`. A length larger than the bytes that remain is refused before anything is built, and nesting past 256 levels is refused. Save and read back with `write` and `read`: `path value ce-value write must drop` and `path read must (ok) cd-run`.
 

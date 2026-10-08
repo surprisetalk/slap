@@ -652,6 +652,19 @@ fs-path read must [0 127 255] eq assert
 fs-path [42] write must drop
 fs-path read must [42] eq assert
 
+-- ===== float-str =====
+-- The shortest of %.15g, %.16g and %.17g that reads back as the same float, with a point.
+1.5 float-str "1.5" eq assert
+1.0 float-str "1.0" eq assert
+-0.0 float-str "-0.0" eq assert
+10.0 300.0 fpow float-str "1e+300" eq assert
+0.1 0.7 fplus float-str "0.7999999999999999" eq assert
+0.1 0.2 fplus float-str "0.30000000000000004" eq assert
+-1.0 fsqrt float-str "nan" eq assert
+0.0 10.0 400.0 fpow fsub float-str "-inf" eq assert
+10.0 400.0 fpow float-str "inf" eq assert
+1000000000000000.0 float-str "1e+15" eq assert
+
 -- ===== Filesystem: ls =====
 "." ls must len 0 lt not assert
 
@@ -731,10 +744,15 @@ crlf 1 get must 10 eq assert
   tcp-close tcp-close tcp-close
 ) 'tcp-empty-send let tcp-empty-send
 
--- a NUL byte in a path or host is a 'no that carries the original bytes
-"a\0b" read {'ok (drop 0) 'no ("a\0b" eq assert 1)} case 1 eq assert
-"a\0b" "x" write {'ok (drop 0) 'no ("a\0b" eq assert 1)} case 1 eq assert
-"a\0b" ls {'ok (drop 0) 'no ("a\0b" eq assert 1)} case 1 eq assert
+-- read, write and ls fail with the path and the reason; a NUL byte keeps the path's bytes
+"a\0b" read {'ok (drop 0) 'no ("a\0b: contains a NUL byte" eq assert 1)} case 1 eq assert
+"a\0b" "x" write {'ok (drop 0) 'no ("a\0b: contains a NUL byte" eq assert 1)} case 1 eq assert
+"a\0b" ls {'ok (drop 0) 'no ("a\0b: contains a NUL byte" eq assert 1)} case 1 eq assert
+"/nonexistent-slap-dir/x" read {'ok (drop "") 'no ()} case "/nonexistent-slap-dir/x: No such file or directory" eq assert
+"." read {'ok (drop "") 'no ()} case ".: Is a directory" eq assert
+"." "x" write {'ok (drop "") 'no ()} case ".: Is a directory" eq assert
+"/nonexistent-slap-dir" ls {'ok (drop "") 'no ()} case "/nonexistent-slap-dir: No such file or directory" eq assert
+"readme.md" ls {'ok (drop "") 'no ()} case "readme.md: Not a directory" eq assert
 "a\0b" 80 tcp-connect {'ok (tcp-close 0) 'no ("tcp-connect: the host contains a NUL byte" eq assert 1)} case 1 eq assert
 
 -- recv-all: (socket -- socket bytes).  Reads until the peer closes.

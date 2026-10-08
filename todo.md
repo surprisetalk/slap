@@ -1,20 +1,121 @@
+- [ ] serve.slap and wiki.slap answer 500 with the reason for a file they
+      cannot read, and 404 only for a missing one. Today both treat every
+      `read` or `ls` 'no as missing: a mode-000 page answers 404, and wiki
+      offers to create a write-only page, whose save replaces its bytes.
+  1. tests/run_serve.py and run_wiki.py first: a mode-000 file answers 500
+     naming "Permission denied"; a missing one stays 404; a write-only wiki
+     page keeps its bytes.
+  2. serve.slap:175 falls through to the listing only on "Is a directory";
+     serve.slap:95 and wiki.slap:100 answer 404 only on "No such file or
+     directory", as todo.slap and kv-server.slap do. That is the third caller
+     of the test, so it moves into strings.slap as one word.
+
+- [ ] A crash, a full disk or a file size limit during `write` leaves the old
+      file whole. Today `write` opens with "wb", which empties the file before
+      it writes: `(ulimit -f 2; todo add zzz)` cut a 1862-byte todo file to
+      1024 bytes. Decided: `write` replaces a regular file atomically. It
+      writes a temp file made with mkstemp beside the target, gives it the
+      target's mode, fsyncs it, and renames it over the target; on any failure
+      it unlinks the temp and gives `"path: reason" no`. A symlink resolves to
+      its target (realpath), so the link stays. A path that exists and is not a
+      regular file (/dev/null, a FIFO, a directory) is written in place as
+      today; /dev/stdout and /dev/stderr keep their streams. slap ignores
+      SIGXFSZ, so a size limit fails the write with EFBIG instead of killing
+      the process and leaving the temp behind. Tradeoffs: the target's
+      directory must be writable; the owner is not kept; each write costs an
+      fsync.
+  1. Tests first, each checked against the old binary: run_todo.py and
+     run_kv.py write under RLIMIT_FSIZE (preexec_fn) and check that the old
+     bytes survive, the exit is nonzero naming "File too large", and no temp
+     file remains. expect.slap: a write through a symlink keeps the link and
+     changes the target; a mode-0600 file keeps its mode; "/dev/null" still
+     takes a write.
+  2. prim_write in slap.c; `signal(SIGXFSZ, SIG_IGN)` in main.
+  3. readme and claude.md's fallible table say write replaces a file
+     atomically.
+
+- [ ] kv-server refuses a SET that would take its store past the size SAVE
+      can write, and keeps serving. Today SAVE builds the snapshot with
+      dict-entries and a fold beside it, and the fold body's `dup` and `fv`
+      copy each value again: past about 1 MB the stack overflows, the server
+      dies with every change since the last save, and a 1-2 MB snapshot loads
+      but dies at the boot save. Decided: a byte count rides on the stack
+      beside the store (snapshot bytes: each key and value plus TAB and LF);
+      SET, and DEL of a key, update it; a SET past the bound answers `ERR
+      store full: N of B bytes` and changes nothing; load-snapshot refuses a
+      file past the bound with its size.
+  1. Tests first: run_kv.py fills the store to just under the bound with raw
+     sockets, checks SAVE, SHUTDOWN and reboot keep every key, then a SET past
+     the bound answers ERR store full and PING still answers; a snapshot file
+     past the bound is refused, untouched.
+  2. save-snapshot binds each entry once and reads key and value from the
+     binding, so a value is never on the stack twice; then measure the
+     largest store SAVE writes and set the bound below it, with a comment
+     naming the measurement's cause (STACK_MAX, two copies of the text).
+  3. handle-cmd and the accept loop thread `store bytes`; the self-tests
+     follow.
+
+- [ ] A closure stored in an outer frame's binding cannot form a cycle: the
+      checker refuses the binding. Today
+      `( 'k let ( k apply 1 plus) ) 'wr let 0 100000 (drop (0 plus) 3 (wr) repeat 'c let 0) repeat drop`
+      reaches 201 MB: F0's `c` holds C3, whose frame F3 holds C2, ..., F1
+      holds `(0 plus)`, whose frame is F0, so no refcount reaches zero. A
+      cycle can also run through a parent link: a closure made by a body that
+      runs in a child of F, bound in F. Decided: reject in the checker; no
+      collector. Rule: in a body that makes a frame (not the top level, whose
+      frame lives forever), a `let` after the first body literal that the
+      body pushes as a value (not an in-place if, while, dip, case or pthen
+      body; in-place bodies count for the literals inside them) may not bind
+      a value that holds a body. A body written right before `'name let` is a
+      word over this frame, which its own binding holds weakly, so it is not a
+      value here. "Holds a body" is a new bit on type variables, as P_COPY is:
+      the let marks the bound type's variables, the bit spreads into lists,
+      records, dicts, tag payloads and results, and a variable with the bit
+      that meets K_FN is refused at that point, generic instances included.
+      Lets before the first such literal stay free, since nothing made in
+      this frame exists yet: `'d let` of a decoder at the start of a word is
+      fine. The message names the binding and the literal's line and says to
+      bind the value before the body is made, or in a word of its own.
+      Tradeoff: some acyclic programs are refused.
+  1. Measure first: run the rule as a warning over the corpus (examples,
+     libs, expect.slap, scale.slap) and count the sites it refuses. If a
+     library idiom such as json.slap's decoders is refused, stop and bring
+     the count back here before going on.
+  2. Tests first, each checked against the old binary: errors.slap gets the
+     program above and a parent-link cycle (a nested binding body returns a
+     closure that the outer body binds); expect.slap gets `'d let` before a
+     literal, and a word bound after a literal.
+  3. Checker: the taint point per frame-making body in ty_range, the bit in
+     ty_bind/ty_need beside P_COPY, the message.
+  4. Breaker and fuzz rounds on the ASan build, with the memory watchdog.
+     readme's closures section and claude.md's Frames paragraph say a cycle
+     cannot form.
+
+- [ ] You type slap at a prompt in the terminal and see the stack after each
+      line ("a nice slap shell"). Decided: there are two shells, one in the
+      terminal and one in sauce (below). Both run one loop in slap.c, so the
+      slap-sdl and wasm builds of sauce get it free; slap.swift needs its own
+      copy. The terminal shell comes first. An error discards its line: the
+      stack and the global bindings return to their state before the line;
+      output the line already wrote stays.
+  1. `./slap` with a TTY on stdin reads lines. The checker's stack type and
+     the global frame persist across lines. An error discards only its line.
+
 - [ ] You build a literal from names bound at runtime: `{'x x 'y y}`,
-      `[i i] insert` and `[ 1 mk ]` work (simplification review). Today a
-      `[...]` or `{...}` literal is built once, when the program is read.
-      Decided: a literal is built when it is reached, in the running frame;
-      `{...} case` clauses stay built once, or `case` loses its in-place path.
-      Measured in a scratch build (scratchpad lit/slap.c, min of interleaved
-      runs): feed, sort.slap, the slow Euler problems and bench-uxn all moved
-      under 1.5%, inside the noise; in hot loops only `[]` is rebuilt.
+      `[i i] insert` and `[ 1 mk ]` work. Today a `[...]` or `{...}` literal
+      is built once, when the program is read. Decided: a literal is built
+      when it is reached, in the running frame; `{...} case` clauses stay
+      built once, or `case` loses its in-place path. Measured in a scratch
+      build: feed, sort.slap, the slow Euler problems and bench-uxn moved
+      under 1.5%; in hot loops only `[]` is rebuilt.
   1. Tests first, each checked against the old binary: expect.slap gets the
      three literals above; errors.slap cases that pin "built when it is read"
      or "starts from an empty stack" become passes or go.
   2. build_tuple: a literal becomes a body plus a marker that counts its
-     results into a list or record header, as the scratch build did; eval_run
-     fuses the pair. Its loc is the literal's open bracket, not the marker.
-     The measurement holds only while `{...} case` clauses stay built once.
-     If they cannot, stop and time make status's feed with clauses built on
-     every `case` before going on.
+     results into a list or record header; eval_run fuses the pair. Its loc
+     is the literal's open bracket, not the marker. If `{...} case` clauses
+     cannot stay built once, stop and time make status's feed with clauses
+     built on every `case` before going on.
   3. Checker: a literal's code is ordinary code on an empty stack. Delete
      ty_literal, ty_lit_depth, tyb_visible, the VF_DICT copy and their
      messages.
@@ -25,26 +126,22 @@
 
 - [ ] You tag a value with any payload, and `'ok`/`'no` are ordinary tags: a
       tagged type lists each tag with its payload, as a record type lists each
-      key with its value (simplification review). Today every tag but
-      'ok/'no has one payload type in the whole program (ty_tag_payload). That
-      types recursive data without declarations: json's 'arr holds json
-      values. A result needs a payload type per use, so results get their own
-      kind, K_RES, and case refuses a result clause beside another tag.
-      Decided: the payload lives in the row, as in OCaml's polymorphic
-      variants. A type may be cyclic only through a tag payload, as OCaml
-      allows. `{'ok int 'no str} either` is a closed tag set. Gains:
+      key with its value. Today every tag but 'ok/'no has one payload type in
+      the whole program (ty_tag_payload), and results have their own kind,
+      K_RES, so case refuses a result clause beside another tag. Decided: the
+      payload lives in the row, as in OCaml's polymorphic variants. A type may
+      be cyclic only through a tag payload, as OCaml allows.
+      `{'ok int 'no str} either` is a closed tag set. Gains:
       `{'ok (…) 'no (…) 'retry (…)} case` works, and a program's 'int no
       longer collides with json.slap's. Tradeoff: the checker gains cyclic
       types, and the runtime trusts it. Do this after the runtime-literals
-      decision: if into becomes replace-only, PRE/ABS go, and records and tag
-      sets have one row shape. The signature task follows this one; a
-      signature names a recursive type there.
+      task; the signature task follows this one.
   1. Tests first; check each fails against the old binary. expect.slap: the
      three-clause case above; `5 'n tag` and `"x" 'n tag` in two words that
-     never meet. errors.slap: a mismatch on a recursive
-     type prints it with `as`. errors.slap cases that pin a payload conflict
-     ("conflicts with its payload elsewhere", "unlike its payload elsewhere")
-     and "a result is tagged only 'ok or 'no" become expect.slap passes.
+     never meet. errors.slap: a mismatch on a recursive type prints it with
+     `as`. errors.slap cases that pin a payload conflict ("conflicts with its
+     payload elsewhere", "unlike its payload elsewhere") and "a result is
+     tagged only 'ok or 'no" become expect.slap passes.
   2. Tag sets reuse K_REXT, K_RNIL and K_RVAR, with the payload as the field.
      Delete K_TEXT, K_TNIL, K_TVAR, K_RES, ty_tagpay, ty_tag_payload and
      ty_tag_take. `'t tag` makes `{'t p | 'r}`. In ty_case, a clause's
@@ -62,14 +159,15 @@
      recursive data. Then run breaker and fuzz rounds on the ASan build: a
      checker hole shows up as memory damage, not as a message.
   5. readme: tagged unions and the type table lose "one payload type in the
-     whole program" and the result row; recursive data gets one example. claude.md's Checker paragraph (kinds, ty_tag_payload, K_RES)
-     follows.
+     whole program" and the result row; recursive data gets one example.
+     claude.md's Checker paragraph (kinds, ty_tag_payload, K_RES) follows.
 
 - [ ] You write a signature as ordinary data: two lists of type values, ins
       then outs, as in `(2 mul) [int] [int] effect 'double let` and `'triple
-      [int] [int] effect` (simplification review). Prelude words build types
-      as tagged values, so `[int str] 'sig let sig len print` prints 2.
-      Decided:
+      [int] [int] effect`. Prelude words build types as tagged values, so
+      `[int str] 'sig let sig len print` prints 2. Do this after the
+      tag-payload task (under one payload per tag, json's 'int holds an int
+      and the type 'int holds `()`). Decided:
       - Base types are words: int, float, sym, str and socket.
       - Constructors are their tags: `int 'list tag`, `'a var 'dict tag`,
         `'a var 'box tag`. dict and box already name value words.
@@ -94,15 +192,12 @@
       name by construction, so today's `[tagged own in  tagged move out]`,
       which names two tag sets and says "'h' declares ( ..a tagged .. -> ..a
       tagged .. ), but its body is ( ..a tagged .. -> ..a tagged .. )",
-      cannot be written. Tradeoffs: this reopens "the slot modes stay"
-      (2026-10-04); signatures and forward declarations stay. Signatures grow:
-      `'each ['s rest 'a var 'list tag ['r sealed 'a var] ['r sealed 'b var]
-      fn] ['s rest 'b var 'list tag]`, and each result in TYPES is
-      `dict "ok" 'a var insert "no" 'b var insert either`. Programs bind str
-      3 times and rest
-      once as local names; those sites get new names. Do this after the
-      tag-payload task (under one payload per tag, json's 'int holds an int
-      and the type 'int holds `()`).
+      cannot be written. Tradeoffs: the slot modes go; signatures and forward
+      declarations stay. Signatures grow: `'each ['s rest 'a var 'list tag
+      ['r sealed 'a var] ['r sealed 'b var] fn] ['s rest 'b var 'list tag]`,
+      and each result in TYPES is `dict "ok" 'a var insert "no" 'b var insert
+      either`. Programs bind str 3 times and rest once as local names; those
+      sites get new names.
   1. Tests first; check each fails against the old binary. expect.slap:
      `(2 mul) [int] [int] effect 'double let 5 double 10 eq assert`;
      `'triple [int] [int] effect (3 mul) 'triple let`; `(dup) ['a copy]
@@ -175,114 +270,29 @@
      zepto8).
   9. Then tic80 on the same lua.slap; duskos and decker after.
 
-- [ ] You type slap at a prompt in the terminal and see the stack after each
-      line ("a nice slap shell"). Decided: there are two shells, one in the
-      terminal and one in sauce (shell, below). Both run one loop in slap.c,
-      so the slap-sdl and wasm builds of sauce get it free; slap.swift needs
-      its own copy. The terminal shell comes first, since sauce does not
-      exist yet.
-  1. `./slap` with a TTY on stdin reads lines. The checker's stack type and
-     the global frame persist across lines. An error discards only its line.
-
 ## Blocked on you
 
-- [ ] You read why a let-bound body fails at a second stack depth when a
-      word, dip, if or apply stands between the body and the failure (code
-      review; breaker rounds 14 and 15). Done: a word whose input ends in an
-      empty stack says "'g' takes exactly 1 value, but the stack holds 3". The
-      hint "'f' is a body bound with let" still fires only when the body is a
-      direct input of the failing word. Two designs were built and reverted. A
-      match by stack depth named an unrelated binding. A per-word record of the
-      let-bound names a body runs broke three breaker rounds in a row (dip and
-      if, apply on a body, a branch mismatch blamed on the body, a word that
-      takes nothing); it matched message text with sscanf and kept tyb
-      indexes past their scope. The gap underneath: the checker does not
-      record which use bound a stack variable. Decide:
-      - Provenance: when ty_unify binds the input rest of a let-bound body,
-        it records that binding's tyb index on the variable. A depth failure
-        names the binding whose rest it reaches. Cost: one int per Ty node
-        and a rule in ty_bind.
-      - Drop the hint through words: "takes exactly N values" already says
-        the word runs at one depth.
-  1. If provenance: errors.slap first, each checked against the old binary:
-     `[(1 plus)] first 'f let (f apply) 'g let 1 g 2 3 g` names 'f; the
-     f1/f2 program (`[(1 plus)] first 'f2 let (f2 apply) 'g let [(2 plus)]
-     first 'f1 let 1 f1 apply drop 1 g 2 3 g`) names 'f2 and never 'f1;
-     `(1 g) 'h let (2 3 g) 'i let h i`, `1 g 1 2 3 (g) dip`, `1 g 2 3 (g)
-     (g) if` and `(1 g (2 3 g) apply) 'z let z` name 'f; `(dup 0 lt (g)
-     (drop) if) 'r let 1 r` stays a branch error. suite.py already checks
-     that `f swap` gets no hint.
-
-- [ ] A closure stored in an outer frame's binding is freed when nothing reaches
-      it (code review). A cycle is never freed: a closure made by a nested body
-      and stored in an outer frame's binding keeps that frame, which keeps the
-      closure's frame.
-      `( 'k let ( k apply 1 plus) ) 'wr let 0 100000 (drop (0 plus) 3 (wr) repeat 'c let 0) repeat drop`
-      reaches 201 MB: `(0 plus)` closes over the outer body's frame, and the
-      chain ends in that frame's binding `c`. With `(0 plus)` bound at the top
-      level it stays at 4.5 MB. Decide: weak parent links, or a collector.
-  1. Tests first: a loop that makes such a cycle each pass holds steady memory.
-
-- [ ] You apply a body while a copy of it is on the stack (breaker round 15 b1).
-      `(5) dup apply print drop` is refused: `dup` gives both copies one type,
-      and applying one changes the depth below the other. This caused nearly all
-      of the 145 refusals among 66,000 generated well-typed programs. Body cat
-      is gone, so only dup remains. Decide: keep the refusal (a let-bound body
-      runs at one depth too), or give each copy of a body value its own stack
-      rest when nothing else holds it, which brings back the fresh-rest
-      machinery (ty_bound_rest, ty_gens_settle) that let-bound bodies lost.
-  1. Tests first for the choice: the program above.
-
-- [ ] The example apps report every I/O failure and keep the data they do not
-      change (silent-failure audit, critical; breaker round 15). `read` gives
-      `path no` for every failure, so a directory, a mode-000 file or an I/O
-      error reads as "no file": todo.slap lists nothing and exits 0, and with a
-      write-only file `add` replaces the items. kv-server's boot `save-snapshot`
-      then writes the empty store back. todo.slap rewrites only text/done and
-      "items", dropping other fields and keys. kv-server: a recv error reads as
-      EOF; send errors vanish; SAVE always says "snapshot not writable"; a torn
-      last snapshot line loads as a short value; a client that connects and
-      sends nothing blocks every other client. feed.slap cuts text by bytes,
-      which can split a UTF-8 sequence. Decide: `read` reports why (errno text
-      in the 'no payload, e.g. "path: not found"), or programs check existence
-      with `ls` of the parent. Recommend the errno text: one change in
-      `prim_read`, and every caller can tell. tcp-recv times out after 30 s, so
-      a silent kv-server client blocks the others for at most 30 s.
-  1. tests/run_todo.py and run_kv first: a directory, a mode-000 file and a
-     write-only file each exit nonzero naming the path; the file keeps its
-     bytes.
-  2. todo.slap:47 and kv-server.slap:53: start empty only on "not found";
-     anything else dies with the path and the reason. A path with a NUL byte
-     gives the reason "contains a NUL byte" (read, write and ls give 'no for it
-     today, with the path as payload).
-  3. todo.slap keeps the decoded JSON and changes only those fields. kv-server
-     reports each error with its reason and refuses a line without TAB and
-     newline. feed.slap cuts at a character boundary.
-
-- [ ] A decoder tells a missing optional field from a present but malformed one
-      (silent-failure audit, critical). `jd-maybe`/`xd-maybe` turn every failure
-      into `none ok`: `{"a":"x"}` with `"a" jd-int jd-field jd-maybe` gives
-      none. rss's `_rss-opt-text` (`xd-child xd-maybe ("" default)`) makes
-      `<title>A <b>bold</b> post</title>` and Atom `<content type="xhtml">` give
-      "", and lets an RSS channel without its required title, link or
-      description parse; rss-to-xml then writes `<pubDate></pubDate>` and
-      `<link href=""/>`. Decide: jd-maybe/xd-maybe give `none` only for "missing
-      field"/"no such child" and pass every other 'no on (Elm's `maybe` swallows
-      all errors; `optionalField` does not); rss keeps absent optional fields as
-      `none`, not "". Text with element children: take the text of xhtml
-      content, or refuse it.
+- [ ] A decoder tells a missing optional field from a present but malformed
+      one. `jd-maybe`/`xd-maybe` turn every failure into `none ok`:
+      `{"a":"x"}` with `"a" jd-int jd-field jd-maybe` gives none. rss's
+      `_rss-opt-text` (`xd-child xd-maybe ("" default)`) makes `<title>A
+      <b>bold</b> post</title>` and Atom `<content type="xhtml">` give "", and
+      lets an RSS channel without its required title, link or description
+      parse; rss-to-xml then writes `<pubDate></pubDate>` and `<link
+      href=""/>`. Proposed: jd-maybe/xd-maybe give `none` only for "missing
+      field"/"no such child" and pass every other 'no on (Elm's `maybe`
+      swallows all errors; `optionalField` does not); rss keeps absent
+      optional fields as `none`, not "". Decide: text with element children
+      (take the text of xhtml content, or refuse it), and links (rss-parse
+      refuses a link that is not an absolute http(s) URL, or keeps the text as
+      written; three breaker rounds each found a bad link that passed).
   1. Tests first: the three inputs above, and a channel without a title.
   2. jd-field/xd-child failures carry a distinct 'missing payload shape (or
      message prefix) that the maybe decoders test.
   3. rss.slap: required fields use xd-child without maybe; rss-to-xml skips
      absent fields.
-  4. `_rss-link` and `_atom-link-href` use xd-maybe too: a `<link>` with element
-     children, or a malformed href, reads as no link.
-  5. Links are text, never checked as URLs: three breaker rounds each found one
-     (an empty href, a space-only href, then `href="&#160;"`, which gives
-     `[194 160] ok` since XML whitespace is ASCII only). Decide: rss-parse
-     refuses a link that is not an absolute http(s) URL, or keeps the text as
-     written.
+  4. `_rss-link` and `_atom-link-href` use xd-maybe too: a `<link>` with
+     element children, or a malformed href, reads as no link.
 
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps
@@ -292,21 +302,20 @@
       nothing kept in intermediate state outside physical notes and a single
       working copy; publish sequels, not incremental improvements. Write the
       apps in slap. slap-sdl hosts them first; wasm and an interpreter in
-      Swift (slap.swift) that loads the ROMs come later. The notes name the
-      first release "slap 0". The apps store everything in CBOR (examples/lib/cbor.slap)
-      and share a charmbracelet-like UI. A dir app opens a general thing. A
-      file app opens one specific thing, and it is always a viewer and an
-      editor. Decide: the first app; what a file app opens with no subject
-      (the last file, or an empty one); whether a file app saves by tags only,
-      with no file name; and whether you publish your own ware registry.
+      Swift (slap.swift) that loads the ROMs come later. The first release is
+      "slap 0". The apps store everything in CBOR (examples/lib/cbor.slap) and
+      share a charmbracelet-like UI. A dir app opens a general thing. A file
+      app opens one specific thing, and it is always a viewer and an editor.
+      Decide: the first app; what a file app opens with no subject (the last
+      file, or an empty one); whether a file app saves by tags only, with no
+      file name; and whether you publish your own ware registry.
       - Dir apps:
         - home: the launcher. A grid of app icons (or text) and widgets, and
           search.
         - stuff: a table of files with an action column (e.g. edit image). No
           file names: tags and thumbnails. It holds libraries too (books,
           albums).
-        - shell: the slap REPL in sauce. It runs the terminal shell's loop
-          (task above).
+        - shell: the slap REPL in sauce. It runs the terminal shell's loop.
       - File apps:
         - ware: package registries. You add recommended registries or custom
           ones. Each registry holds apps. Each app has an author, a changelog
@@ -315,8 +324,7 @@
         - web: tk. An html/css browser.
         - book, feed, code, slides, prose, sheet, email, cal, phone, chat,
           video, music, photo, camera, print, clock, map, steno, cast.
-      - Earlier notes name apps with no match above: query, debug, talk,
-        claude, hypercard.
+      - Unplaced: query, debug, talk, claude, hypercard.
   1. Move the blog and all projects into sauce as slaps/scraps. taylor.town
      serves its pages (indexed) and assets (not indexed) from sauce.
   2. home.slap lists the apps and runs one.
@@ -325,15 +333,14 @@
   4. stuff.slap: SQL or FQL finds files by tag, instead of navigating
      directories.
 
-- [ ] The language has the batteries the apps need. The notes sketched these
-      types: `i8, i16, i32, u8, u16, u32, f16, f32`; `int, float, str`;
-      `'x box, 'x list, 'x slice, 'v 'k dict, 'v 'k dice, ['b 'a], [.. 'b 'a], {'k 'v}, {.. 'k 'v}`.
-      Other candidates: SIMD and GPU acceleration; sets; concurrent
+- [ ] The language has the batteries the apps need. Sketched types: `i8, i16,
+      i32, u8, u16, u32, f16, f32`; `int, float, str`; `'x box, 'x list, 'x
+      slice, 'v 'k dict, 'v 'k dice, ['b 'a], [.. 'b 'a], {'k 'v}, {.. 'k
+      'v}`. Other candidates: SIMD and GPU acceleration; sets; concurrent
       go-func-esque threads, each with its own input queue and state; a
       charm-like UI framework with a WYSIWYG editor that builds templates and
       components visually; a graphics stack language (sneeze? splat? spill?);
-      a query language. Decide: which ones the first
-      app needs.
+      a query language. Decide: which ones the first app needs.
   1. Each chosen one: expect.slap first, then TYPES, then a readme section.
   2. When SIMD, GPU or threads land, revisit examples/zoom.slap: it needs
      them most. Deep keyframes spend their time in `escape` (about 240 ns

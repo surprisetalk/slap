@@ -459,13 +459,18 @@ static void val_print(Value *data, int slots, FILE *out) {
     if (!print_max) c_stack_check("printing a deeply nested value"); /* the error report runs on the deep stack that caused the error */
     print_depth++; val_print_node(data, slots, out); print_depth--;
 }
+/* The shortest of %.15g, %.16g and %.17g that reads back as f, with a point so it never reads as an int.
+   NaN prints as nan whatever its sign: glibc prints a negative one as -nan, macOS as nan. */
+static void float_text(char *b, size_t cap, double f) {
+    if (isnan(f)) { snprintf(b, cap, "nan"); return; }
+    for (int p = 15; p <= 17; p++) { snprintf(b, cap, "%.*g", p, f); if (strtod(b, NULL) == f) break; }
+    if (!strpbrk(b, ".eni")) strncat(b, ".0", cap - strlen(b) - 1);
+}
 static void val_print_node(Value *data, int slots, FILE *out) {
     Value top = data[slots - 1];
     switch (top.tag) {
     case VAL_INT: fprintf(out, "%lld", (long long)top.as.i); break;
-    case VAL_FLOAT: { /* shortest text that reads back as the same double, with a point so it never looks like an int */
-        char b[40]; snprintf(b,sizeof b,"%.15g",top.as.f); if(strtod(b,NULL)!=top.as.f) snprintf(b,sizeof b,"%.17g",top.as.f);
-        fputs(b,out); if(!strpbrk(b,".eni")) fputs(".0",out); break; }
+    case VAL_FLOAT: { char b[40]; float_text(b,sizeof b,top.as.f); fputs(b,out); break; }
     case VAL_SYM: fprintf(out, "'%s", sym_name(top.as.sym)); break;
     case VAL_XT: fprintf(out, "%s", sym_name(top.as.xt.sym)); break;
     case VAL_LIST: {
@@ -740,8 +745,10 @@ static int ty_bind(int v, int t) {
     int occ = ty_occurs(v, t, ty[v].level);
     if (occ == 2) { snprintf(ty_why, sizeof ty_why, "a type the signature leaves open would have to be a type from outside the body"); return 1; }
     if (occ) {
-        int n = 0; for (int x = ty_find(t); ty[x].kind == K_SCONS && n < ty_n; x = ty_find(ty[x].b)) n++;
-        if (ty[v].kind == K_SVAR && n) ty_depth_why = 1, snprintf(ty_why, sizeof ty_why, "one path leaves %d more value%s on the stack than the other, so a branch, clause, loop pass or recursive call changes the stack's depth", n, n == 1 ? "" : "s");
+        int n = 0, x = ty_find(t); for (; ty[x].kind == K_SCONS && n < ty_n; x = ty_find(ty[x].b)) n++;
+        /* The stack does not end in v, so v is inside a value on it: a body's type that names this stack. */
+        if (ty[v].kind == K_SVAR && n && x != v) snprintf(ty_why, sizeof ty_why, "a copy of the body lies below it on the stack. dup, or a second lookup of a body bound with let, gives both copies one type, so one copy cannot run while the other lies below it");
+        else if (ty[v].kind == K_SVAR && n) ty_depth_why = 1, snprintf(ty_why, sizeof ty_why, "one path leaves %d more value%s on the stack than the other, so a branch, clause, loop pass or recursive call changes the stack's depth", n, n == 1 ? "" : "s");
         else if (ty[v].kind == K_RVAR) snprintf(ty_why, sizeof ty_why, "a record would have to contain itself: one path adds a field the other has not");
         else { char s[256]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a value would have to contain itself, as %s", s); }
         return 1; }
@@ -943,7 +950,7 @@ static const char *TYPES =
     "'mod ( int int -> int ) 'band ( int int -> int ) 'bor ( int int -> int ) 'bxor ( int int -> int )\n"
     "'shl ( int int -> int ) 'shr ( int int -> int ) 'and ( int int -> int ) 'or ( int int -> int )\n"
     "'eq ( 'a 'a -> int ) 'lt ( int int -> int ) 'flt ( float float -> int )\n"
-    "'itof ( int -> float ) 'ftoi ( float -> int ) 'float-bits ( float -> int ) 'bits-float ( int -> float ) 'fsqrt ( float -> float ) 'ffloor ( float -> float ) 'fround ( float -> float )\n"
+    "'itof ( int -> float ) 'ftoi ( float -> int ) 'float-str ( float -> str ) 'float-bits ( float -> int ) 'bits-float ( int -> float ) 'fsqrt ( float -> float ) 'ffloor ( float -> float ) 'fround ( float -> float )\n"
     "'fexp ( float -> float ) 'flog ( float -> float ) 'fpow ( float float -> float ) 'fatan2 ( float float -> float )\n"
     "'print ( 'a -> ) 'assert ( int -> ) 'millis ( -> int ) 'datetime ( -> int list ) 'random ( int -> int ) 'isheadless ( -> int )\n"
     "'apply ( ..s ( ..s -> ..t ) -> ..t ) 'dip ( ..s 'x ( ..s -> ..t ) -> ..t 'x )\n"
@@ -2160,6 +2167,7 @@ static void push_byte_list(const unsigned char *buf, size_t len) {
 static void push_string_bytes(const char *buf, int len) { push_byte_list((const unsigned char*)buf, (size_t)len); }
 static void push_c_string(const char *s) { push_byte_list((const unsigned char*)s, strlen(s)); }
 static void push_fail(const char *msg) { push_c_string(msg); push_no(); }
+static void prim_float_str(Frame *e){(void)e;char b[40];float_text(b,sizeof b,pop_float());push_c_string(b);}
 static Value dict_val(DictData *dd){Value v={0};v.tag=VAL_DICT;v.loc=0;v.as.box=dd;return v;}
 static void prim_dict(Frame *e){(void)e;DictData *dd=calloc(1,sizeof(DictData));dicts_made=1;spush(dict_val(dd));}
 static void prim_insert(Frame *e) {
@@ -2577,23 +2585,31 @@ static char *pop_string_path(const char *who, int *len) {
     char *buf = realloc(raw, *len + 1); if (!buf) die("%s: out of memory for a %d-byte path", who, *len);
     buf[*len] = '\0'; return buf;
 }
-/* A C string stops at a NUL, so a path with one cannot name a file. The 'no payload keeps every byte. */
+/* A failed read, write or ls gives "path: reason" no, with every byte of the path. */
+static void push_path_fail(const char *path, int len, const char *reason) {
+    int rl = (int)strlen(reason);
+    for (int i = 0; i < len; i++) spush(val_int((unsigned char)path[i]));
+    spush(val_int(':')); spush(val_int(' '));
+    for (int i = 0; i < rl; i++) spush(val_int((unsigned char)reason[i]));
+    spush(val_compound(VAL_LIST, len + 2 + rl, len + 3 + rl)); push_no();
+}
+/* A C string stops at a NUL, so a path with one cannot name a file. */
 static int path_has_nul(const char *path, int len) {
     if (!memchr(path, 0, len)) return 0;
-    push_byte_list((const unsigned char*)path, len); push_no(); return 1;
+    push_path_fail(path, len, "contains a NUL byte"); return 1;
 }
 static void prim_read(Frame *e) {
     (void)e; int plen;char *path=pop_string_path("read",&plen);
     if(path_has_nul(path,plen)){free(path);return;}
     FILE *f=fopen(path,"rb");
-    if(!f) { push_fail(path); free(path); return; }
-    size_t n=0,cap=65536,got; unsigned char *buf=malloc(cap);
+    if(!f) { push_path_fail(path,plen,strerror(errno)); free(path); return; }
+    size_t n=0,cap=65536,got; unsigned char *buf=malloc(cap); errno=0;
     while(buf&&(got=fread(buf+n,1,cap-n,f))>0){ n+=got;
         if(n>STACK_MAX-2) die("read: %s holds more than %d bytes, the most read returns: each byte, the list and its 'ok take one slot of the %d-slot stack. Split the file into smaller files.", path, STACK_MAX-2, STACK_MAX);
         if(n==cap){ cap*=2; buf=realloc(buf,cap); } }
     if(!buf) die("read: out of memory reading %s", path);
-    int bad=ferror(f); fclose(f);
-    if(bad) { free(buf); push_fail(path); free(path); return; }
+    int bad=ferror(f), er=errno; fclose(f);
+    if(bad) { free(buf); push_path_fail(path,plen,er?strerror(er):"the read did not finish"); free(path); return; }
     stack_room((int)n+2,"read"); push_byte_list(buf,n);free(buf);free(path); push_ok();
 }
 static void prim_write(Frame *e) {
@@ -2603,19 +2619,24 @@ static void prim_write(Frame *e) {
        file the shell redirected stdout to. Write through the process's own streams instead. */
     FILE *std=strcmp(path,"/dev/stdout")==0?stdout:strcmp(path,"/dev/stderr")==0?stderr:NULL;
     if(std==stderr) fflush(stdout);
-    FILE *f=std?std:fopen(path,"wb");if(!f){free(buf);push_fail(path);free(path);return;}
-    size_t n=fwrite(buf,1,len,f); int closed=std?fflush(f):fclose(f);
-    if((int)n!=len||closed){free(buf);push_fail(path);free(path);return;}
+    FILE *f=std?std:fopen(path,"wb");if(!f){int er=errno;free(buf);push_path_fail(path,plen,strerror(er));free(path);return;}
+    errno=0; size_t n=fwrite(buf,1,len,f); int short_write=(int)n!=len, er=short_write?errno:0;
+    int closed=std?fflush(f):fclose(f); if(closed&&!er) er=errno;
+    /* C does not require fwrite or fclose to set errno */
+    if(short_write||closed){free(buf);push_path_fail(path,plen,er?strerror(er):"the write did not finish");free(path);return;}
     free(buf);free(path); spush(val_int(1)); push_ok();
 }
 static void prim_ls(Frame *e) {
     (void)e; int plen;char *path=pop_string_path("ls",&plen);
     if(path_has_nul(path,plen)){free(path);return;}
-    DIR *d=opendir(path); if(!d) { push_fail(path); free(path); return; }
+    DIR *d=opendir(path); if(!d) { push_path_fail(path,plen,strerror(errno)); free(path); return; }
     struct dirent *ent; int base=sp,count=0;
-    while((ent=readdir(d))!=NULL){if(strcmp(ent->d_name,".")==0||strcmp(ent->d_name,"..")==0)continue;
+    /* readdir returns NULL at the end and on an error; only an error sets errno */
+    for(;;){errno=0; if(!(ent=readdir(d))) break; if(strcmp(ent->d_name,".")==0||strcmp(ent->d_name,"..")==0)continue;
         push_c_string(ent->d_name);count++;}
-    closedir(d);spush(val_compound(VAL_LIST,count,sp-base+1));free(path); push_ok();
+    int er=errno; closedir(d);
+    if(er){ sp=base; push_path_fail(path,plen,strerror(er)); free(path); return; }
+    spush(val_compound(VAL_LIST,count,sp-base+1));free(path); push_ok();
 }
 
 #ifndef SLAP_WASM
@@ -2747,7 +2768,7 @@ static void register_prims(void) {
         R(eq,eq),R(lt,lt),{"flt",prim_lt,NULL},R(and,and),R(or,or),
         R(print,print),R(assert,assert),R(random,random),
         R(if,if),R(case,case),R(while,while),
-        R(itof,itof),R(ftoi,ftoi),{"float-bits",prim_float_bits,NULL},{"bits-float",prim_bits_float,NULL},R(fsqrt,fsqrt),
+        R(itof,itof),R(ftoi,ftoi),{"float-str",prim_float_str,NULL},{"float-bits",prim_float_bits,NULL},{"bits-float",prim_bits_float,NULL},R(fsqrt,fsqrt),
         R(ffloor,ffloor),R(fround,fround),R(fexp,fexp),R(flog,flog),R(fpow,fpow),R(fatan2,fatan2),
         R(len,size),R(push,push_op),M("pop",pop),
         M("get",get),M("peek",peek),M("nth",nth),M("set",set),R(cat,concat),

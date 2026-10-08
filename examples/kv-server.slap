@@ -20,6 +20,7 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 4096 'LINE-CAP let
 ([] 10 push) 'LF let
 ([] 9 push) 'TAB let
+('lm let "/dev/stderr" "kv-server: " lm cat LF cat write must drop) 'log let
 
 -- ===== pure helpers =====
 
@@ -45,24 +46,37 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 (dict-entries [] (dup 'key at 'fk let 'value at 'fv let fk cat TAB cat fv cat LF cat) fold
  SNAP swap write) 'save-snapshot let
 
--- Every non-empty line must be key<TAB>value. A line without a TAB means the file
--- was corrupted or a prior save was torn mid-write; refuse to load rather than
--- silently drop the pair (and then overwrite it on the next save). Missing file
--- is the normal first-run case: start empty.
+-- Each line must be what save-snapshot writes: a valid key, a TAB, a value with
+-- no byte under 32 and a LF, each key once. Anything else means the file was
+-- corrupted or a prior save was torn mid-write; refuse to load rather than drop
+-- or change a pair (and then overwrite it on the next save). A missing file is
+-- the normal first-run case: start empty. Any other read failure stops the boot,
+-- since the boot save would overwrite the store.
+('cw let 'cn let "refusing to load corrupt snapshot " SNAP cat " -- line " cat cn int-str cat ": " cat cw cat fail) 'corrupt let
+
+-- load-line: (store line n -- store).  Line n of the snapshot into the store.
+('lnum let 'll let
+ ll len 0 eq (lnum "the line is empty" corrupt) () if
+ ll TAB str-find {'ok () 'no (drop lnum "the line has no TAB separator" corrupt)} case 'tp let
+ ll tp take-n 'lk let ll tp 1 plus drop-n 'lv let
+ lk valid-key not (lnum "bad key: expected 1-64 printable bytes, no spaces" corrupt) () if
+ lv (32 lt) filter len 0 gt (lnum "the value holds a control byte" corrupt) () if
+ lk of {'ok (drop lnum "key " lk cat " appears twice" cat corrupt) 'no (drop)} case
+ lk lv insert) 'load-line let
+
 (dict SNAP read {
-   'no (drop)
-   'ok ('sr let sr LF str-split (len 0 gt) filter 'lines let
-        lines (TAB str-find {'ok (drop 1) 'no (drop 0)} case) filter len lines len eq (
-          lines
-          (dup len 0 gt) (
-            dup 0 get must 'sl let 1 drop-n swap
-            sl TAB str-find must 'tp let sl tp take-n sl tp 1 plus drop-n insert
-            swap) while
-          drop
-        ) (
-          "/dev/stderr" "kv-server: refusing to load corrupt snapshot " SNAP cat " -- a line has no TAB separator" cat LF cat write must drop
-          0 assert
-        ) if)
+   'no ('re let re SNAP ": No such file or directory" cat eq () ("cannot read snapshot " re cat fail) if)
+   'ok ('sr let
+        sr len 'sn let
+        sn 0 gt (sn 1 sub 'sr nth must 10 eq not) (0) if (
+          "refusing to load corrupt snapshot " SNAP cat " -- the last line has no newline" cat fail) () if
+        -- The loop reads the text by index with nth, since a lookup of sr would
+        -- copy all of it. stack: store, the index of the next line, its number
+        0 1 (over sn lt) ('ln let 'p let
+          p (dup 'sr nth must 10 eq not) (1 plus) while 'e let
+          p e range ('i let i 'sr nth must) each ln load-line
+          e 1 plus ln 1 plus) while
+        drop drop)
  } case) 'load-snapshot let
 
 -- ===== protocol =====
@@ -80,8 +94,8 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
  cmd "DEL" eq (
    rest valid-key (rest remove "OK") (bad-key) if) (
  cmd "KEYS" eq (dict-keys " " str-join "KEYS " swap cat) (
- cmd "SAVE" eq (save-snapshot {'ok (drop "OK") 'no (drop "ERR save failed: snapshot not writable")} case) (
- cmd "SHUTDOWN" eq (save-snapshot {'ok (drop "BYE") 'no (drop "ERR save failed: snapshot not writable; still running")} case) (
+ cmd "SAVE" eq (save-snapshot {'ok (drop "OK") 'no ('se let "ERR save failed: " se cat)} case) (
+ cmd "SHUTDOWN" eq (save-snapshot {'ok (drop "BYE") 'no ('se let "ERR save failed: " se cat "; still running" cat)} case) (
  cmd len 0 eq ("ERR empty command; try PING")
               ("ERR unknown command: " cmd cat "; try SET GET DEL KEYS SAVE PING SHUTDOWN" cat) if
  ) if) if) if) if) if) if) if
@@ -89,7 +103,8 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 
 -- ===== connection =====
 
-([] (swap 4096 tcp-recv {'ok () 'no (drop [])} case 'ch let
+-- A recv error ends the line like a hang-up, and the log says why.
+([] (swap 4096 tcp-recv {'ok () 'no ('rr let "recv failed: " rr cat log [])} case 'ch let
        swap ch cat
        dup has-lf not
        ch len 0 gt and
@@ -97,7 +112,7 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 
 -- A socket stays on the stack: each word that uses it hands it on or closes it.
 ('rtext let
- rtext LF cat tcp-send {'ok (drop) 'no (drop)} case tcp-close) 'reply-close let
+ rtext LF cat tcp-send {'ok (drop) 'no ('sd let "send failed: " sd cat log)} case tcp-close) 'reply-close let
 
 -- stack: store client -> store continue?
 (recv-line 'rline let
@@ -154,6 +169,13 @@ load-snapshot
 save-snapshot must drop  -- an unwritable snapshot is a deployment bug: fail at boot, not on the first SAVE
 PORT print
 PORT tcp-listen must
--- stack: store server; the client goes above the store for handle-conn, then the server comes back up
-(tcp-accept must rot swap handle-conn (swap) dip) () while
-tcp-close
+-- stack: store server failures; the client goes above the store for handle-conn,
+-- then the server comes back up. accept fails on a client that resets before it
+-- is accepted; 100 failures in a row is a fault of the host, such as no free
+-- file descriptors, and each retry is immediate.
+0 ('fails let tcp-accept {
+    'ok (rot swap handle-conn (swap) dip 0 swap)
+    'no ('ae let fails 1 plus 'nf let
+         nf 100 lt ("accept failed: " ae cat log) ("accept failed 100 times in a row; the last: " ae cat fail) if
+         nf 1)} case) () while
+drop tcp-close

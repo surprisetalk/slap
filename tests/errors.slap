@@ -1518,6 +1518,11 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- EXPECT: one path leaves 1 more value on the stack than the other
 0 (dup 3 lt) (1 plus 7) while
 
+-- EXPECT: 'apply' takes ( ..a -> ..b )
+-- EXPECT: a copy of the body lies below it on the stack
+-- dup gives both copies one type, so one cannot run above the other
+(5) dup apply print drop
+
 -- EXPECT: 'if' takes int
 -- EXPECT: str is not int.
 "s" (1) (2) if

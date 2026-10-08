@@ -110,4 +110,49 @@ with tempfile.TemporaryDirectory() as d:
         r.returncode == 0 and r.stdout.rstrip().endswith("1000 items"),
         f"{os.path.getsize(big)} bytes: {r.stderr[:200]}",
     )
+
+    # The 512-byte text cut and the 64-byte summary cut each land inside a
+    # two-byte character; both cut before it.
+    utf8 = os.path.join(d, "utf8.xml")
+    title, desc = "a" + "é" * 300, "a" + "é" * 100
+    with open(utf8, "w", encoding="utf-8") as f:
+        f.write(
+            '<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>'
+            "<link>http://e.com</link><description>d</description>"
+            f"<item><title>{title}</title><description>{desc}</description></item></channel></rss>"
+        )
+    r = subprocess.run(
+        ["./slap", utf8], input=SRC.encode(), capture_output=True, timeout=20
+    )
+    try:
+        out = r.stdout.decode("utf-8")
+    except UnicodeDecodeError as e:
+        out = f"invalid UTF-8: {e}"
+    check("utf8-exit-0", r.returncode == 0, r.stderr[:300])
+    check("utf8-text-cut", " 1. a" + "é" * 255 + "\n" in out, repr(out[:80]))
+    check("utf8-summary-cut", "    a" + "é" * 31 + "...\n" in out, repr(out[-120:]))
+
+    # 3- and 4-byte characters, a cut on a character start, and stray
+    # continuation bytes after a whole character, which the cut keeps whole.
+    items = [("a" + "\u20ac" * 300, "x"), ("t2", "ab" + "\U0001F600" * 40), ("t3", "a" * 64 + "é")]
+    body = "".join(f"<item><title>{t}</title><description>{s}</description></item>" for t, s in items)
+    with open(utf8, "wb") as f:
+        f.write(
+            (
+                '<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>'
+                f"<link>http://e.com</link><description>d</description>{body}"
+                "<item><title>t4</title><description>"
+            ).encode()
+            + b"a" * 60
+            + "\U0001F600".encode()
+            + b"\x80\x80\x80aaaa"
+            + b"</description></item></channel></rss>"
+        )
+    r = subprocess.run(["./slap", utf8], input=SRC.encode(), capture_output=True, timeout=20)
+    check("utf8-wide-exit-0", r.returncode == 0, r.stderr[:300])
+    out = r.stdout
+    check("utf8-3-byte-cut", (" 1. a" + "\u20ac" * 170 + "\n").encode() in out, repr(out[:80]))
+    check("utf8-4-byte-cut", ("    ab" + "\U0001F600" * 15 + "...\n").encode() in out, repr(out[-400:]))
+    check("utf8-cut-on-start", ("    " + "a" * 64 + "...\n").encode() in out, repr(out[-400:]))
+    check("utf8-stray-bytes-kept-whole", b"    " + b"a" * 60 + "\U0001F600...\n".encode() in out, repr(out[-200:]))
 print(f"feed: {count[0]} checks passed")
