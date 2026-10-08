@@ -14,7 +14,7 @@
   b   1 band 0 neq (px 7 plus py dc pixel) () if
 ) 'draw-byte let
 
--- Draw one character from raw font bytes
+-- Draw one character from raw font bytes; nth reads raw by name, so no per-byte copy
 (
   'dc let 'gy let 'gx let 'ch let 'n let 'raw let
   ch n n mul 8 mul mul 256 plus 'base let
@@ -26,7 +26,7 @@
     0
     (dup 8 lt) (
       dup 'row let
-      raw base ti 8 mul plus row plus get must
+      base ti 8 mul plus row plus 'raw nth must
       tx ty row plus dc draw-byte
       1 plus
     ) while
@@ -44,7 +44,7 @@
     dup 'si let
     swap 'cx-cur let
     str si get must 'ch let
-    raw ch get must 'w let
+    ch 'raw nth must 'w let
     w 0 gt (
       raw n ch cx-cur sy dc draw-char
       cx-cur w plus 1 plus
@@ -55,21 +55,21 @@
   drop drop
 ) 'draw-text let
 
--- Draw text with wrapping; returns cur-x cur-y on stack
+-- Draw text with wrapping, clipped at row mh; returns cur-x cur-y on stack
 (
-  'dc let 'maxw let 'sy let 'sx let 'str let 'n let 'raw let
+  'dc let 'mh let 'maxw let 'sy let 'sx let 'str let 'n let 'raw let
   n 8 mul 'rh let
   sx sy 0
   (dup str len lt) (
     dup 'si let
     rot 'cx-cur let swap 'cy-cur let
     str si get must 'ch let
-    raw ch get must 'w let
+    ch 'raw nth must 'w let
     w 0 gt (
       cx-cur w plus sx maxw plus gt
         (sx cy-cur rh 2 plus plus) (cx-cur cy-cur) if
       'cy2 let 'cx2 let
-      cy2 480 lt (
+      cy2 mh lt (
         raw n ch cx2 cy2 dc draw-char
       ) () if
       cx2 w plus 1 plus cy2
@@ -109,13 +109,22 @@ fnames len 'nf let
 -- Layout
 180 'PW let
 
--- State: record on stack, modified by keydown, read must by show
+-- Each font file is read once: the label font here, the selected font on selection
+"fonts/chicago12.uf2" read must 'lf let
+('s let "fonts/" s 'fnames nth must cat read must) 'load-font let
+
+-- State: record on stack, modified by keydown, read must by show.
+-- w and h are the canvas size.
 {} 0 'sel into "The quick brown fox jumps over the lazy dog" 'txt into
+0 'w into 0 'h into 0 load-font 'raw into
+
+-- on resize: keep the canvas size
+('rh let 'rw let rw 'w into rh 'h into) 'resize on
 
 (
   'key let
-  key 1073741906 eq ((1 sub 0 max) 'sel edit) (
-  key 1073741905 eq ((1 plus nf 1 sub min) 'sel edit) (
+  key 1073741906 eq ((1 sub 0 max) 'sel edit  dup 'sel at load-font 'raw into) (
+  key 1073741905 eq ((1 plus nf 1 sub min) 'sel edit  dup 'sel at load-font 'raw into) (
   key 8 eq key 127 eq or (
     dup 'txt at len 0 gt ((dup len 1 sub take-n) 'txt edit) () if
   ) (
@@ -127,14 +136,14 @@ fnames len 'nf let
   drop
   dup 'sel at 'sel-v let
   dup 'txt at 'txt-v let
+  dup 'raw at 'raw let
+  dup 'w at 'cw let
+  dup 'h at 'ch let
   3 clear
-
-  -- Label font
-  "fonts/chicago12.uf2" read must 'lf let
 
   -- Auto-scroll left pane so selection is visible
   sel-v 16 mul 'sely let
-  sely 230 sub 0 max 'lscr let
+  sely ch 2 div 10 sub sub 0 max 'lscr let
 
   -- Left pane header
   0 0 PW 14 1 fill-rect
@@ -145,7 +154,7 @@ fnames len 'nf let
   (dup nf lt) (
     dup 'li let
     li 16 mul 16 plus lscr sub 'ly let
-    ly 14 ge ly 16 plus 480 le and (
+    ly 14 ge ly 16 plus ch le and (
       li 'fnames nth must dup len 4 sub take-n 'dn let
       li sel-v eq (
         0 ly PW 16 0 fill-rect
@@ -159,21 +168,19 @@ fnames len 'nf let
   drop
 
   -- Right pane header
-  PW 1 plus 0 640 PW sub 1 sub 14 1 fill-rect
+  PW 1 plus 0 cw PW sub 1 sub 14 1 fill-rect
 
   -- Divider (full height, over headers)
-  PW 0 1 480 1 fill-rect
+  PW 0 1 ch 1 fill-rect
   sel-v 'fnames nth must dup len 4 sub take-n 'sdn let
   lf 2 sdn PW 8 plus 0 3 draw-text
 
-  -- Load selected font
-  "fonts/" sel-v 'fnames nth must cat read must 'raw let
   sel-v 'fnames nth must font-n 'pn let
   pn 8 mul 'ph let
-  640 PW sub 16 sub 'pw let
+  cw PW sub 16 sub 'pw let
 
   -- Editable text preview
-  raw pn txt-v PW 8 plus 22 pw 0 draw-text-wrap
+  raw pn txt-v PW 8 plus 22 pw ch 0 draw-text-wrap
   'cur-y let 'cur-x let
 
   -- Cursor
@@ -186,16 +193,16 @@ fnames len 'nf let
   PW 2 plus cur-y ph plus 8 plus pw 1 1 fill-rect
 
   -- Glyph grid: fixed cell len, 16 columns
-  pn 8 mul 2 plus 'cw let
+  pn 8 mul 2 plus 'gw let
   16 'cols let
   cur-y ph plus 16 plus 'gy0 let
   32
   (dup 128 lt) (
     dup 'gc let
     gc 32 sub 'gi let
-    gi cols mod cw mul PW 8 plus plus 'gcx let
+    gi cols mod gw mul PW 8 plus plus 'gcx let
     gi cols div ph 2 plus mul gy0 plus 'gcy let
-    gcy ph plus 480 le (
+    gcy ph plus ch le (
       raw pn gc gcx gcy 0 draw-char
     ) () if
     1 plus

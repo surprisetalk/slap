@@ -1,13 +1,23 @@
 -- maze-sdl.slap: the SDL shell for maze.slap. It draws a maze, and any key
--- builds another.
+-- builds another. The cells grow to the largest whole-pixel size that fits the
+-- window, and the maze sits in the middle.
 --
 --   cat examples/maze.slap examples/maze-sdl.slap | ./slap-sdl
 
-build
+-- model: the maze and the canvas size
+{'w 0 'h 0} build 'st into
 
-(drop drop build) 'keydown on
+(drop (drop build) 'st edit) 'keydown on
 
-('st let 0 clear
+('rh let 'rw let rw 'w into rh 'h into) 'resize on
+
+('m let
+  m 'w at 'cw let  m 'h at 'ch let  m 'st at 'st let
+  cw GW div 'sw let  ch GH div 'sh let
+  sw sh min 'S let
+  cw GW S mul sub 2 div 'OX let
+  ch GH S mul sub 2 div 'OY let
+  0 clear
   0 (dup GN lt) (
     'i let
     i 'st nth must 'v let

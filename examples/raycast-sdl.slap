@@ -1,49 +1,58 @@
--- raycast-sdl.slap: the SDL shell for raycast.slap. Walk with W/A/S/D, and
--- turn with the arrows.
+-- raycast-sdl.slap: the SDL shell for raycast.slap. Walk with W/S or the up and
+-- down arrows, step sideways with A/D, and turn with the left and right arrows.
 --
 --   cat examples/raycast.slap examples/raycast-sdl.slap | ./slap-sdl
 
--- state: [px py angle fwd strafe turn] as one flat list, threaded on the stack
--- All six slots are floats: a list is homogeneous, so the three input flags
--- ride along as -1.0/0.0/1.0 rather than forcing an itof at every use.
-[] PX0 push PY0 push 0.0 push 0.0 push 0.0 push 0.0 push
+-- The model is a record of the canvas size and the player state. The state is
+-- [px py angle w s a d left right] as one flat list. Slots 3 to 8 hold 1.0
+-- while a key is down. All slots are floats: a list is homogeneous. Each run
+-- starts facing a random direction.
+{'w 0 'h 0} [] PX0 push PY0 push 1000000 random itof 1000000.0 fdiv tau fmul push
+0.0 push 0.0 push 0.0 push 0.0 push 0.0 push 0.0 push 'st into
 
--- 26 W, 22 S, 4 A, 7 D, 1073741903 right, 1073741904 left
-('k let 'st let
- k 26 eq (1.0) (k 22 eq (-1.0) (0.0) if) if 'f let
- k 4 eq (-1.0) (k 7 eq (1.0) (0.0) if) if 'sX let
- k 1073741903 eq (1.0) (k 1073741904 eq (-1.0) (0.0) if) if 'tn let
- st 3 f set must 4 sX set must 5 tn set must) 'apply-key let
+-- SDL keycodes: ASCII for letters; arrows 1073741906 up, 1073741905 down,
+-- 1073741904 left, 1073741903 right. A key outside the table gives -1.
+('k let k 119 eq k 1073741906 eq or (3) (k 115 eq k 1073741905 eq or (4) (k 97 eq (5) (k 100 eq (6)
+ (k 1073741904 eq (7) (k 1073741903 eq (8) (-1) if) if) if) if) if) if) 'key-slot let
+('v let key-slot 'i let i 0 lt () (i v set must) if) 'set-key let
 
-(apply-key) 'keydown on
-(drop 3 0.0 set must 4 0.0 set must 5 0.0 set must) 'keyup on
+('rh let 'rw let rw 'w into rh 'h into) 'resize on
 
-(drop
+('k let (k 1.0 set-key) 'st edit) 'keydown on
+('k let (k 0.0 set-key) 'st edit) 'keyup on
+
+(drop (
   dup 0 peek must 'px let 1 peek must 'py let 2 peek must 'ang let
-  3 peek must 'f let 4 peek must 'sX let 5 peek must 'tn let
+  3 peek must 'kw let 4 peek must 'ks let 5 peek must 'ka let
+  6 peek must 'kd let 7 peek must 'kl let 8 peek must 'kr let
   drop
+  kw ks fsub 'f let  kd ka fsub 'sX let  kr kl fsub 'tn let
   ang tn 0.06 fmul fplus 'na let
   px na fcos f 0.08 fmul fmul fplus  na pi 2.0 fdiv fplus fcos sX 0.08 fmul fmul fplus 'nx let
   py na fsin f 0.08 fmul fmul fplus  na pi 2.0 fdiv fplus fsin sX 0.08 fmul fmul fplus 'ny let
   ny ftoi MW mul nx ftoi plus 'MAP nth must 0 eq 'clear0 let
   clear0 (nx) (px) if 'fx2 let
   clear0 (ny) (py) if 'fy2 let
-  0 fx2 set must 1 fy2 set must 2 na set must) 'tick on
+  0 fx2 set must 1 fy2 set must 2 na set must) 'st edit) 'tick on
 
-('st let 0 clear
+-- One ray per strip of K pixels, so a wide window casts at most 640 rays.
+('m let m 'w at 'cw let  m 'h at 'ch let  m 'st at 'st let
+  cw 639 plus 640 div 1 max 'K let
+  cw K plus 1 sub K div 'strips let
+  0 clear
+  0 ch 2 div cw ch ch 2 div sub 1 fill-rect
   0 'st nth must 'px let
   1 'st nth must 'py let
   2 'st nth must 'ang let
-  0 SCRH 2 div SCRW SCRH 2 div 1 fill-rect
-  0 (dup SCRW lt) (
-    'col let
-    col itof SCRW itof fdiv 0.5 fsub FOV fmul 'off let
+  0 (dup strips lt) (
+    'c let
+    c K mul K 2 div plus itof cw itof fdiv 0.5 fsub FOV fmul 'off let
     px py ang off fplus cast off fcos fmul 'd let
     d 0.05 flt (0.05) (d) if 'dd let
-    SCRH itof dd fdiv ftoi 'h let
-    h SCRH gt (SCRH) (h) if 'hh let
-    SCRH hh sub 2 div 'top let
+    ch itof dd fdiv ftoi 'h let
+    h ch gt (ch) (h) if 'hh let
+    ch hh sub 2 div 'top let
     dd 3.0 flt (3) (dd 6.0 flt (2) (1) if) if 'shade let
-    col top 1 hh shade fill-rect
-    col 1 plus
+    c K mul top K hh shade fill-rect
+    c 1 plus
   ) while drop) show

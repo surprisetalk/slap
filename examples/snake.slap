@@ -13,9 +13,9 @@
   gx 20 mul 2 plus gy 20 mul 2 plus 16 16 c fill-rect
 ) 'draw-inset let
 
--- Decode grid position
-(32 mod) 'pos-x let
-(32 div) 'pos-y let
+-- Decode grid position (cell index, column count)
+(mod) 'pos-x let
+(div) 'pos-y let
 
 -- Map SDL arrow key to direction, -1 if unknown
 (
@@ -27,14 +27,37 @@
   ) if) if) if) if
 ) 'key-dir let
 
--- State record on stack
-{}
+-- New game: three cells ending at the board's center, food anywhere on the board
+(
+  dup 'cols at 'cs let  dup 'rows at 'rs let
+  cs 2 div 2 max cs 1 sub min 'hx let
+  rs 2 div cs mul hx plus 'head let
+  [] hx 2 ge (head 2 sub push) () if
+     hx 1 ge (head 1 sub push) () if
+     head push 'snk let
   0 'state into
   0 'death-at into
-  [398 399 400] 'snake into
+  snk 'snake into
   1 'dir into
-  768 random 'food into
+  cs rs mul random 'food into
+) 'reset let
+
+-- State record on stack: the board is the canvas in 20px cells
+{}
+  0 'w into
+  32 'cols into  24 'rows into
   0 'frame into
+  reset
+
+-- on resize: keep the canvas size and restart on the new board.
+-- show runs this once before the first frame.
+(
+  'rh let 'rw let
+  rw 'w into
+  rw 20 div 1 max 'cols into
+  rh 20 div 1 max 'rows into
+  reset
+) 'resize on
 
 (
   key-dir 'kd let
@@ -59,8 +82,9 @@
   dup 'state at 1 eq (
     frm 6 mod 0 eq (
       dup 'snake at last 'head let
-      head pos-x 'hx let
-      head pos-y 'hy let
+      dup 'cols at 'cs let  dup 'rows at 'rs let
+      head cs pos-x 'hx let
+      head cs pos-y 'hy let
       dup 'dir at 'dr let
       dr 0 eq (hx hy 1 sub) (
       dr 1 eq (hx 1 plus hy) (
@@ -69,16 +93,16 @@
       ) if) if) if
       'ny let 'nx let
 
-      nx 0 lt nx 32 ge or ny 0 lt or ny 24 ge or (
+      nx 0 lt nx cs ge or ny 0 lt or ny rs ge or (
         frm 'death-at into (drop 2) 'state edit
       ) (
-        ny 32 mul nx plus 'nh let
+        ny cs mul nx plus 'nh let
         dup 'snake at nh member (
           frm 'death-at into (drop 2) 'state edit
         ) (
           dup 'snake at nh push 'snk2 let
           nh over 'food at eq (
-            snk2 'snake into 768 random 'food into
+            snk2 'snake into cs rs mul random 'food into
           ) (
             snk2 1 drop-n 'snake into
           ) if
@@ -88,10 +112,7 @@
   ) (
     dup 'state at 2 eq (
       frm over 'death-at at sub 90 gt (
-        (drop 0) 'state edit
-        [398 399 400] 'snake into
-        1 'dir into
-        768 random 'food into
+        reset
       ) () if
     ) () if
   ) if
@@ -102,27 +123,29 @@
   dup 'frame at 'frm let
   dup 'state at 'stv let
   dup 'food at 'fd let
+  dup 'cols at 'cs let
+  dup 'w at 'W let
   dup 'snake at 'snk let
   0 clear
 
   stv 2 eq (
     dup 'death-at at 'da let
     frm da sub 4 div 2 mod 'flash let
-    snk (dup pos-x swap pos-y flash 1 eq (3) (1) if draw-cell 0) each drop
+    snk (dup cs pos-x swap cs pos-y flash 1 eq (3) (1) if draw-cell 0) each drop
   ) (
-    snk (dup pos-x swap pos-y 2 draw-inset 0) each drop
-    snk last dup pos-x swap pos-y 3 draw-inset
+    snk (dup cs pos-x swap cs pos-y 2 draw-inset 0) each drop
+    snk last dup cs pos-x swap cs pos-y 3 draw-inset
 
     stv 0 eq frm 20 div 2 mod 0 eq and (
-      fd pos-x fd pos-y 3 draw-cell
+      fd cs pos-x fd cs pos-y 3 draw-cell
     ) (
-      fd pos-x fd pos-y 1 draw-inset
+      fd cs pos-x fd cs pos-y 1 draw-inset
     ) if
   ) if
 
   snk len 3 sub 'score let
   score 0 gt (
-    0 (dup score lt over 32 lt and) (
+    0 (dup score lt over 20 mul W lt and) (
       dup 20 mul 0 20 2 3 fill-rect
       1 plus
     ) while drop

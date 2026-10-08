@@ -1,8 +1,25 @@
 -- uxn-sdl.slap: the SDL shell for uxn.slap. It feeds keys and the mouse to the
 -- Controller and Mouse devices, runs the Screen vector each tick and draws the
--- changed rectangle.
+-- changed rectangle, scaled to the largest centered fit in the window.
 --
 --   cat examples/uxn.slap examples/uxn-sdl.slap | ./slap-sdl game.rom
+
+-- Three cells after the machine's own state: the canvas size and a redraw-all
+-- flag that a resize sets.
+0 push 0 push 0 push
+STATE-N 'CW-I let  STATE-N 1 plus 'CH-I let  STATE-N 2 plus 'FULL-I let
+
+-- machine -- machine ox oy dw dh: the aspect-preserving fit of the screen in the canvas
+(CW-I cell 'cw let CH-I cell 'ch let
+ cw SCR-H mul ch SCR-W mul le (cw  cw SCR-H mul SCR-W div) (ch SCR-W mul SCR-H div  ch) if
+ 'dh let 'dw let  cw dw sub 2 div  ch dh sub 2 div  dw dh) 'fit let
+
+-- window point v, drawn origin o and extent d, screen extent n -- screen pixel, clamped
+('n let 'd let 'o let 'v let
+ d 0 eq (0) (v o sub n mul d div) if 'p let
+ p 0 lt (0) (p n ge (n 1 sub) (p) if) if) 'unmap let
+
+('h let 'w let CW-I w cell!  CH-I h cell!  FULL-I 1 cell!) 'resize on
 
 -- SDL keysym -> Varvara Controller button bit
 --   up down left right  z=A x=B lshift=select return=start
@@ -24,8 +41,8 @@
    'no (drop)
  } case) 'keyup on
 
-('y let 'x let
-  146 x 2 div 65535 band dev2!  148 y 2 div 65535 band dev2!
+('y let 'x let fit 'dh let 'dw let 'oy let 'ox let
+  146 x ox dw SCR-W unmap dev2!  148 y oy dh SCR-H unmap dev2!
   144 dev2 60000 run-at) 'mousemove on
 ('y let 'x let x drop y drop
   150 1 dev!  144 dev2 60000 run-at) 'mousedown on
@@ -36,21 +53,29 @@
 -- render body only ever sees a copy and cannot clear it.
 (drop
   DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!
-  32 dev2 60000 run-at) 'tick on
+  32 dev2 60000 run-at
+  FULL-I cell 0 neq (
+    DX0-I 0 cell!  DY0-I 0 cell!  DX1-I SCR-W 1 sub cell!  DY1-I SCR-H 1 sub cell!
+    FULL-I 0 cell!) () if) 'tick on
 
 -- The render body gets a COPY of the machine, so anything written here is
 -- discarded -- which is why the dirty box is reset in the tick handler above.
--- The canvas persists between frames, so only the changed rectangle is redrawn.
-( DX0-I cell 'x0 let DY0-I cell 'y0 let DX1-I cell 'x1 let DY1-I cell 'y1 let
-  RY-I y0 cell!
-  (RY-I cell y1 le) (
-    RX-I x0 cell!
-    (RX-I cell x1 le) (
-      RX-I cell 'x let RY-I cell 'y let
-      FG-B y SCR-W mul plus x plus cell 'fg let
-      fg 0 neq (fg) (BG-B y SCR-W mul plus x plus cell) if 'ci let
-      SHADE-I ci plus cell 'sh let
-      x 2 mul y 2 mul 2 2 sh fill-rect
-      RX-I cell 1 plus 'nx let RX-I nx cell!) while
-    RY-I cell 1 plus 'ny let RY-I ny cell!) while
-  drop) show
+-- The canvas persists between frames, so only the changed rectangle is redrawn;
+-- a resize clears the canvas, so it marks the whole screen changed. Source
+-- pixel x fills canvas columns [ox + x*dw/SCR-W, ox + (x+1)*dw/SCR-W). nth
+-- reads the bound machine in place, so the loops can count on the stack.
+( fit 'dh let 'dw let 'oy let 'ox let
+  DX0-I cell 'x0 let DY0-I cell 'y0 let DX1-I cell 'x1 let DY1-I cell 'y1 let
+  'm let
+  y0 (dup y1 le) ('y let
+    oy y dh mul SCR-H div plus 'ya let
+    oy y 1 plus dh mul SCR-H div plus ya sub 'yh let
+    x0 (dup x1 le) ('x let
+      y SCR-W mul x plus 'k let
+      FG-B k plus 'm nth must 'fg let
+      fg 0 neq (fg) (BG-B k plus 'm nth must) if 'ci let
+      ox x dw mul SCR-W div plus 'xa let
+      ox x 1 plus dw mul SCR-W div plus xa sub 'xw let
+      xa ya xw yh SHADE-I ci plus 'm nth must fill-rect
+      x 1 plus) while drop
+    y 1 plus) while drop) show

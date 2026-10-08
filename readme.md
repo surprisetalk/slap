@@ -39,7 +39,7 @@ CLI:
 ```
 slap [--check] [--headless] [--profile] [args...] < file.slap
   --check      type-check only, no execution
-  --headless   (SDL) run without a window, tick loop continues indefinitely
+  --headless   (SDL) run without a window: show runs the tick handlers and the render body each frame until a handler fails
   --profile    at exit, print one `word;word;word nanoseconds` line per call path to stderr
 ```
 
@@ -558,7 +558,7 @@ Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-
 
 ## SDL graphics
 
-Build with `make slap-sdl`. Opens a borderless window at the size of the screen, with a canvas of one pixel per window point and 2-bit grayscale (4 shades: 0=black, 1=dark, 2=light, 3=white). The OS sets the window size, and no word changes it. The canvas starts cleared to 0. When you drag the window's edge, the canvas takes the new size and starts cleared to 0 again. The canvas exists once `show` starts, so `clear`, `pixel` or `fill-rect` before `show` is an error: draw in a handler or the render body. A program that draws for 640x480 fills only the top-left corner of a larger window, since `pixel` and `fill-rect` clip. `examples/gradient.slap` keeps the size from its `'resize` handler in its model and fills the window.
+Build with `make slap-sdl`. Opens a borderless window at the size of the screen, with a canvas of one pixel per window point and 2-bit grayscale (4 shades: 0=black, 1=dark, 2=light, 3=white). The OS sets the window size, and no word changes it. The canvas starts cleared to 0. When you drag the window's edge, the canvas takes the new size and starts cleared to 0 again. The canvas exists once `show` starts, so `clear`, `pixel` or `fill-rect` before `show` is an error: draw in a handler or the render body. A program that draws for 640x480 fills only the top-left corner of a larger window, since `pixel` and `fill-rect` clip. Every SDL demo keeps the size from its `'resize` handler in its model and fills the window. `examples/gradient.slap` is the smallest example.
 
 ### primitives
 
@@ -654,7 +654,7 @@ Interactive SDL demos in `examples/`:
 | `chip8.slap` | CHIP-8 emulator: runs real ROMs, 16-key hex keypad, sound-timer border flash |
 | `uxn.slap` | Uxn/Varvara emulator: full 32-opcode CPU with all mode flags, System/Console/Screen/Controller/Mouse |
 | `maze.slap` | Aldous-Broder maze generation and a BFS solve, both on one flat int list |
-| `raycast.slap` | Grid raycaster: DDA per screen column, wall slices drawn as 1-pixel `fill-rect`s |
+| `raycast.slap` | Grid raycaster: DDA per screen column, wall slices drawn as `fill-rect`s; past 640 columns, one ray covers a strip of columns |
 | `zoom.slap` | Mandelbrot zoom in to 1e5 and back out: reuses the last keyframe's rows and columns, guesses smooth gaps, tweens between keyframes, 8x8 Bayer dither |
 | `dots.slap`, `fish.slap`, `gradient.slap` | More graphics demos |
 
@@ -794,7 +794,7 @@ make status      # every likely failure mode, scored; 1.0 is the minimum pass
 
 `tests/expect.slap` holds the assertions, `tests/errors.slap` every error a program can hit (each case names the message it must print), and `tests/run_*.py` drive the apps from outside: servers over real sockets, CLIs against real files, codecs against their file formats. `tests/suite.py` runs them all.
 
-Where SDL2 is installed, `make test` builds `slap-sdl` too and runs one check on it headless. Without SDL2 it skips that check with a warning, and `make status` fails until SDL2 is installed.
+Where SDL2 is installed, `make test` builds `slap-sdl` too and runs each SDL demo headless. Without SDL2 it only type-checks the demos, with a warning, and `make status` fails until SDL2 is installed.
 
 `.githooks/pre-commit` runs `make test` before each commit. Enable it once per clone:
 

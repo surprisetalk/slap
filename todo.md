@@ -129,29 +129,26 @@
 
 - [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,
       `let` and `dip` each cost at most twice `swap` (zoom.slap
-      microbenchmarks). Measured per use, minimum of 3 runs of 2,000,000
-      passes of a `while` loop: push, drop, swap, over, int plus and float
-      mul 3-4 ns; a name lookup 8-10 ns; `if` with branches written in place
-      20 ns; `let` 15-20 ns per binding; `dip` 40 ns; an empty `while` pass
-      with `body apply` 50 ns. zoom.slap's per-pixel pass (reuse, guess,
-      dither, `pixel`) spends about 150 ms on a 640x480 frame, mostly in
-      `let` and `if`. `rot` already has a one-slot fast path. Tradeoff: each
-      fast path is more C to keep correct.
-  1. Benchmark first. Each line below times one construct; subtract the empty
-     loop. Run it before and after each change, interleaved, and take the
-     minimum, since the machine runs other loads:
+      microbenchmarks). Where the time goes: run callgrind on zoom's tick on
+      pc (`nix-shell -p valgrind --run "valgrind --tool=callgrind ./slap <
+      prog"`, then `callgrind_annotate --auto=yes`). The big remaining costs:
+      `elem_starts` and the element offsets it feeds, since every run of a
+      body that holds a nested body walks its elements twice; the
+      per-primitive aux and staged bookkeeping in eval_run; frame scans for
+      lookups, and `nth`'s scan for its list. clang lays out eval_run's hot
+      loop differently when it grows, so a fast path inlined there can make
+      zoom slower: keep new paths in noinline helpers. Tradeoff: each fast
+      path is more C to keep correct.
+  1. Benchmark first, interleaved, minimum of 3 runs: the microbenchmark
      `2000000 'N let ('label let 'body let millis 't0 let 0 (dup N lt) (body apply 1 plus) while drop millis t0 sub 'dt let label print dt print) 'bench let`
-     then for example `() "empty" bench`, `(1.0 2.0 swap drop drop) "swap" bench`,
-     `(1 (2) (3) if drop) "if" bench`, `(5 'v let) "let" bench`,
-     `(1 2 (drop) dip drop) "dip" bench`.
-  2. `if`, then `let`, then `dip`: profile each with `--profile` and perf on
-     pc, and remove the work that does not depend on the data. Candidates: the
-     branch dispatch of an in-place `if`; the pool frame that the first `let`
-     of a body takes; the POP_BODY and POP_VAL copies of `dip`. `(body) dip`
-     written in place can run from the body itself, as `if` and `while` do.
-  3. Keep a change only if make status's feed time, make bench-uxn and the
-     zoom.slap self-test time (`./slap-sdl --headless < examples/zoom.slap`)
-     do not get slower.
+     with `() "empty" bench`, `(1 (2) (3) if drop) "if" bench`,
+     `(5 'v let) "let" bench`, `(1 2 (drop) dip drop) "dip" bench`; zoom's
+     tick without SDL (zoom.slap, `start`, and zoom-sdl's tick body with
+     `fill-rect` as five `drop`s, run 4 times); the 600 KB feed; and
+     uxn.slap on `tests/.uxn-refs/drool.rom` for 60 frames.
+  2. Element offsets once per body, not per run, without making a Value
+     larger: every compound copy moves Values.
+  3. Keep a change only if every benchmark in step 1 gets no slower.
 
 - [ ] You run a pico8 cart headless for N frames and its screen matches a
       reference render. Decided up front: pico8 first; tic80 reuses the

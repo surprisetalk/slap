@@ -332,7 +332,8 @@ static inline __attribute__((always_inline)) void frame_bind(Frame *f, uint32_t 
         if (!b->vals) die("out of memory: cannot bind %d values to '%s", slots, sym_name(sym));
         b->cap = slots;
     }
-    VCPY(b->vals, vals, slots); b->slots = slots; b->word = word; b->heap = 0; b->tuples = 0;
+    if (slots == 1) b->vals[0] = vals[0]; else VCPY(b->vals, vals, slots);
+    b->slots = slots; b->word = word; b->heap = 0; b->tuples = 0;
     for (int i = 0; i < slots; i++) {
         if (b->vals[i].tag == VAL_TUPLE) {
             b->tuples = 1;
@@ -365,6 +366,15 @@ static void frame_drop(Frame *f) {
     }
     busy = 0;
 }
+/* A run's frame that only the run holds goes straight back to the pool. Keep it noinline: inlined,
+   it makes clang lay out eval_run's hot loop worse, and zoom.slap slows. */
+__attribute__((noinline)) static void frame_end_run(Frame *f) {
+    if(f->refs!=1||f->hash){ frame_drop(f); return; }
+    Frame *p=f->parent;
+    for(int i=f->bind_count-1;i>=0;i--) binding_release(f,&f->bindings[i]);
+    f->bind_count=0; f->refs=0; f->parent=frame_pool; frame_pool=f;
+    frame_drop(p);
+}
 static Frame *frame_acquire(Frame *parent) {
     Frame *f = frame_pool;
     if (f) frame_pool = f->parent; else f = frame_new(NULL);
@@ -388,7 +398,7 @@ static void eval_run(Value *body, int slots, Frame *ee);
    otherwise. */
 static inline void eval_in(Value *body, int slots, Frame *ee) {
     if(!(body[slots-1].flags&VF_BINDS)){ eval_run(body,slots,ee); return; }
-    Frame *f=frame_acquire(ee); eval_run(body,slots,f); frame_drop(f);
+    Frame *f=frame_acquire(ee); eval_run(body,slots,f); frame_end_run(f);
 }
 static inline void dispatch_word(uint32_t sym, Frame *env);
 /* Primitives by symbol id; the second table holds the fused `X must` variant. */
@@ -1679,7 +1689,9 @@ static void prim_swap(Frame *e) {
     int b=val_start(sp),a=val_start(b); swap_blocks(a,b-a,sp-b);
 }
 static void prim_over(Frame *e) {
-    (void)e; int b=val_start(sp),a=val_start(b);
+    (void)e;
+    if(sp>=2&&sp<STACK_MAX&&stack[sp-1].tag<=VAL_XT&&stack[sp-2].tag<=VAL_XT){stack[sp]=stack[sp-2];sp++;return;}
+    int b=val_start(sp),a=val_start(b);
     stack_room(b-a,"over");
     deep_copy_values(&stack[sp],&stack[a],b-a); sp+=b-a;
 }
@@ -1695,6 +1707,9 @@ static void prim_dip(Frame *env) {
     POP_VAL(saved); eval_body(body_buf,body_s,env);
     SPUSH(saved_buf,saved_s);
 }
+/* `(body) dip` written in place. Keep it noinline: inlined, it makes clang lay out eval_run's hot
+   loop worse, and zoom.slap slows. */
+__attribute__((noinline)) static void dip_run(Value *body, int slots, Frame *ee) { POP_VAL(saved); eval_in(body,slots,ee); SPUSH(saved_buf,saved_s); }
 static void prim_apply(Frame *env) { POP_BODY(body); eval_body(body_buf,body_s,env); }
 /* Integer plus/sub/mul wrap at 64 bits: computed in uint64_t, where overflow is defined. */
 #define ARITH2(nm,iop,fop) static void prim_##nm(Frame *e){(void)e;Value b=spop(),a=spop(); \
@@ -1862,7 +1877,9 @@ static inline void prim_nth_impl(Frame *env, int tagged) {
     if(ref.base<0) { if(tagged) push_none(); else die("nth: index %lld out of bounds (len %d)",(long long)idx,len); return; }
     /* A deep copy: the binding keeps its own boxes and dicts. */
     stack_room(ref.slots,"nth");
-    deep_copy_values(&stack[sp],&data[ref.base],ref.slots); sp+=ref.slots; if(tagged) push_ok();
+    if(ref.slots==1&&data[ref.base].tag<=VAL_SYM) stack[sp++]=data[ref.base];
+    else { deep_copy_values(&stack[sp],&data[ref.base],ref.slots); sp+=ref.slots; }
+    if(tagged) push_ok();
 }
 MUST_PAIR(nth)
 static void prim_slice_n(int take) {
@@ -2228,7 +2245,9 @@ static void prof_report(void) {
 static inline __attribute__((always_inline)) void dispatch_word(uint32_t sym, Frame *env) {
     Lookup lu=frame_lookup(env,sym);
     Binding *b=lu.bind; Value *v=b->vals; int s=b->slots;
-    if(!b->word){ if(b->heap){ stack_room(s,sym_name(sym)); deep_copy_values(&stack[sp],v,s); sp+=s; } else { SPUSH(v,s); if(b->tuples) vals_retain(v,s); } return; }
+    if(!b->word){
+        if(s==1&&v->tag<=VAL_SYM&&sp<STACK_MAX){ stack[sp++]=*v; return; }
+        if(b->heap){ stack_room(s,sym_name(sym)); deep_copy_values(&stack[sp],v,s); sp+=s; } else { SPUSH(v,s); if(b->tuples) vals_retain(v,s); } return; }
     Frame *f=lu.frame; int bi=(int)(b-f->bindings);
     if(LOC_FID(current_loc)!=FID_PRELUDE) user_loc=current_loc;
     b->pinned++; eval_body(v,s,env); f->bindings[bi].pinned--;
@@ -2277,14 +2296,14 @@ static void eval_run(Value *body, int slots, Frame *ee) {
                 else if(h->tag==VAL_TUPLE) frame_drop(h->as.compound.env); }
             asp=a1;
         } else if(is_compound(ep->tag)){
-            /* `{clauses} case`, `(body) pthen`, `(then) (else) if` and `(pred) (body) while` written in
-               place run from this body rather than copy their bodies to the stack and then to the aux
+            /* `{clauses} case`, `(body) pthen`, `(body) dip`, `(then) (else) if` and `(pred) (body) while`
+               written in place run from this body rather than copy their bodies to the stack and then to the aux
                stack. A literal's header holds the frame it was built in, so these run in ee. */
             if(k+1<len){
                 const Value *b1=&body[(st?st[k+2]:k+2)-1];
-                if(b1->tag==VAL_XT && ((ep->tag==VAL_RECORD && b1->as.xt.fn==prim_case) || (ep->tag==VAL_TUPLE && b1->as.xt.fn==prim_pthen))){
+                if(b1->tag==VAL_XT && ((ep->tag==VAL_RECORD && b1->as.xt.fn==prim_case) || (ep->tag==VAL_TUPLE && (b1->as.xt.fn==prim_pthen || b1->as.xt.fn==prim_dip)))){
                     if(b1->loc) current_loc=b1->loc;
-                    int a1=asp; if(ep->tag==VAL_RECORD) case_run(&body[eo],es,ee); else pthen_run(&body[eo],es,ee); asp=a1;
+                    int a1=asp; if(ep->tag==VAL_RECORD) case_run(&body[eo],es,ee); else if(b1->as.xt.fn==prim_pthen) pthen_run(&body[eo],es,ee); else dip_run(&body[eo],es,ee); asp=a1;
                     k++; continue;
                 }
             }
@@ -2531,13 +2550,8 @@ static void prim_show(Frame *env) {
     VCPY(render_body,&stack[sp-render_slots],render_slots); sp-=render_slots;
     show_intern_syms();
     if(headless_mode){
-        int64_t frame=0; canvas_alloc(640,480); run_resize(640,480,env);
-        for(;;){
-            for(int h=0;h<handler_count;h++)
-                if(event_handlers[h].event_sym==sym_tick){spush(val_int(frame));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
-            frame++;
-            SDL_Delay(16);
-        }
+        canvas_alloc(640,480); run_resize(640,480,env);
+        for(int64_t frame=0;;frame++){show_tick_render(frame,env);SDL_Delay(16);}
     }
     sdl_init();
 #ifdef __EMSCRIPTEN__

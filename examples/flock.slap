@@ -1,5 +1,6 @@
 -- Boids flocking — swirl around mouse, flee predator
 -- Run with: ./slap-sdl < examples/flock.slap
+-- The flock fills the window.
 
 60 'N let
 
@@ -7,25 +8,47 @@
 
 -- State record
 {}
-  [] N (640 random push) repeat 'xs into
-  [] N (480 random push) repeat 'ys into
+  [] N (0 push) repeat 'xs into
+  [] N (0 push) repeat 'ys into
   [] N (25 random 12 sub push) repeat 'vxs into
   [] N (25 random 12 sub push) repeat 'vys into
-  [] N (640 random push) repeat 'p1xs into
-  [] N (480 random push) repeat 'p1ys into
-  [] N (640 random push) repeat 'p2xs into
-  [] N (480 random push) repeat 'p2ys into
-  [] N (640 random push) repeat 'p3xs into
-  [] N (480 random push) repeat 'p3ys into
+  [] N (0 push) repeat 'p1xs into
+  [] N (0 push) repeat 'p1ys into
+  [] N (0 push) repeat 'p2xs into
+  [] N (0 push) repeat 'p2ys into
+  [] N (0 push) repeat 'p3xs into
+  [] N (0 push) repeat 'p3ys into
   -100 'px into  -100 'py into
   0 'pvx into  0 'pvy into
   0 'ptimer into
   -100 'ppx into  -100 'ppy into
-  320 'mx into  240 'my into  0 'frame into
+  0 'mx into  0 'my into  0 'moved into  0 'frame into
+  1 'w into  1 'h into
+
+-- on resize: keep the canvas size, scatter the boids over it and drop the
+-- predator. The mouse point stays at the canvas center until the mouse moves.
+-- w and h stay at least 1, since wrap and random refuse 0.
+(
+  'rh let 'rw let
+  rw 1 max 'cw let  rh 1 max 'ch let
+  cw 'w into ch 'h into
+  [] N (cw random push) repeat 'xs into
+  [] N (ch random push) repeat 'ys into
+  [] N (cw random push) repeat 'p1xs into
+  [] N (ch random push) repeat 'p1ys into
+  [] N (cw random push) repeat 'p2xs into
+  [] N (ch random push) repeat 'p2ys into
+  [] N (cw random push) repeat 'p3xs into
+  [] N (ch random push) repeat 'p3ys into
+  dup 'moved at 0 eq (cw 2 div 'mx into ch 2 div 'my into) () if
+  (0 cw 1 sub clamp) 'mx edit (0 ch 1 sub clamp) 'my edit
+  -100 'px into  -100 'py into  0 'ptimer into
+  -100 'ppx into  -100 'ppy into
+) 'resize on
 
 (
   'mmy let 'mmx let
-  (drop mmx) 'mx edit (drop mmy) 'my edit
+  (drop mmx) 'mx edit (drop mmy) 'my edit 1 'moved into
 ) 'mousemove on
 
 -- Separation inner loop
@@ -101,8 +124,8 @@
   vyi ay4 3 div plus 15 mul 16 div 'vyi2 let
   vxi2 -28 28 clamp 'vxi3 let
   vyi2 -28 28 clamp 'vyi3 let
-  xi vxi3 4 div plus 640 wrap 'xi2 let
-  yi vyi3 4 div plus 480 wrap 'yi2 let
+  xi vxi3 4 div plus st 'w at wrap 'xi2 let
+  yi vyi3 4 div plus st 'h at wrap 'yi2 let
 
   st2
   (i xi2 set must) 'xs edit (i yi2 set must) 'ys edit
@@ -133,11 +156,12 @@
     (drop cpx npvx plus) 'px edit (drop cpy npvy plus) 'py edit
   ) (
     frame 500 mod 0 eq frame 0 gt and (
+      st 'w at 'pw let  st 'h at 'ph let
       4 random
-      dup 0 eq (drop -30 480 random) (
-      dup 1 eq (drop 670 480 random) (
-      dup 2 eq (drop 640 random -30) (
-      drop 640 random 510
+      dup 0 eq (drop -30 ph random) (
+      dup 1 eq (drop pw 30 plus ph random) (
+      dup 2 eq (drop pw random -30) (
+      drop pw random ph 30 plus
       ) if) if) if
       'spy let 'spx let
       st

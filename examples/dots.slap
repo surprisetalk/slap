@@ -4,17 +4,24 @@
 7 'COLS let  5 'ROWS let
 35 'N let
 
--- Home positions: 7x5 grid
-0 N range (COLS mod 88 mul 36 plus) each 'hxs let
-0 N range (COLS div 90 mul 50 plus) each 'hys let
-
--- State: record with xs ys vxs vys mx my
-{}
-  hxs dup 'xs0 let 'xs into
-  0 N range (COLS div 90 mul 50 plus) each dup 'ys0 let 'ys into
+-- on resize: keep the canvas size, spread the 7x5 homes across it, and put
+-- every dot at rest on its home. Home (c, r) sits at the center of cell (c, r).
+(
+  'rh let 'rw let
+  rw 'w into  rh 'h into
+  0 N range (COLS mod 2 mul 1 plus rw mul COLS 2 mul div) each 'nx let
+  0 N range (COLS div 2 mul 1 plus rh mul ROWS 2 mul div) each 'ny let
+  nx 'hxs into  ny 'hys into  nx 'xs into  ny 'ys into
   [] N (0 push) repeat 'vxs into
   [] N (0 push) repeat 'vys into
+) 'fit let
+
+-- State: record with xs ys vxs vys mx my, canvas size and homes
+{}
   -1 'mx into  -1 'my into  0 'frame into
+  640 480 fit
+
+(fit) 'resize on
 
 (
   'mmy let 'mmx let
@@ -23,6 +30,8 @@
 
 (
   'frame let 'i let 'st let
+  st 'hxs at 'hxs let  st 'hys at 'hys let
+  st 'w at 1 sub 0 max 'wm let  st 'h at 1 sub 0 max 'hm let
   st 'xs at i get must 'x let  st 'ys at i get must 'y let
   st 'vxs at i get must 'vx let  st 'vys at i get must 'vy let
   st 'mx at 'mxv let  st 'my at 'myv let
@@ -42,8 +51,8 @@
   vy2 3 mul 4 div 'vy3 let
 
   -- Apply velocity
-  x vx3 plus 0 max 639 min 'x2 let
-  y vy3 plus 0 max 479 min 'y2 let
+  x vx3 plus 0 max wm min 'x2 let
+  y vy3 plus 0 max hm min 'y2 let
 
   -- When nearly stopped, sneak back home directly
   vx3 abs vy3 abs plus 2 lt (
@@ -92,6 +101,7 @@
   i N lt (
     st 'xs at i get must 'x let  st 'ys at i get must 'y let
     st 'mx at 'mxv let  st 'my at 'myv let
+    st 'hxs at 'hxs let  st 'hys at 'hys let
     x mxv sub 'dx let  y myv sub 'dy let
     dx dx mul dy dy mul plus 'dist2 let
     x hxs i get must sub abs y hys i get must sub abs plus 'hd let

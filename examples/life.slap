@@ -1,21 +1,31 @@
 -- Conway's Game of Life
 -- Run with: ./slap-sdl < examples/life.slap
 
-160 'W let
-120 'H let
-W H mul 'N let
-4 'S let
+-- Model is a flat list: W, H, drawing, mx, my, S, F, C, then W*H cells row by row.
+-- A resize starts a new grid of canvas / S cells in each direction.
+-- S is the smallest cell size from 4 that keeps the grid at 30000 cells or fewer.
+-- F is the frame of the last tick. C is the frame whose render draws the grid:
+-- the render body cannot write the model, so it draws only when C equals F.
+0 'I-W let
+1 'I-H let
+2 'I-DRAW let
+3 'I-MX let
+4 'I-MY let
+5 'I-S let
+6 'I-F let
+7 'I-C let
+8 'B let
 
--- State packed into grid list: indices 0..N-1 = cells, N = drawing, N+1 = mx, N+2 = my
-N 'I-DRAW let
-N 1 plus 'I-MX let
-N 2 plus 'I-MY let
+-- A generation every third tick: 20 a second at 60 frames a second.
+3 'EVERY let
 
 -- Compute next generation
 (
   'g let
+  I-W 'g nth must 'W let
+  I-H 'g nth must 'H let
   -- cell reads the grid by name with nth (no grid copy), so it lives where 'g is bound
-  (H plus H mod W mul  swap W plus W mod  plus 'g nth must) 'cell let
+  (H plus H mod W mul  swap W plus W mod  plus B plus 'g nth must) 'cell let
   ('cy let 'cx let
     cx 1 sub cy 1 sub cell
     cx       cy 1 sub cell plus
@@ -29,12 +39,14 @@ N 2 plus 'I-MY let
   I-DRAW 'g nth must 'dv let
   I-MX 'g nth must 'mxv let
   I-MY 'g nth must 'myv let
-  [] 0
-  (dup N lt)
+  I-S 'g nth must 'sv let
+  I-F 'g nth must 'fv let
+  [] W push H push dv push mxv push myv push sv push fv push fv push 0
+  (dup W H mul lt)
   (
     dup W divmod 'y let 'x let
     x y neighbors 'n let
-    dup 'g nth must 1 eq
+    dup B plus 'g nth must 1 eq
       (n 2 eq n 3 eq or)
       (n 3 eq)
     if
@@ -43,69 +55,95 @@ N 2 plus 'I-MY let
   )
   while
   drop
-  dv push mxv push myv push
 ) 'step let
 
--- Draw SxS block for one alive cell
+-- The next frame draws the grid. Model stays on the stack.
+(I-F peek must 1 plus 'c let I-C c set must) 'changed let
+
+-- Draw an s by s block at grid (gx, gy) with color c
 (
-  S mul 'py let
-  S mul 'px let
-  px py S S 3 fill-rect
+  's let 'cc let
+  s mul 'py let
+  s mul 'px let
+  px py s s cc fill-rect
 ) 'draw-cell let
 
--- Draw SxS block in a given color
+-- Is canvas point (px, py) inside the grid? Model stays below.
 (
-  'cc let
-  S mul 'py let
-  S mul 'px let
-  px py S S cc fill-rect
-) 'draw-cell-color let
+  'py let 'px let
+  0 peek must 'W let 1 peek must 'H let I-S peek must 'S let
+  px 0 ge px W S mul lt and py 0 ge and py H S mul lt and
+) 'in-grid let
 
--- Random initial grid + state slots
-[] N (2 random push) repeat
-0 push -1 push -1 push
+-- A 1x1 grid until the first resize
+[] 1 push 1 push 0 push -1 push -1 push 1 push -1 push 0 push 0 push
+
+-- New random grid at the new canvas size
+('h let 'w let I-F peek must 'f let drop
+  4 (dup 's let w s div 1 max h s div 1 max mul 30000 gt) (1 plus) while 'S let
+  w S div 1 max 'gw let
+  h S div 1 max 'gh let
+  [] gw push gh push 0 push -1 push -1 push S push f push f 1 plus push
+  gw gh mul (2 random push) repeat
+) 'resize on
 
 -- Mouse handlers
 (
-  S div 'mdy let S div 'mdx let
-  I-DRAW 1 set must I-MX mdx set must I-MY mdy set must
-  mdy W mul mdx plus 1 set must
+  'my let 'mx let
+  mx my in-grid (
+    I-S peek must 'S let
+    mx S div 'mdx let my S div 'mdy let
+    I-DRAW 1 set must I-MX mdx set must I-MY mdy set must
+    I-W peek must mdy mul mdx plus B plus 1 set must
+    changed
+  ) () if
 ) 'mousedown on
 
 (
   drop drop
-  I-DRAW 0 set must
+  I-DRAW 0 set must changed
 ) 'mouseup on
 
 (
-  S div 'mmy let S div 'mmx let
-  I-MX mmx set must I-MY mmy set must
-  dup I-DRAW get must 1 eq (
-    mmy W mul mmx plus 1 set must
+  'my let 'mx let
+  mx my in-grid (
+    I-S peek must 'S let
+    mx S div 'mmx let my S div 'mmy let
+    I-MX mmx set must I-MY mmy set must
+    I-DRAW peek must 1 eq (
+      I-W peek must mmy mul mmx plus B plus 1 set must
+      changed
+    ) () if
   ) () if
 ) 'mousemove on
 
--- Step on each tick (skip when drawing)
+-- Step every EVERY ticks (skip when drawing)
 (
-  drop
-  dup I-DRAW get must 0 eq (step) () if
+  'f let
+  I-F f set must
+  I-DRAW peek must 0 eq f EVERY mod 0 eq and (step) () if
 ) 'tick on
 
--- Render
+-- Render: draw the grid on the frame it changed; the canvas keeps it until then
 (
   'sg let
-  0 clear
-  I-DRAW 'sg nth must 'sdv let
-  I-MX 'sg nth must 'smxv let
-  I-MY 'sg nth must 'smyv let
-  0 (dup N lt) (
-    dup 'ri let
-    ri 'sg nth must 1 eq (
-      ri W divmod draw-cell
+  I-C 'sg nth must I-F 'sg nth must eq (
+    0 clear
+    I-W 'sg nth must 'W let
+    I-H 'sg nth must 'H let
+    I-DRAW 'sg nth must 'sdv let
+    I-MX 'sg nth must 'smxv let
+    I-MY 'sg nth must 'smyv let
+    I-S 'sg nth must 'S let
+    0 (dup W H mul lt) (
+      dup 'ri let
+      ri B plus 'sg nth must 1 eq (
+        ri W divmod 3 S draw-cell
+      ) () if
+      1 plus
+    ) while drop
+    sdv 1 eq smxv 0 ge and (
+      smxv smyv 2 S draw-cell
     ) () if
-    1 plus
-  ) while drop
-  sdv 1 eq smxv 0 ge and (
-    smxv smyv 2 draw-cell-color
   ) () if
 ) show

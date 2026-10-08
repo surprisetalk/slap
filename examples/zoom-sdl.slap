@@ -1,8 +1,32 @@
 -- The window for zoom.slap.
 -- Run with: cat examples/zoom.slap examples/zoom-sdl.slap | ./slap-sdl
 --
--- tick draws the whole canvas, so show has nothing to do.
+-- tick draws the whole canvas, so show has nothing to do. The image is W by H
+-- and fills the largest aspect-preserving rectangle of the window, centered.
+-- Each source pixel is one fill-rect, so the call count does not depend on the
+-- window size. The model is the zoom state and a record of the canvas size.
 
-start
-((pixel) step) 'tick on
+start {'w 0 'h 0}
+
+('rh let 'rw let rw 'w into rh 'h into) 'resize on
+
+('t let 'g let
+  g 'w at 'cw let  g 'h at 'ch let
+  cw H mul ch W mul lt 'wide let
+  wide (cw) (ch W mul H div) if 'tw let
+  wide (cw H mul W div) (ch) if 'th let
+  cw tw sub 2 div 'ox let
+  ch th sub 2 div 'oy let
+  -- per axis: where each source pixel's rectangle starts, and how long it is
+  0 W range ('i let i tw mul W div ox plus) each 'X0 let
+  0 W range ('i let i 1 plus tw mul W div i tw mul W div sub 1 max) each 'XW let
+  0 H range ('i let i th mul H div oy plus) each 'Y0 let
+  0 H range ('i let i 1 plus th mul H div i th mul H div sub 1 max) each 'YW let
+  -- a canvas with no area shows nothing, so step runs without the draw calls
+  tw 1 lt th 1 lt or (t (drop drop drop) step) (t (
+    'lv let 'y let
+    dup 'X0 nth must swap 'XW nth must
+    y 'Y0 nth must swap y 'YW nth must
+    lv fill-rect
+  ) step) if g) 'tick on
 (drop) show

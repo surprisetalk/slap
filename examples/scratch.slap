@@ -1,4 +1,4 @@
--- System 7 Note Pad
+-- System 7 Note Pad, filling the window
 -- ./slap-sdl [file.txt] < examples/scratch.slap
 
 -- Draw one byte as 8 horizontal pixels (MSB = leftmost)
@@ -66,10 +66,12 @@ FH 2 plus 'LH let
 20 'BAR-H let
 BAR-H 4 plus 'PAD-Y let
 16 'PAD-X let
-640 PAD-X 2 mul sub 'TW let
 
--- State: gap buffer as record on stack
-{} [] 'before into [] 'after into
+-- State: gap buffer and canvas size as record on stack
+{} [] 'before into [] 'after into 0 'w into 0 'h into
+
+-- on resize: keep the canvas size
+('rh let 'rw let rw 'w into rh 'h into) 'resize on
 
 -- File I/O
 args 'argv let
@@ -111,11 +113,12 @@ argv len 0 gt (
 
 -- Chrome
 (
-  0 0 640 BAR-H 1 fill-rect
+  'tw let
+  0 0 tw BAR-H 1 fill-rect
   2
   (dup BAR-H 2 sub lt) (
     dup 'by let
-    by 2 mod 0 eq (0 by 640 1 2 fill-rect) () if
+    by 2 mod 0 eq (0 by tw 1 2 fill-rect) () if
     1 plus
   ) while
   drop
@@ -126,30 +129,31 @@ argv len 0 gt (
   4 4 1 12 0 fill-rect
   15 4 1 12 0 fill-rect
   -- Title
-  260 2 120 16 3 fill-rect
-  chic FN "Note Pad" 268 3 0 draw-text
+  tw 120 sub 2 div 'bx let
+  bx 2 120 16 3 fill-rect
+  chic FN "Note Pad" bx 8 plus 3 0 draw-text
   -- Bottom border
-  0 BAR-H 1 sub 640 1 0 fill-rect
+  0 BAR-H 1 sub tw 1 0 fill-rect
 ) 'draw-titlebar let
 
 (
+  'tw let
   0
-  (dup 640 lt) (
+  (dup tw lt) (
     dup 'tx let
-    tx 4 div 2 mod 0 eq
-    (tx BAR-H 2 pixel  tx BAR-H 1 plus 2 pixel)
-    (tx BAR-H 3 pixel  tx BAR-H 1 plus 3 pixel) if
-    1 plus
+    tx BAR-H 4 2 tx 4 div 2 mod 0 eq (2) (3) if fill-rect
+    4 plus
   ) while
   drop
-  0 BAR-H 2 plus 640 1 1 fill-rect
+  0 BAR-H 2 plus tw 1 1 fill-rect
 ) 'draw-torn let
 
 (
+  'th let 'tw let
   PAD-Y LH plus
-  (dup 480 lt) (
+  (dup th lt) (
     dup 'ry let
-    0 ry 640 1 2 fill-rect
+    0 ry tw 1 2 fill-rect
     LH plus
   ) while
   drop
@@ -157,7 +161,8 @@ argv len 0 gt (
 
 -- Render gap buffer text
 (
-  'aft let 'bef let
+  'th let 'tw let 'aft let 'bef let
+  tw PAD-X 2 mul sub 'lw let
 
   -- Before cursor: stack carries rcx, rcy, ri
   PAD-X PAD-Y 2 plus 0
@@ -168,10 +173,10 @@ argv len 0 gt (
     rch 10 eq (
       PAD-X rcy-cur LH plus
     ) (
-      rcy-cur 480 lt (
+      rcy-cur th lt (
         body-font FN rch rcx-cur rcy-cur 0 draw-char
         rcx-cur body-font rch get must plus 1 plus 'rcx-new let
-        rcx-new PAD-X TW plus gt
+        rcx-new PAD-X lw plus gt
           (PAD-X rcy-cur LH plus) (rcx-new rcy-cur) if
       ) (rcx-cur rcy-cur) if
     ) if
@@ -195,10 +200,10 @@ argv len 0 gt (
     rch 10 eq (
       PAD-X rcy-cur LH plus
     ) (
-      rcy-cur 480 lt (
+      rcy-cur th lt (
         body-font FN rch rcx-cur rcy-cur 0 draw-char
         rcx-cur body-font rch get must plus 1 plus 'rcx-new let
-        rcx-new PAD-X TW plus gt
+        rcx-new PAD-X lw plus gt
           (PAD-X rcy-cur LH plus) (rcx-new rcy-cur) if
       ) (rcx-cur rcy-cur) if
     ) if
@@ -212,6 +217,7 @@ argv len 0 gt (
 (
   'my let 'mx let
   my PAD-Y ge (
+    dup 'w at PAD-X 2 mul sub 'lw let
     -- Build full text: before + reversed after
     dup 'before at 'mbef let
     dup 'after at 'maft let
@@ -249,7 +255,7 @@ argv len 0 gt (
         body-font hch get must 'hw let
         hw 0 gt (
           (hw plus 1 plus) 'hx edit
-          dup 'hx at PAD-X TW plus gt (
+          dup 'hx at PAD-X lw plus gt (
             PAD-X 'hx into (LH plus) 'hy edit
           ) () if
         ) () if
@@ -323,8 +329,10 @@ argv len 0 gt (
   dup 'before at 'show-bef let
   dup 'after at 'show-aft let
   3 clear
-  draw-titlebar
-  draw-torn
-  draw-rules
-  show-bef show-aft render-text
+  dup 'w at 'cw let
+  dup 'h at 'ch let
+  cw draw-titlebar
+  cw draw-torn
+  cw ch draw-rules
+  show-bef show-aft cw ch render-text
 ) show

@@ -40,9 +40,6 @@ GW GH mul 'GN let
 GN CELLS plus 'TRASH let
 TRASH 1 plus 'SLOTS let
 CELLS 1 sub 'TARGET let
-20 'S let
-640 GW S mul sub 2 div 'OX let
-480 GH S mul sub 2 div 'OY let
 
 ('cy let 'cx let cy 2 mul 1 plus GW mul cx 2 mul 1 plus plus) 'cell-at let
 

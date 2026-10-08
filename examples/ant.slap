@@ -1,32 +1,37 @@
 -- Langton's ant
 -- Run with: ./slap-sdl < examples/ant.slap
 
-160 'W let
-120 'H let
-19200 'N let
-4 'S let
+-- Model is a flat list: W, H, ax, ay, dir, steps, S, then W*H cells row by row.
+-- A resize starts a new grid of canvas / S cells, with the ant at the center.
+-- S is the smallest cell size from 4 that keeps the grid at 500000 cells or fewer.
+-- Show copies the model onto the stack, so a larger grid overflows it.
+0 'I-W let
+1 'I-H let
+2 'I-AX let
+3 'I-AY let
+4 'I-DIR let
+5 'I-STEPS let
+6 'I-S let
+7 'B let
 
--- Draw SxS block at grid (gx, gy) with color c
+-- Draw s by s block at grid (gx, gy) with color c
 (
-  'c let 'gy let 'gx let
-  gx S mul gy S mul S S c fill-rect
+  's let 'c let 'gy let 'gx let
+  gx s mul gy s mul s s c fill-rect
 ) 'draw-block let
-
--- State indices packed into grid list:
--- 0..N-1 = cells, N = ax, N+1 = ay, N+2 = dir, N+3 = steps
-N 'I-AX let
-N 1 plus 'I-AY let
-N 2 plus 'I-DIR let
-N 3 plus 'I-STEPS let
 
 -- One ant step: grid on stack -> updated grid
 (
-  dup I-AX get must 'ax let
-  dup I-AY get must 'ay let
-  dup I-DIR get must 'dir let
+  I-W peek must 'W let
+  I-H peek must 'H let
+  I-AX peek must 'ax let
+  I-AY peek must 'ay let
+  I-DIR peek must 'dir let
+  I-S peek must 'S let
 
   -- read the cell at the ant position
-  dup ay W mul ax plus get must 'cell let
+  ay W mul ax plus B plus 'i let
+  i peek must 'cell let
 
   -- turn: white(0)->right, black(1)->left
   cell 0 eq
@@ -35,10 +40,10 @@ N 3 plus 'I-STEPS let
   if 'newdir let
 
   -- flip cell and update grid
-  ay W mul ax plus 1 cell sub set must
+  i 1 cell sub set must
 
   -- draw flipped cell to canvas
-  ax ay 1 cell sub 0 eq (0) (3) if draw-block
+  ax ay 1 cell sub 0 eq (0) (3) if S draw-block
 
   -- move forward
   ax [0 1 0 -1] newdir get must plus W plus W mod 'nax let
@@ -46,22 +51,30 @@ N 3 plus 'I-STEPS let
 
   -- update state
   I-AX nax set must I-AY nay set must I-DIR newdir set must
-  dup I-STEPS get must 1 plus 'nsteps let
-  I-STEPS nsteps set must
+  I-STEPS peek must 1 plus 'ns let
+  I-STEPS ns set must
 ) 'ant-step let
 
--- Initial grid: all 0, as the canvas starts
-[] N (0 push) repeat
-80 push 60 push 0 push 0 push
+[]
+
+-- New all-0 grid at the new canvas size, as the canvas starts
+('h let 'w let drop
+  4 (dup 's let w s div 1 max h s div 1 max mul 500000 gt) (1 plus) while 'S let
+  w S div 1 max 'gw let
+  h S div 1 max 'gh let
+  [] gw push gh push gw 2 div push gh 2 div push 0 push 0 push S push
+  gw gh mul (0 push) repeat
+) 'resize on
 
 -- Step 40 times per tick
 (drop 40 (ant-step) repeat) 'tick on
 
 -- Render: draw ant marker
 (
-  drop
-  dup I-AX get must 'ax let
-  dup I-AY get must 'ay let
-  dup I-STEPS get must 'steps let
-  ax ay steps 10 div 2 mod 1 plus draw-block
+  'm let
+  I-AX 'm nth must 'ax let
+  I-AY 'm nth must 'ay let
+  I-STEPS 'm nth must 'steps let
+  I-S 'm nth must 'S let
+  ax ay steps 10 div 2 mod 1 plus S draw-block
 ) show

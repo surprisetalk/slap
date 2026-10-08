@@ -1,5 +1,6 @@
 -- Koi pond — fish swim in smooth curves, scatter from mouse
 -- Run with: ./slap-sdl < examples/fish.slap
+-- The pond fills the window.
 
 12 'N let
 8 'NR let
@@ -10,8 +11,8 @@
 
 -- State record on stack
 {}
-  [] N (560 random 40 plus push) repeat 'xs into
-  [] N (400 random 40 plus push) repeat 'ys into
+  [] N (0 push) repeat 'xs into
+  [] N (0 push) repeat 'ys into
   [] N (25 random 12 sub push) repeat 'vxs into
   [] N (25 random 12 sub push) repeat 'vys into
   [] NR (0 push) repeat 'rxs into
@@ -19,6 +20,17 @@
   [] NR (-1 push) repeat 'rages into
   0 'rnext into
   -1 'mx into  -1 'my into  0 'frame into
+  1 'w into  1 'h into
+
+-- on resize: keep the canvas size and scatter the fish over it.
+-- w and h stay at least 1, since wrap and random refuse 0.
+(
+  'rh let 'rw let
+  rw 1 max 'cw let  rh 1 max 'ch let
+  cw 'w into ch 'h into
+  [] N (cw random push) repeat 'xs into
+  [] N (ch random push) repeat 'ys into
+) 'resize on
 
 (
   'mmy let 'mmx let
@@ -29,6 +41,7 @@
   drop
   (1 plus) 'frame edit
   dup 'frame at 'frame let
+  dup 'w at 'W let  dup 'h at 'H let
 
   -- Age ripples
   (
@@ -105,8 +118,8 @@
     -- Light damping, clamp
     vx5 63 mul 64 div -24 24 clamp 'fvx let
     vy5 63 mul 64 div -24 24 clamp 'fvy let
-    x fvx 8 div plus 640 wrap 'xf let
-    y fvy 8 div plus 480 wrap 'yf let
+    x fvx 8 div plus W wrap 'xf let
+    y fvy 8 div plus H wrap 'yf let
 
     (i xf set must) 'xs edit  (i yf set must) 'ys edit
     (i fvx set must) 'vxs edit  (i fvy set must) 'vys edit
@@ -117,15 +130,18 @@
 (
   drop
   dup 'frame at 'frame let
+  dup 'w at 'W let  dup 'h at 'H let
 
   0 clear
 
-  -- Water shimmer
-  0 (dup 480 lt) (
+  -- Water shimmer: the dot grid grows with the window, so a frame draws
+  -- about as many dots at any size.
+  W 640 div H 480 div max 1 max 'sc let
+  0 (dup sc mul H lt) (
     'wy let
-    0 (dup 640 lt) (
+    0 (dup sc mul W lt) (
       dup frame plus wy 3 div plus 8 mod 3 lt (
-        dup wy 1 pixel
+        dup sc mul wy sc mul sc sc 1 fill-rect
       ) () if
       2 plus
     ) while drop

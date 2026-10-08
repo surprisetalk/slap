@@ -1,6 +1,6 @@
 -- raycast.slap: a grid raycaster, the Wolfenstein 3D way.
 --
---   cat examples/raycast.slap examples/raycast-sdl.slap | ./slap-sdl  -- walk around: W/A/S/D, arrows turn
+--   cat examples/raycast.slap examples/raycast-sdl.slap | ./slap-sdl  -- walk: W/S or up/down, A/D sideways, left/right turn
 --   ./slap --headless < examples/raycast.slap                         -- run the self-test, print ok
 --
 -- One ray per screen column, each stepped through the grid with DDA: jump
@@ -39,8 +39,6 @@
 cat cat cat cat cat cat cat cat cat cat cat cat cat cat cat
 ('mc let mc 35 eq (1) (0) if) each 'MAP let
 
-640 'SCRW let
-480 'SCRH let
 1.0472 'FOV let          -- 60 degrees
 0.0000001 'TINY let
 1000000.0 'FAR let

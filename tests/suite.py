@@ -48,13 +48,128 @@ BAD_COLOR = (
     ' out=$(echo "0 (drop ${c%%:*}) \'tick on (drop) show" | ./slap-sdl --headless 2>&1);'
     ' test $? -eq 1 && grep -qF "${c#*:}" <<<"$out" || exit 1; done'
 )
-# A headless run sends 'resize 640 480 once before tick 0.
-RESIZE = (
+# A headless run sends 'resize 640 480 once, then runs the tick handlers and the render body
+# each frame until a handler fails.
+HEADLESS = (
     "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
     " e=$(mktemp); trap 'rm -f $e' EXIT;"
-    ' out=$(echo "(swap print print) \'resize on 0 (drop \\"tick\\" fail) \'tick on (drop) show" | ./slap-sdl --headless 2>$e);'
-    ' test $? -eq 1 && test "$(tr "\\n" " " <<<"$out")" = "640 480 " && grep -q tick $e'
+    ' out=$(echo "0 (swap print print) \'resize on (drop 1 plus dup 3 eq (\\"stop\\" fail) () if) \'tick on (print) show" | ./slap-sdl --headless 2>$e);'
+    ' test $? -eq 1 && test "$(tr "\\n" " " <<<"$out")" = "640 480 1 2 " && grep -q stop $e'
 )
+
+
+# A headless run never ends on its own, so a demo check stops it at frame 15. The check binds
+# the demo's resize, key and mouse handlers as words (test-resize, test-keydown, ...), runs the
+# probe each frame, and
+# calls test-resize with 0 0 at frame 5 and 1920 1080 at frame 10, so a demo that divides by
+# its size dies. The canvas stays 640x480, and pixel and fill-rect clip.
+def drive_demo(files, probe=""):
+    src = "".join(open(f).read() for f in files)
+    end = re.search(r"\bshow\s*\Z", src)
+    head = src[: end.start()] if end else src
+    n = head.count("'resize on")
+    if n != 1 or not end:
+        return (
+            None,
+            f"{files[-1]} must register one 'resize handler (found {n}) and end with show",
+        )
+    for ev in ["resize", "keydown", "keyup", "mousedown", "mouseup", "mousemove"]:
+        if head.count(f"'{ev} on") == 1:
+            head = head.replace(f"'{ev} on", f"'test-{ev} let (test-{ev}) '{ev} on")
+    driver = (
+        f"('test-frame let {probe}"
+        " test-frame 5 eq (0 0 test-resize) () if"
+        " test-frame 10 eq (1920 1080 test-resize) () if"
+        ' test-frame 15 eq ("test-done" fail) () if) \'tick on\n'
+    )
+    try:
+        r = subprocess.run(
+            ["./slap-sdl", "--headless"],
+            input=head + driver + "show\n",
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"timed out after {TIMEOUT} s"
+    if r.returncode != 1 or "test-done" not in r.stderr:
+        return None, r.stdout[-2000:] + r.stderr[-4000:]
+    return r.stdout, None
+
+
+def headless_demo(files, ok, probe=""):
+    def check():
+        out, err = drive_demo(files, probe)
+        return (False, err) if err else (ok is None or ok(out), out[-2000:])
+
+    check.__name__ = f"headless_demo({' '.join(files)})"
+    return check
+
+
+# raycast: each key sets only its own flag (state slots 3 to 8: forward, back, left, right,
+# turn left, turn right), the left arrow turns (slot 2), and two runs start facing different
+# directions.
+RAYCAST_KEYS = {
+    119: 3,
+    1073741906: 3,
+    115: 4,
+    1073741905: 4,
+    97: 5,
+    100: 6,
+    1073741904: 7,
+    1073741903: 8,
+}
+RAYCAST_FLAGS = " ".join(f"{i} peek must print" for i in range(3, 9))
+RAYCAST_PROBE = (
+    "test-frame 0 eq (dup 'st at 2 peek must print drop) () if"
+    + "".join(
+        f" test-frame {f} eq ({k} test-keydown dup 'st at {RAYCAST_FLAGS} drop {k} test-keyup) () if"
+        for f, k in enumerate(RAYCAST_KEYS, 1)
+    )
+    + " test-frame 9 eq (1073741904 test-keydown) () if"
+    + " test-frame 10 eq (dup 'st at 2 peek must print drop 1073741904 test-keyup) () if"
+)
+
+
+def raycast_keys():
+    want = [
+        ["1.0" if i == slot else "0.0" for i in range(3, 9)]
+        for slot in RAYCAST_KEYS.values()
+    ]
+    starts = []
+    for _ in range(2):
+        out, err = drive_demo(
+            ["examples/raycast.slap", "examples/raycast-sdl.slap"], RAYCAST_PROBE
+        )
+        if err:
+            return False, err
+        v = out.split()[-50:]
+        flags = [v[1 + 6 * i : 7 + 6 * i] for i in range(8)]
+        if "raycast-selftest-ok" not in out or flags != want or v[0] == v[-1]:
+            return (
+                False,
+                "want the start angle, one flag per key, then a turned angle:\n" + out,
+            )
+        starts.append(v[0])
+    return starts[0] != starts[1], f"both runs start at angle {starts[0]}"
+
+
+# life draws the grid on the frame where C (slot 7) equals F (slot 6). A mouse edit and its
+# mouseup draw on the next frame, no generation runs while the button is down, a resize draws
+# on the next frame, a generation runs on every third tick, and a 1920x1080 canvas holds
+# 213x120 cells (slots 0 and 1).
+LIFE_PROBE = (
+    "test-frame 1 eq (10 10 test-mousedown 7 peek must print 6 peek must print) () if"
+    " test-frame 2 eq (7 peek must print 6 peek must print) () if"
+    " test-frame 3 eq (7 peek must print 10 10 test-mouseup) () if"
+    " test-frame 4 eq (7 peek must print 6 peek must print) () if"
+    " test-frame 11 eq (7 peek must print 6 peek must print 0 peek must print 1 peek must print) () if"
+    " test-frame 12 eq (7 peek must print) () if"
+    " test-frame 13 eq (7 peek must print) () if"
+)
+LIFE_OUT = "2 1 2 2 2 4 4 11 11 213 120 12 12".split()
+
+
 # Drawing before show has no canvas to draw on, so it dies.
 NO_CANVAS = (
     "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
@@ -199,7 +314,9 @@ def send_trickle_peer():
     try:
         r = subprocess.run(
             ["./slap"],
-            input=f'"x" 19 (dup cat) repeat \'b let "127.0.0.1" {port} tcp-connect must ' + send * 40 + "tcp-close",
+            input=f'"x" 19 (dup cat) repeat \'b let "127.0.0.1" {port} tcp-connect must '
+            + send * 40
+            + "tcp-close",
             capture_output=True,
             text=True,
             timeout=90,
@@ -212,7 +329,13 @@ def send_trickle_peer():
     out = r.stdout.split()
     took = int(out[-1]) if out and out[-1].isdigit() else None
     detail = f"stdout {r.stdout[-200:]!r}, stderr {r.stderr[-200:]!r}"
-    return r.returncode != 0 and '"timed out after 30 s"' in r.stdout and took is not None and 29000 <= took <= 31000, detail
+    return (
+        r.returncode != 0
+        and '"timed out after 30 s"' in r.stdout
+        and took is not None
+        and 29000 <= took <= 31000,
+        detail,
+    )
 
 
 def connect_blackhole():
@@ -275,13 +398,34 @@ def steps(slow):
                 refuses(
                     ("strings", "parse", "json", "xml", "rss", "cbor"),
                     [
-                        ("""[] {} "a" 'name into 1 je-int 'value into push {} "a" 'name into 2 je-int 'value into push je-obj print""", 'json: je-obj: duplicate key "a"'),
-                        ("""[] {} "a" 'name into 1 ce-int 'value into push {} "a" 'name into 2 ce-int 'value into push ce-map print""", 'cbor: ce-map: duplicate key "a"'),
-                        ("""2 ce-bool print""", 'cbor: ce-bool: expected 0 or 1, got 2'),
-                        (""""r" [] {} "x" 'name into "1" 'value into push {} "x" 'name into "2" 'value into push [] xe-elem xml-render print""", 'xml: duplicate attribute "x" in <r>'),
-                        (""""r" [] {} "x y" 'name into "1" 'value into push [] xe-elem xml-render print""", 'xml: attribute name "x y" in <r> is not an XML name'),
-                        (""""" [] [] xe-elem xml-render print""", 'xml: element name "" is not an XML name'),
-                        (""""1a" [] [] xe-elem xml-pretty print""", 'xml: element name "1a" is not an XML name'),
+                        (
+                            """[] {} "a" 'name into 1 je-int 'value into push {} "a" 'name into 2 je-int 'value into push je-obj print""",
+                            'json: je-obj: duplicate key "a"',
+                        ),
+                        (
+                            """[] {} "a" 'name into 1 ce-int 'value into push {} "a" 'name into 2 ce-int 'value into push ce-map print""",
+                            'cbor: ce-map: duplicate key "a"',
+                        ),
+                        (
+                            """2 ce-bool print""",
+                            "cbor: ce-bool: expected 0 or 1, got 2",
+                        ),
+                        (
+                            """"r" [] {} "x" 'name into "1" 'value into push {} "x" 'name into "2" 'value into push [] xe-elem xml-render print""",
+                            'xml: duplicate attribute "x" in <r>',
+                        ),
+                        (
+                            """"r" [] {} "x y" 'name into "1" 'value into push [] xe-elem xml-render print""",
+                            'xml: attribute name "x y" in <r> is not an XML name',
+                        ),
+                        (
+                            """"" [] [] xe-elem xml-render print""",
+                            'xml: element name "" is not an XML name',
+                        ),
+                        (
+                            """"1a" [] [] xe-elem xml-pretty print""",
+                            'xml: element name "1a" is not an XML name',
+                        ),
                     ],
                 ),
                 None,
@@ -311,7 +455,7 @@ def steps(slow):
                 None,
             ),
             "a stack swap of a let-bound body gets no let hint": (
-                "out=$(printf \"[(1 plus)] first 'f let f swap\\n\" | ./slap 2>&1); test $? -eq 1 && grep -q \"'swap' takes\" <<<\"$out\" && ! grep -q 'bound with let' <<<\"$out\"",
+                'out=$(printf "[(1 plus)] first \'f let f swap\\n" | ./slap 2>&1); test $? -eq 1 && grep -q "\'swap\' takes" <<<"$out" && ! grep -q \'bound with let\' <<<"$out"',
                 None,
             ),
             "an error's stack dump cuts a long string": (
@@ -362,19 +506,16 @@ def steps(slow):
         out["fill-rect clips a huge rect"] = (FILL_RECT, None)
         out["a color outside 0-3 dies"] = (BAD_COLOR, None)
         out["drawing before show dies"] = (NO_CANVAS, None)
-        out["headless runs 'resize with 640 480 first"] = (RESIZE, None)
+        out["headless runs 'resize 640 480 first, then tick and render"] = (
+            HEADLESS,
+            None,
+        )
     else:
         print(
-            "suite: warning: sdl2-config is not on PATH, so slap-sdl is not built and the fill-rect check"
-            " does not run. make status fails until SDL2 is installed (brew install sdl2, or"
+            "suite: warning: sdl2-config is not on PATH, so slap-sdl is not built and the SDL checks"
+            " only type-check the demos. make status fails until SDL2 is installed (brew install sdl2, or"
             " nix-shell -p SDL2 pkg-config).",
             file=sys.stderr,
-        )
-    for name in ["chip8", "uxn", "maze", "raycast", "zoom"]:
-        out[name] = (
-            f"cat examples/{name}.slap examples/{name}-sdl.slap | ./slap --check"
-            f" && ./slap --headless < examples/{name}.slap",
-            lambda o, n=name: f"{n}-selftest-ok" in o,
         )
     for name in ["icn", "chr", "nmt", "tga", "gly", "ulz"]:
         out[f"lib/{name}"] = (f"./slap < examples/lib/{name}.slap", None)
@@ -390,18 +531,42 @@ def steps(slow):
         f"cat {lib('strings', 'parse', 'json', 'xml', 'rss', 'http', 'cbor')} tests/scale.slap | ./slap",
         None,
     )
-    for name in [
-        "ant",
-        "dots",
-        "fish",
-        "flock",
-        "fonts",
-        "gradient",
-        "life",
-        "scratch",
-        "snake",
-    ]:
-        out[name] = (f"./slap --check < examples/{name}.slap", None)
+    # A demo fills the window, so it reads the canvas size from 'resize. A core file runs its
+    # self-test headless before its window shell.
+    demos = {
+        n: ([f"examples/{n}.slap"], None)
+        for n in [
+            "ant",
+            "dots",
+            "fish",
+            "flock",
+            "fonts",
+            "gradient",
+            "life",
+            "scratch",
+            "snake",
+        ]
+    }
+    for n in ["chip8", "maze", "raycast", "uxn", "zoom"]:
+        demos[n] = (
+            [f"examples/{n}.slap", f"examples/{n}-sdl.slap"],
+            lambda o, n=n: f"{n}-selftest-ok" in o,
+        )
+    probes = {"life": (LIFE_PROBE, lambda o: o.split() == LIFE_OUT)}
+    for name, (files, ok) in demos.items():
+        if not HAS_SDL:
+            out[name] = (
+                f"cat {' '.join(files)} | ./slap --check"
+                + (f" && ./slap --headless < {files[0]}" if ok else ""),
+                ok,
+            )
+        elif name == "raycast":
+            out[name] = (raycast_keys, None)
+        elif name in probes:
+            probe, pok = probes[name]
+            out[name] = (headless_demo(files, pok, probe), None)
+        else:
+            out[name] = (headless_demo(files, ok), None)
     return out
 
 
@@ -428,10 +593,15 @@ def status():
     """Each condition scores 1.0 at the minimum pass and 0.0 at total failure."""
     score = {}
     t = time.time()
-    r = subprocess.run([sys.executable, __file__], capture_output=True)
+    r = subprocess.run([sys.executable, __file__], capture_output=True, text=True)
     score["make test passes within 10 s."] = (
         10 / (time.time() - t) if r.returncode == 0 else 0.0
     )
+    if r.returncode:
+        print(
+            f"status: make test failed:\n{r.stdout[-6000:]}{r.stderr[-2000:]}",
+            file=sys.stderr,
+        )
     docs = open("readme.md").read() + open("claude.md").read()
     samples = re.findall(r"```slap\n(.*?)```", open("readme.md").read(), re.S)
     ran = 0

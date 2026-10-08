@@ -1,11 +1,16 @@
 -- chip8-sdl.slap: the SDL shell for chip8.slap. It loads the ROM, maps the
--- keypad and draws the display.
+-- keypad and draws the display, scaled to the largest centered fit in the window.
 --
 --   cat examples/chip8.slap examples/chip8-sdl.slap | ./slap-sdl game.ch8
 
 args len 0 gt (args 0 get must read must) (DEMO-ROM) if 'ROM let
 
 blank FONT 80 load-at ROM 512 load-at
+
+-- Two cells after the machine's own state: the canvas size, set by a resize.
+0 push 0 push
+6197 'W-I let  6198 'H-I let
+('h let 'w let W-I w set must H-I h set must) 'resize on
 
 ('ksym let
   KEYMAP-SDL ksym index-of {
@@ -24,10 +29,21 @@ blank FONT 80 load-at ROM 512 load-at
   dup ST-I get must 'stv let stv 0 gt (ST-I stv 1 sub set must) () if
   10 run-n) 'tick on
 
+-- The 64x32 display fits the canvas at dw x dh. Pixel p fills the canvas span
+-- [o + p*d/N, o + (p+1)*d/N), so a scale that is not whole still fills.
 ('sg let
+ W-I 'sg nth must 'cw let  H-I 'sg nth must 'ch let
+ cw 32 mul ch 64 mul le (cw  cw 32 mul 64 div) (ch 64 mul 32 div  ch) if 'dh let 'dw let
+ cw dw sub 2 div 'ox let  ch dh sub 2 div 'oy let
  0 clear
  0 (dup 2048 lt) ('pxi let DISP-I pxi plus 'sg nth must 1 eq (
-     pxi 64 mod 10 mul  pxi 64 div 10 mul 80 plus  10 10 3 fill-rect
+     pxi 64 mod 'px let  pxi 64 div 'py let
+     ox px dw mul 64 div plus 'xa let
+     oy py dh mul 32 div plus 'ya let
+     ox px 1 plus dw mul 64 div plus xa sub  oy py 1 plus dh mul 32 div plus ya sub 'yh let 'xw let
+     xa ya xw yh 3 fill-rect
    ) () if pxi 1 plus) while drop
- ST-I 'sg nth must 0 gt (0 0 640 6 2 fill-rect  0 474 640 6 2 fill-rect) () if
+ ST-I 'sg nth must 0 gt (
+   dh 79 plus 80 div 'bh let
+   ox oy dw bh 2 fill-rect  ox oy dh plus bh sub dw bh 2 fill-rect) () if
 ) show
