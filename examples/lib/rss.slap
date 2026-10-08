@@ -23,7 +23,7 @@
 -- Each record is built one field at a time: xd-map2 runs a field's decoder and
 -- puts its value into the record.
 
-(rec xd-succeed
+({} xd-succeed
    "title"       _rss-opt-text ('title into) xd-map2
    _rss-link     ('link into) xd-map2
    "description" _rss-opt-text ('summary into) xd-map2
@@ -31,7 +31,7 @@
    "guid"        _rss-opt-text ('id into) xd-map2
    xd-attrs      ('attrs into) xd-map2) '_rss2-item let
 
-(rec "rss" 'kind into xd-succeed
+({} "rss" 'kind into xd-succeed
    "title"       _rss-opt-text ('title into) xd-map2
    _rss-link     ('link into) xd-map2
    "description" _rss-opt-text ('description into) xd-map2
@@ -52,7 +52,7 @@
 ("link" _atom-link-href xd-children
    (none ('o let 'acc let acc {'ok (ok) 'no (drop o)} case) fold) xd-map) '_atom-link let
 
-(rec xd-succeed
+({} xd-succeed
    "title" _rss-opt-text ('title into) xd-map2
    _atom-link            ('link into) xd-map2
    _atom-summary-dec     ('summary into) xd-map2
@@ -60,7 +60,7 @@
    "id" _rss-opt-text    ('id into) xd-map2
    xd-attrs              ('attrs into) xd-map2) '_atom-entry let
 
-(rec "atom" 'kind into xd-succeed
+({} "atom" 'kind into xd-succeed
    "title" _rss-opt-text    ('title into) xd-map2
    _atom-link               ('link into) xd-map2
    "subtitle" _rss-opt-text ('description into) xd-map2
@@ -95,28 +95,28 @@
 -- _rss-text-elem: (name-str value-str -- element-record).
 -- Builds <name>value</name>.
 ('v let 'n let
-  n list list v xe-text push xe-elem) '_rss-text-elem let
+  n [] [] v xe-text push xe-elem) '_rss-text-elem let
 
 -- _rss-make-item: (normalized-item-record -- item-element-record).
 ('item let
-  list
+  []
   "title"       item rss-item-title     _rss-text-elem push
   item rss-item-link {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
   "description" item rss-item-summary   _rss-text-elem push
   "pubDate"     item rss-item-published _rss-text-elem push
   "guid"        item rss-item-id        _rss-text-elem push
   'kids let
-  "item" list kids xe-elem) '_rss-make-item let
+  "item" [] kids xe-elem) '_rss-make-item let
 
 -- _rss-make-channel: (feed-record -- channel-element-record).
 ('feed let
-  list
+  []
   "title"       feed rss-title       _rss-text-elem push
   feed rss-link {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
   "description" feed rss-description _rss-text-elem push
   feed rss-items (_rss-make-item) each cat
   'kids let
-  "channel" list kids xe-elem) '_rss-make-channel let
+  "channel" [] kids xe-elem) '_rss-make-channel let
 
 -- ========== Atom generation ==========
 
@@ -124,45 +124,46 @@
 -- <link href="..." rel="alternate"/>.
 ('href let
   "link"
-  list "href" href couple push "rel" "alternate" couple push
-  list
+  [] {} "href" 'name into href 'value into push {} "rel" 'name into "alternate" 'value into push
+  []
   xe-elem) '_atom-link-elem let
 
 -- _atom-make-entry: (normalized-item-record -- entry-element-record).
 -- Uses 'summary for <summary>, 'published for <published>, 'id for <id>,
 -- and builds <link href=...> from 'link.
 ('item let
-  list
+  []
   "title"     item rss-item-title     _rss-text-elem push
   item rss-item-link {'ok (_atom-link-elem push) 'no (drop)} case
   "summary"   item rss-item-summary   _rss-text-elem push
   "published" item rss-item-published _rss-text-elem push
   "id"        item rss-item-id        _rss-text-elem push
   'kids let
-  "entry" list kids xe-elem) '_atom-make-entry let
+  "entry" [] kids xe-elem) '_atom-make-entry let
 
 -- _atom-make-feed: (feed-record -- feed-element-record).
 ('feed let
-  list
+  []
   "title"    feed rss-title       _rss-text-elem push
   feed rss-link {'ok (_atom-link-elem push) 'no (drop)} case
   "subtitle" feed rss-description _rss-text-elem push
   feed rss-items (_atom-make-entry) each cat
   'kids let
   "feed"
-    list "xmlns" "http://www.w3.org/2005/Atom" couple push
+    [] {} "xmlns" 'name into "http://www.w3.org/2005/Atom" 'value into push
     kids xe-elem) '_atom-make-feed let
 
--- rss-to-xml: (feed-record -- xml-string).
--- Dispatches on feed's 'kind field: "rss" → RSS 2.0, "atom" → Atom.
+-- rss-to-xml: (feed-record -- xml-string ok | msg no).
+-- Dispatches on feed's 'kind field: "rss" → RSS 2.0, "atom" → Atom.  Any other kind is an error.
 ('feed let
   feed rss-kind "atom" eq (
-    feed _atom-make-feed xml-render
+    feed _atom-make-feed xml-render ok
   ) (
+  feed rss-kind "rss" eq (
     feed _rss-make-channel 'ch let
-    "rss" list "version" "2.0" couple push list ch push xe-elem
-    xml-render
-  ) if) 'rss-to-xml let
+    "rss" [] {} "version" 'name into "2.0" 'value into push [] ch push xe-elem
+    xml-render ok
+  ) ("rss-to-xml: expected kind \"rss\" or \"atom\", got \"" feed rss-kind cat "\"" cat no) if) if) 'rss-to-xml let
 
 -- ========== Tests ==========
 
@@ -302,23 +303,23 @@ au rss-items 0 get must rss-item-published "2024-03-01" eq assert
 _rss-pod-sample rss-parse must 'pod let
 pod rss-items 0 get must rss-item-attrs 'pod-attrs let
 pod-attrs len 1 eq assert
-pod-attrs 0 get must 0 get must "isPermaLink" eq assert
-pod-attrs 0 get must 1 get must "true" eq assert
+pod-attrs 0 get must 'name at "isPermaLink" eq assert
+pod-attrs 0 get must 'value at "true" eq assert
 
 -- rss-to-xml: roundtrip via parse → generate → reparse.
 -- Build a feed record by hand and serialize.
-rec "rss" 'kind into
+{} "rss" 'kind into
     "My Feed" 'title into
     "http://example.com" ok 'link into
     "A feed" 'description into
-    list
-      rec "Post 1" 'title into "http://a/1" ok 'link into "body 1" 'summary into
-          "Mon, 01 Jan 2024" 'published into "http://a/1" 'id into list 'attrs into
+    []
+      {} "Post 1" 'title into "http://a/1" ok 'link into "body 1" 'summary into
+          "Mon, 01 Jan 2024" 'published into "http://a/1" 'id into [] 'attrs into
       push
     'items into
 'built-feed let
 
-built-feed rss-to-xml 'xml-out let
+built-feed rss-to-xml must 'xml-out let
 
 -- The generated XML should reparse to the same normalized fields.
 xml-out rss-parse must 'rt let
@@ -328,18 +329,18 @@ rt rss-items 0 get must rss-item-title "Post 1" eq assert
 rt rss-items 0 get must rss-item-link "http://a/1" ok eq assert
 
 -- Atom output roundtrip: build an atom feed, serialize, reparse.
-rec "atom" 'kind into
+{} "atom" 'kind into
     "Atom Feed" 'title into
     "http://example.com" ok 'link into
     "Atom desc" 'description into
-    list
-      rec "Atom Post" 'title into "http://a/1" ok 'link into "atom body" 'summary into
-          "2024-01-01T00:00:00Z" 'published into "urn:uuid:1" 'id into list 'attrs into
+    []
+      {} "Atom Post" 'title into "http://a/1" ok 'link into "atom body" 'summary into
+          "2024-01-01T00:00:00Z" 'published into "urn:uuid:1" 'id into [] 'attrs into
       push
     'items into
 'atom-feed let
 
-atom-feed rss-to-xml 'atom-xml let
+atom-feed rss-to-xml must 'atom-xml let
 atom-xml rss-parse must 'art let
 art rss-kind "atom" eq assert
 art rss-title "Atom Feed" eq assert
@@ -350,9 +351,17 @@ art rss-items 0 get must rss-item-id "urn:uuid:1" eq assert
 
 -- rss-to-xml leaves out an absent link, and the reparse gives none again.
 ["rss" "atom"] ('k let
-  rec k 'kind into "T" 'title into none 'link into "d" 'description into
-    list rec "I" 'title into none 'link into "s" 'summary into "p" 'published into "i" 'id into list 'attrs into push
+  {} k 'kind into "T" 'title into none 'link into "d" 'description into
+    [] {} "I" 'title into none 'link into "s" 'summary into "p" 'published into "i" 'id into [] 'attrs into push
     'items into
-  rss-to-xml rss-parse must 'nl let
+  rss-to-xml must rss-parse must 'nl let
   nl rss-link none eq nl rss-items 0 get must rss-item-link none eq and) each [1 1] eq assert
 
+-- rss-to-xml accepts the kind "rss" or "atom" only.
+["Atom" "RSS" "" "feed"] ('k let
+  {} k 'kind into "T" 'title into none 'link into "d" 'description into [] 'items into
+  rss-to-xml xerr "rss-to-xml: expected kind \"rss\" or \"atom\", got \"" k cat "\"" cat eq) each [1 1 1 1] eq assert
+
+-- A feed in another encoding is an error, not UTF-8 misread.
+"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><rss><channel><title>T</title></channel></rss>" rss-parse xerr
+  "xml: unsupported encoding \"ISO-8859-1\"; expected UTF-8 or US-ASCII at byte 30" eq assert

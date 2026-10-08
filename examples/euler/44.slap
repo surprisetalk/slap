@@ -6,7 +6,7 @@
   'ipn-x let
   1 24 ipn-x mul plus itof fsqrt 'ipn-s let
   ipn-s ftoi 'ipn-si let
-  ipn-si ipn-si mul itof ipn-s ipn-s mul sub fabs 0.5 lt (
+  ipn-si ipn-si mul itof ipn-s ipn-s fmul fsub fabs 0.5 flt (
     ipn-si 1 plus 6 mod 0 eq
   ) (0) if
 ) 'is-pentagonal let

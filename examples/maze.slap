@@ -154,7 +154,7 @@ CELLS 1 sub 'TARGET let
 -- a fresh maze: carved, solved, and with the solution marked
 (0 GN range (drop 1) each
  0 CELLS range (drop -1) each cat
- list 0 push cat
+ [] 0 push cat
  0 0 cell-at 0 set must
  carve
  GN 0 set must

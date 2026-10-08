@@ -15,7 +15,7 @@ N 2 plus 'I-MY let
 (
   'g let
   -- cell reads the grid by name with nth (no grid copy), so it lives where 'g is bound
-  (H plus H mod W mul  swap W plus W mod  plus 'g swap nth must) 'cell let
+  (H plus H mod W mul  swap W plus W mod  plus 'g nth must) 'cell let
   ('cy let 'cx let
     cx 1 sub cy 1 sub cell
     cx       cy 1 sub cell plus
@@ -26,15 +26,15 @@ N 2 plus 'I-MY let
     cx       cy 1 plus cell plus
     cx 1 plus cy 1 plus cell plus
   ) 'neighbors let
-  'g I-DRAW nth must 'dv let
-  'g I-MX nth must 'mxv let
-  'g I-MY nth must 'myv let
-  list 0
+  I-DRAW 'g nth must 'dv let
+  I-MX 'g nth must 'mxv let
+  I-MY 'g nth must 'myv let
+  [] 0
   (dup N lt)
   (
     dup W divmod 'y let 'x let
     x y neighbors 'n let
-    'g over nth must 1 eq
+    dup 'g nth must 1 eq
       (n 2 eq n 3 eq or)
       (n 3 eq)
     if
@@ -62,45 +62,45 @@ N 2 plus 'I-MY let
 ) 'draw-cell-color let
 
 -- Random initial grid + state slots
-list N (2 random push) repeat
+[] N (2 random push) repeat
 0 push -1 push -1 push
 
 -- Mouse handlers
-'mousedown (
+(
   S div 'mdy let S div 'mdx let
   I-DRAW 1 set must I-MX mdx set must I-MY mdy set must
   mdy W mul mdx plus 1 set must
-) on
+) 'mousedown on
 
-'mouseup (
+(
   drop drop
   I-DRAW 0 set must
-) on
+) 'mouseup on
 
-'mousemove (
+(
   S div 'mmy let S div 'mmx let
   I-MX mmx set must I-MY mmy set must
   dup I-DRAW get must 1 eq (
     mmy W mul mmx plus 1 set must
   ) () if
-) on
+) 'mousemove on
 
 -- Step on each tick (skip when drawing)
-'tick (
+(
   drop
   dup I-DRAW get must 0 eq (step) () if
-) on
+) 'tick on
 
 -- Render
 (
   'sg let
   0 clear
-  'sg I-DRAW nth must 'sdv let
-  'sg I-MX nth must 'smxv let
-  'sg I-MY nth must 'smyv let
+  I-DRAW 'sg nth must 'sdv let
+  I-MX 'sg nth must 'smxv let
+  I-MY 'sg nth must 'smyv let
   0 (dup N lt) (
     dup 'ri let
-    'sg ri nth must 1 eq (
+    ri 'sg nth must 1 eq (
       ri W divmod draw-cell
     ) () if
     1 plus

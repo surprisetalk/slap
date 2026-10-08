@@ -17,14 +17,14 @@
   (
     'ad-j let 'ad-carry let
     ad-j ad-n lt (
-      'ad-a ad-j nth must 'ad-b ad-j nth must plus ad-carry plus 'ad-v let
+      ad-j 'ad-a nth must ad-j 'ad-b nth must plus ad-carry plus 'ad-v let
       ad-v 10 mod push
       ad-v 10 div ad-j 1 plus ad-loop
     ) (
       ad-carry ad-j ad-carry-loop
     ) if
   ) 'ad-loop let
-  list 0 0 ad-loop
+  [] 0 0 ad-loop
 ) 'add-digits let
 
 -- fib-step: fa alen fb blen idx -> fa' alen' fb' blen' idx'

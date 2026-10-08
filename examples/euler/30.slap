@@ -6,12 +6,12 @@
 
 (
   'dfs-n let
-  'p5 dfs-n 10 mod nth must
-  'p5 dfs-n 10 div 10 mod nth must plus
-  'p5 dfs-n 100 div 10 mod nth must plus
-  'p5 dfs-n 1000 div 10 mod nth must plus
-  'p5 dfs-n 10000 div 10 mod nth must plus
-  'p5 dfs-n 100000 div 10 mod nth must plus
+  dfs-n 10 mod 'p5 nth must
+  dfs-n 10 div 10 mod 'p5 nth must plus
+  dfs-n 100 div 10 mod 'p5 nth must plus
+  dfs-n 1000 div 10 mod 'p5 nth must plus
+  dfs-n 10000 div 10 mod 'p5 nth must plus
+  dfs-n 100000 div 10 mod 'p5 nth must plus
 ) 'digit-fifth-sum let
 
 -- stack: total n

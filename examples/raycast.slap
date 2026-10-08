@@ -50,13 +50,13 @@ cat cat cat cat cat cat cat cat cat cat cat cat cat cat cat
 -- Bhaskara I: sin t ~ 16 t (pi - t) / (5 pi^2 - 4 t (pi - t)) on [0, pi],
 -- reduced to [0, tau) and mirrored. Error stays under 0.002 of a full turn.
 ('t0 let
- t0 tau div ffloor tau mul t0 swap sub 'tr let
- tr pi gt (tr pi sub) (tr) if 'tm let
- tm pi tm sub mul 'q let
- 16.0 q mul 5.0 pi pi mul mul 4.0 q mul sub div 'sv let
- tr pi gt (sv fneg) (sv) if) 'fsin let
+ t0 tau fdiv ffloor tau fmul t0 swap fsub 'tr let
+ tr pi fgt (tr pi fsub) (tr) if 'tm let
+ tm pi tm fsub fmul 'q let
+ 16.0 q fmul 5.0 pi pi fmul fmul 4.0 q fmul fsub fdiv 'sv let
+ tr pi fgt (sv fneg) (sv) if) 'fsin let
 
-(pi 2.0 div plus fsin) 'fcos let
+(pi 2.0 fdiv fplus fsin) 'fcos let
 
 -- x y off-map -- bool. The two axes are tested against their own bound; with
 -- a square map a swap here is invisible, which is exactly why it is written out.
@@ -71,34 +71,34 @@ cat cat cat cat cat cat cat cat cat cat cat cat cat cat cat
 ('ang let 'py let 'px let
  ang fcos 'rdx let
  ang fsin 'rdy let
- rdx fabs TINY lt (FAR) (1.0 rdx fabs div) if 'ddx let
- rdy fabs TINY lt (FAR) (1.0 rdy fabs div) if 'ddy let
- rdx 0.0 lt (-1) (1) if 'sx let
- rdy 0.0 lt (-1) (1) if 'sy let
+ rdx fabs TINY flt (FAR) (1.0 rdx fabs fdiv) if 'ddx let
+ rdy fabs TINY flt (FAR) (1.0 rdy fabs fdiv) if 'ddy let
+ rdx 0.0 flt (-1) (1) if 'sx let
+ rdy 0.0 flt (-1) (1) if 'sy let
  px ffloor ftoi 'mx0 let
  py ffloor ftoi 'my0 let
- rdx 0.0 lt (px mx0 itof sub) (mx0 itof 1.0 plus px sub) if ddx mul 'sdx0 let
- rdy 0.0 lt (py my0 itof sub) (my0 itof 1.0 plus py sub) if ddy mul 'sdy0 let
+ rdx 0.0 flt (px mx0 itof fsub) (mx0 itof 1.0 fplus px fsub) if ddx fmul 'sdx0 let
+ rdy 0.0 flt (py my0 itof fsub) (my0 itof 1.0 fplus py fsub) if ddy fmul 'sdy0 let
 
  -- DDA tests the cell it steps *into*, so it never looks at the one it starts
  -- in. A player clipped into a wall would otherwise see straight through it.
- mx0 my0 off-map (1) ('MAP my0 MW mul mx0 plus nth must 1 eq) if 'inside let
+ mx0 my0 off-map (1) (my0 MW mul mx0 plus 'MAP nth must 1 eq) if 'inside let
 
  mx0 my0 sdx0 sdy0 0 0
  (dup 0 eq) (
    'hit0 let 'side0 let 'sdy let 'sdx let 'my let 'mx let
-   sdx sdy lt 'stepx let
+   sdx sdy flt 'stepx let
    stepx (mx sx plus) (mx) if 'nmx let
    stepx (my) (my sy plus) if 'nmy let
-   stepx (sdx ddx plus) (sdx) if 'nsdx let
-   stepx (sdy) (sdy ddy plus) if 'nsdy let
+   stepx (sdx ddx fplus) (sdx) if 'nsdx let
+   stepx (sdy) (sdy ddy fplus) if 'nsdy let
    stepx (0) (1) if 'nside let
-   nmx nmy off-map (2) ('MAP nmy MW mul nmx plus nth must 1 eq (1) (0) if) if 'nhit let
+   nmx nmy off-map (2) (nmy MW mul nmx plus 'MAP nth must 1 eq (1) (0) if) if 'nhit let
    nmx nmy nsdx nsdy nside nhit
  ) while
  'hitv let 'sidev let 'sdyv let 'sdxv let 'myv let 'mxv let
  inside (0.0) (
-   hitv 2 eq (FAR) (sidev 0 eq (sdxv ddx sub) (sdyv ddy sub) if) if) if) 'cast let
+   hitv 2 eq (FAR) (sidev 0 eq (sdxv ddx fsub) (sdyv ddy fsub) if) if) if) 'cast let
 
 -- ===== player =====
 
@@ -111,33 +111,33 @@ isheadless (
 
   -- the map parsed into the grid it looks like
   MAP len MW MH mul eq assert
-  'MAP 0 nth must 1 eq assert                       -- top-left is wall
-  'MAP 1 MW mul 1 plus nth must 0 eq assert         -- (1,1) is open
-  'MAP 3 MW mul 4 plus nth must 1 eq assert         -- the 2x2 block at (4,3)
-  'MAP 6 MW mul 10 plus nth must 1 eq assert        -- the pillar at (10,6)
+  0 'MAP nth must 1 eq assert                       -- top-left is wall
+  1 MW mul 1 plus 'MAP nth must 0 eq assert         -- (1,1) is open
+  3 MW mul 4 plus 'MAP nth must 1 eq assert         -- the 2x2 block at (4,3)
+  6 MW mul 10 plus 'MAP nth must 1 eq assert        -- the pillar at (10,6)
 
   -- Hand-computed distances from (1.5, 1.5). Row 1 is "#..............#", so
   -- east hits the wall cell at x=15 (its near face is x=15.0) and west hits the
   -- one at x=0 (its far face is x=1.0). Column 1 is open top to bottom, so
   -- south hits y=15 and north hits y=1.0.
-  1.5 1.5 0.0      cast 13.5 sub fabs 0.01 lt assert   -- east
-  1.5 1.5 pi       cast 0.5  sub fabs 0.01 lt assert   -- west
-  1.5 1.5 pi 2.0 div      cast 13.5 sub fabs 0.01 lt assert   -- south (+y)
-  1.5 1.5 pi 1.5 mul      cast 0.5  sub fabs 0.01 lt assert   -- north (-y)
+  1.5 1.5 0.0      cast 13.5 fsub fabs 0.01 flt assert   -- east
+  1.5 1.5 pi       cast 0.5  fsub fabs 0.01 flt assert   -- west
+  1.5 1.5 pi 2.0 fdiv      cast 13.5 fsub fabs 0.01 flt assert   -- south (+y)
+  1.5 1.5 pi 1.5 fmul      cast 0.5  fsub fabs 0.01 flt assert   -- north (-y)
 
   -- Straight at the 2x2 block: from (1.5, 3.5) facing east its near face is
   -- x=4.0, so the distance is 2.5. One cell up at y=2.5 the block is not there
   -- and the ray runs to the far wall instead -- which is what says the y index
   -- is not being used as the x index.
-  1.5 3.5 0.0 cast 2.5  sub fabs 0.01 lt assert
-  1.5 2.5 0.0 cast 13.5 sub fabs 0.01 lt assert
+  1.5 3.5 0.0 cast 2.5  fsub fabs 0.01 flt assert
+  1.5 2.5 0.0 cast 13.5 fsub fabs 0.01 flt assert
 
   -- Standing inside a wall returns 0 rather than reporting the next wall out.
-  4.5 3.5 0.0 cast fabs 0.01 lt assert
+  4.5 3.5 0.0 cast fabs 0.01 flt assert
 
   -- A ray that leaves the map cannot happen here (the border is solid), so the
   -- FAR sentinel must never be the answer for a ray fired from open floor.
-  PX0 PY0 0.7 cast FAR lt assert
+  PX0 PY0 0.7 cast FAR flt assert
 
   -- No fisheye: a wall square to the view renders flat. Sampling three columns
   -- across the field and correcting by cos(offset) must give the same
@@ -149,11 +149,11 @@ isheadless (
   -- spread walks off it, which is why the flat surface has to be the border.
   3.5 7.5 'fy let 'fx let
   fx fy pi cast 'd-mid let
-  d-mid 2.5 sub fabs 0.01 lt assert
-  fx fy pi FOV 4.0 div plus       cast FOV 4.0 div fcos mul 'd-right let
-  fx fy pi FOV 4.0 div fneg plus  cast FOV 4.0 div fneg fcos mul 'd-left let
-  d-right d-mid sub fabs 0.02 lt assert
-  d-left  d-mid sub fabs 0.02 lt assert
+  d-mid 2.5 fsub fabs 0.01 flt assert
+  fx fy pi FOV 4.0 fdiv fplus       cast FOV 4.0 fdiv fcos fmul 'd-right let
+  fx fy pi FOV 4.0 fdiv fneg fplus  cast FOV 4.0 fdiv fneg fcos fmul 'd-left let
+  d-right d-mid fsub fabs 0.02 flt assert
+  d-left  d-mid fsub fabs 0.02 flt assert
 
   "raycast-selftest-ok" print
 ) () if

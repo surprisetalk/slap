@@ -22,7 +22,7 @@
       cg-ei 1 plus cg-outer
     ) () if
   ) 'cg-outer let
-  list 0 cg-outer
+  [] 0 cg-outer
   sort dedup len
 ) 'count-group let
 

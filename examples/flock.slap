@@ -3,30 +3,30 @@
 
 60 'N let
 
-list N (3 random 1 plus push) repeat 'szs let
+[] N (3 random 1 plus push) repeat 'szs let
 
 -- State record
-rec
-  list N (640 random push) repeat 'xs into
-  list N (480 random push) repeat 'ys into
-  list N (25 random 12 sub push) repeat 'vxs into
-  list N (25 random 12 sub push) repeat 'vys into
-  list N (640 random push) repeat 'p1xs into
-  list N (480 random push) repeat 'p1ys into
-  list N (640 random push) repeat 'p2xs into
-  list N (480 random push) repeat 'p2ys into
-  list N (640 random push) repeat 'p3xs into
-  list N (480 random push) repeat 'p3ys into
+{}
+  [] N (640 random push) repeat 'xs into
+  [] N (480 random push) repeat 'ys into
+  [] N (25 random 12 sub push) repeat 'vxs into
+  [] N (25 random 12 sub push) repeat 'vys into
+  [] N (640 random push) repeat 'p1xs into
+  [] N (480 random push) repeat 'p1ys into
+  [] N (640 random push) repeat 'p2xs into
+  [] N (480 random push) repeat 'p2ys into
+  [] N (640 random push) repeat 'p3xs into
+  [] N (480 random push) repeat 'p3ys into
   -100 'px into  -100 'py into
   0 'pvx into  0 'pvy into
   0 'ptimer into
   -100 'ppx into  -100 'ppy into
   320 'mx into  240 'my into  0 'frame into
 
-'mousemove (
+(
   'mmy let 'mmx let
-  'mx (drop mmx) edit 'my (drop mmy) edit
-) on
+  (drop mmx) 'mx edit (drop mmy) 'my edit
+) 'mousemove on
 
 -- Separation inner loop
 (
@@ -57,12 +57,12 @@ rec
 
   -- Shift trail history
   st
-  'p3xs (i st 'p2xs at i get must set must) edit
-  'p3ys (i st 'p2ys at i get must set must) edit
-  'p2xs (i st 'p1xs at i get must set must) edit
-  'p2ys (i st 'p1ys at i get must set must) edit
-  'p1xs (i xi set must) edit
-  'p1ys (i yi set must) edit
+  (i st 'p2xs at i get must set must) 'p3xs edit
+  (i st 'p2ys at i get must set must) 'p3ys edit
+  (i st 'p1xs at i get must set must) 'p2xs edit
+  (i st 'p1ys at i get must set must) 'p2ys edit
+  (i xi set must) 'p1xs edit
+  (i yi set must) 'p1ys edit
   'st2 let
 
   -- Separation
@@ -105,8 +105,8 @@ rec
   yi vyi3 4 div plus 480 wrap 'yi2 let
 
   st2
-  'xs (i xi2 set must) edit 'ys (i yi2 set must) edit
-  'vxs (i vxi3 set must) edit 'vys (i vyi3 set must) edit
+  (i xi2 set must) 'xs edit (i yi2 set must) 'ys edit
+  (i vxi3 set must) 'vxs edit (i vyi3 set must) 'vys edit
 ) 'update-one-boid let
 
 (
@@ -127,10 +127,10 @@ rec
     st 'ys at 0 (plus) fold N div cpy sub 6 div -8 8 clamp 'npvy let
 
     st
-    'ppx (drop cpx) edit 'ppy (drop cpy) edit
-    'ptimer (1 sub) edit
-    'pvx (drop npvx) edit 'pvy (drop npvy) edit
-    'px (drop cpx npvx plus) edit 'py (drop cpy npvy plus) edit
+    (drop cpx) 'ppx edit (drop cpy) 'ppy edit
+    (1 sub) 'ptimer edit
+    (drop npvx) 'pvx edit (drop npvy) 'pvy edit
+    (drop cpx npvx plus) 'px edit (drop cpy npvy plus) 'py edit
   ) (
     frame 500 mod 0 eq frame 0 gt and (
       4 random
@@ -141,21 +141,21 @@ rec
       ) if) if) if
       'spy let 'spx let
       st
-      'ptimer (drop 540) edit
-      'px (drop spx) edit 'py (drop spy) edit
-      'ppx (drop spx) edit 'ppy (drop spy) edit
+      (drop 540) 'ptimer edit
+      (drop spx) 'px edit (drop spy) 'py edit
+      (drop spx) 'ppx edit (drop spy) 'ppy edit
     ) (st) if
   ) if
 ) 'update-predator let
 
-'tick (
+(
   drop
-  'frame (1 plus) edit
+  (1 plus) 'frame edit
   dup 'frame at 'fr let
 
   fr update-predator
   0 fr update-boids-loop
-) on
+) 'tick on
 
 -- Draw diamond outline
 (

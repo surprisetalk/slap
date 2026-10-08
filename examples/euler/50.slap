@@ -18,7 +18,7 @@
 ) 'is-prime let
 
 -- Generate primes up to 4600
-list
+[]
 2
 (dup 4600 lt)
 (dup is-prime (swap over push swap) () if 1 plus)

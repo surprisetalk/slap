@@ -5,20 +5,20 @@
 -- double-digits: digits -> digits' (doubles the big number)
 (
   'ds let
-  rec 0 'carry into list 'result into 0 'j into
+  {} 0 'carry into [] 'result into 0 'j into
   (dup 'j at ds len lt)
   (
     dup 'j at ds swap get must 2 mul over 'carry at plus 'val let
-    'result (val 10 mod push) edit
-    'carry (drop val 10 div) edit
-    'j (1 plus) edit
+    (val 10 mod push) 'result edit
+    (drop val 10 div) 'carry edit
+    (1 plus) 'j edit
   )
   while
   (dup 'carry at 0 gt)
   (
     dup 'carry at 'c let
-    'result (c 10 mod push) edit
-    'carry (10 div) edit
+    (c 10 mod push) 'result edit
+    (10 div) 'carry edit
   )
   while
   'result at

@@ -2,18 +2,55 @@
 -- every load of a library, so they live here; tests/suite.py runs this file once.
 
 -- json.slap: a string and an array of 30000
-list 34 push 30000 (120 push) repeat 34 push jd-str jd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
-list 91 push 30000 (49 push 44 push) repeat pop drop 93 push jd-int jd-list jd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
+[] 34 push 30000 (120 push) repeat 34 push jd-str jd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
+[] 91 push 30000 (49 push 44 push) repeat pop drop 93 push jd-int jd-list jd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
 -- json.slap: nesting at the limit parses
-list 256 (91 push) repeat 256 (93 push) repeat _json-parse {'ok (drop 1) 'no (drop 0)} case assert
+[] 256 (91 push) repeat 256 (93 push) repeat _json-parse {'ok (drop 1) 'no (drop 0)} case assert
 
 -- xml.slap: 30000 children, a 30000-byte text, and nesting at the limit
 "<a>" 30000 ("<b/>" cat) repeat "</a>" cat "b" xd-tag xd-children xd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
 "<a>" 30000 (120 push) repeat "</a>" cat xd-raw-text xd-run {'ok (len) 'no (drop -1)} case 30000 eq assert
-list 256 ("<a>" cat) repeat 256 ("</a>" cat) repeat _xml-parse {'ok (drop 1) 'no (drop 0)} case assert
+[] 256 ("<a>" cat) repeat 256 ("</a>" cat) repeat _xml-parse {'ok (drop 1) 'no (drop 0)} case assert
 
 -- zip walks each list once, even when elements span several slots
 0 30000 range (int-str) each dup zip len 30000 eq assert
 
 -- je-str escapes with a loop, not a recursion per byte
-list 30000 (120 push) repeat je-str len 30002 eq assert
+[] 30000 (120 push) repeat je-str len 30002 eq assert
+
+-- http.slap: 60000 long headers parse in one pass
+"HTTP/1.1 200 OK" crlf cat 60000 ("Header-Name: some-value" cat crlf cat) repeat crlf cat parse-http must 'headers at len 60000 eq assert
+
+-- http.slap: 300000 blanks before a header value drop in one pass
+"HTTP/1.1 200 OK" crlf cat "A:" cat [] 300000 (32 push) repeat cat "v" cat crlf cat crlf cat parse-http must 'headers at 0 get must 'value at "v" eq assert
+
+-- parse.slap: 300000 bytes of one repeated token scan in one pass
+[] 300000 (32 push) repeat ok parse-spaces {'ok (len) 'no (drop -1)} case 0 eq assert
+[] 300000 (120 push) repeat ok (120 eq) parse-while {'ok (drop len) 'no (drop drop -1)} case 300000 eq assert
+[] 300000 (120 push) repeat ok "y" parse-until {'ok (drop drop 1) 'no (drop drop 0)} case 0 eq assert
+[] 300000 (120 push) repeat ok "xy" parse-exact {'ok (drop 1) 'no (drop 0)} case 0 eq assert
+[] 300000 (49 push) repeat ok parse-int {'ok (drop drop 1) 'no (drop drop 0)} case 0 eq assert
+[] 300000 (49 push) repeat ok parse-float {'ok (drop drop 1) 'no (drop drop 0)} case drop
+
+-- json.slap: 40000 distinct keys check for duplicates in one pass
+0 40000 range "{" ('k let "\"k" k int-str cat "\":1," cat cat) fold "\"z\":1}" cat _json-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+
+-- json.slap: 300000 blanks, 40000 escapes and 20000 nested arrays
+"[" [] 300000 (32 push) repeat cat "1]" cat _json-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+"[\"" 40000 ("\\u0041" cat) repeat "\"]" cat _json-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+"[" 20000 ("[1]," cat) repeat "1]" cat _json-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+
+-- xml.slap: 40000 distinct attributes check for duplicates in one pass
+0 40000 range "<a" ('k let " b" k int-str cat "=\"1\"" cat cat) fold ">" cat "</a>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+
+-- xml.slap: 300000 blanks in a tag, 50000 entities, 30000 mixed children
+"<a" [] 300000 (32 push) repeat cat ">" cat "</a>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+"<a>" 50000 ("&#65;" cat) repeat "</a>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+"<a>" 30000 ("t<b>x</b>" cat) repeat "</a>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+
+-- xml.slap: a 300000-byte element name and a 300000-byte attribute name
+"<" [] 300000 (97 push) repeat cat "/>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+"<a " [] 300000 (97 push) repeat cat "=\"1\"/>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+
+-- rss.slap: 6000 items
+"<rss><channel><title>t</title>" 6000 ("<item><title>a</title><link>b</link></item>" cat) repeat "</channel></rss>" cat rss-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert

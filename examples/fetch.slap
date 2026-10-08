@@ -1,6 +1,6 @@
 -- fetch.slap: an HTTP/1.0 client. A very small curl.
 --
---   cat examples/lib/strings.slap examples/lib/parse.slap examples/fetch.slap | ./slap HOST PORT PATH [-i|-I]
+--   cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/http.slap examples/fetch.slap | ./slap HOST PORT PATH [-i|-I]
 --
 --   (no flag)  print the body
 --   -i         print the status line and headers, then the body
@@ -18,7 +18,7 @@
 -- HTTP/1.0 with no Connection: keep-alive, so the read ends when the peer
 -- closes. No redirects are followed: a 301 is reported, not chased.
 
-(list 10 push) 'LF let
+([] 10 push) 'LF let
 ('st let "/dev/stdout" st write must drop) 'out let
 ('st let "/dev/stdout" st LF cat write must drop) 'say let
 ('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
@@ -50,8 +50,8 @@ REQ tcp-send must drop
 
 -- HTTP/1.0 connection-close: read until the peer hangs up. The cap is a
 -- backstop against a server that never closes, not a content limit.
-list
-(swap 65536 tcp-recv {'ok () 'no (drop list)} case 'ch let
+[]
+(swap 65536 tcp-recv {'ok () 'no ("fetch: read failed: " swap cat fail)} case 'ch let
  swap ch cat
  ch len 0 gt
  over len RESP-CAP lt and) () while
@@ -76,7 +76,7 @@ R 'body at 'BODY let
 
 SHOW-HEAD (
   "HTTP/1.0 " STATUS int-str cat say
-  HEADERS list ('h let h 'key at ": " cat h 'value at cat LF cat cat) fold out
+  HEADERS [] ('h let h 'key at ": " cat h 'value at cat LF cat cat) fold out
   HEAD-ONLY () (LF out) if
 ) () if
 

@@ -1,0 +1,66 @@
+-- http.slap: parse-http reads the raw bytes of an HTTP response.
+-- It gives {'status int 'headers {'key str 'value str} list 'body str} ok, or message no.
+-- Cat it after strings.slap (for crlf) and before the program:
+--   cat examples/lib/strings.slap examples/lib/http.slap prog.slap | slap
+
+-- Drops the spaces and tabs at the start of a string.
+-- One fold counts the blanks (a negative count marks the first other byte); one drop-n then cuts them.
+(dup 0 ('ph-b let 'ph-a let ph-a 0 lt (ph-a) (ph-b 32 eq ph-b 9 eq or (ph-a 1 plus) (0 ph-a sub 1 sub) if) if) fold
+  dup 0 lt (0 swap sub 1 sub) () if drop-n) 'ph-trim let
+
+-- Reads the 3-digit code at the start of a status line.
+('ph-l let ph-l " " str-find {
+  'ok ('ph-i let ph-l ph-i 1 plus drop-n 'ph-r let ph-r 3 take-n 'ph-c let
+    ph-c (dup 47 gt swap 58 lt and) filter len 3 eq
+      (ph-r 3 drop-n 'ph-t let ph-t len 0 eq (1) (ph-t 0 get must 32 eq) if)
+      (0) if
+      (ph-c 0 (48 sub swap 10 mul plus) fold ok)
+      ("status line has no 3-digit code" no) if)
+  'no (drop "status line has no 3-digit code" no)} case) 'ph-status let
+
+-- Reads one "Key: value" line.
+('ph-l let ph-l ":" str-find {
+  'ok ('ph-i let {} ph-l ph-i take-n 'key into ph-l ph-i 1 plus drop-n ph-trim 'value into ok)
+  'no (drop "header line has no colon" no)} case) 'ph-header let
+
+('ph-raw let ph-raw crlf crlf cat str-find {
+  'no (drop "no header/body separator" no)
+  'ok ('ph-s let
+    ph-raw ph-s take-n 'ph-head let
+    ph-head crlf str-find {'ok () 'no (drop ph-head len)} case 'ph-e let
+    ph-head ph-e take-n ph-status ('ph-code let
+      ph-head ph-e 2 plus drop-n crlf str-split (len 0 gt) filter 'ph-ls let
+      -- The fold keeps its list on the stack: a bound name copies the list at each header.
+      ph-ls (":" str-find {'ok (drop 1) 'no (drop 0)} case) filter len ph-ls len eq
+        (ph-ls [] (ph-header must push) fold 'ph-hs let
+          -- The body goes in first: a copy of ph-raw beside a long headers list overflows the stack.
+          {} ph-raw ph-s 4 plus drop-n 'body into ph-code 'status into ph-hs 'headers into ok)
+        ("header line has no colon" no) if) then)
+  } case) 'parse-http let
+
+-- ========== Self-test (runs when the library loads) ==========
+
+('ph-raw let ph-raw parse-http) 'ph-run let
+("HTTP/1.1 200 OK" crlf cat "Content-Type: text/html" cat crlf cat crlf cat "hello body" cat ph-run must 'r let
+  r 'status at 200 eq assert
+  r 'headers at len 1 eq assert
+  r 'headers at 0 get must 'key at "Content-Type" eq assert
+  r 'headers at 0 get must 'value at "text/html" eq assert
+  r 'body at "hello body" eq assert) 'ph-t1 let ph-t1
+("HTTP/1.1 200 OK" crlf cat "A: 1" cat crlf cat "B:\t 2: x" cat crlf cat crlf cat ph-run must 'r let
+  r 'headers at len 2 eq assert
+  r 'headers at 1 get must 'value at "2: x" eq assert
+  r 'body at len 0 eq assert) 'ph-t2 let ph-t2
+("HTTP/1.1 200 OK" crlf cat "Content-Length:5" cat crlf cat crlf cat ph-run must 'headers at 0 get must 'value at "5" eq assert) 'ph-t3 let ph-t3
+("HTTP/1.1 404" crlf cat crlf cat ph-run must 'status at 404 eq assert) 'ph-t4 let ph-t4
+("HTTP/1.1 200 OK" crlf cat crlf cat ph-run must 'headers at len 0 eq assert) 'ph-t5 let ph-t5
+"HTTP/1.1 200 OK" ph-run "no header/body separator" no eq assert
+"" ph-run "no header/body separator" no eq assert
+"HTTP/1.1 OK" crlf cat crlf cat ph-run "status line has no 3-digit code" no eq assert
+"HTTP/1.1 20" crlf cat crlf cat ph-run "status line has no 3-digit code" no eq assert
+"HTTP/1.1 2000 OK" crlf cat crlf cat ph-run "status line has no 3-digit code" no eq assert
+"HTTP/1.1 2x0 OK" crlf cat crlf cat ph-run "status line has no 3-digit code" no eq assert
+crlf crlf cat ph-run "status line has no 3-digit code" no eq assert
+"HTTP/1.1 200 OK" crlf cat "garbage line" cat crlf cat crlf cat ph-run "header line has no colon" no eq assert
+"HTTP/1.1 2/0 OK" crlf cat crlf cat ph-run "status line has no 3-digit code" no eq assert
+"HTTP/1.1 2:0 OK" crlf cat crlf cat ph-run "status line has no 3-digit code" no eq assert

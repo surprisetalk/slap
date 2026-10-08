@@ -14,7 +14,7 @@
   (dup 0 gt)
   (
     -- stack: total n acc dn
-    dup 10 mod 'facts swap nth must swap (plus) dip
+    dup 10 mod 'facts nth must swap (plus) dip
     -- stack: total n acc' dn
     10 div
     -- stack: total n acc' dn'

@@ -20,7 +20,7 @@
 -- digit-key: 4-digit n -> sorted-digit list (4 bytes in [0,9]; valid dict key)
 (
   'dk-n let
-  list
+  []
     dk-n 1000 div push
     dk-n 100 div 10 mod push
     dk-n 10 div 10 mod push
@@ -32,7 +32,7 @@
 (
   'ap-p let
   ap-p digit-key 'ap-k let
-  ap-k of list default
+  ap-k of [] default
   ap-p push
   ap-k swap insert
 ) 'add-prime let

@@ -5,4 +5,4 @@ args 0 get must 'pat let
 -- A final newline ends the last line; it does not start another.
 1 arg-bytes "\n" str-split pop must dup len 0 eq (drop) (push) if
 (pat str-find {'ok (drop 1) 'no (drop 0)} case) filter
-list (cat 10 push) fold stdout-write
+[] (cat 10 push) fold stdout-write

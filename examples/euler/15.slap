@@ -6,7 +6,7 @@
 ('j let ('r let r j get must r j 1 sub get must plus 'v let r j v set must) mutate) 'upd-row let
 
 -- stack: box i
-list 21 (0 push) repeat 0 1 set must box 1
+[] 21 (0 push) repeat 0 1 set must box 1
 (dup 40 le)
 (
   -- stack: box i

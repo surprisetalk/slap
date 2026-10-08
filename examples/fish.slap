@@ -4,50 +4,50 @@
 12 'N let
 8 'NR let
 
-list N (3 random 2 plus push) repeat 'szs let
-list N (5 random 2 sub push) repeat 'bxs let
-list N (5 random 2 sub push) repeat 'bys let
+[] N (3 random 2 plus push) repeat 'szs let
+[] N (5 random 2 sub push) repeat 'bxs let
+[] N (5 random 2 sub push) repeat 'bys let
 
 -- State record on stack
-rec
-  list N (560 random 40 plus push) repeat 'xs into
-  list N (400 random 40 plus push) repeat 'ys into
-  list N (25 random 12 sub push) repeat 'vxs into
-  list N (25 random 12 sub push) repeat 'vys into
-  list NR (0 push) repeat 'rxs into
-  list NR (0 push) repeat 'rys into
-  list NR (-1 push) repeat 'rages into
+{}
+  [] N (560 random 40 plus push) repeat 'xs into
+  [] N (400 random 40 plus push) repeat 'ys into
+  [] N (25 random 12 sub push) repeat 'vxs into
+  [] N (25 random 12 sub push) repeat 'vys into
+  [] NR (0 push) repeat 'rxs into
+  [] NR (0 push) repeat 'rys into
+  [] NR (-1 push) repeat 'rages into
   0 'rnext into
   -1 'mx into  -1 'my into  0 'frame into
 
-'mousemove (
+(
   'mmy let 'mmx let
-  'mx (drop mmx) edit 'my (drop mmy) edit
-) on
+  (drop mmx) 'mx edit (drop mmy) 'my edit
+) 'mousemove on
 
-'tick (
+(
   drop
-  'frame (1 plus) edit
+  (1 plus) 'frame edit
   dup 'frame at 'frame let
 
   -- Age ripples
-  'rages (
+  (
     0 (dup NR lt) (
       'ri let
       dup ri get must -1 neq (ri over ri get must 1 plus set must) () if
       ri 1 plus
     ) while drop
-  ) edit
+  ) 'rages edit
 
   -- Spawn ripple from mouse
   dup 'mx at 'mxv let
   frame 12 mod 0 eq mxv -1 neq and (
     dup 'my at 'myv let
     dup 'rnext at 'rn let
-    'rxs (rn mxv set must) edit
-    'rys (rn myv set must) edit
-    'rages (rn 0 set must) edit
-    'rnext (drop rn 1 plus NR mod) edit
+    (rn mxv set must) 'rxs edit
+    (rn myv set must) 'rys edit
+    (rn 0 set must) 'rages edit
+    (drop rn 1 plus NR mod) 'rnext edit
   ) () if
 
   -- Update fish
@@ -108,11 +108,11 @@ rec
     x fvx 8 div plus 640 wrap 'xf let
     y fvy 8 div plus 480 wrap 'yf let
 
-    'xs (i xf set must) edit  'ys (i yf set must) edit
-    'vxs (i fvx set must) edit  'vys (i fvy set must) edit
+    (i xf set must) 'xs edit  (i yf set must) 'ys edit
+    (i fvx set must) 'vxs edit  (i fvy set must) 'vys edit
     i 1 plus
   ) while drop
-) on
+) 'tick on
 
 (
   drop

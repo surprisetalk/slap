@@ -110,18 +110,18 @@ fnames len 'nf let
 180 'PW let
 
 -- State: record on stack, modified by keydown, read must by show
-rec 0 'sel into "The quick brown fox jumps over the lazy dog" 'txt into
+{} 0 'sel into "The quick brown fox jumps over the lazy dog" 'txt into
 
-'keydown (
+(
   'key let
-  key 1073741906 eq ('sel (1 sub 0 max) edit) (
-  key 1073741905 eq ('sel (1 plus nf 1 sub min) edit) (
+  key 1073741906 eq ((1 sub 0 max) 'sel edit) (
+  key 1073741905 eq ((1 plus nf 1 sub min) 'sel edit) (
   key 8 eq key 127 eq or (
-    dup 'txt at len 0 gt ('txt (dup len 1 sub take-n) edit) () if
+    dup 'txt at len 0 gt ((dup len 1 sub take-n) 'txt edit) () if
   ) (
-    key 32 ge key 126 le and ('txt (key push) edit) () if
+    key 32 ge key 126 le and ((key push) 'txt edit) () if
   ) if) if) if
-) on
+) 'keydown on
 
 (
   drop
@@ -146,7 +146,7 @@ rec 0 'sel into "The quick brown fox jumps over the lazy dog" 'txt into
     dup 'li let
     li 16 mul 16 plus lscr sub 'ly let
     ly 14 ge ly 16 plus 480 le and (
-      'fnames li nth must dup len 4 sub take-n 'dn let
+      li 'fnames nth must dup len 4 sub take-n 'dn let
       li sel-v eq (
         0 ly PW 16 0 fill-rect
         lf 2 dn 4 ly 1 plus 3 draw-text
@@ -163,12 +163,12 @@ rec 0 'sel into "The quick brown fox jumps over the lazy dog" 'txt into
 
   -- Divider (full height, over headers)
   PW 0 1 480 1 fill-rect
-  'fnames sel-v nth must dup len 4 sub take-n 'sdn let
+  sel-v 'fnames nth must dup len 4 sub take-n 'sdn let
   lf 2 sdn PW 8 plus 0 3 draw-text
 
   -- Load selected font
-  "fonts/" 'fnames sel-v nth must cat read must 'raw let
-  'fnames sel-v nth must font-n 'pn let
+  "fonts/" sel-v 'fnames nth must cat read must 'raw let
+  sel-v 'fnames nth must font-n 'pn let
   pn 8 mul 'ph let
   640 PW sub 16 sub 'pw let
 

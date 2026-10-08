@@ -84,8 +84,10 @@ Stack manipulation:
 
 ### floats
 
+`plus`, `sub`, `mul`, `div`, `lt` and `sort` take ints. `fplus`, `fsub`, `fmul`, `fdiv` and `flt` take floats, and `fdiv` follows IEEE (`1.0 0.0 fdiv` is `inf`). `eq` takes any copyable type. `itof` and `ftoi` convert.
+
 ```slap
-2.0 3.0 plus         -- 5.0
+2.0 3.0 fplus        -- 5.0
 9.0 fsqrt            -- 3.0
 42 itof              -- 42.0
 3.7 ftoi             -- 3
@@ -197,12 +199,12 @@ A body passed as an input is a value: `apply` runs it, and the name passes it on
 
 ```slap
 -- creation
-list                        -- []
+[]                          -- []
 [1 2 3]                     -- [1 2 3]
 0 5 range                   -- [0 1 2 3 4]
 
 -- mutation (pop/get/set return tagged; must unwraps or panics on no)
-list 10 push 20 push            -- [10 20]
+[] 10 push 20 push            -- [10 20]
 [10 20 30] pop must             -- 30 [10 20]
 [10 20 30] 1 get must           -- 20            (consumes the list)
 [10 20 30] 1 peek must          -- 20, with [10 20 30] still under it
@@ -219,7 +221,7 @@ list 10 push 20 push            -- [10 20]
 [1 2 3] 0 (plus) fold           -- 6
 
 -- sorting and searching
-[3 1 2] sort                    -- [1 2 3]
+[3 1 2] sort                    -- [1 2 3]   (ints only)
 [1 2 3] reverse                 -- [3 2 1]
 [1 2 2 3 3] dedup               -- [1 2 3]
 [10 20 30] 20 index-of must     -- 1
@@ -244,9 +246,9 @@ Key-value maps keyed by symbols.
 ```slap
 {'x 10 'y 20}                -- record
 {'x 10 'y 20} 'x at          -- 10
-{'x 10 'y 20} 'x (1 plus) edit  -- {'x 11 'y 20}
+{'x 10 'y 20} (1 plus) 'x edit  -- {'x 11 'y 20}
 {'x 10 'y 20} 30 'x into     -- {'x 30 'y 20}
-rec 10 'x into 20 'y into    -- {'x 10 'y 20}
+{} 10 'x into 20 'y into    -- {'x 10 'y 20}
 ```
 
 `at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. A record's type names its keys and the type of each value, `{'x int 'y int}`. `into` adds a key, or replaces the value of a key the record has. A word that reads `'k` from its input takes any record that has `'k`, so every caller must pass one. Records in one list, or left by the two branches of an `if`, have the same keys. The key is written as a literal right before `at`, `into` or `edit`; for keys that are data, use a dict.
@@ -326,16 +328,16 @@ Realistic example — a mutable counter:
 
 ```slap
 {'count 0 'total 0} box
-  ('count (1 plus) edit) mutate
-  ('count (1 plus) edit) mutate
-  ('total (100 plus) edit) mutate
+  ((1 plus) 'count edit) mutate
+  ((1 plus) 'count edit) mutate
+  ((100 plus) 'total edit) mutate
   () lend
   dup 'count at 2 eq assert
   'total at 100 eq assert
 free
 ```
 
-A box stays on the stack from `box` to `free`: it cannot be bound with `let`, stored in a list, record or dict, duplicated or dropped. `lend` and `mutate` give it back. A socket from `tcp-listen`, `tcp-connect` or `tcp-accept` follows the same rules and ends with `tcp-close`.
+A box stays on the stack from `box` to `free`: it cannot be bound with `let`, stored in a list, record or dict, duplicated or dropped. `lend` and `mutate` give it back. The body of `lend`, as the body of `mutate`, leaves exactly one value. A socket from `tcp-listen`, `tcp-connect` or `tcp-accept` follows the same rules and ends with `tcp-close`.
 
 ## type system
 
@@ -360,11 +362,11 @@ A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, an
 
 Type variables are symbols: `'a list`. A signature is a promise for every type it allows, so a bare `list` means "a list of whatever element type the caller picks": a body that leaves `int list` must say `int list`.
 
-Every tag but `'ok` and `'no` has one payload type in the whole program: once `5 'n tag` appears, `'n` always holds an int. Recursive data goes through tags, as in `rec 1 'hd into nil 'tl into 'cons tag`. `ok` and `no` build results, which `then`, `pthen`, `default` and `must` take.
+Every tag but `'ok` and `'no` has one payload type in the whole program: once `5 'n tag` appears, `'n` always holds an int. Recursive data goes through tags, as in `{} 1 'hd into nil 'tl into 'cons tag`. `ok` and `no` build results, which `then`, `pthen`, `default` and `must` take.
 
 ### ownership
 
-A value is copyable unless it holds a box or a socket. Only a copyable value may be bound with `let`, duplicated, dropped, put in a list, record or dict, or left on the stack when the program ends. A body given to `each`, `fold`, `edit`, `mutate` or `lend` sees only its input, not the stack below it.
+A value is copyable unless it holds a box or a socket. Only a copyable value may be bound with `let`, duplicated, dropped, put in a list, record or dict, or left on the stack when the program ends. A body given to `each`, `fold`, `edit`, `mutate` or `lend` sees only its input, not the stack below it. A type variable carries one bit: copyable or linear.
 
 ### effect annotations
 
@@ -382,19 +384,7 @@ A signature can also come first, as `'name [sig] effect`; the body later bound t
 (3 mul) 'triple let
 ```
 
-The checker holds the body to the signature for every type the signature allows: `(2 mul) ['a num lent in  'a num move out] effect` is an error, because `2` makes the body int-only. A `lent` or `copy` slot takes a copyable value; `own`, `move` and `auto` slots may hold a box. A body type in a slot runs on the word's own stack below its declared inputs, so `(apply) [( -> int ) own in  int move out] effect` checks; a body type that names its own rest, as in `( ..x int -> ..x int )`, has a stack of its own.
-
-### protocol constraints
-
-Built-in protocols group types by capability. Use them in signatures, as in `['a ord list own in  'a ord list move out]`:
-
-| Protocol | Keyword | Types | Operations |
-|----------|---------|-------|------------|
-| Num | `num` | int, float | `plus`, `sub`, `mul`, `div` |
-| Ord | `ord` | int, float | `lt`, `sort` |
-| Copy | `copy` | every type without a box or socket | `let`, `dup`, `drop`, `eq` |
-
-Symbols are comparable with `eq` but not orderable.
+The checker holds the body to the signature for every type the signature allows: `(2 mul) ['a lent in  'a move out] effect` is an error, because `2` makes the body int-only. A `lent` or `copy` slot takes a copyable value; `own`, `move` and `auto` slots may hold a box. A body type in a slot runs on the word's own stack below its declared inputs, so `(apply) [( -> int ) own in  int move out] effect` checks; a body type that names its own rest, as in `( ..x int -> ..x int )`, has a stack of its own.
 
 ## prelude
 
@@ -416,8 +406,8 @@ Definitions written in slap itself, loaded at startup.
 |------|--------|---------|
 | `inc` | int → int+1 | `5 inc` → `6` |
 | `neg` | int → -int (`fneg` for floats) | `5 neg` → `-5` |
-| `abs` | n → \|n\| | `-3 abs` → `3` |
-| `sqr` | n → n\*n | `5 sqr` → `25` |
+| `abs` | int → \|int\| | `-3 abs` → `3` |
+| `sqr` | int → int\*int | `5 sqr` → `25` |
 | `max` | a b → max | `3 5 max` → `5` |
 | `min` | a b → min | `3 5 min` → `3` |
 | `sign` | n → -1/0/1 | `-3 sign` → `-1` |
@@ -467,6 +457,7 @@ Definitions written in slap itself, loaded at startup.
 |------|--------|---------|
 | `fneg` | f → -f | `3.0 fneg` → `-3.0` |
 | `fabs` | f → \|f\| | `-2.5 fabs` → `2.5` |
+| `fgt` | a b → a>b | `3.0 2.0 fgt` → `1` |
 
 ### constants
 
@@ -546,17 +537,18 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/xml.slap` | Elm-style XML decoder (requires `strings.slap` for `int-str`) |
 | `examples/lib/rss.slap` | RSS/Atom feed parser (requires `xml.slap`) |
 | `examples/lib/json.slap` | Elm-style JSON decoder (requires `strings.slap` for `int-str`) |
+| `examples/lib/http.slap` | `parse-http` (requires `strings.slap` for `crlf`) |
 | `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request`, `arg-count`, `arg-bytes`, `stdout-write` |
 
-`jd-run` and `xd-run` return `value ok`, or `msg no` for a syntax error as well as a shape error. Neither library recurses per byte or per element, so input size is bounded by memory; nesting deeper than 256 is refused. `jd-str` decodes `\u` escapes, surrogate pairs included, to UTF-8 and refuses a raw control byte; `je-str` escapes every byte under 0x20, so anything it writes reads back.
+`jd-run` and `xd-run` return `value ok`, or `msg no` for a syntax error as well as a shape error. A parse error names the byte offset from the start of the input and the byte found there: `json: expected , or ] in an array at byte 3, found '2'`. Neither library recurses per byte or per element, so input size is bounded by memory; nesting deeper than 256 levels is refused. `jd-run` refuses a leading zero (`0123`), a repeated key in one object, and a nonzero number that rounds to 0 or past the float range (`2e308`, `1e-400`; `0e999` is `0.0`); a float is one integer mantissa scaled once by a power of ten, so `0.3` equals the literal `0.3` (for up to 15 digits and a scale within 22; past that it is within a few ulps). `xd-run` refuses a repeated attribute name and a declared encoding other than UTF-8 or US-ASCII; the declaration is `<?xml` and white space, then version, encoding and standalone once each, and any other `<?xml...?>` is a processing instruction. `je-obj` dies on a repeated key, and `xml-render` dies on a repeated attribute name or a name the parser refuses. `jd-one-of` and `xd-one-of` list each alternative's error. Attributes are `{'name 'value}` records, in a parsed element and in `xe-elem`; `je-obj` takes `{'name 'value}` records too. `rss-to-xml` gives `xml ok`, or `msg no` for a kind other than `"rss"` or `"atom"`. `jd-str` decodes `\u` escapes, surrogate pairs included, to UTF-8 and refuses a raw control byte; `je-str` escapes every byte under 0x20, so anything it writes reads back.
 
 ### networking / http
 
-Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http`. `tcp-recv` gives up to n bytes, and at most 64 KiB per call. `http-request` lives in `examples/lib/strings.slap`.
+Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http` from `examples/lib/http.slap`. `tcp-recv` gives up to n bytes, and at most 64 KiB per call. `tcp-recv` gives `'no` after 30 s with no data, `tcp-send` gives `'no` when it has not sent everything after 30 s, and `tcp-connect` gives `'no` after 10 s. `tcp-accept` waits without a limit. `tcp-listen` binds 127.0.0.1 only, so a client on another machine cannot reach a slap server. `http-request` lives in `examples/lib/strings.slap`.
 
 | Word | Effect |
 |------|--------|
-| `parse-http` | raw response bytes → `{'status 'headers 'body} ok` |
+| `parse-http` | raw response bytes → `{'status 'headers 'body} ok`, or `message no` (from `http.slap`) |
 | `http-request` | `method host path headers body → request-bytes` (from `strings.slap`) |
 
 ## SDL graphics
@@ -567,10 +559,10 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
 
 | Word | Effect |
 |------|--------|
-| `clear` | Fill canvas with color (0-3) |
-| `pixel` | `x y color pixel` — set one pixel |
-| `fill-rect` | `x y w h color fill-rect` — fill a rectangle |
-| `on` | `'event (handler) on` — register event callback |
+| `clear` | Fill canvas with color (0-3); another color is an error |
+| `pixel` | `x y color pixel` — set one pixel; color 0-3, a pixel off the canvas is clipped |
+| `fill-rect` | `x y w h color fill-rect` — fill a rectangle; color 0-3, clipped to the canvas |
+| `on` | `(handler) 'event on` — register event callback |
 | `show` | `(render) show` — start event loop with render function |
 
 ### events
@@ -592,7 +584,7 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
 ('g let
   -- wrapped cell lookup; the grid stays let-bound and nth reads it by name,
   -- so the words that read it live where 'g is bound
-  (H plus H mod W mul  swap W plus W mod  plus 'g swap nth must) 'cell let
+  (H plus H mod W mul  swap W plus W mod  plus 'g nth must) 'cell let
   ('cy let 'cx let
     cx 1 sub cy 1 sub cell
     cx       cy 1 sub cell plus
@@ -603,23 +595,23 @@ Build with `make slap-sdl`. Opens a 640x480 canvas with 2-bit grayscale (4 shade
     cx       cy 1 plus cell plus
     cx 1 plus cy 1 plus cell plus
   ) 'neighbors let
-  list 0
+  [] 0
   (dup N lt) (
     dup W divmod 'y let 'x let
     x y neighbors 'n let
-    'g over nth must 1 eq (n 2 eq n 3 eq or) (n 3 eq) if
+    dup 'g nth must 1 eq (n 2 eq n 3 eq or) (n 3 eq) if
     (1) (0) if
     swap (push) dip 1 plus
   ) while drop
 ) 'step let
 
-list N (2 random push) repeat
+[] N (2 random push) repeat
 
-'tick (drop step) on
+(drop step) 'tick on
 ('sg let 0 clear
   0 (dup N lt) (
     dup 'i let
-    'sg i nth must 1 eq (i W mod S mul  i W div S mul  S S 3 fill-rect) () if
+    i 'sg nth must 1 eq (i W mod S mul  i W div S mul  S S 3 fill-rect) () if
     1 plus
   ) while drop
 ) show
@@ -713,7 +705,7 @@ cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-client.slap | 
 ```bash
 # a static file server, and the repo's own client fetching from it
 cat examples/lib/strings.slap examples/lib/parse.slap examples/serve.slap | ./slap 8080 .
-cat examples/lib/strings.slap examples/lib/parse.slap examples/fetch.slap | ./slap 127.0.0.1 8080 /readme.md -i
+cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/http.slap examples/fetch.slap | ./slap 127.0.0.1 8080 /readme.md -i
 
 # an RSS/Atom digest, and a todo list in JSON
 cat examples/lib/strings.slap examples/lib/parse.slap examples/lib/xml.slap \
@@ -779,7 +771,7 @@ The checker runs on the prelude and the program before anything executes. It ref
 - A body given to `each`, `fold`, `edit`, `mutate` or `lend` that reaches below its input.
 
 **Literals**
-- A `[...]` or `{...}` literal is built once, when the program is read. Its code sees only what is written inside it and the prelude. Build such a value at runtime instead: `list x push`, `rec x 'key into`.
+- A `[...]` or `{...}` literal is built once, when the program is read. Its code sees only what is written inside it and the prelude. Build such a value at runtime instead: `[] x push`, `{} x 'key into`.
 - A `{...}` literal is a record: each value follows its `'key`, and `{}` is the empty record. For code that pushes values, write a body: `(1 2)`. Right before `case`, a `{...}` literal is a clause list of `'tag (body)` pairs: write `(drop 1)`, not `1`.
 
 **What it does *not* catch**

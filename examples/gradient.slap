@@ -5,7 +5,7 @@
 0
 
 -- on tick: increment model
-'tick (drop 1 plus) on
+(drop 1 plus) 'tick on
 
 -- render: draw gradient based on model
 (

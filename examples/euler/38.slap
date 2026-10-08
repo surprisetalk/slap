@@ -12,7 +12,7 @@
   'gdh-n let 'gdh-lst let
   gdh-n 0 gt (gdh-lst gdh-n 10 mod push gdh-n 10 div gd-helper) (gdh-lst) if
 ) 'gd-helper let
-(list swap gd-helper) 'get-digits let
+([] swap gd-helper) 'get-digits let
 
 -- concat-step: val dcount k n -> val' dcount' k'
 (

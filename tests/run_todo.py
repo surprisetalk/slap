@@ -129,7 +129,7 @@ with tempfile.TemporaryDirectory() as d:
         ("empty-file", "", "json: unexpected end of input"),
         ("whitespace-only", "  \n\t ", "json: unexpected end of input"),
         ("truncated-array", '{"items":[{"text":"a","done":false}', "json: unexpected end of input in an array"),
-        ("trailing-garbage", '{"items":[]} nonsense', "json: trailing input"),
+        ("trailing-garbage", '{"items":[]} nonsense', "json: expected the end of input after the value at byte 13"),
     ]:
         with open(f, "w") as fh:
             fh.write(text)

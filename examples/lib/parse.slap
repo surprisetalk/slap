@@ -27,19 +27,19 @@
 -- frame arena at 2045 characters.
 ('pred let 0 ('pwi let pwi peek {'ok (pred apply) 'no (drop 0)} case pwi swap) (1 plus) while
  'pwn let dup pwn take-n swap pwn drop-n) 'parse-while-core let
-('pred let list (pred parse-while-core ok) pthen) 'parse-while let
-('delim let dup delim str-find {'ok ('pos let dup pos take-n swap pos delim len plus drop-n ok) 'no (drop drop list "parse-until: delimiter not found" no)} case) 'parse-until-core let
-('delim let list (delim parse-until-core) pthen) 'parse-until let
+('pred let [] (pred parse-while-core ok) pthen) 'parse-while let
+('delim let dup delim str-find {'ok ('pos let dup pos take-n swap pos delim len plus drop-n ok) 'no (drop drop [] "parse-until: delimiter not found" no)} case) 'parse-until-core let
+('delim let [] (delim parse-until-core) pthen) 'parse-until let
 -- The integer part: same loop as parse-int-acc, with a float accumulator.
 ('pfv let pfv 0
  ('pfi let 'pfa let pfi peek {'ok ('pfc let pfc 48 ge pfc 57 le and) 'no (drop 0)} case pfa swap pfi swap)
- ('pgi let 'pga let pgi peek must 48 sub itof 'pgd let pga 10.0 mul pgd plus pgi 1 plus) while
+ ('pgi let 'pga let pgi peek must 48 sub itof 'pgd let pga 10.0 fmul pgd fplus pgi 1 plus) while
  'pfn let swap pfn drop-n) 'parse-float-int let
 -- The fraction: the divisor is a fourth item of loop state and is dropped at the
 -- end, the same way the recursive version let it fall off the last frame.
 ('pff let 'pfv let pfv pff 0
  ('pki let 'pkf let 'pkv let pki peek {'ok ('pkc let pkc 48 ge pkc 57 le and) 'no (drop 0)} case pkv swap pkf swap pki swap)
- ('pli let 'plf let 'plv let pli peek must 48 sub itof 'pld let plv pld plf div plus plf 10.0 mul pli 1 plus) while
+ ('pli let 'plf let 'plv let pli peek must 48 sub itof 'pld let plv pld plf fdiv fplus plf 10.0 fmul pli 1 plus) while
  'pkn let drop swap pkn drop-n) 'parse-float-frac let
-(dup len 0 eq (drop 0.0 "parse-float: empty input" no) (dup 0 get must 45 eq (1 drop-n 1) (0) if 'pfneg let 0.0 parse-float-int dup len 0 gt (dup 0 get must 46 eq) (0) if (1 drop-n 0.0 10.0 parse-float-frac (swap plus) dip) () if pfneg (swap fneg swap) () if ok) if) 'parse-float-core let
+(dup len 0 eq (drop 0.0 "parse-float: empty input" no) (dup 0 get must 45 eq (1 drop-n 1) (0) if 'pfneg let 0.0 parse-float-int dup len 0 gt (dup 0 get must 46 eq) (0) if (1 drop-n 0.0 10.0 parse-float-frac (swap fplus) dip) () if pfneg (swap fneg swap) () if ok) if) 'parse-float-core let
 (0.0 (parse-float-core) pthen) 'parse-float let

@@ -30,10 +30,10 @@
   3 35 11 43  1 33  9 41
  51 19 59 27 49 17 57 25
  15 47  7 39 13 45  5 37
- 63 31 55 23 61 29 53 21] (itof 0.5 plus 64.0 div) each 'BAYER let
+ 63 31 55 23 61 29 53 21] (itof 0.5 fplus 64.0 fdiv) each 'BAYER let
 
 -- n -> the width of one pixel at keyframe n
-(itof F swap fpow 3.0 H itof div swap div) 'scale let
+(itof F swap fpow 3.0 H itof fdiv swap fdiv) 'scale let
 
 -- cx cy lim -> mu: the smooth escape count of c, or -1.0 if c stays bounded
 -- for lim steps. The stack holds zx zy i, and each pass makes two steps but
@@ -41,31 +41,31 @@
 -- An escape leaves |z|^2 and i + ESC, which ends the loop.
 1000000000 'ESC let
 ('lim let 'cy let 'cx let
-  cx 0.25 sub 'xm let
-  xm xm mul cy cy mul plus 'q let
+  cx 0.25 fsub 'xm let
+  xm xm fmul cy cy fmul fplus 'q let
   -- the main cardioid and the period-2 bulb never escape
-  q q xm plus mul cy cy mul 0.25 mul lt
-  cx 1.0 plus dup mul cy cy mul plus 0.0625 lt
+  q q xm fplus fmul cy cy fmul 0.25 fmul flt
+  cx 1.0 fplus dup fmul cy cy fmul fplus 0.0625 flt
   or (-1.0) (
     0.0 0.0 0
     (dup lim lt)
     (rot rot
-     over over mul dup plus cy plus rot rot
-     dup mul swap dup mul swap sub cx plus swap
-     over dup mul over dup mul
-     over over plus 256.0 gt
-     (plus swap drop swap drop swap ESC plus 1 plus 0.0 swap)
-     (sub cx plus rot rot mul dup plus cy plus rot 2 plus)
+     over over fmul dup fplus cy fplus rot rot
+     dup fmul swap dup fmul swap fsub cx fplus swap
+     over dup fmul over dup fmul
+     over over fplus 256.0 fgt
+     (fplus swap drop swap drop swap ESC plus 1 plus 0.0 swap)
+     (fsub cx fplus rot rot fmul dup fplus cy fplus rot 2 plus)
      if)
     while
     'i let drop 'm2 let
-    i ESC lt (-1.0) (i ESC sub itof 1.0 plus  m2 flog 0.5 mul flog 2.0 flog div  sub) if
+    i ESC lt (-1.0) (i ESC sub itof 1.0 fplus  m2 flog 0.5 fmul flog 2.0 flog fdiv  fsub) if
   ) if
 ) 'escape let
 
 -- mu -> gray level from 0.0 to 3.0: black inside, and a triangle wave in sqrt mu
 -- outside, so the bands widen as the counts grow with depth.
-(dup 0.0 lt (drop 0.0) (fsqrt 0.5 mul dup ffloor sub 2.0 mul 1.0 sub fabs 3.0 mul) if) 'shade let
+(dup 0.0 flt (drop 0.0) (fsqrt 0.5 fmul dup ffloor fsub 2.0 fmul 1.0 fsub fabs 3.0 fmul) if) 'shade let
 
 -- prev t s -> map coords: the lines of one axis, centered on t, s apart.
 -- prev holds the last keyframe's line coordinates. Each old line, in order,
@@ -74,19 +74,19 @@
 -- a new line. coords holds the coordinate of each line.
 ('s let 't let 'prev let
   prev len 'count let
-  count 1 sub itof 0.5 mul 'mid let
+  count 1 sub itof 0.5 fmul 'mid let
   0 count range (drop -1) each 0 -1
   (over count lt)
   ('taken let 'k let
-    'prev k nth must t sub s div mid plus 'p let
+    k 'prev nth must t fsub s fdiv mid fplus 'p let
     p fround ftoi taken 1 plus max 'r let
-    r count lt  p r itof sub fabs 1.0 lt  and (r k set must r) (taken) if
+    r count lt  p r itof fsub fabs 1.0 flt  and (r k set must r) (taken) if
     k 1 plus swap)
   while drop drop 'map let
   map
   0 count range ('i let
-    'map i nth must 'k let
-    k 0 lt (i itof mid sub s mul t plus) ('prev k nth must) if
+    i 'map nth must 'k let
+    k 0 lt (i itof mid fsub s fmul t fplus) (k 'prev nth must) if
   ) each
 ) 'lines let
 
@@ -97,8 +97,8 @@
 -- into streaks over the lifetime of a line. 2654435761 is Knuth's
 -- multiplicative hash; bits 29-31 of the product pick the pixels.
 ('n let 'y let 'x let 'b let 'a let
-  a GUESS lt b GUESS lt and
-  a b sub fabs 0.5 lt and
+  a GUESS flt b GUESS flt and
+  a b fsub fabs 0.5 flt and
   x y W mul plus n W H mul mul plus 2654435761 mul 29 shr 7 band 0 neq and) 'agree let
 
 -- A keyframe is one float list: W column coordinates, H row coordinates,
@@ -126,17 +126,17 @@ W H plus 'P let
 
   -- Draw keyframe k enlarged to the view's depth: pixel i of an axis shows
   -- line round((i - mid) / grow + mid). 3 band drops a guess's GUESS.
-  F t depth itof STEPS itof div k itof sub fpow 'grow let
-  ('count let count 1 sub itof 0.5 mul 'mid let
-    0 count range (itof mid sub grow div mid plus fround ftoi) each) 'pull let
+  F t depth itof STEPS itof fdiv k itof fsub fpow 'grow let
+  ('count let count 1 sub itof 0.5 fmul 'mid let
+    0 count range (itof mid fsub grow fdiv mid fplus fround ftoi) each) 'pull let
   W pull 'tx let
   H pull 'ty let
   0 H range ('y let
-    'ty y nth must W mul P plus 'tbase let
+    y 'ty nth must W mul P plus 'tbase let
     y 7 band 8 mul 'brow let
     0 W range (
-      dup 'tx swap nth must tbase plus 'old swap nth must
-      over 7 band brow plus 'BAYER swap nth must plus ffloor ftoi 3 band
+      dup 'tx nth must tbase plus 'old nth must
+      over 7 band brow plus 'BAYER nth must fplus ffloor ftoi 3 band
       y swap plot apply 0
     ) each drop 0
   ) each drop
@@ -145,39 +145,39 @@ W H plus 'P let
   -- same keyframe again, and keeps every line.
   n scale 's let
   100 8 n mul plus 'lim let
-  0 W range ('old swap nth must) each TX s lines 'xs let 'cols let
-  W P range ('old swap nth must) each TY s lines 'ys let 'rows let
-  0 W range (dup 0 gt ('cols swap 1 sub nth must) (drop -1) if) each 'left let
-  0 W range (dup W 1 sub lt ('cols swap 1 plus nth must) (drop -1) if) each 'right let
-  ('cy let 'xs swap nth must cy lim escape shade) 'calc let
+  0 W range ('old nth must) each TX s lines 'xs let 'cols let
+  W P range ('old nth must) each TY s lines 'ys let 'rows let
+  0 W range (dup 0 gt (1 sub 'cols nth must) (drop -1) if) each 'left let
+  0 W range (dup W 1 sub lt (1 plus 'cols nth must) (drop -1) if) each 'right let
+  ('cy let 'xs nth must cy lim escape shade) 'calc let
   ('cy let 'y let 'x let 'b let 'a let
-    a b x y n agree (a b plus 0.5 mul GUESS plus) (x cy calc) if) 'guess let
+    a b x y n agree (a b fplus 0.5 fmul GUESS fplus) (x cy calc) if) 'guess let
 
   old
   j H mul STEPS div  j 1 plus H mul STEPS div range ('y let
-    'rows y nth must 'r let
-    'ys y nth must 'cy let
+    y 'rows nth must 'r let
+    y 'ys nth must 'cy let
     r W mul P plus 'base let
     r 0 ge 'kept let
-    y 0 gt ('rows y 1 sub nth must) (-1) if 'up let
-    y H 1 sub lt ('rows y 1 plus nth must) (-1) if 'down let
+    y 0 gt (y 1 sub 'rows nth must) (-1) if 'up let
+    y H 1 sub lt (y 1 plus 'rows nth must) (-1) if 'down let
     up 0 ge down 0 ge and 'vert let
     up W mul P plus 'ubase let
     down W mul P plus 'dbase let
     -- A kept pixel, most of them, takes one branch and no let.
     0 W range (
-      dup 'cols swap nth must
-      dup 0 ge kept and ('old swap base plus nth must nip) (
+      dup 'cols nth must
+      dup 0 ge kept and (base plus 'old nth must nip) (
         'c let 'x let
         kept (
-          'left x nth must 'lc let
-          'right x nth must 'rc let
+          x 'left nth must 'lc let
+          x 'right nth must 'rc let
           lc 0 ge rc 0 ge and
-          ('old base lc plus nth must 'old base rc plus nth must x y cy guess)
+          (base lc plus 'old nth must base rc plus 'old nth must x y cy guess)
           (x cy calc) if
         ) (
           vert c 0 ge and
-          ('old ubase c plus nth must 'old dbase c plus nth must x y cy guess)
+          (ubase c plus 'old nth must dbase c plus 'old nth must x y cy guess)
           (x cy calc) if
         ) if
       ) if
@@ -197,14 +197,14 @@ isheadless (
   -- -0.5 lies in the cardioid, -1 in the bulb, and -2 stays bounded outside
   -- both. 1 escapes at |z_5| = 677, so mu = 6 - log2(ln 677).
   [-0.5 -1.0 -2.0] (0.0 100 escape -1.0 eq) each 1 (and) fold assert
-  1.0 0.0 100 escape 3.29556 sub fabs 0.0001 lt assert
+  1.0 0.0 100 escape 3.29556 fsub fabs 0.0001 flt assert
 
   -- Computed levels 0.4 apart agree except at about 1 pixel in 8; 0.6 apart
   -- never; guesses never.
   0 800 range (1.0 1.4 rot 3 5 agree) each sum 'yes let
   yes 650 gt yes 750 lt and assert
   0 800 range (1.0 1.6 rot 3 5 agree) each sum 0 eq assert
-  0 800 range (GUESS 1.0 plus GUESS 1.2 plus rot 3 5 agree) each sum 0 eq assert
+  0 800 range (GUESS 1.0 fplus GUESS 1.2 fplus rot 3 5 agree) each sum 0 eq assert
 
   -- Columns of keyframes 0 to 59, then back out to 40: once the zoom in has
   -- settled, each keyframe makes at most 80 new ones. The least is
@@ -213,10 +213,10 @@ isheadless (
   0 60 range  40 59 range reverse cat 'path let
   0 W range (drop 1000.0) each
   0 (dup path len lt) ('i let 'prev let
-    'path i nth must scale 's let
+    i 'path nth must scale 's let
     prev TX s lines 'xs let 'cols let
     i 20 gt (cols (0 lt) filter len 80 le assert) () if
-    0 W range ('c let 'xs c nth must TX sub s div W 1 sub itof 0.5 mul plus  c itof sub fabs 1.0 lt) each
+    0 W range ('c let c 'xs nth must TX fsub s fdiv W 1 sub itof 0.5 fmul fplus  c itof fsub fabs 1.0 flt) each
     1 (and) fold assert
     xs i 1 plus) while drop drop
 
@@ -232,13 +232,13 @@ isheadless (
   -- computed and kept pixels in cerr, guesses in gerr.
   0 W H mul 97 div range (97 mul) each 'probe let
   ('lim let 'st let
-    probe (W divmod 'y let 'x let 'st x nth must 'st W y plus nth must lim escape shade) each
-    probe (P plus 'st swap nth must) each zip 'pairs let
-    ('pr let 'pr 1 nth must dup GUESS ge (GUESS sub) () if 'pr 0 nth must sub fabs) 'miss let
-    pairs ('pr let 'pr 1 nth must GUESS lt) filter (miss) each
-    pairs ('pr let 'pr 1 nth must GUESS ge) filter (miss) each) 'errors let
+    probe (W divmod 'y let 'x let x 'st nth must W y plus 'st nth must lim escape shade) each
+    probe (P plus 'st nth must) each zip 'pairs let
+    ('pr let 1 'pr nth must dup GUESS flt not (GUESS fsub) () if 0 'pr nth must fsub fabs) 'miss let
+    pairs ('pr let 1 'pr nth must GUESS flt) filter (miss) each
+    pairs ('pr let 1 'pr nth must GUESS flt not) filter (miss) each) 'errors let
   -- i count t k -> the coordinate of new line i of an axis of keyframe k
-  ('k let 't let 'count let itof count 1 sub itof 0.5 mul sub k scale mul t plus) 'grid let
+  ('k let 't let 'count let itof count 1 sub itof 0.5 fmul fsub k scale fmul t fplus) 'grid let
 
   -- Ticks 0 to 3 build keyframe 1 from keyframe 0, at 108 steps. A kept or
   -- computed pixel matches, except where keyframe 0's 100 steps left a pixel
@@ -248,21 +248,21 @@ isheadless (
   start 0 (dup 4 lt) ('k let k (drop drop drop) step k 1 plus) while drop 'm let
   m len P W H mul plus eq assert
   m 108 errors 'gerr let 'cerr let
-  cerr (0.0 gt) filter len 100 mul  cerr len  le assert
+  cerr (0.0 fgt) filter len 100 mul  cerr len  le assert
   gerr len 0 gt assert
-  gerr len itof  probe len itof 1.0 1.0 F F mul div sub mul  le assert
-  gerr (0.5 gt) filter len 100 mul  gerr len 5 mul  le assert
-  probe ('p let 'm P p plus nth must GUESS ge  'm p W mod nth must  p W mod W TX 1 grid eq  and) each sum 0 gt assert
-  probe ('p let 'm P p plus nth must GUESS ge  'm W p W div plus nth must  p W div H TY 1 grid eq  and) each sum 0 gt assert
+  gerr len itof  probe len itof 1.0 1.0 F F fmul fdiv fsub fmul  swap flt not assert
+  gerr (0.5 fgt) filter len 100 mul  gerr len 5 mul  le assert
+  probe ('p let P p plus 'm nth must GUESS flt not  p W mod 'm nth must  p W mod W TX 1 grid eq  and) each sum 0 gt assert
+  probe ('p let P p plus 'm nth must GUESS flt not  W p W div plus 'm nth must  p W div H TY 1 grid eq  and) each sum 0 gt assert
 
   -- e -> a plot that asserts that a tick draws keyframe 1 enlarged by
   -- F^(e / STEPS): pixel i of an axis shows line round((i - mid) / grow + mid).
-  ('e let F e itof STEPS itof div fpow 'g let
+  ('e let F e itof STEPS itof fdiv fpow 'g let
     ('lv let 'py let 'px let
-      px itof W 1 sub itof 0.5 mul sub g div W 1 sub itof 0.5 mul plus fround ftoi
-      py itof H 1 sub itof 0.5 mul sub g div H 1 sub itof 0.5 mul plus fround ftoi
-      W mul plus P plus 'm swap nth must
-      'BAYER py 7 band 8 mul px 7 band plus nth must plus ffloor ftoi 3 band
+      px itof W 1 sub itof 0.5 fmul fsub g fdiv W 1 sub itof 0.5 fmul fplus fround ftoi
+      py itof H 1 sub itof 0.5 fmul fsub g fdiv H 1 sub itof 0.5 fmul fplus fround ftoi
+      W mul plus P plus 'm nth must
+      py 7 band 8 mul px 7 band plus 'BAYER nth must fplus ffloor ftoi 3 band
       lv eq assert)) 'drawn let
   -- Zooming in, ticks 4 and 6 draw keyframe 1 enlarged by F^0 and F^(1/2).
   m 4 0 drawn step 5 (drop drop drop) step 6 2 drawn step drop
@@ -274,7 +274,7 @@ isheadless (
   m b2 STEPS drawn step  b2 1 plus (drop drop drop) step
   b2 2 plus 2 drawn step  b2 3 plus (drop drop drop) step 'o let
   o 100 errors 'ogerr let 'ocerr let
-  ocerr (0.0 gt) filter len 100 mul  ocerr len  le assert
-  ogerr (0.5 gt) filter len 100 mul  ogerr len 5 mul  le assert
+  ocerr (0.0 fgt) filter len 100 mul  ocerr len  le assert
+  ogerr (0.5 fgt) filter len 100 mul  ogerr len 5 mul  le assert
   "zoom-selftest-ok" print
 ) () if

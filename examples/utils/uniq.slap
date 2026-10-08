@@ -4,7 +4,7 @@
 1 "FILE" arg-count
 0 arg-bytes "\n" str-split pop must dup len 0 eq (drop) (push) if 'all let
 -- Pair each line with the one before it; [-1] is before the first, and no line equals it.
-all list [-1] push all cat zip
+all [] [-1] push all cat zip
   (dup 0 get must swap 1 get must eq not) filter
   (0 get must) each
-list (cat 10 push) fold stdout-write
+[] (cat 10 push) fold stdout-write

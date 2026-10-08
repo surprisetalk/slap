@@ -7,7 +7,7 @@
 --
 -- Sieve 0..10^6 once; every is-prime check is O(1) nth.
 
-list 1000000 (1 push) repeat box
+[] 1000000 (1 push) repeat box
 
 (
   0 0 set must 1 0 set must
@@ -26,7 +26,7 @@ list 1000000 (1 push) repeat box
 
 (
   'data let
-  ('data swap nth must 1 eq) 'is-prime let
+  ('data nth must 1 eq) 'is-prime let
 
   ('p let 1 p (10 mul) repeat) 'pow-10 let
 

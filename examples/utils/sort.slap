@@ -8,37 +8,37 @@
 0 arg-bytes 'in let
 in len 'n let
 -- Where each line ends: every newline, and the end of the text when it has no final newline.
-0 n range ('in swap nth must 10 eq) filter
-n 0 gt ('in n 1 sub nth must 10 eq not) (0) if (n push) () if 'ends let
+0 n range ('in nth must 10 eq) filter
+n 0 gt (n 1 sub 'in nth must 10 eq not) (0) if (n push) () if 'ends let
 ends len 'lines let
-('k let k 0 eq (0) ('ends k 1 sub nth must 1 plus) if) 'start let
+('k let k 0 eq (0) (k 1 sub 'ends nth must 1 plus) if) 'start let
 -- Byte order: the first differing byte decides, and a prefix comes first.
 ('b let 'a let
- a start 'sa let  'ends a nth must sa sub 'la let
- b start 'sb let  'ends b nth must sb sub 'lb let
+ a start 'sa let  a 'ends nth must sa sub 'la let
+ b start 'sb let  b 'ends nth must sb sub 'lb let
  la lb min 'm let
- 0 (dup m lt (dup sa plus 'in swap nth must over sb plus 'in swap nth must eq) (0) if) (1 plus) while 'k let
- k m lt ('in sa k plus nth must 'in sb k plus nth must lt) (la lb lt) if
+ 0 (dup m lt (dup sa plus 'in nth must over sb plus 'in nth must eq) (0) if) (1 plus) while 'k let
+ k m lt (sa k plus 'in nth must sb k plus 'in nth must lt) (la lb lt) if
 ) 'line-lt let
 -- Bottom-up merge sort of the line numbers: each pass merges runs of width w in src into runs of 2w.
 0 lines range 1
 (dup lines lt) (
   'w let 'src let
-  list 0
+  [] 0
   (dup lines lt) (
     'lo let
     lo w plus lines min 'mid let  mid w plus lines min 'hi let
     lo mid
     (over mid lt over hi lt or) (
       'j let 'i let
-      j hi lt (i mid lt ('src j nth must 'src i nth must line-lt) (1) if) (0) if
-      ('src j nth must push  i j 1 plus) ('src i nth must push  i 1 plus j) if
+      j hi lt (i mid lt (j 'src nth must i 'src nth must line-lt) (1) if) (0) if
+      (j 'src nth must push  i j 1 plus) (i 'src nth must push  i 1 plus j) if
     ) while
     drop drop hi
   ) while
   drop w 2 mul
 ) while
 drop
-list ('k let  'ends k nth must 'e let  k start
-  (dup e lt) ('p let 'in p nth must push p 1 plus) while drop 10 push) fold
+[] ('k let  k 'ends nth must 'e let  k start
+  (dup e lt) ('p let p 'in nth must push p 1 plus) while drop 10 push) fold
 stdout-write

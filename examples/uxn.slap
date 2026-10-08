@@ -222,7 +222,7 @@
      p1 bi shr 1 band 'c1 let
      two (c1 2 mul c0 plus) (c0) if 'ch let
      opaque ch 0 neq or
-     ( 'BLEND ch 16 mul blend plus nth must 'col let
+     ( ch 16 mul blend plus 'BLEND nth must 'col let
        -- destination wraps at 16 bits: a sprite at x=0xfffc is four pixels off
        -- the left edge, and its right half must appear at x=0..3 rather than
        -- being clipped away as a large positive coordinate
@@ -291,7 +291,7 @@
 
 -- ===== console: buffer a line, flush on LF =====
 (CON-N-I cell 'n let
- list 0 (dup n lt) ('i let (CON-B i plus cell) dip swap push i 1 plus) while drop
+ [] 0 (dup n lt) ('i let (CON-B i plus cell) dip swap push i 1 plus) while drop
  print
  CON-N-I 0 cell!) 'con-flush let
 
@@ -313,12 +313,12 @@
 -- at TOS and `dt` is the only safe place to put it -- a bare list on the stack
 -- would sit between the machine and every subsequent `cell`.
 ('q let datetime 'dt let
- q 192 eq ('dt 0 nth must 8 shr) (
- q 193 eq ('dt 0 nth must 255 band) (
- q 200 eq ('dt 7 nth must 8 shr) (
- q 201 eq ('dt 7 nth must 255 band) (
- q 202 eq ('dt 8 nth must) (
- 'dt q 193 sub nth must ) if) if) if) if) if) 'dt-port let
+ q 192 eq (0 'dt nth must 8 shr) (
+ q 193 eq (0 'dt nth must 255 band) (
+ q 200 eq (7 'dt nth must 8 shr) (
+ q 201 eq (7 'dt nth must 255 band) (
+ q 202 eq (8 'dt nth must) (
+ q 193 sub 'dt nth must ) if) if) if) if) if) 'dt-port let
 
 ('p let p 255 band 'q let
  q 4 eq (WSP-I cell) (
@@ -424,7 +424,7 @@
      ( WSP-I rf plus cell 'sv let  KSP-I sv cell!  KSP-I )
      ( WSP-I rf plus ) if 'pp let
    POPP-I pp cell!
-   'OPTAB base nth must apply ) if) 'step let
+   base 'OPTAB nth must apply ) if) 'step let
 
 -- Run from `addr` until BRK. The step cap keeps a runaway ROM from making the
 -- SDL window unkillable -- `show` only pumps events between frames.
@@ -438,11 +438,11 @@
  a 0 eq () (PC-I a cell!  RUN-I 1 cell!  lim run-more) if) 'run-at let
 
 -- ===== machine construction =====
-(list STATE-N (0 push) repeat
+([] STATE-N (0 push) repeat
  DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!) 'blank let
 
 ('bs let bs len 'n let
- 0 (dup n lt) ('i let 256 i plus 'bs i nth must mwr i 1 plus) while drop) 'load-rom let
+ 0 (dup n lt) ('i let 256 i plus i 'bs nth must mwr i 1 plus) while drop) 'load-rom let
 
 -- ===== demo ROM: an 8x8 blob you steer with the arrow keys =====
 --
@@ -699,12 +699,12 @@ isheadless args len 0 eq and (
   -- would fail whenever the clock happens to tick mid-test, which is a flaky
   -- test rather than a bug in the device.
   datetime 'dtn let
-  [128 192 54 0] run  ws2 'dtn 0 nth must eq assert     -- 0xc0 year, a short
-  [128 194 22 0] run  0 wat 'dtn 1 nth must eq assert   -- 0xc2 month, 0-11
-  [128 195 22 0] run  0 wat 'dtn 2 nth must eq assert   -- 0xc3 day, 1-31
-  [128 199 22 0] run  0 wat 'dtn 6 nth must eq assert   -- 0xc7 day of week, 0=Sunday
-  [128 200 54 0] run  ws2 'dtn 7 nth must eq assert     -- 0xc8 day of year, a short
-  [128 202 22 0] run  0 wat 'dtn 8 nth must eq assert   -- 0xca isdst
+  [128 192 54 0] run  ws2 0 'dtn nth must eq assert     -- 0xc0 year, a short
+  [128 194 22 0] run  0 wat 1 'dtn nth must eq assert   -- 0xc2 month, 0-11
+  [128 195 22 0] run  0 wat 2 'dtn nth must eq assert   -- 0xc3 day, 1-31
+  [128 199 22 0] run  0 wat 6 'dtn nth must eq assert   -- 0xc7 day of week, 0=Sunday
+  [128 200 54 0] run  ws2 7 'dtn nth must eq assert     -- 0xc8 day of year, a short
+  [128 202 22 0] run  0 wat 8 'dtn nth must eq assert   -- 0xca isdst
   -- The three that do move are range-checked instead.
   [128 196 22 0] run  0 wat 24 lt assert                -- 0xc4 hour
   [128 197 22 0] run  0 wat 60 lt assert                -- 0xc5 minute
@@ -716,7 +716,7 @@ isheadless args len 0 eq and (
   -- Datetime is read-only. The write lands in the device page like any other,
   -- but the read still comes from the clock and ignores it.
   [128 99 128 194 23 128 194 22 0] run
-    0 wat 'dtn 1 nth must eq assert
+    0 wat 1 'dtn nth must eq assert
     194 gd 99 eq assert                                 -- the write did land
 
   -- --- the demo ROM actually boots ---
@@ -792,8 +792,8 @@ isheadless args len 0 gt and (
      i 1 plus) while drop 'INS-N let
 
   ('n let n 10 lt (n 48 plus) (n 87 plus) if) 'hexd let
-  ('n let n 0 eq (list 48 push)
-     (list n (dup 0 gt) ('m let m 10 mod 48 plus push m 10 div) while drop reverse)
+  ('n let n 0 eq ([] 48 push)
+     ([] n (dup 0 gt) ('m let m 10 mod 48 plus push m 10 div) while drop reverse)
    if) 'dstr let
   "INS " INS-N dstr cat print
   8 dev2 'PR let  10 dev2 'PG let  12 dev2 'PB let
@@ -810,10 +810,10 @@ isheadless args len 0 gt and (
   dup dup BG-B drop-n SCR-N take-n 'BGL let
           FG-B drop-n SCR-N take-n 'FGL let
   0 (dup SCR-H lt) ('y let
-     list 0 (dup SCR-W lt) ('x let
+     [] 0 (dup SCR-W lt) ('x let
         y SCR-W mul x plus 'k let
-        'FGL k nth must 'f let
-        f 0 neq (f) ('BGL k nth must) if 48 plus push
+        k 'FGL nth must 'f let
+        f 0 neq (f) (k 'BGL nth must) if 48 plus push
         x 1 plus) while drop
      print
      y 1 plus) while drop

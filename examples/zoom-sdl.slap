@@ -4,5 +4,5 @@
 -- tick draws the whole canvas, so show has nothing to do.
 
 start
-'tick ((pixel) step) on
+((pixel) step) 'tick on
 (drop) show

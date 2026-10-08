@@ -69,39 +69,39 @@ BAR-H 4 plus 'PAD-Y let
 640 PAD-X 2 mul sub 'TW let
 
 -- State: gap buffer as record on stack
-rec list 'before into list 'after into
+{} [] 'before into [] 'after into
 
 -- File I/O
 args 'argv let
 argv len 0 gt (argv 0 get must) ("") if 'fpath let
 argv len 0 gt (
   fpath read must 'fbytes let
-  'before (
+  (
     0
     (dup fbytes len lt) (
       dup 'fi let
-      ('fbytes fi nth must push) dip
+      (fi 'fbytes nth must push) dip
       1 plus
     ) while
     drop
-  ) edit
+  ) 'before edit
 ) () if
 
 (
   argv len 0 gt (
     dup 'before at 'sav-bef let
     dup 'after at 'sav-aft let
-    list 0
+    [] 0
     (dup sav-bef len lt) (
       dup 'wi let
-      ('sav-bef wi nth must push) dip
+      (wi 'sav-bef nth must push) dip
       1 plus
     ) while
     drop
     sav-aft len 1 sub
     (dup 0 ge) (
       dup 'wj let
-      ('sav-aft wj nth must push) dip
+      (wj 'sav-aft nth must push) dip
       1 sub
     ) while
     drop
@@ -164,7 +164,7 @@ argv len 0 gt (
   (dup bef len lt) (
     dup 'ri let
     rot 'rcx-cur let swap 'rcy-cur let
-    'bef ri nth must 'rch let
+    ri 'bef nth must 'rch let
     rch 10 eq (
       PAD-X rcy-cur LH plus
     ) (
@@ -191,7 +191,7 @@ argv len 0 gt (
   (dup 0 ge) (
     dup 'ra let
     rot 'rcx-cur let swap 'rcy-cur let
-    'aft ra nth must 'rch let
+    ra 'aft nth must 'rch let
     rch 10 eq (
       PAD-X rcy-cur LH plus
     ) (
@@ -209,48 +209,48 @@ argv len 0 gt (
 ) 'render-text let
 
 -- Click to move cursor
-'mousedown (
+(
   'my let 'mx let
   my PAD-Y ge (
     -- Build full text: before + reversed after
     dup 'before at 'mbef let
     dup 'after at 'maft let
-    list 0
+    [] 0
     (dup mbef len lt) (
       dup 'mfi let
-      ('mbef mfi nth must push) dip
+      (mfi 'mbef nth must push) dip
       1 plus
     ) while
     drop
     maft len 1 sub
     (dup 0 ge) (
       dup 'mfj let
-      ('maft mfj nth must push) dip
+      (mfj 'maft nth must push) dip
       1 sub
     ) while
     drop
     'full let
     -- Walk text computing positions, find closest index
     -- Walk state record: hx, hy, best, bestd
-    rec PAD-X 'hx into PAD-Y 2 plus 'hy into 0 'best into 1000000 'bestd into
+    {} PAD-X 'hx into PAD-Y 2 plus 'hy into 0 'best into 1000000 'bestd into
     0
     (dup full len lt) (
       dup 'hi let
       swap 'ws let
-      'full hi nth must 'hch let
+      hi 'full nth must 'hch let
       mx ws 'hx at sub dup mul my ws 'hy at sub dup mul plus 'hd let
       hd ws 'bestd at lt
         (ws hi 'best into hd 'bestd into)
         (ws)
       if
       hch 10 eq (
-        PAD-X 'hx into 'hy (LH plus) edit
+        PAD-X 'hx into (LH plus) 'hy edit
       ) (
         body-font hch get must 'hw let
         hw 0 gt (
-          'hx (hw plus 1 plus) edit
+          (hw plus 1 plus) 'hx edit
           dup 'hx at PAD-X TW plus gt (
-            PAD-X 'hx into 'hy (LH plus) edit
+            PAD-X 'hx into (LH plus) 'hy edit
           ) () if
         ) () if
       ) if
@@ -265,27 +265,27 @@ argv len 0 gt (
       (full len) (ws-end 'best at) if
     'best-pos let
     -- Rebuild gap buffer at best-pos
-    list 0
+    [] 0
     (dup best-pos lt) (
       dup 'rbi let
-      ('full rbi nth must push) dip
+      (rbi 'full nth must push) dip
       1 plus
     ) while
     drop
     'before into
-    list full len 1 sub
+    [] full len 1 sub
     (dup best-pos ge) (
       dup 'raj let
-      ('full raj nth must push) dip
+      (raj 'full nth must push) dip
       1 sub
     ) while
     drop
     'after into
   ) () if
-) on
+) 'mousedown on
 
 -- Input
-'keydown (
+(
   'key let
   key 8 eq (
     dup 'before at len 0 gt (
@@ -293,7 +293,7 @@ argv len 0 gt (
     ) () if
   ) (
   key 13 eq (
-    'before (10 push) edit do-save
+    (10 push) 'before edit do-save
   ) (
   key 127 eq (
     dup 'after at len 0 gt (
@@ -303,20 +303,20 @@ argv len 0 gt (
   key 1073741904 eq (
     dup 'before at len 0 gt (
       dup 'before at pop must 'mc let 'before into
-      'after (mc push) edit
+      (mc push) 'after edit
     ) () if
   ) (
   key 1073741903 eq (
     dup 'after at len 0 gt (
       dup 'after at pop must 'mc let 'after into
-      'before (mc push) edit
+      (mc push) 'before edit
     ) () if
   ) (
     key 32 ge key 127 lt and (
-      'before (key push) edit do-save
+      (key push) 'before edit do-save
     ) () if
   ) if) if) if) if) if
-) on
+) 'keydown on
 
 (
   drop

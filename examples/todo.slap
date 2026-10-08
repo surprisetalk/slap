@@ -22,7 +22,7 @@
 -- that exists and does not decode is refused and left untouched -- starting
 -- empty instead would silently overwrite the list on the next write.
 
-(list 10 push) 'LF let
+([] 10 push) 'LF let
 ('st let "/dev/stdout" st LF cat write must drop) 'say let
 ('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
 
@@ -91,15 +91,15 @@ CMD "rm" eq (
 ) if) if) if) if) if
 'DONES2 let 'TEXTS2 let
 
--- je-obj takes [key fragment] couples and quotes the keys itself, so the values
+-- je-obj takes {'name 'value} records and quotes the names itself, so the values
 -- are already-encoded JSON text. That is what lets "true"/"false" go in
 -- literally: json.slap has je-int and je-str but no je-bool.
 CMD "list" eq not (
   0 TEXTS2 len range ('i let
-    list "text" TEXTS2 i get must je-str couple push
-         "done" DONES2 i get must ("true") ("false") if couple push
+    [] {} "text" 'name into TEXTS2 i get must je-str 'value into push
+       {} "done" 'name into DONES2 i get must ("true") ("false") if 'value into push
     je-obj) each je-list 'body let
-  FILE list "items" body couple push je-obj write must drop
+  FILE [] {} "items" 'name into body 'value into push je-obj write must drop
 ) () if
 
 TEXTS2 len 0 eq (

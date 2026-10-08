@@ -5,12 +5,12 @@
 
 build
 
-'keydown (drop drop build) on
+(drop drop build) 'keydown on
 
 ('st let 0 clear
   0 (dup GN lt) (
     'i let
-    'st i nth must 'v let
+    i 'st nth must 'v let
     v 1 eq (0) (v 2 eq (3) (1) if) if 'col let
     i GW mod S mul OX plus  i GW div S mul OY plus  S S col fill-rect
     i 1 plus

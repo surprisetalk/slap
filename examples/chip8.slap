@@ -31,11 +31,11 @@
 -- ===== helpers =====
 
 -- a zeroed machine with the PC at the ROM entry point (512)
-(list STATE-N (0 push) repeat PC-I 512 set must) 'blank let
+([] STATE-N (0 push) repeat PC-I 512 set must) 'blank let
 
 -- write a byte list into memory starting at addr; nth reads the source zero-copy
 ('la let 'lbytes let lbytes len 'lblen let
- 0 (dup lblen lt) ('bi let la bi plus 'lbytes bi nth must set must bi 1 plus) while drop) 'load-at let
+ 0 (dup lblen lt) ('bi let la bi plus bi 'lbytes nth must set must bi 1 plus) while drop) 'load-at let
 
 -- ===== one instruction =====
 
@@ -135,7 +135,7 @@
    nn 10 eq (
      -- the accumulator and counter sit above the machine; nested dip lifts both
      -- out of the way so peek sees the machine at top of stack
-     list 0 (dup 16 lt) (dup 'ki let ((KEY-I ki plus peek must) dip) dip (swap push) dip 1 plus) while drop
+     [] 0 (dup 16 lt) (dup 'ki let ((KEY-I ki plus peek must) dip) dip (swap push) dip 1 plus) while drop
      1 index-of {
        'ok ('kf let V-I x plus kf set must)
        'no (drop PC-I pc set must)

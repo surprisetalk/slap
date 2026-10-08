@@ -18,12 +18,12 @@
 args len 0 gt (args 0 get must ok parse-int must len 0 eq assert dup 0 gt over 65536 lt and assert) (4321) if 'PORT let
 args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 4096 'LINE-CAP let
-(list 10 push) 'LF let
-(list 9 push) 'TAB let
+([] 10 push) 'LF let
+([] 9 push) 'TAB let
 
 -- ===== pure helpers =====
 
-('us let us list ('uc let uc 97 ge uc 122 le and (uc 32 sub) (uc) if push) fold) 'upper let
+('us let us [] ('uc let uc 97 ge uc 122 le and (uc 32 sub) (uc) if push) fold) 'upper let
 
 ('vk let vk len 1 ge vk len 64 le and vk ('kc let kc 33 ge kc 126 le and) filter len vk len eq and) 'valid-key let
 
@@ -42,7 +42,7 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 -- ===== snapshot =====
 
 -- Fallible: returns the write's tagged result so callers choose crash vs report.
-(dict-entries list (dup 'key at 'fk let 'value at 'fv let fk cat TAB cat fv cat LF cat) fold
+(dict-entries [] (dup 'key at 'fk let 'value at 'fv let fk cat TAB cat fv cat LF cat) fold
  SNAP swap write) 'save-snapshot let
 
 -- Every non-empty line must be key<TAB>value. A line without a TAB means the file
@@ -89,7 +89,7 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 
 -- ===== connection =====
 
-(list (swap 4096 tcp-recv {'ok () 'no (drop list)} case 'ch let
+([] (swap 4096 tcp-recv {'ok () 'no (drop [])} case 'ch let
        swap ch cat
        dup has-lf not
        ch len 0 gt and

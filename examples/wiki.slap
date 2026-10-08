@@ -25,14 +25,14 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
 
 ('pn let DIR "/" cat pn cat ".txt" cat) 'page-path let
 
-('es let es list ('ec let
+('es let es [] ('ec let
   ec 38 eq ("&amp;" cat) (
   ec 60 eq ("&lt;" cat) (
   ec 62 eq ("&gt;" cat) (
   ec 34 eq ("&quot;" cat) (
   ec push) if) if) if) if) fold) 'esc let
 
-('bs let bs list ('bc let
+('bs let bs [] ('bc let
   bc 10 eq ("<br>" cat) (
   bc 13 eq () (
   bc push) if) if) fold) 'br let
@@ -42,7 +42,7 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
 ('hv let hv 57 le (hv 48 sub) (hv 90 le (hv 55 sub) (hv 87 sub) if) if) 'hex-val let
 
 -- percent-decoding for form bodies; '+' is space, malformed '%' copied literally
-(list swap
+([] swap
  (dup len 0 gt) (
    dup 0 get must 'uc let
    uc 43 eq (
@@ -61,14 +61,14 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
  drop) 'url-decode let
 
 -- turn [PageName] into links (input already escaped, so no stray tags)
-(list swap
+([] swap
  (dup len 0 gt) (
    dup "[" str-find {
-     'no (drop 'r1 let 'a1 let a1 r1 cat list)
+     'no (drop 'r1 let 'a1 let a1 r1 cat [])
      'ok ('p1 let 'r2 let 'a2 let
           r2 p1 1 plus drop-n 'rest2 let
           rest2 "]" str-find {
-            'no (drop a2 r2 cat list)
+            'no (drop a2 r2 cat [])
             'ok ('p2 let
                  rest2 p2 take-n 'cand let
                  cand valid-name (
@@ -117,7 +117,7 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
  (".txt" ends-with) filter
  ('sfn let sfn sfn len 4 sub take-n) each
  (valid-name) filter
- list ('ip let "<li><a href='/" ip cat "'>" cat ip cat "</a></li>" cat cat) fold
+ [] ('ip let "<li><a href='/" ip cat "'>" cat ip cat "</a></li>" cat cat) fold
  cat "</ul>" cat
  "index" swap layout) 'index-page let
 
@@ -156,14 +156,14 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
             'ok ('pcl let
                  pparts 1 get must dup "?" str-find {'ok (take-n) 'no (drop)} case 'pp let
                  pq phe 4 plus drop-n pcl take-n 'pb let
-                 list pparts 0 get must push pp push pb push ok)
+                 [] pparts 0 get must push pp push pb push ok)
           } case
         ) if)
  } case) 'parse-request let
 
 -- accumulate one request: until headers + declared body arrive, peer closes, or 12k cap
-(list
- (swap 4096 tcp-recv {'ok () 'no (drop list)} case 'ch let
+([]
+ (swap 4096 tcp-recv {'ok () 'no (drop [])} case 'ch let
   swap ch cat
   dup req-complete not
   ch len 0 gt and
@@ -225,7 +225,7 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
 -- ===== self-tests =====
 
 "a<b>& c" esc "a&lt;b&gt;&amp; c" eq assert
-34 list swap push esc "&quot;" eq assert
+34 [] swap push esc "&quot;" eq assert
 "x" br "x" eq assert
 "a+b%21" url-decode "a b!" eq assert
 "a%2Fb" url-decode "a/b" eq assert

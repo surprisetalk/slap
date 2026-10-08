@@ -6,7 +6,7 @@
 -- covers odd numbers up to 1,999,999. Mark composites during `mutate`
 -- (set only, no reads), then `lend` and sum via O(1) `nth` reads.
 
-list 1000000 (1 push) repeat box
+[] 1000000 (1 push) repeat box
 
 (
   0 0 set must                                    -- 1 is not prime
@@ -30,7 +30,7 @@ list 1000000 (1 push) repeat box
   (dup 1000000 lt)
   (
     'k let
-    'data k nth must 1 eq (k 2 mul 1 plus plus) () if
+    k 'data nth must 1 eq (k 2 mul 1 plus plus) () if
     k 1 plus
   ) while
   drop

@@ -2,13 +2,13 @@
 -- Largest prime factor of 600851475143.
 -- Answer: 6857
 
-rec 600851475143 'n into 2 'i into
+{} 600851475143 'n into 2 'i into
 (dup 'i at dup mul over 'n at le)
 (
   dup 'n at 'n let  dup 'i at 'i let
   n i mod 0 eq
-    ('n (i div) edit)
-    ('i (1 plus) edit)
+    ((i div) 'n edit)
+    ((1 plus) 'i edit)
   if
 )
 while

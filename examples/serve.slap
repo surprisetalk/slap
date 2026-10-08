@@ -21,7 +21,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
 ('sfx let 'eh let eh len sfx len lt (0) (eh eh len sfx len sub drop-n sfx eq) if) 'ends-with let
 (('lc let lc 65 ge lc 90 le and (lc 32 plus) (lc) if) each) 'lower let
 
-('es let es list ('ec let
+('es let es [] ('ec let
   ec 38 eq ("&amp;" cat) (
   ec 60 eq ("&lt;" cat) (
   ec 62 eq ("&gt;" cat) (
@@ -33,7 +33,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
 
 -- Percent-decoding. A malformed '%' is copied literally rather than dropped, so
 -- a bad escape cannot silently splice two path segments together.
-(list swap
+([] swap
  (dup len 0 gt) (
    dup 0 get must 'uc let
    uc 37 eq (
@@ -97,14 +97,14 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
         "<p>No such file or directory.</p>" "404" swap layout)
    'ok ('entries let
         200 "text/html; charset=utf-8"
-        -- `sort` is Ord, and Ord is int and float only, so a list of names
+        -- `sort` takes only an int list, so a list of names
         -- cannot be sorted here. Entries come out in whatever order ls gives.
         -- `en`, not `e`: the prelude binds `e` to 2.718..., and a fold body
         -- that shadows it hands `esc` a float somewhere down the call chain
         -- instead of a name. It fails as "fold: expected list, got ?" inside
         -- esc, nowhere near here.
         "<ul>" entries
-          list ('en let "<li><a href=\"" cat base esc cat en esc cat "\">" cat
+          [] ('en let "<li><a href=\"" cat base esc cat en esc cat "\">" cat
                         en esc cat "</a></li>" cat) fold
         cat "</ul>" cat
         "index of " base cat swap layout)
@@ -136,8 +136,8 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
 -- is closed after the 405 either way.
 ('rr let rr crlf crlf cat str-find {'ok (drop 1) 'no (drop 0)} case) 'req-complete let
 
-(list
- (swap 4096 tcp-recv {'ok () 'no (drop list)} case 'ch let
+([]
+ (swap 4096 tcp-recv {'ok () 'no (drop [])} case 'ch let
   swap ch cat
   dup req-complete not
   ch len 0 gt and
@@ -153,7 +153,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
         parts len 2 lt (
           "bad request: malformed request line" no
         ) (
-          list parts 0 get must push
+          [] parts 0 get must push
                parts 1 get must dup "?" str-find {'ok (take-n) 'no (drop)} case push
           ok
         ) if)
@@ -190,7 +190,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
 "/%2e%2e/etc/passwd" url-decode safe-path not assert
 "/a b" safe-path not assert
 "/a\\b" safe-path not assert
-list 47 push 0 push safe-path not assert          -- an embedded NUL
+[] 47 push 0 push safe-path not assert          -- an embedded NUL
 "/a?b" safe-path not assert
 0 600 range (drop 97) each "/" swap cat safe-path not assert   -- 512-byte cap
 

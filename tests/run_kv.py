@@ -3,7 +3,7 @@
 server, drive it through the Slap client, verify persistence survives a
 restart, and confirm hostile input fails safely rather than crashing the loop."""
 
-import os, random, subprocess, sys, tempfile
+import os, random, shutil, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -44,6 +44,13 @@ def main():
         check, count = harness.server_check("kv", lambda: proc)
 
         try:
+            # The OS reports the bound address, so the check needs no network.
+            if not shutil.which("lsof"):
+                sys.exit("kv: lsof is not on PATH; the loopback-only check needs it to read the listener's address")
+            listen = subprocess.run(
+                ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True, timeout=10
+            ).stdout
+            check("loopback-only", f"127.0.0.1:{port}" in listen, f"(expected a listener on 127.0.0.1:{port}, lsof shows:\n{listen})")
             check("ping", client("ping") == "PONG\n")
             check("set-ok", client("set", "greeting", "hello", "world") == "OK\n")
             check(

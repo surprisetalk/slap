@@ -8,18 +8,18 @@
 0 N range (COLS mod 88 mul 36 plus) each 'hxs let
 0 N range (COLS div 90 mul 50 plus) each 'hys let
 
--- State: rec with xs ys vxs vys mx my
-rec
+-- State: record with xs ys vxs vys mx my
+{}
   hxs dup 'xs0 let 'xs into
   0 N range (COLS div 90 mul 50 plus) each dup 'ys0 let 'ys into
-  list N (0 push) repeat 'vxs into
-  list N (0 push) repeat 'vys into
+  [] N (0 push) repeat 'vxs into
+  [] N (0 push) repeat 'vys into
   -1 'mx into  -1 'my into  0 'frame into
 
-'mousemove (
+(
   'mmy let 'mmx let
-  'mx (drop mmx) edit 'my (drop mmy) edit
-) on
+  (drop mmx) 'mx edit (drop mmy) 'my edit
+) 'mousemove on
 
 (
   'frame let 'i let 'st let
@@ -62,8 +62,8 @@ rec
   'yf let 'xf let
 
   st
-  'xs (i xf set must) edit 'ys (i yf set must) edit
-  'vxs (i vx3 set must) edit 'vys (i vy3 set must) edit
+  (i xf set must) 'xs edit (i yf set must) 'ys edit
+  (i vx3 set must) 'vxs edit (i vy3 set must) 'vys edit
 ) 'update-dot let
 
 (
@@ -74,12 +74,12 @@ rec
   ) (st) if
 ) 'tick-loop let
 
-'tick (
+(
   drop
-  'frame (1 plus) edit
+  (1 plus) 'frame edit
   dup 'frame at 'fr let
   0 fr tick-loop
-) on
+) 'tick on
 
 (
   'c let 'sz let 'cy let 'cx let

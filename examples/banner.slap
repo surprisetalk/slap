@@ -12,7 +12,7 @@
 -- .uf2 and .uf3 are the same idea at 32 and 72 bytes per glyph. They are
 -- rejected by name below rather than decoded as garbage.
 
-(list 10 push) 'LF let
+([] 10 push) 'LF let
 ('st let "/dev/stdout" st LF cat write must drop) 'say let
 ('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
 
@@ -63,7 +63,7 @@ RAW 256 65 8 mul plus drop-n 8 take-n icn-decode 65 glyph eq assert
 -- ===== render =====
 
 0 8 range ('row let
-  TEXT list ('ch let
+  TEXT [] ('ch let
     ch glyph 'g let
     ch cell-width 'cw let
     0 cw range ('col let g row 8 mul col plus get must 1 eq (INK) (BG) if) each

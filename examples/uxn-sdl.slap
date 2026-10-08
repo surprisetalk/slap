@@ -10,33 +10,33 @@
 [16         32          64          128         1   2   4          8] 'KEY-BIT let
 
 ('k let KEY-SDL k index-of {
-   'ok ('i let 'KEY-BIT i nth must 'bit let
+   'ok ('i let i 'KEY-BIT nth must 'bit let
         130 dev 'b let 130 b bit bor dev!
         128 dev2 60000 run-at)
    'no (drop k 0 gt (131 k 255 band dev!  128 dev2 60000 run-at  131 0 dev!) () if)
  } case) 'key-down let
 
-'keydown (key-down) on
-'keyup ('k let KEY-SDL k index-of {
-   'ok ('i let 'KEY-BIT i nth must 'bit let
+(key-down) 'keydown on
+('k let KEY-SDL k index-of {
+   'ok ('i let i 'KEY-BIT nth must 'bit let
         130 dev 'b let 130 b bit bnot band 255 band dev!
         128 dev2 60000 run-at)
    'no (drop)
- } case) on
+ } case) 'keyup on
 
-'mousemove ('y let 'x let
+('y let 'x let
   146 x 2 div 65535 band dev2!  148 y 2 div 65535 band dev2!
-  144 dev2 60000 run-at) on
-'mousedown ('y let 'x let x drop y drop
-  150 1 dev!  144 dev2 60000 run-at) on
-'mouseup ('y let 'x let x drop y drop
-  150 0 dev!  144 dev2 60000 run-at) on
+  144 dev2 60000 run-at) 'mousemove on
+('y let 'x let x drop y drop
+  150 1 dev!  144 dev2 60000 run-at) 'mousedown on
+('y let 'x let x drop y drop
+  150 0 dev!  144 dev2 60000 run-at) 'mouseup on
 
 -- The tick handler owns the real machine, so the dirty box is reset here; the
 -- render body only ever sees a copy and cannot clear it.
-'tick (drop
+(drop
   DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!
-  32 dev2 60000 run-at) on
+  32 dev2 60000 run-at) 'tick on
 
 -- The render body gets a COPY of the machine, so anything written here is
 -- discarded -- which is why the dirty box is reset in the tick handler above.

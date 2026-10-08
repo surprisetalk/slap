@@ -1,170 +1,27 @@
-- [ ] Every network call gives up after a bounded time, and a slap server
-      listens on loopback only (audit 2026-10-05). Today tcp-recv on a silent
-      peer and tcp-connect to a blackhole (10.255.255.1) block forever, and
-      tcp-listen binds INADDR_ANY. Decided: loopback, hardcoded; recv and
-      send time out after 30 s, connect after 10 s; tcp-accept keeps
-      blocking, since a server waits for clients. Tradeoff: a long-poll
-      client must retry, and a LAN server needs a setting, which enters only
-      when a program needs it.
-  1. Tests in `make test-slow`, since each waits out a timeout: tcp-recv on
-     a silent peer gives 'no within 35 s; tcp-connect to 10.255.255.1 gives
-     'no within 15 s. In make test, run_kv.py: a client at the machine's
-     non-loopback address is refused.
-  2. nosigpipe (every socket passes it) sets SO_RCVTIMEO and SO_SNDTIMEO to
-     30 s. recv and send then fail with EAGAIN; the 'no says "timed out
-     after 30 s".
-  3. prim_tcp_connect: a non-blocking connect and poll(10 s) per address,
-     then blocking again. On expiry: 'no "tcp-connect: timed out after 10 s".
-  4. prim_tcp_listen binds INADDR_LOOPBACK. The readme's tcp section states
-     both.
-
-- [ ] You read a bound list with `i 'xs nth`, and every symbol has one type, sym
-      (breaker rounds 14 and 15; simplification review). Decided: nth reads its
-      name from the symbol written right before it, as at, into and edit read
-      their keys. Symbol types lose their labels: no K_LVAR, no `named`, no
-      widening, and no eq/neq special case. Then
-      `[1 2] 'xs let 'xs 'k let [k 'ys] drop` and `k 'ys member` pass, which nth
-      refuses today. Tradeoff: nth's name can no longer come from a let-bound
-      symbol; no example does this.
-  1. expect.slap first: `[1 2] 'xs let 1 'xs nth must 2 eq assert`, and both
-     programs above. errors.slap: `'xs 1 nth` says that nth needs the list's
-     name written right before it.
-  2. ty_range: S_NTH reads toks[i-1] as S_AT does. prim_nth pops the name, then
-     the index.
-  3. K_SYM unifies like K_INT. Record literal keys and `on`'s event read the
-     symbol of the token that pushed them: the K_SYM a TOK_SYM makes keeps it in
-     `ty[t].sym`, and unify ignores it. Test `{'kind 'atom}`, a symbol as a
-     value. Delete K_LVAR, ty_label_var, `named`, the label branch in
-     ty_unify_chain, the eq/neq special case, and the LVAR branches in ty_copy
-     and ty_parse.
-  4. Migrate the ~130 nth sites; the checker refuses each old one. `'g i nth` →
-     `i 'g nth`; `'g swap nth` → `'g nth`; `'g over nth` → `dup 'g nth`;
-     `'g x 10 mod nth` → `x 10 mod 'g nth`. readme (life example) and claude.md
-     (Invariants) follow.
-
-- [ ] You do float math with f-words, and the only protocol left is copy
-      (simplification review). Decided: as in OCaml, `fplus fsub fmul fdiv flt`
-      take floats, and `plus sub mul div lt sort` take ints. num and ord go, and
-      a type variable carries one bit: copyable or linear.
-  1. errors.slap first: `1.0 2.0 plus` says "float is not int". expect.slap:
-     `1.0 2.0 fplus 3.0 eq assert`, `1.0 2.0 flt assert`.
-  2. TYPES as decided, with `'sort ( int list -> int list )`. The f-prims reuse
-     prim_plus, prim_sub, prim_mul, prim_div and prim_lt. Prelude: fneg uses
-     fsub, fabs uses flt. max, min, abs, sqr, clamp, sign, gt, ge and le become
-     int-only; add an f-variant only where a program needs it.
-  3. Migrate: the checker refuses each site. A scratch build counts about 185:
-     raycast 101, plasma 42, zoom 15, the libraries 18, uxn 2, and euler/44 and
-     euler/45 3 each.
-  4. Delete P_NUM and P_ORD, their words in ty_prot_word, and the protocol names
-     in ty_prot_name. readme: arithmetic, floats, and the protocol table become
-     one sentence on copy. claude.md follows.
-  5. This also ends a silent wrong answer: `[1.5 -1.0 fsqrt 0.5] sort` returns
-     the list unsorted, since nan has no order. sort takes ints only.
-
-- [ ] You choose between read-time and runtime literals from a measured cost
-      (simplification review). Today a `[...]` or `{...}` literal is built once,
-      when the program is read, so it cannot use a name bound at runtime:
-      `[i i] insert` and `[ 1 mk ]` are refused. Runtime literals delete
-      ty_literal, ty_lit_depth, tyb_visible, the VF_DICT copy and about 8
-      messages; `{'x x 'y y}` works, so into can be replace-only and the PRE/ABS
-      fields go. The cost is speed: a constant literal in a hot loop is built
-      on every pass.
-  1. In a scratch copy, evaluate a literal when it is reached. Build a literal
-     that holds only constants once, if speed needs it.
-  2. Time make status (the 600 KB feed and sort.slap), make bench-uxn and make
-     test-slow against the current binary: interleave the runs and take the
-     minimum, since the machine runs other loads.
-  3. Write the numbers into this task, then decide.
-
-- [ ] You lend a box to a body that leaves one value, as you give a body to
-      mutate or each, and lend is an ordinary word (simplification review).
-      Decided: lend's body leaves exactly one value, so lend goes in TYPES as
-      `'lend ( ..s 'a box ( ..!r 'a -> ..!r 'b ) -> ..s 'a box 'b )` and its
-      form goes. Then every body a primitive runs on a sealed stack leaves one
-      value, and `( 'g let 5 box (g apply) lend swap free ) 'w let (1 plus) w`
-      passes, as it does with mutate. Tradeoff: a body that only asserts must
-      leave a value for the caller to drop. Every lend outside lend's own
-      tests already leaves one.
-  1. Tests first; check each fails against the old binary. expect.slap: the
-     `w` program above leaves 6. errors.slap: `5 box (drop) lend free` says
-     "this body must turn its inputs into one value".
-  2. TYPES: add the entry above. Delete ty_lend, S_LEND and lend's place in
-     ty_reserved. prim_lend stays.
-  3. Migrate expect.slap:1560-1561: each body leaves its result, and its
-     assertion moves after the lend. errors.slap's lend messages ("lend takes
-     a box", "lend's body does not fit the box's contents", "'lend' takes more
-     values") become what ty_apply says; keep each case's intent.
-  4. readme (boxes) and claude.md (Fallible operations: "Bodies given to
-     each, fold and mutate") name lend with the others.
-
-- [ ] You use a socket that the runtime keeps as a plain fd, with no box
-      around it (simplification review). Today a socket is a box that holds
-      one int. tcp-send, tcp-recv and tcp-accept unwrap it and push a new box
-      on every call (2 mallocs), and pop_socket_fd checks the box tag, the
-      slot count and `fstat(S_ISSOCK)`. The checker proves all three, so the
-      checks break "the runtime trusts the checker". Decided: a socket is a
-      VAL_INT at runtime, and K_SOCK alone keeps it linear. Tradeoff: none
-      in behavior; a checker hole that copied a socket would show as a wrong
-      fd, which the ASan breaker rounds look for anyway.
-  1. No behavior changes, so the net is run_kv.py and run_serve.py. Run them
-     before and after.
-  2. push_socket_box pushes `val_int(fd)`; pop_socket_fd pops an int. Delete
-     the three checks. The TYPES comment on sockets ("the runtime keeps it in
-     a box") and claude.md's Invariants follow.
-
-- [ ] You read fewer words in C: divmod, wrap, bnot and dict-keys live in the
-      prelude, and parse-http lives in examples/lib/http.slap (simplification
-      review). Each is rare and off every measured hot path: divmod in life
-      and zoom, wrap in 5 files, bnot in uxn-sdl, dict-keys in kv-server's
-      KEYS, parse-http in fetch.slap. rot, over, filter, zip, reverse and
-      str-split stay in C: zoom or the feed benchmark runs them. Tradeoffs:
-      `1 0 wrap` now dies with mod's "division by zero", and `INT64_MIN -1
-      wrap` dies as `INT64_MIN -1 mod` does, where it gave 0. dict-keys
-      copies each value once on its way to the key.
-  1. The expect.slap cases for each word pass before and after; add one where
-     a word has none. errors.slap's "wrap: modulus must be non-zero" case
-     takes mod's message.
-  2. Prelude: `(over over div rot rot mod swap) 'divmod let`; `(-1 bxor)
-     'bnot let`; `(dict-entries ('key at) each) 'dict-keys let`; wrap is mod,
-     plus the modulus when the remainder is nonzero and its sign differs from
-     the modulus's. Name a prelude local as dedup's `'dd-x` is named.
-  3. http.slap: `parse-http` keeps its name, its record and its three 'no
-     messages, built from str-find, take-n and drop-n. expect.slap's
-     parse-http cases move into its self-test. suite.py runs it as a library
-     combination, as json's; run_serve.py and fetch.slap's header prepend it.
-  4. Delete prim_divmod, prim_wrap, prim_bnot, prim_keys, prim_parse_http,
-     memfind, their TYPES entries and registrations. readme's tables and
-     claude.md's Fallible operations table follow.
-
-- [ ] You make an empty list with `[]` and an empty record with `{}`, and no
-      word duplicates them (simplification review). Decided: the words `list`
-      and `rec` go. `dict` stays, since a dict has no literal; `list` stays a
-      type word. Tradeoff: a script changes about 330 sites.
-  1. errors.slap first: `list` is an unknown word. expect.slap keeps `[] 1
-     push len 1 eq assert` and `{} 1 'x into 'x at 1 eq assert`.
-  2. Delete prim_list, prim_rec, their TYPES entries and registrations. The
-     prelude's couple, flatten, dedup and chunks use `[]`.
-  3. Migrate with a scratchpad script: the token `list` outside signatures,
-     strings and comments becomes `[]`, and `rec` becomes `{}`.
-  4. readme (the tour, lists, records) and claude.md follow.
-
-- [ ] You write a record key or an event name right before its word:
-      `(1 plus) 'x edit` and `(drop step) 'tick on` (simplification review).
-      Today at, into, tag and let read the token right before them, but edit
-      and on read a symbol written before their body: `'x (1 plus) edit`.
-      Decided: the body comes first, as into's value does, and the key comes
-      last. The checker's look-back past a body goes. Tradeoff: a script
-      changes 113 edit and 31 on sites.
-  1. Tests first; check each fails against the old binary. expect.slap:
-     `{'x 1} (1 plus) 'x edit 'x at 2 eq assert`. errors.slap: `{'x 1} 'x
-     (1 plus) edit` says edit needs its key right before it, as in `(1 plus)
-     'x edit`.
-  2. Checker: S_EDIT reads toks[i-1] as S_AT does; delete the TOK_RPAREN
-     look-back, and the key sits above the body in edit's stack type. S_ON
-     pops the event, then the handler.
-  3. Runtime: prim_edit pops the key, then the body; prim_on likewise.
-  4. Migrate with a scratchpad script that moves the key past the body, in
-     examples, tests, suite.py's FILL_RECT program, readme and claude.md.
+- [ ] You build a literal from names bound at runtime: `{'x x 'y y}`,
+      `[i i] insert` and `[ 1 mk ]` work (simplification review). Today a
+      `[...]` or `{...}` literal is built once, when the program is read.
+      Decided: a literal is built when it is reached, in the running frame;
+      `{...} case` clauses stay built once, or `case` loses its in-place path.
+      Measured in a scratch build (scratchpad lit/slap.c, min of interleaved
+      runs): feed, sort.slap, the slow Euler problems and bench-uxn all moved
+      under 1.5%, inside the noise; in hot loops only `[]` is rebuilt.
+  1. Tests first, each checked against the old binary: expect.slap gets the
+     three literals above; errors.slap cases that pin "built when it is read"
+     or "starts from an empty stack" become passes or go.
+  2. build_tuple: a literal becomes a body plus a marker that counts its
+     results into a list or record header, as the scratch build did; eval_run
+     fuses the pair. Its loc is the literal's open bracket, not the marker.
+     The measurement holds only while `{...} case` clauses stay built once.
+     If they cannot, stop and time make status's feed with clauses built on
+     every `case` before going on.
+  3. Checker: a literal's code is ordinary code on an empty stack. Delete
+     ty_literal, ty_lit_depth, tyb_visible, the VF_DICT copy and their
+     messages.
+  4. into becomes replace-only; delete K_PRE and K_ABS. Then the tag-payload
+     task below has one row shape.
+  5. Breaker and fuzz rounds on the ASan build. readme and claude.md (Records,
+     Evaluator, Invariants on VF_DICT) follow.
 
 - [ ] You tag a value with any payload, and `'ok`/`'no` are ordinary tags: a
       tagged type lists each tag with its payload, as a record type lists each
@@ -245,8 +102,7 @@
       3 times and rest
       once as local names; those sites get new names. Do this after the
       tag-payload task (under one payload per tag, json's 'int holds an int
-      and the type 'int holds `()`), the f-words task (copy is the only
-      protocol) and the list/rec task (rec becomes the type word).
+      and the type 'int holds `()`).
   1. Tests first; check each fails against the old binary. expect.slap:
      `(2 mul) [int] [int] effect 'double let 5 double 10 eq assert`;
      `'triple [int] [int] effect (3 mul) 'triple let`; `(dup) ['a copy]
@@ -271,123 +127,52 @@
      protocol constraints; the "tuples" section becomes "bodies", the word
      claude.md uses. claude.md's Checker paragraph (TYPES notation) follows.
 
-- [ ] A tight stack loop runs at the cost of its cheapest primitives: `rot`,
-      `if`, `let` and `dip` each cost at most twice `swap` (zoom.slap
-      microbenchmarks, 2026-10-05). Measured per use, minimum of 3 runs of
-      2,000,000 passes of a `while` loop: push, drop, swap, over, int plus and
-      float mul 3-4 ns; a name lookup 8-10 ns; `rot` 17 ns; `if` with branches
-      written in place 20 ns; `let` 15-20 ns per binding; `dip` 40 ns; an empty
-      `while` pass with `body apply` 50 ns. zoom.slap's escape loop spends
-      about 240 ns on the 30 tokens of one iteration, about 60 ns of it in
-      `rot`. Its per-pixel pass (reuse, guess, dither, `pixel`) spends about
-      150 ms on a 640x480 frame, mostly in `let` and `if`. Tradeoff: each fast
-      path is more C to keep correct.
+- [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,
+      `let` and `dip` each cost at most twice `swap` (zoom.slap
+      microbenchmarks). Measured per use, minimum of 3 runs of 2,000,000
+      passes of a `while` loop: push, drop, swap, over, int plus and float
+      mul 3-4 ns; a name lookup 8-10 ns; `if` with branches written in place
+      20 ns; `let` 15-20 ns per binding; `dip` 40 ns; an empty `while` pass
+      with `body apply` 50 ns. zoom.slap's per-pixel pass (reuse, guess,
+      dither, `pixel`) spends about 150 ms on a 640x480 frame, mostly in
+      `let` and `if`. `rot` already has a one-slot fast path. Tradeoff: each
+      fast path is more C to keep correct.
   1. Benchmark first. Each line below times one construct; subtract the empty
      loop. Run it before and after each change, interleaved, and take the
      minimum, since the machine runs other loads:
      `2000000 'N let ('label let 'body let millis 't0 let 0 (dup N lt) (body apply 1 plus) while drop millis t0 sub 'dt let label print dt print) 'bench let`
      then for example `() "empty" bench`, `(1.0 2.0 swap drop drop) "swap" bench`,
-     `(1.0 2.0 3.0 rot rot drop drop drop) "rot rot" bench`,
      `(1 (2) (3) if drop) "if" bench`, `(5 'v let) "let" bench`,
      `(1 2 (drop) dip drop) "dip" bench`.
-  2. prim_rot: copy prim_swap's fast path. When the top three values are one
-     slot each (tag <= VAL_XT), rotate them in place, with no val_start and no
-     swap_blocks. This is the lowest-hanging fruit.
-  3. `if`, then `let`, then `dip`: profile each with `--profile` and perf on
+  2. `if`, then `let`, then `dip`: profile each with `--profile` and perf on
      pc, and remove the work that does not depend on the data. Candidates: the
      branch dispatch of an in-place `if`; the pool frame that the first `let`
      of a body takes; the POP_BODY and POP_VAL copies of `dip`. `(body) dip`
      written in place can run from the body itself, as `if` and `while` do.
-  4. Keep a change only if make status's feed time, make bench-uxn and the
-     zoom.slap frame time (`cat examples/zoom.slap` plus a loop of
-     `k (pixel) frame` under millis, in ./slap-sdl) do not get slower.
+  3. Keep a change only if make status's feed time, make bench-uxn and the
+     zoom.slap self-test time (`./slap-sdl --headless < examples/zoom.slap`)
+     do not get slower.
 
-- [ ] You draw with a color outside 0-3 and the program dies, naming the
-      color and the word (zoom.slap review). Today `clear`, `pixel` and
-      `fill-rect` keep `color & 3`, so a bug that makes color 4 draws black
-      with no message. Decided: die, as every runtime failure does. A pixel
-      off the canvas stays clipped: drawing past an edge is normal.
-      Tradeoff: a program that relied on the mask now dies.
-  1. errors.slap cannot run SDL words, so the test goes in tests/suite.py
-     beside the fill-rect check: `0 'tick (drop 0 0 4 pixel) on (drop) show`
-     under `./slap-sdl --headless` dies with "pixel: color 4 is not 0-3";
-     likewise `4 clear` and `0 0 1 1 -1 fill-rect`.
-  2. prim_clear, prim_pixel and prim_fill_rect: die on a color outside 0-3
-     before they draw.
-  3. Run every SDL example and pair (`grep -l "pixel\|fill-rect\|clear"
-     examples/*.slap`) headless for a few frames; fix any that passed a
-     color past 3. readme's SDL table says the range.
-
-- [ ] You read a checker message that names the real cause, in the right
-      direction, with one name per variable (code review; silent-failure audit;
-      breaker rounds 14 and 15).
-  1. errors.slap first: pin one message per step below, and check each fails
-     against the old binary.
-  2. Mismatches read backwards where the actual type is passed first: nth with a
-     str index says "int is not a list". Call `ty_unify(expected, actual)` at
-     nth, as `ty_apply` and `ty_case` do.
-  3. `'apply' takes ( ..a -> ..b ) / but the stack has ... / <why>`: the "takes"
-     line shows a fresh copy of the word's type, so the why line uses other
-     names. In ty_apply, print the instance and the stack top before `ty_unify`,
-     with `ty_print_count` reset once. It is the hottest path: print only when a
-     cheap pre-check fails, or keep a copy of the instance and print it after.
-     ty_define and the case messages already do this.
-  4. Inside a `[...]` literal, `1 [drop]` says "'drop' takes 'a copyable / but
-     the stack has nothing": say that a literal's code starts from an empty
-     stack.
-  5. "one path leaves N more values ... a branch, clause, loop pass or recursive
-     call" appears where there is no branch. A let-bound body used at two depths
-     through a word, dip or if gets no let hint and can read "'g' takes int /
-     but the stack has int / the stack is shorter": ty_apply adds the hint only
-     when the body is a direct input of the failing word, as in
-     `[(1 plus)] first 'f let (f apply) 'g let 1 g 2 3 g`. Tag-set variables
-     print as an unnamed `tagged ..`, so "declares X, but its body is X" can
-     show two equal types: name them like row variables. "program too long"
-     prints the whole 160 KB source line, and its location is the prelude's
-     last line: say "the program has N tokens; the limit is M (TOK_MAX minus
-     K for the prelude and builtins)" at <stdin>. `{'a int | 'r | 's}`
-     silently drops 'r: refuse a second `|`.
-  6. An unknown type word in a signature, such as `strng`, reports "at line 1"
-     in the text, with the caret at column 1. Pass the annotation's token to
-     the error, as `ty_err` does for words; drop the "at line %d" text.
-     errors.slap: EXPECT-COL on an unknown type word.
-  7. Stale: the comment above `binding_release` names the old checker's box
-     bindings; claude.md's Frames paragraph gives "about a tenth of the run
-     time". errors.slap: merge "a program redefines ok", "a program redefines
-     no" and "a word redefined after a word that calls it" into the "already
-     defined" block.
-  8. An int list prints as `str`: `('f let (f apply) each) 'm let 5 [1 2]
-     (plus) m` says "the stack has str". A string is an int list with no
-     flag. Print `str` only for a type made by a string literal or a TYPES
-     entry, with a flag on its K_LIST that ty_unify ignores. Printing `int
-     list` everywhere is wrong: it rewrites 20+ pinned messages such as
-     "'read' takes str".
-
-- [ ] The JSON and XML libraries refuse what they cannot read or write, and say
-      where (silent-failure audit; breaker round 15). Accepted today: leading
-      zeros (`"0123"` gives 123), duplicate object keys (first wins), duplicate
-      attributes (first wins), an `encoding="ISO-8859-1"` declaration (its bytes
-      read as UTF-8), and a float past the range (`"2e308"` gives `inf ok`).
-      `"0.3"` does not equal `0.3`: the fraction is built as digit x 0.1^n. JSON
-      refuses nesting at 257 and XML accepts 257. rss-to-xml writes RSS for any
-      'kind but "atom" ("Atom" too). `_xe-render-attrs` and json `je-obj` read
-      caller-built pairs with `nth must`/`get must`: an attribute of 3 items
-      renders 2 with no error. `jd-one-of`/`xd-one-of` say only "oneOf: no
-      decoders matched". Parse errors ("json: expected , or ] in an array",
-      "json: trailing input", "xml: expected <", ...) give neither position nor
-      byte: on a 600 KB feed there is no other way to find the fault.
-  1. One failing test per case in json.slap/xml.slap/rss.slap; one pinned
-     message each for the parse errors.
-  2. json: refuse a leading 0 before a digit, a repeated key in one object, and
-     a non-finite result; build the fraction as an integer mantissa and scale it
-     once.
-  3. xml: refuse a repeated attribute name and any declared encoding but UTF-8
-     or US-ASCII. One nesting limit, one comparison, in both libraries.
-  4. rss-to-xml accepts "rss" or "atom" only. `_xe-render-attrs` and `je-obj`
-     take records `{'name 'value}`.
-  5. Parse errors give the byte offset and the byte found.
-     `jd-one-of`/`xd-one-of` list each alternative's error: "oneOf: [0] .a:
-     expected int, got string; [1] ...".
+- [ ] You read why a let-bound body fails at a second stack depth, even when a
+      word, dip or if stands between the body and the failure (code review;
+      breaker rounds 14 and 15). The hint "'f' is a body bound with let" fires
+      only when the body is a direct input of the failing word. Through a word,
+      `[(1 plus)] first 'f let (f apply) 'g let 1 g 2 3 g` reads "'g' takes int
+      / but the stack has int / the stack is shorter than this needs", and
+      `(1 g) 'h let (2 3 g) 'i let h i` reads "one path leaves 2 more values
+      ... a branch, clause, loop pass or recursive call" with no branch.
+      Tried and reverted: a match by stack depth and value kinds names the
+      wrong binding (with f2 behind g and an unrelated f1 bound later at the
+      same depth, the hint names f1) and fires on `[(1 plus)] first 'f let f
+      swap`. A match by node fails too: a word's instance shares no node with
+      the let body, since ty_copy rebuilds a term whose child is not its root.
+  1. errors.slap first, each checked against the old binary: the g case names
+     'f; the f1/f2 case names 'f2 and never 'f1; `f swap` gets no hint.
+  2. While a word's body is checked, record each let-bound body it calls,
+     directly or through another word (tyb index). ty_apply hints only a body
+     that the failing word records.
+  3. When the word's input ends in an empty stack (K_SNIL), say "'g' takes
+     exactly 1 value, but the stack holds 3", not "the stack is shorter".
 
 - [ ] You run a pico8 cart headless for N frames and its screen matches a
       reference render. Decided up front: pico8 first; tic80 reuses the

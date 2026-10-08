@@ -6,7 +6,7 @@
 -- Default source is examples/feeds/sample.xml. rss-parse normalizes both
 -- formats to one record shape, so nothing below this line knows which it read.
 --
-(list 10 push) 'LF let
+([] 10 push) 'LF let
 ('et let "/dev/stderr" et LF cat write must drop 0 assert) 'die let
 
 args len 0 gt (args 0 get must) ("examples/feeds/sample.xml") if 'SRC let
@@ -21,8 +21,8 @@ args len 0 gt (args 0 get must) ("examples/feeds/sample.xml") if 'SRC let
 -- before is the same as cutting after for anything that reaches the screen.
 ('sq-in let
  sq-in len TEXT-CAP gt (sq-in TEXT-CAP take-n) (sq-in) if
- list ('c let c 33 lt (32) (c) if push) fold 'norm let
- norm list 32 push norm cat zip
+ [] ('c let c 33 lt (32) (c) if push) fold 'norm let
+ norm [] 32 push norm cat zip
    (dup 0 get must 32 eq swap 1 get must 32 eq and not) filter
    (0 get must) each
  dup len 0 gt (dup 0 get must 32 eq (1 drop-n) () if) () if

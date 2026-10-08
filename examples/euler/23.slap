@@ -23,7 +23,7 @@
 ) 'sum-divs let
 
 -- Collect abundant numbers into a list
-list
+[]
 1
 (dup 28124 lt)
 (
@@ -36,7 +36,7 @@ drop
 abundants len 'alen let
 
 -- Mark sums of abundant pairs in a boolean array
-list 28124 (0 push) repeat box
+[] 28124 (0 push) repeat box
 (
   -- stack: arr
   0
@@ -44,14 +44,14 @@ list 28124 (0 push) repeat box
   (dup alen lt)
   (
     dup 'ai let
-    ai 'abundants swap nth must 'av let
+    ai 'abundants nth must 'av let
     -- early break: if av+av >= 28124, no pair (i,j>=i) can produce a valid sum
     av 2 mul 28124 lt (
       ai
       -- stack: arr i j
       (dup alen lt)
       (
-        dup 'abundants swap nth must av plus 'sm let
+        dup 'abundants nth must av plus 'sm let
         sm 28124 lt
         (((sm 1 set must) dip) dip)
         -- if sm >= 28124, skip remaining j (break by jumping j to alen)
@@ -74,7 +74,7 @@ list 28124 (0 push) repeat box
   (dup 28124 lt)
   (
     dup 'csn let
-    csn 'sums swap nth must not
+    csn 'sums nth must not
     -- stack: total sn !found
     (drop csn plus) (drop) if
     -- stack: total'

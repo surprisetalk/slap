@@ -14,7 +14,7 @@ SERVE = "examples/serve.slap"
 FETCH = "examples/fetch.slap"
 
 SERVE_SRC = "".join(open(f).read() for f in LIBS + [SERVE])
-FETCH_SRC = "".join(open(f).read() for f in LIBS + [FETCH])
+FETCH_SRC = "".join(open(f).read() for f in LIBS + ["examples/lib/http.slap", FETCH])
 
 port = random.randint(20000, 40000)
 

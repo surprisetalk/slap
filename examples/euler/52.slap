@@ -4,7 +4,7 @@
 
 -- digit-sig: n -> signature (sorted digit list)
 (
-  list swap
+  [] swap
   (dup 0 gt) (dup 10 mod (swap) dip push swap 10 div) while
   drop sort
 ) 'digit-sig let

@@ -28,7 +28,7 @@
 ) 'key-dir let
 
 -- State record on stack
-rec
+{}
   0 'state into
   0 'death-at into
   [398 399 400] 'snake into
@@ -36,11 +36,11 @@ rec
   768 random 'food into
   0 'frame into
 
-'keydown (
+(
   key-dir 'kd let
   kd -1 neq (
     dup 'state at 0 eq (
-      kd 'dir into 'state (drop 1) edit
+      kd 'dir into (drop 1) 'state edit
     ) (
       dup 'state at 1 eq (
         kd over 'dir at sub abs 2 neq (
@@ -49,11 +49,11 @@ rec
       ) () if
     ) if
   ) () if
-) on
+) 'keydown on
 
-'tick (
+(
   drop
-  'frame (1 plus) edit
+  (1 plus) 'frame edit
   dup 'frame at 'frm let
 
   dup 'state at 1 eq (
@@ -70,11 +70,11 @@ rec
       'ny let 'nx let
 
       nx 0 lt nx 32 ge or ny 0 lt or ny 24 ge or (
-        frm 'death-at into 'state (drop 2) edit
+        frm 'death-at into (drop 2) 'state edit
       ) (
         ny 32 mul nx plus 'nh let
         dup 'snake at nh member (
-          frm 'death-at into 'state (drop 2) edit
+          frm 'death-at into (drop 2) 'state edit
         ) (
           dup 'snake at nh push 'snk2 let
           nh over 'food at eq (
@@ -88,14 +88,14 @@ rec
   ) (
     dup 'state at 2 eq (
       frm over 'death-at at sub 90 gt (
-        'state (drop 0) edit
+        (drop 0) 'state edit
         [398 399 400] 'snake into
         1 'dir into
         768 random 'food into
       ) () if
     ) () if
   ) if
-) on
+) 'tick on
 
 (
   drop

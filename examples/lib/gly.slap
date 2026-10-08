@@ -10,7 +10,7 @@
    rows 0 (len max) fold 'w let rows len 'nrows let nrows 4 mul 'h let
    0 h range ('y let 0 w range ('c let y 4 div 'r let y 4 mod 'bit let
      rows len r gt (rows r get must dup len c gt (c get must bit shr 1 band) (drop 0) if) (0) if) each) each flatten 'pixels let
-   rec w 'width into h 'height into pixels 'pixels into ok)} case) 'gly-decode let
+   {} w 'width into h 'height into pixels 'pixels into ok)} case) 'gly-decode let
 (dup 'width at 'w let dup 'height at 'h let 'pixels at 'px let h 4 div 'nrows let 0 nrows range ('r let 0 w range ('c let 0 4 range 0 ('bit let px r 4 mul bit plus w mul c plus get must bit shl bor) fold 63 plus) each r nrows 1 sub lt (10 push) () if) each flatten) 'gly-encode let
 
 -- ===== tests =====

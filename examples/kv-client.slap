@@ -9,7 +9,7 @@
 -- A refused connection or a dead server crashes with the OS error -- there is
 -- nothing sensible to fall back to.
 
-(list 10 push) 'LF let
+([] 10 push) 'LF let
 ('st let "/dev/stdout" st LF cat write must drop) 'say let
 
 args len 2 lt (
@@ -27,7 +27,7 @@ LINE (32 lt) filter len 0 gt (
 
 "127.0.0.1" PORT tcp-connect must
 LINE LF cat tcp-send must drop
-list (swap 4096 tcp-recv {'ok () 'no (drop list)} case 'ch let
+[] (swap 4096 tcp-recv {'ok () 'no ("kv-client: read failed: " swap cat fail)} case 'ch let
       swap ch cat
       dup has-lf not
       ch len 0 gt and

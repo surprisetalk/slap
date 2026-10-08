@@ -14,15 +14,20 @@
 -- input it binds as '_jin by name, not a caller's.
 ('_jin let
   -- _jc: (i -- c).  The byte at i, or -1 past the end.
-  ('_jin swap nth {'ok () 'no (drop -1)} case) '_jc let
+  ('_jin nth {'ok () 'no (drop -1)} case) '_jc let
+
+  -- _jpos: (msg i -- msg').  Appends " at byte i".  _jat: (msg i -- msg').  Also appends the byte found there.
+  (int-str " at byte " swap cat cat) '_jpos let
+  ('jai let jai _jpos jai _jc 'jac let jac 0 lt () (
+     jac 32 gt jac 127 lt and (", found '" cat [] jac push cat "'" cat) (", found byte " cat jac int-str cat) if) if) '_jat let
 
   -- _jws: (i -- i').  Skips JSON whitespace.
   ((dup _jc 'c let c 32 eq c 9 eq or c 10 eq or c 13 eq or) (1 plus) while) '_jws let
 
   -- _jlit: (i lit -- st).  Matches lit at i.
   ('jl let 'ji let
-   0 (dup jl len lt (dup 'jk let ji jk plus _jc 'jl jk nth must eq) (0) if) (1 plus) while
-   dup jl len eq (ji plus ok) (drop "json: expected " jl cat no) if) '_jlit let
+   0 (dup jl len lt (dup 'jk let ji jk plus _jc jk 'jl nth must eq) (0) if) (1 plus) while
+   dup jl len eq (ji plus ok) ('jk let "json: expected " jl cat ji jk plus _jat no) if) '_jlit let
 
   -- _jhex4: (i -- n).  The four hex digits at i, or -1 if any is not a hex digit.
   ('jhi let 0 4 range 0 ('jhk let 'jha let jhi jhk plus _jc 'jhc let
@@ -32,10 +37,10 @@
 
   -- _jutf8: (codepoint -- bytes).  The codepoint is a Unicode scalar value.
   ('cp let
-   cp 128 lt (list cp push) (
-   cp 2048 lt (list 192 cp 6 shr bor push 128 cp 63 band bor push) (
-   cp 65536 lt (list 224 cp 12 shr bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push) (
-     list 240 cp 18 shr bor push 128 cp 12 shr 63 band bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push
+   cp 128 lt ([] cp push) (
+   cp 2048 lt ([] 192 cp 6 shr bor push 128 cp 63 band bor push) (
+   cp 65536 lt ([] 224 cp 12 shr bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push) (
+     [] 240 cp 18 shr bor push 128 cp 12 shr 63 band bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push
    ) if) if) if) '_jutf8 let
 
   -- _jstr: (i -- s st).  i is at the opening quote.  Loop state: bytes, index,
@@ -43,7 +48,7 @@
   -- escape JSON does not have, 4 on a bad \u escape, 5 on a raw control byte.
   -- \u escapes are UTF-8 encoded; a surrogate is only valid as the first half of
   -- a \uD8xx\uDCxx pair.
-  ('jsi let list jsi 1 plus 0
+  ('jsi let [] jsi 1 plus 0
    (dup 0 eq)
    (drop 'ji let ji _jc 'jc let
      jc 0 lt (ji 2) (
@@ -68,93 +73,111 @@
    while
    'jst let 'ji let
    jst 1 eq (ji ok) (
-   jst 2 eq ("json: unterminated string" no) (
-   jst 3 eq ("json: unknown escape in string" no) (
-   jst 4 eq ("json: bad \\u escape in string" no) ("json: control byte in a string; escape it as \\u00XX" no) if) if) if) if) '_jstr let
+   jst 2 eq ("json: unterminated string" ji _jpos no) (
+   jst 3 eq ("json: unknown escape in string" ji _jpos no) (
+   jst 4 eq ("json: bad \\u escape in string" ji _jpos no) ("json: control byte in a string; escape it as \\u00XX" ji _jat no) if) if) if) if) '_jstr let
 
   -- _jdigits: (n i -- n' i').  Folds the decimal digits at i into n.
   ((dup _jc 'jd let jd 48 ge jd 57 le and) ('jdi let 10 mul jdi _jc 48 sub plus jdi 1 plus) while) '_jdigits let
 
-  -- _jexp: (f st -- f' st').  Applies an exponent (e/E, sign, digits) if one follows.
-  ({'ok ('jxi let 'jxf let
-     jxi _jc 'jxc let jxc 101 eq jxc 69 eq or (
-       jxi 1 plus _jc 'jxs let
-       jxs 45 eq (-1 jxi 2 plus) (jxs 43 eq (1 jxi 2 plus) (1 jxi 1 plus) if) if 'jxj let 'jxg let
-       0 jxj _jdigits 'jxk let 'jxe let
-       jxk jxj eq (jxf "json: expected a digit in the exponent" no) (
-       jxk jxj sub 3 gt jxe 308 gt or (jxf "json: exponent past 308" no) (
-         jxf 10.0 jxe jxg mul itof fpow mul jxk ok) if) if
-     ) (jxf jxi ok) if)
-    'no (no)} case) '_jexp let
+  -- _jfin: (f -- bool).  Is f finite?  inf and nan minus themselves are not 0.
+  (dup dup fsub 0.0 eq nip) '_jfin let
+
+  -- _jexp: (i -- e st).  The exponent (e/E, sign, digits) at i and the index past it, or 0 and i if none follows.
+  -- An exponent past 10^8 stops growing, so its digits cannot wrap; _jnum refuses it unless the mantissa is 0.
+  ('jxi let
+   jxi _jc 'jxc let jxc 101 eq jxc 69 eq or (
+     jxi 1 plus _jc 'jxs let
+     jxs 45 eq (-1 jxi 2 plus) (jxs 43 eq (1 jxi 2 plus) (1 jxi 1 plus) if) if 'jxj let 'jxg let
+     0 jxj (dup _jc 'jd let jd 48 ge jd 57 le and) ('jdi let dup 100000000 gt () (10 mul jdi _jc 48 sub plus) if jdi 1 plus) while 'jxk let 'jxe let
+     jxk jxj eq (0 "json: expected a digit in the exponent" jxj _jat no) (
+       jxe jxg mul jxk ok) if
+   ) (0 jxi ok) if) '_jexp let
 
   -- _jnum: (i -- jv st).  An int, unless a fraction or an exponent follows.
   -- 18 digits always fit in an int, so a longer integer part is refused rather
-  -- than left to wrap.
+  -- than left to wrap.  A float is one integer mantissa m (the first 18 digits)
+  -- scaled once by 10^s, so "0.3" is 3 / 10, the float nearest 0.3.  That equals
+  -- strtod for up to 15 digits and |s| up to 22; past those it is within a few ulps.
+  -- A scale under -300 divides by 10^300 first, so 10^s does not overflow.
+  -- A zero mantissa is 0.0 at any exponent.  A nonzero one that rounds to 0 or past the range is refused.
   ('jni let
    jni _jc 45 eq (-1 jni 1 plus) (1 jni) if 'jn1 let 'jsg let
    0 jn1 _jdigits 'jn2 let 'jint let
    jn2 _jc 'jc let
-   jn2 jn1 eq (() 'null tag "json: expected a digit" no) (
-   jn2 jn1 sub 18 gt (() 'null tag "json: number has more than 18 digits before the point" no) (
-   jc 46 eq (
-     jint itof 0.1 jn2 1 plus
-     (dup _jc 'jd let jd 48 ge jd 57 le and)
-     ('jfi let 'jfs let jfi _jc 48 sub itof jfs mul plus jfs 10.0 div jfi 1 plus) while
-     'jfk let drop 'jfv let
-     jfk jn2 1 plus eq (() 'null tag "json: expected a digit after ." no) (
-       jfv jfk ok _jexp swap jsg itof mul 'float tag swap) if
-   ) (
-   jc 101 eq jc 69 eq or (jint itof jn2 ok _jexp swap jsg itof mul 'float tag swap) (
-     jint jsg mul 'int tag jn2 ok) if) if) if) if) '_jnum let
+   jn2 jn1 eq (() 'null tag "json: expected a digit" jn2 _jat no) (
+   jn2 jn1 sub 18 gt (() 'null tag "json: number has more than 18 digits before the point" jn1 _jpos no) (
+   jn2 jn1 sub 1 gt jn1 _jc 48 eq and (() 'null tag "json: leading zero in a number" jn1 _jpos no) (
+   jc 46 eq jc 101 eq or jc 69 eq or (
+     jint 0 jn2 jc 46 eq (1 plus
+       (dup _jc 'jd let jd 48 ge jd 57 le and)
+       ('jfi let 'jfs let 'jfm let jfi _jc 48 sub 'jfd let
+         jfm 100000000000000000 lt (jfm 10 mul jfd plus jfs 1 sub) (jfm jfs) if
+         jfi 1 plus) while) () if 'jni2 let 'jsc let 'jm let
+     jc 46 eq jni2 jn2 1 plus eq and (() 'null tag "json: expected a digit after ." jni2 _jat no) (
+     jni2 _jexp {'ok ('jxi let jsc plus 'jsx let
+         jm 0 eq (0.0 jsg itof fmul 'float tag jxi ok) (
+         jm itof jsx -300 lt (10.0 300 itof fpow fdiv jsx 300 plus) (jsx) if 'jsy let 'jv0 let
+         10.0 jsy 0 lt (0 jsy sub) (jsy) if itof fpow 'jp let
+         jp _jfin (
+           jv0 jsy 0 lt (jp fdiv) (jp fmul) if jsg itof fmul 'jv let
+           jv _jfin jv 0.0 eq not and (jv 'float tag jxi ok) (() 'null tag "json: number past the float range" jni _jpos no) if
+         ) (() 'null tag "json: number past the float range" jni _jpos no) if) if)
+       'no ('jm2 let drop () 'null tag jm2 no)} case) if
+   ) (jint jsg mul 'int tag jn2 ok) if) if) if) if) '_jnum let
 
   -- _jarr-next: (i -- more st).  Reads the separator after an array element.
   (_jws 'jak let jak _jc 'jac let
    jac 44 eq (1 jak 1 plus ok) (
    jac 93 eq (0 jak 1 plus ok) (
-   jac 0 lt (0 "json: unexpected end of input in an array" no) (
-     0 "json: expected , or ] in an array" no) if) if) if) '_jarr-next let
+   jac 0 lt (0 "json: unexpected end of input in an array" jak _jat no) (
+     0 "json: expected , or ] in an array" jak _jat no) if) if) if) '_jarr-next let
 
   -- Object parts.  _jkey: (i -- s st), _jcolon: (i -- st), _jobj-next: (i -- more st).
-  (_jws 'jki let jki _jc 34 eq (jki _jstr) ("" "json: expected \" to start an object key" no) if) '_jkey let
-  (_jws 'jci let jci _jc 58 eq (jci 1 plus ok) ("json: expected : after an object key" no) if) '_jcolon let
+  (_jws 'jki let jki _jc 34 eq (jki _jstr) ("" "json: expected \" to start an object key" jki _jat no) if) '_jkey let
+  (_jws 'jci let jci _jc 58 eq (jci 1 plus ok) ("json: expected : after an object key" jci _jat no) if) '_jcolon let
   (_jws 'jek let jek _jc 'jec let
    jec 44 eq (1 jek 1 plus ok) (
    jec 125 eq (0 jek 1 plus ok) (
-   jec 0 lt (0 "json: unexpected end of input in an object" no) (
-     0 "json: expected , or } in an object" no) if) if) if) '_jobj-next let
+   jec 0 lt (0 "json: unexpected end of input in an object" jek _jat no) (
+     0 "json: expected , or } in an object" jek _jat no) if) if) if) '_jobj-next let
 
   -- _jv-at: (i depth -- jv st).  One value at i.  An array or object reads each
   -- element with _jv-at one level deeper; nesting past 256 is refused before it
-  -- can exhaust the interpreter's recursion limit.  An object entry is
+  -- can exhaust the interpreter's recursion limit.  A key repeated in one object is
+  -- refused.  An object entry is
   -- {'key str 'value jv}.
   ('jd let _jws 'ji let ji _jc 'jc let
-   jd 256 gt (() 'null tag "json: nested deeper than 256" no) (
-   jc 0 lt (() 'null tag "json: unexpected end of input" no) (
+   jd 255 gt jc 91 eq jc 123 eq or and (() 'null tag "json: nested deeper than 256" ji _jpos no) (
+   jc 0 lt (() 'null tag "json: unexpected end of input; expected a value" ji _jat no) (
    jc 34 eq (ji _jstr swap 'str tag swap) (
    jc 91 eq (
      ji 1 plus _jws 'jai let
-     jai _jc 93 eq (list 'arr tag jai 1 plus ok) (
-       list jai ok 1
+     jai _jc 93 eq ([] 'arr tag jai 1 plus ok) (
+       [] jai ok 1
        (dup) (drop () 'null tag (jd 1 plus _jv-at) pthen (push) dip 0 (_jarr-next) pthen swap) while
        drop swap 'arr tag swap) if) (
    jc 123 eq (
      ji 1 plus _jws 'joi let
-     joi _jc 125 eq (list 'obj tag joi 1 plus ok) (
-       list joi ok 1
-       (dup) (drop "" (_jkey) pthen swap 'jk let
+     joi _jc 125 eq ([] 'obj tag joi 1 plus ok) (
+       [] dict joi ok 1
+       (dup) (drop dup {'ok (_jws) 'no (drop 0)} case 'jkp let
+         "" (_jkey) pthen swap 'jk let
+         (jk of {'ok (drop 1) 'no (drop 0)} case 'jdf let jk 0 insert jdf) dip swap 'jdp let
+         ('jdi let jdp ("json: duplicate key \"" jk cat "\"" cat jkp _jpos no) (jdi ok) if) then
          (_jcolon) then () 'null tag (jd 1 plus _jv-at) pthen swap 'jv let
-         (rec jk 'key into jv 'value into push) dip
+         (({} jk 'key into jv 'value into push) dip) dip
          0 (_jobj-next) pthen swap) while
-       drop swap 'obj tag swap) if) (
+       drop swap drop swap 'obj tag swap) if) (
    jc 116 eq (1 'bool tag ji "true" _jlit) (
    jc 102 eq (0 'bool tag ji "false" _jlit) (
    jc 110 eq (() 'null tag ji "null" _jlit) (
    jc 45 eq jc 48 ge jc 57 le and or (ji _jnum) (
-     () 'null tag "json: unexpected character '" list jc push cat "'" cat no
+     () 'null tag "json: expected a value: { [ \" - a digit true false or null" ji _jat no
    ) if) if) if) if) if) if) if) if) if) '_jv-at let
 
   -- _jend: (i -- st).  Only whitespace may follow the value.
-  (_jws _jc 0 lt (0 ok) ("json: trailing input" no) if) '_jend let
+  (_jws 'jti let jti _jc 0 lt (0 ok) ("json: expected the end of input after the value" jti _jat no) if) '_jend let
   0 0 _jv-at swap 'jv0 let (_jend) then (drop jv0 ok) then) '_json-parse let
 
 -- ========== Decoders ==========
@@ -184,13 +207,13 @@
 -- jd-list: (dec -- dec').  The first failing item wins, and its index is the
 -- count of items decoded before it: "[1]: ...".
 ('d let ({'arr (
-   list ok ('x let (x d apply {'ok (push ok) 'no ('m let len int-str "[" swap cat "]" cat m cat no)} case) then) fold)
+   [] ok ('x let (x d apply {'ok (push ok) 'no ('m let len int-str "[" swap cat "]" cat m cat no)} case) then) fold)
    '_ ("array" _jwant nip)} case)) 'jd-list let
 
 -- jd-field: (key dec -- dec').  The first entry with the key wins.
 ('d let 'k let ({'obj ('es let
    es ('key at) each k index-of
-   {'ok ('i let 'es i nth must 'value at d apply {'ok (ok) 'no ("." k cat swap cat no)} case)
+   {'ok ('i let i 'es nth must 'value at d apply {'ok (ok) 'no ("." k cat swap cat no)} case)
        'no (drop ": missing field \"" k cat "\"" cat no)} case)
    '_ ("object" _jwant nip)} case)) 'jd-field let
 
@@ -203,11 +226,14 @@
 -- jd-and-then: (dec f -- dec').  f: (value -- dec2), and dec2 reads the same jv.
 ('f let 'd let ('jv let jv d apply (f apply jv swap apply) then)) 'jd-and-then let
 
--- jd-one-of: (decs -- dec).  The first decoder that succeeds wins.
+-- jd-one-of: (decs -- dec).  The first decoder that succeeds wins.  If none does,
+-- the error lists each one's: ": oneOf: [0] .a: expected int, got string; [1] ...".
 ('ds let ('jv let
-   ds ": oneOf: no decoders matched" no
-   ('dd let {'ok (ok) 'no (drop jv dd apply)} case) fold
-   {'ok (ok) 'no (drop ": oneOf: no decoders matched" no)} case)) 'jd-one-of let
+   ds {} 0 'n into "" 'msg into no
+   ('dd let {'ok (ok) 'no ('r let jv dd apply {'ok (ok) 'no ('m let
+       {} r 'n at 1 plus 'n into
+          r 'msg at r 'n at 0 gt ("; " cat) () if "[" cat r 'n at int-str cat "] " cat m cat 'msg into no)} case)} case) fold
+   {'ok (ok) 'no ('r let ": oneOf: " r 'n at 0 eq ("no decoders") (r 'msg at) if cat no)} case)) 'jd-one-of let
 
 -- jd-maybe: (dec -- dec').  value ok ok, or none ok when dec fails.
 ('d let (d apply {'ok (ok ok) 'no (drop none ok)} case)) 'jd-maybe let
@@ -230,7 +256,7 @@
 -- 0x20 as \u00XX, so the result reads back through jd-str.
 ('c let c 10 lt (c 48 plus) (c 87 plus) if) '_je-hex let
 ('s let
-  s list 34 push ('c let
+  s [] 34 push ('c let
     c 92 eq ("\\\\" cat) (
     c 34 eq ("\\\"" cat) (
     c 10 eq ("\\n" cat) (
@@ -248,20 +274,23 @@
   items len 0 eq ("[]") (
     items 0 get must 'first-item let
     items 1 drop-n                                 -- (items-rest)
-    list 91 push first-item cat                     -- (items-rest acc="[first")
+    [] 91 push first-item cat                     -- (items-rest acc="[first")
     ("," swap cat cat) fold
     93 push) if) 'je-list let
 
--- je-obj: (list-of-[key-str value-fragment] couples -- json-object-string)
+-- je-obj: (list-of-{'name key-str 'value value-fragment} -- json-object-string)
 -- Keys are plain strings (encoded via je-str); values are already JSON fragments.
+-- A repeated key dies, since jd-run refuses it.
 ('pairs let
+  pairs dict ('jq let 'jqd let jq 'name at 'jqk let
+    jqd jqk of {'ok ("json: je-obj: duplicate key \"" jqk cat "\"; the parser refuses it" cat fail) 'no (0 insert)} case) fold drop
   pairs len 0 eq ("{}") (
     pairs 0 get must 'p0 let
     pairs 1 drop-n                                 -- (pairs-rest)
-    list 123 push
-      p0 0 get must je-str cat ":" cat p0 1 get must cat
+    [] 123 push
+      p0 'name at je-str cat ":" cat p0 'value at cat
     ('kv let
-      "," cat kv 0 get must je-str cat ":" cat kv 1 get must cat
+      "," cat kv 'name at je-str cat ":" cat kv 'value at cat
     ) fold
     125 push) if) 'je-obj let
 
@@ -321,9 +350,9 @@
 
 -- One-of (list of decoders must be built at runtime since list literals are
 -- eagerly evaluated at build time and can't see user def'd names)
-(list jd-int push "wrong" jd-fail push jd-one-of) 'try-int-or-fail let
+([] jd-int push "wrong" jd-fail push jd-one-of) 'try-int-or-fail let
 "42" try-int-or-fail jd-run 42 ok eq assert
-(list jd-str push jd-int (int-str) jd-map push jd-one-of) 'int-or-str let
+([] jd-str push jd-int (int-str) jd-map push jd-one-of) 'int-or-str let
 "\"hi\"" int-or-str jd-run "hi" ok eq assert
 "42" int-or-str jd-run "42" ok eq assert
 
@@ -357,8 +386,8 @@
 "{\"a\":{\"b\":[{\"c\":\"wrong\"}]}}" a-dec jd-run
   jerr "$.a.b[0].c: expected int, got string" eq assert
 
-(list jd-one-of) 'empty-one-of let
-"42" empty-one-of jd-run jerr "$: oneOf: no decoders matched" eq assert
+([] jd-one-of) 'empty-one-of let
+"42" empty-one-of jd-run jerr "$: oneOf: no decoders" eq assert
 
 ("v" positive-int jd-field) 'v-pos-dec let
 "{\"v\": -1}" v-pos-dec jd-run
@@ -376,48 +405,100 @@
 42 je-int "42" eq assert
 -7 je-int "-7" eq assert
 
-list je-list "[]" eq assert
-list 42 je-int push je-list "[42]" eq assert
-list 1 je-int push 2 je-int push 3 je-int push je-list "[1,2,3]" eq assert
+[] je-list "[]" eq assert
+[] 42 je-int push je-list "[42]" eq assert
+[] 1 je-int push 2 je-int push 3 je-int push je-list "[1,2,3]" eq assert
 
-list je-obj "{}" eq assert
-list "a" 1 je-int couple push je-obj "{\"a\":1}" eq assert
-list "a" 1 je-int couple push "b" "hi" je-str couple push je-obj
+[] je-obj "{}" eq assert
+[] {} "a" 'name into 1 je-int 'value into push je-obj "{\"a\":1}" eq assert
+[] {} "a" 'name into 1 je-int 'value into push {} "b" 'name into "hi" je-str 'value into push je-obj
   "{\"a\":1,\"b\":\"hi\"}" eq assert
 
 
 -- ========== Malformed input returns 'no, never a crash ==========
 
-"" jd-int jd-run jerr "json: unexpected end of input" eq assert
-"  " jd-int jd-run jerr "json: unexpected end of input" eq assert
-"hello" jd-int jd-run jerr "json: unexpected character 'h'" eq assert
-"[1," jd-int jd-list jd-run jerr "json: unexpected end of input" eq assert
-"[1 2]" jd-int jd-list jd-run jerr "json: expected , or ] in an array" eq assert
-"{\"a\" 1}" "a" jd-int jd-field jd-run jerr "json: expected : after an object key" eq assert
-"{\"a\":1" "a" jd-int jd-field jd-run jerr "json: unexpected end of input in an object" eq assert
-"{1:2}" "a" jd-int jd-field jd-run jerr "json: expected \" to start an object key" eq assert
-"\"abc" jd-str jd-run jerr "json: unterminated string" eq assert
-"\"a\\qb\"" jd-str jd-run jerr "json: unknown escape in string" eq assert
-"tru" jd-bool jd-run jerr "json: expected true" eq assert
-"1 2" jd-int jd-run jerr "json: trailing input" eq assert
-"-" jd-int jd-run jerr "json: expected a digit" eq assert
-"12345678901234567890" jd-int jd-run jerr "json: number has more than 18 digits before the point" eq assert
-"1e999" jd-float jd-run jerr "json: exponent past 308" eq assert
-list 300 (91 push) repeat jd-int jd-run jerr "json: nested deeper than 256" eq assert
+"" jd-int jd-run jerr "json: unexpected end of input; expected a value at byte 0" eq assert
+"  " jd-int jd-run jerr "json: unexpected end of input; expected a value at byte 2" eq assert
+"hello" jd-int jd-run jerr "json: expected a value: { [ \" - a digit true false or null at byte 0, found 'h'" eq assert
+"[1," jd-int jd-list jd-run jerr "json: unexpected end of input; expected a value at byte 3" eq assert
+"[1 2]" jd-int jd-list jd-run jerr "json: expected , or ] in an array at byte 3, found '2'" eq assert
+"[1" jd-int jd-list jd-run jerr "json: unexpected end of input in an array at byte 2" eq assert
+"{\"a\" 1}" "a" jd-int jd-field jd-run jerr "json: expected : after an object key at byte 5, found '1'" eq assert
+"{\"a\":1" "a" jd-int jd-field jd-run jerr "json: unexpected end of input in an object at byte 6" eq assert
+"{\"a\":1 \"b\":2}" "a" jd-int jd-field jd-run jerr "json: expected , or } in an object at byte 7, found '\"'" eq assert
+"{1:2}" "a" jd-int jd-field jd-run jerr "json: expected \" to start an object key at byte 1, found '1'" eq assert
+"\"abc" jd-str jd-run jerr "json: unterminated string at byte 4" eq assert
+"\"a\\qb\"" jd-str jd-run jerr "json: unknown escape in string at byte 2" eq assert
+"\"a\nb\"" jd-str jd-run jerr "json: control byte in a string; escape it as \\u00XX at byte 2, found byte 10" eq assert
+"tru" jd-bool jd-run jerr "json: expected true at byte 3" eq assert
+"trux" jd-bool jd-run jerr "json: expected true at byte 3, found 'x'" eq assert
+"1 2" jd-int jd-run jerr "json: expected the end of input after the value at byte 2, found '2'" eq assert
+"-" jd-int jd-run jerr "json: expected a digit at byte 1" eq assert
+"1." jd-float jd-run jerr "json: expected a digit after . at byte 2" eq assert
+"1e" jd-float jd-run jerr "json: expected a digit in the exponent at byte 2" eq assert
+"12345678901234567890" jd-int jd-run jerr "json: number has more than 18 digits before the point at byte 0" eq assert
+[] 257 (91 push) repeat jd-int jd-run jerr "json: nested deeper than 256 at byte 256" eq assert
+[] 256 (91 push) repeat 256 (93 push) repeat jd-int jd-run jerr "$: expected int, got array" eq assert
+[] 256 (123 push 34 push 97 push 34 push 58 push) repeat 49 push 256 (125 push) repeat jd-int jd-run jerr "$: expected int, got object" eq assert
+[] 257 (123 push 34 push 97 push 34 push 58 push) repeat 49 push 257 (125 push) repeat jd-int jd-run jerr "json: nested deeper than 256 at byte 1280" eq assert
+
+-- A leading zero, a repeated key and a number past the float range are errors
+"0123" jd-int jd-run jerr "json: leading zero in a number at byte 0" eq assert
+"-01" jd-int jd-run jerr "json: leading zero in a number at byte 1" eq assert
+"0" jd-int jd-run 0 ok eq assert
+"-0" jd-int jd-run 0 ok eq assert
+"0.5" jd-float jd-run 0.5 ok eq assert
+"0e2" jd-float jd-run 0.0 ok eq assert
+"{\"a\":1,\"a\":2}" "a" jd-int jd-field jd-run jerr "json: duplicate key \"a\" at byte 7" eq assert
+"{\"a\":1,\"b\":{\"c\":1,\"c\":1}}" "b" jd-int jd-field jd-run jerr "json: duplicate key \"c\" at byte 18" eq assert
+"{\"a\":{\"x\":1},\"b\":{\"x\":2}}" "b" "x" jd-int jd-field jd-field jd-run 2 ok eq assert
+"2e308" jd-float jd-run jerr "json: number past the float range at byte 0" eq assert
+-- A zero stays zero at any exponent; a subnormal is a float; a nonzero value that rounds to 0 or inf is refused
+"0e999" jd-float jd-run 0.0 ok eq assert
+"0e-999" jd-float jd-run 0.0 ok eq assert
+"0.0e-999" jd-float jd-run 0.0 ok eq assert
+"0e99999999999999999999" jd-float jd-run 0.0 ok eq assert
+"1e-310" jd-float jd-run must dup 0.0 swap flt assert "1e-300" jd-float jd-run must flt assert
+"4.9e-324" jd-float jd-run must 0.0 swap flt assert
+"0.1e309" jd-float jd-run "1e308" jd-float jd-run eq assert
+"-0.0" jd-float jd-run 0.0 ok eq assert
+"0.1234567890123456789012" jd-float jd-run 0.1234567890123456789012 ok eq assert
+"1e-400" jd-float jd-run jerr "json: number past the float range at byte 0" eq assert
+"1e99999999999999999999" jd-float jd-run jerr "json: number past the float range at byte 0" eq assert
+"1e-99999999999999999999" jd-float jd-run jerr "json: number past the float range at byte 0" eq assert
+"0." [] 400 (48 push) repeat cat "1e-300" cat jd-float jd-run jerr "json: number past the float range at byte 0" eq assert
+
+-- A fraction is one integer scaled once, so it equals what the source language reads
+"0.3" jd-float jd-run 0.3 ok eq assert
+"0.1" jd-float jd-run 0.1 ok eq assert
+"0.07" jd-float jd-run 0.07 ok eq assert
+"1.1" jd-float jd-run 1.1 ok eq assert
+"123.456" jd-float jd-run 123.456 ok eq assert
+"-9.99" jd-float jd-run -9.99 ok eq assert
+"2.5e-3" jd-float jd-run 0.0025 ok eq assert
+"1e22" jd-float jd-run 10000000000000000000000.0 ok eq assert
+"0.000001" jd-float jd-run 0.000001 ok eq assert
+"3.141592653589793" jd-float jd-run 3.141592653589793 ok eq assert
+
+-- oneOf lists the error of each alternative
+([] jd-int push "wrong" jd-fail push jd-one-of) 'int-or-wrong let
+"\"x\"" int-or-wrong jd-run jerr "$: oneOf: [0] : expected int, got string; [1] : wrong" eq assert
+([] "a" jd-int jd-field push "b" jd-int jd-field push jd-one-of) 'a-or-b let
+"{\"a\":\"s\",\"b\":true}" a-or-b jd-run jerr "$: oneOf: [0] .a: expected int, got string; [1] .b: expected int, got bool" eq assert
 
 -- Valid JSON the old parser refused
 "1.5e3" jd-float jd-run 1500.0 ok eq assert
 "25e-1" jd-float jd-run 2.5 ok eq assert
-"\"a\\rb\\tc\"" jd-str jd-run list 97 push 13 push 98 push 9 push 99 push ok eq assert
+"\"a\\rb\\tc\"" jd-str jd-run [] 97 push 13 push 98 push 9 push 99 push ok eq assert
 
 -- ========== je-str output reads back through jd-str ==========
 
 0 256 range 'all-bytes let
 all-bytes je-str jd-str jd-run all-bytes ok eq assert
-list 7 push je-str "\"\\u0007\"" eq assert
-"\"\\u00e9\\u20ac\"" jd-str jd-run list 195 push 169 push 226 push 130 push 172 push ok eq assert
-"\"\\ud83d\\ude00\"" jd-str jd-run list 240 push 159 push 152 push 128 push ok eq assert
-"\"\\u12G4\"" jd-str jd-run jerr "json: bad \\u escape in string" eq assert
-"\"\\ud83d\"" jd-str jd-run jerr "json: bad \\u escape in string" eq assert
-"\"\\ude00\"" jd-str jd-run jerr "json: bad \\u escape in string" eq assert
-"\"\\u00" jd-str jd-run jerr "json: bad \\u escape in string" eq assert
+[] 7 push je-str "\"\\u0007\"" eq assert
+"\"\\u00e9\\u20ac\"" jd-str jd-run [] 195 push 169 push 226 push 130 push 172 push ok eq assert
+"\"\\ud83d\\ude00\"" jd-str jd-run [] 240 push 159 push 152 push 128 push ok eq assert
+"\"\\u12G4\"" jd-str jd-run jerr "json: bad \\u escape in string at byte 1" eq assert
+"\"\\ud83d\"" jd-str jd-run jerr "json: bad \\u escape in string at byte 1" eq assert
+"\"\\ude00\"" jd-str jd-run jerr "json: bad \\u escape in string at byte 1" eq assert
+"\"\\u00" jd-str jd-run jerr "json: bad \\u escape in string at byte 1" eq assert

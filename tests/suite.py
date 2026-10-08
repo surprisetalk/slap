@@ -2,7 +2,7 @@
 """Run every check in parallel. `suite.py` is `make test`, `suite.py slow` is
 `make test-slow`, and `suite.py status` is `make status`."""
 
-import concurrent.futures, glob, json, os, random, re, shutil, subprocess, sys, tempfile, threading, time
+import concurrent.futures, glob, json, os, random, re, shlex, shutil, socket, subprocess, sys, tempfile, threading, time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -15,6 +15,13 @@ SCRATCH = tempfile.mkdtemp(prefix="slap-suite-")
 
 def lib(*names):
     return " ".join(f"examples/lib/{n}.slap" for n in names)
+
+
+# A shell command: each program, run after the libraries, exits 1 with its message on stderr.
+def refuses(libs, cases):
+    q = shlex.quote
+    run = f'out=$({{ cat {lib(*libs)}; echo "$1"; }} | ./slap 2>&1 >/dev/null); test $? -eq 1 && grep -qF -- "$2" <<<"$out"'
+    return f"w() {{ {run}; }}; " + " && ".join(f"w {q(p)} {q(m)}" for p, m in cases)
 
 
 def euler(path):
@@ -30,8 +37,16 @@ def euler(path):
 # fill-rect exists only in slap-sdl. A rect this large takes minutes unless it is clipped before it draws.
 FILL_RECT = (
     "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
-    ' out=$(echo "0 \'tick (drop 0 0 1000000000 1000000000 3 fill-rect \\"drew\\" fail) on (drop) show" | ./slap-sdl --headless 2>&1);'
+    ' out=$(echo "0 (drop 0 0 1000000000 1000000000 3 fill-rect \\"drew\\" fail) \'tick on (drop) show" | ./slap-sdl --headless 2>&1);'
     ' test $? -eq 1 && grep -q drew <<<"$out"'
+)
+# A color outside 0-3 dies naming the word and the color, also for a pixel off the canvas.
+BAD_COLOR = (
+    "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
+    " for c in '0 0 4 pixel:pixel: color 4 is not 0-3' '-1 -1 9 pixel:pixel: color 9 is not 0-3'"
+    " '4 clear:clear: color 4 is not 0-3' '0 0 1 1 -1 fill-rect:fill-rect: color -1 is not 0-3'; do"
+    ' out=$(echo "0 (drop ${c%%:*}) \'tick on (drop) show" | ./slap-sdl --headless 2>&1);'
+    ' test $? -eq 1 && grep -qF "${c#*:}" <<<"$out" || exit 1; done'
 )
 # Without SDL2, make test leaves out the slap-sdl check and says so; make status fails a condition.
 HAS_SDL = shutil.which("sdl2-config") is not None
@@ -44,14 +59,14 @@ STEADY = [
     "('x let x 'a tag {'a (x plus)} case) 'f let 0 100000 (drop 5 f) repeat drop",
     f"0 1000000 (drop {DICT} box free 0) repeat drop",
     f"0 100000 (drop {{'b {DICT}}} drop 0) repeat drop",
-    f"0 100000 (drop list {DICT} push dup print len) repeat drop",
-    f"0 100000 (drop list {DICT} push list {DICT} push eq) repeat drop",
-    f"0 100000 (drop list {DICT} push {DICT} push dup 0 get must drop 5 get drop 0) repeat drop",
-    f"0 100000 (drop list {DICT} push {DICT} push 1 take-n drop 0) repeat drop",
-    f"0 100000 (drop list {DICT} push {DICT} push 1 drop-n drop 0) repeat drop",
-    f"0 100000 (drop list {DICT} push {DICT} push {DICT} index-of must) repeat drop",
+    f"0 100000 (drop [] {DICT} push dup print len) repeat drop",
+    f"0 100000 (drop [] {DICT} push [] {DICT} push eq) repeat drop",
+    f"0 100000 (drop [] {DICT} push {DICT} push dup 0 get must drop 5 get drop 0) repeat drop",
+    f"0 100000 (drop [] {DICT} push {DICT} push 1 take-n drop 0) repeat drop",
+    f"0 100000 (drop [] {DICT} push {DICT} push 1 drop-n drop 0) repeat drop",
+    f"0 100000 (drop [] {DICT} push {DICT} push {DICT} index-of must) repeat drop",
     f"0 100000 (drop {{}} {DICT} 'd into 1 'n into 'n at) repeat drop",
-    f"0 100000 (drop list {DICT} push {DICT} push (drop 0) filter len) repeat drop",
+    f"0 100000 (drop [] {DICT} push {DICT} push (drop 0) filter len) repeat drop",
 ]
 
 
@@ -128,6 +143,74 @@ def profile():
     return True, ""
 
 
+def timed_slap(src, limit, want='"no '):
+    start = time.time()
+    try:
+        r = subprocess.run(
+            ["./slap"], input=src, capture_output=True, text=True, timeout=limit
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"no answer within {limit} s"
+    took = time.time() - start
+    detail = f"{r.stdout.strip()} (after {took:.1f} s)"
+    return r.returncode == 0 and r.stdout.startswith(want), detail + r.stderr[-2000:]
+
+
+def recv_silent_peer():
+    port = random.randint(41000, 49000)
+    # The listener never accepts: the backlog completes the connection, so the client waits.
+    return timed_slap(
+        f'{port} tcp-listen must "127.0.0.1" {port} tcp-connect must 16 tcp-recv'
+        ' {\'ok (drop "got data" print) \'no ("no " swap cat print)} case tcp-close tcp-close',
+        35,
+        '"no timed out after 30 s"',
+    )
+
+
+def send_trickle_peer():
+    # A peer that reads 4 KB every 5 s frees room before a blocking send's timeout runs out, so that timeout alone never ends the call.
+    # 40 sends of 512 KB overfill the socket buffers. Each send prints how long it took when it gives 'no; the kernel may grow its buffers
+    # first, so the run as a whole takes longer than one send.
+    srv = socket.create_server(("127.0.0.1", 0))
+    port, stop = srv.getsockname()[1], threading.Event()
+
+    def trickle():
+        conn, _ = srv.accept()
+        with conn:
+            while not stop.wait(5):
+                conn.recv(4096)
+
+    threading.Thread(target=trickle, daemon=True).start()
+    send = "millis swap b tcp-send {'ok (drop swap drop) 'no (print swap millis swap sub print \"stuck\" fail)} case "
+    try:
+        r = subprocess.run(
+            ["./slap"],
+            input=f'"x" 19 (dup cat) repeat \'b let "127.0.0.1" {port} tcp-connect must ' + send * 40 + "tcp-close",
+            capture_output=True,
+            text=True,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "no answer within 90 s"
+    finally:
+        stop.set()
+        srv.close()
+    out = r.stdout.split()
+    took = int(out[-1]) if out and out[-1].isdigit() else None
+    detail = f"stdout {r.stdout[-200:]!r}, stderr {r.stderr[-200:]!r}"
+    return r.returncode != 0 and '"timed out after 30 s"' in r.stdout and took is not None and 29000 <= took <= 31000, detail
+
+
+def connect_blackhole():
+    # Some networks refuse 10.255.255.1 at once; the 'no then names that reason.
+    passed, detail = timed_slap(
+        '"10.255.255.1" 80 tcp-connect {\'ok (tcp-close "connected" print) \'no ("no " swap cat print)} case',
+        15,
+    )
+    print(f"tcp-connect to 10.255.255.1 got: {detail}", file=sys.stderr)
+    return passed, detail
+
+
 def steps(slow):
     euler_files = sorted(
         glob.glob("examples/euler/*.slap"), key=lambda p: int(re.sub(r"\D", "", p))
@@ -144,6 +227,18 @@ def steps(slow):
         else:
             out[p] = e
     if slow:
+        out["tcp-recv on a silent peer gives 'no within 35 s"] = (
+            recv_silent_peer,
+            None,
+        )
+        out["tcp-send to a peer that reads a trickle gives 'no after 30 s"] = (
+            send_trickle_peer,
+            None,
+        )
+        out["tcp-connect to a blackhole gives 'no within 15 s"] = (
+            connect_blackhole,
+            None,
+        )
         return out
     out.update(
         {
@@ -159,7 +254,20 @@ def steps(slow):
                 None,
             ),
             "deep value error prints once": (
-                "test $(echo \"[] 'n tag 20000 (list swap push 'n tag) repeat print\" | ./slap 2>&1 | grep -c 'C stack exhausted') -eq 1",
+                "test $(echo \"[] 'n tag 20000 ([] swap push 'n tag) repeat print\" | ./slap 2>&1 | grep -c 'C stack exhausted') -eq 1",
+                None,
+            ),
+            "writers refuse": (
+                refuses(
+                    ("strings", "parse", "json", "xml", "rss"),
+                    [
+                        ("""[] {} "a" 'name into 1 je-int 'value into push {} "a" 'name into 2 je-int 'value into push je-obj print""", 'json: je-obj: duplicate key "a"'),
+                        (""""r" [] {} "x" 'name into "1" 'value into push {} "x" 'name into "2" 'value into push [] xe-elem xml-render print""", 'xml: duplicate attribute "x" in <r>'),
+                        (""""r" [] {} "x y" 'name into "1" 'value into push [] xe-elem xml-render print""", 'xml: attribute name "x y" in <r> is not an XML name'),
+                        (""""" [] [] xe-elem xml-render print""", 'xml: element name "" is not an XML name'),
+                        (""""1a" [] [] xe-elem xml-pretty print""", 'xml: element name "1a" is not an XML name'),
+                    ],
+                ),
                 None,
             ),
             # Inputs errors.slap cannot hold: a NUL byte, a 3 MB literal, a small C stack, an SDL build.
@@ -176,6 +284,22 @@ def steps(slow):
             ),
             "program past 16 MiB": (
                 "out=$(head -c 16777217 /dev/zero | tr '\\0' ' ' | ./slap 2>&1); test $? -eq 1 && grep -q 'larger than 16 MiB' <<<\"$out\"",
+                None,
+            ),
+            "a program past the token limit says so briefly": (
+                "out=$(python3 -c \"print('1 ' * 70000)\" | ./slap 2>&1); test $? -eq 1 && grep -q 'the program has more than 65[0-9]* tokens; the limit is 65[0-9]* (TOK_MAX minus [0-9]* for the prelude)' <<<\"$out\" && grep -q 'ERROR <stdin> -' <<<\"$out\" && ! grep -q 'source unavailable' <<<\"$out\" && test ${#out} -lt 1000",
+                None,
+            ),
+            "a plain underflow through a let-bound body gets no let hint": (
+                "out=$(printf \"[(1 plus)] first 'f let (f apply) 'g let g\\n\" | ./slap 2>&1); test $? -eq 1 && grep -q 'but the stack has nothing' <<<\"$out\" && ! grep -q 'bound with let' <<<\"$out\"",
+                None,
+            ),
+            "an error's stack dump cuts a long string": (
+                "out=$(echo '\"x\" 20 (dup cat) repeat 1 0 div' | ./slap 2>&1); test $? -eq 1 && grep -q '1048376 more bytes' <<<\"$out\" && test ${#out} -lt 2000",
+                None,
+            ),
+            "old-order nth is one error": (
+                "out=$(printf \"[1 2] 'xs let\\n'xs 1 nth must print\\n\" | ./slap 2>&1); test $? -eq 1 && grep -q 'nth needs the list' <<<\"$out\" && ! grep -q 'int index' <<<\"$out\"",
                 None,
             ),
             "unreadable stdin": (
@@ -216,6 +340,7 @@ def steps(slow):
     )
     if HAS_SDL:
         out["fill-rect clips a huge rect"] = (FILL_RECT, None)
+        out["a color outside 0-3 dies"] = (BAD_COLOR, None)
     else:
         print(
             "suite: warning: sdl2-config is not on PATH, so slap-sdl is not built and the fill-rect check"
@@ -234,11 +359,12 @@ def steps(slow):
     for combo in [
         ("icn", "ufx"),
         ("strings", "parse", "json"),
+        ("strings", "http"),
         ("strings", "parse", "xml", "rss"),
     ]:
         out["lib/" + "+".join(combo)] = (f"cat {lib(*combo)} | ./slap", None)
     out["scale"] = (
-        f"cat {lib('strings', 'parse', 'json', 'xml')} tests/scale.slap | ./slap",
+        f"cat {lib('strings', 'parse', 'json', 'xml', 'rss', 'http')} tests/scale.slap | ./slap",
         None,
     )
     for name in [
@@ -327,10 +453,18 @@ def status():
     score["slap.c compiles with no warnings."] = (
         1.0 if r.returncode == 0 and "warning" not in r.stderr else 0.0
     )
-    sdl = HAS_SDL and subprocess.run(["make", "-s", "slap-sdl"], capture_output=True).returncode == 0
+    sdl = (
+        HAS_SDL
+        and subprocess.run(["make", "-s", "slap-sdl"], capture_output=True).returncode
+        == 0
+    )
     score["slap-sdl builds and draws headless."] = (
         1.0
-        if sdl and subprocess.run(["bash", "-c", FILL_RECT], capture_output=True, timeout=TIMEOUT).returncode == 0
+        if sdl
+        and subprocess.run(
+            ["bash", "-c", FILL_RECT], capture_output=True, timeout=TIMEOUT
+        ).returncode
+        == 0
         else 0.0
     )
     feed = os.path.join(SCRATCH, "feed.xml")
