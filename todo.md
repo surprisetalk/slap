@@ -1,17 +1,29 @@
-- [ ] A kv-server request line is held to one limit however it arrives: a
-      head of at most 4095 bytes before LF, a trailing CR not counted, whole
-      or in TCP segments. Today recv-line stops once its buffer holds 4096
-      bytes with no LF, so a 4095-byte head with CRLF is refused when sent
-      whole and accepted when the CR and LF arrive in a later segment. Both
-      results are safe (an accepted line still loads from the snapshot); the
-      limit is just not one rule. Three breaker rounds in a row found a limit
-      case here, so fix the rule, not the next case.
-  1. Tests first in run_kv.py: heads of 4094, 4095 and 4096 bytes, LF and
-     CRLF, sent whole and cut at every byte from 4093 to 4097; 4095 is
-     accepted and 4096 refused in every case.
-  2. recv-line reads until LF or until its buffer passes LINE-CAP + 1 (a
-     head, CR and LF); handle-conn refuses a head of LINE-CAP or more after
-     line-head strips the CR.
+- [ ] A decoder tells a missing optional field from a present but malformed
+      one, as Elm's `optionalField` does: a missing field gives `none`, and a
+      present field that fails its decoder fails the decode. Today
+      `jd-maybe`/`xd-maybe` turn every failure into `none ok`: `{"a":"x"}`
+      with `"a" jd-int jd-field jd-maybe` gives none, and an RSS channel
+      without its required title, link or description parses. rss's
+      `_rss-opt-text` gives "" for an absent field, so rss-to-xml writes
+      `<pubDate></pubDate>` and `<link href=""/>`. Decided: the text of an
+      element with element children is a string with its markup, `<title>A
+      <b>bold</b> post</title>` gives `A <b>bold</b> post`; its text parts stay
+      escaped, so the string is valid markup, and an element with only text
+      gives decoded text as today. Atom `<content type="xhtml">` gives its
+      inner markup, the div included. Links are kept as written: feed.slap
+      prints them as text, never as an href.
+  1. Tests first, in json.slap's and xml.slap's self-tests and run_feed.py,
+     each checked against the old code: `{"a":"x"}` with `"a" jd-int
+     jd-field jd-maybe` gives 'no and `{}` gives none; the title above gives
+     its markup; an RSS channel without a title gives 'no; rss-to-xml of an
+     item without a pubDate writes no pubDate.
+  2. jd-field and xd-child fail a missing field with a 'no that
+     jd-maybe/xd-maybe can tell apart (a distinct message prefix); every other
+     'no passes through.
+  3. xml.slap's `_x-collect-text` renders an element child with xml-render
+     instead of failing. Delete the "element has non-text children" message.
+  4. rss.slap: required fields use xd-child without xd-maybe; an absent
+     optional field stays `none`, and rss-to-xml skips it.
 
 - [ ] You build a literal from names bound at runtime: `{'x x 'y y}`,
       `[i i] insert` and `[ 1 mk ]` work. Today a `[...]` or `{...}` literal
@@ -184,41 +196,6 @@
   9. Then tic80 on the same lua.slap; duskos and decker after.
 
 ## Blocked on you
-
-- [ ] A word may bind, after it makes a body, a body its caller passed in. The
-      cycle rule (`ty_taint`, `ty_no_body`) is sound: a breaker round found no
-      accepted program that leaks. It refuses some programs that cannot
-      cycle, all of one kind, a body that came from the caller and is bound
-      again after the word's first literal: `( 'f let 0 3 (0 plus) repeat
-      drop f 'g let g apply ) 'go let`, and a generic word that binds its
-      input after a literal cannot then take a body. The corpus has none.
-      Decide: keep the strict rule, or track where a body came from (a value
-      bound from the word's input before its first literal stays a caller's
-      body through copies), which needs a provenance mark on types.
-  1. If tracked: the breaker's three false refusals become expect.slap
-     passes, and the cycle cases in errors.slap stay errors.
-
-- [ ] A decoder tells a missing optional field from a present but malformed
-      one. `jd-maybe`/`xd-maybe` turn every failure into `none ok`:
-      `{"a":"x"}` with `"a" jd-int jd-field jd-maybe` gives none. rss's
-      `_rss-opt-text` (`xd-child xd-maybe ("" default)`) makes `<title>A
-      <b>bold</b> post</title>` and Atom `<content type="xhtml">` give "", and
-      lets an RSS channel without its required title, link or description
-      parse; rss-to-xml then writes `<pubDate></pubDate>` and `<link
-      href=""/>`. Proposed: jd-maybe/xd-maybe give `none` only for "missing
-      field"/"no such child" and pass every other 'no on (Elm's `maybe`
-      swallows all errors; `optionalField` does not); rss keeps absent
-      optional fields as `none`, not "". Decide: text with element children
-      (take the text of xhtml content, or refuse it), and links (rss-parse
-      refuses a link that is not an absolute http(s) URL, or keeps the text as
-      written; three breaker rounds each found a bad link that passed).
-  1. Tests first: the three inputs above, and a channel without a title.
-  2. jd-field/xd-child failures carry a distinct 'missing payload shape (or
-     message prefix) that the maybe decoders test.
-  3. rss.slap: required fields use xd-child without maybe; rss-to-xml skips
-     absent fields.
-  4. `_rss-link` and `_atom-link-href` use xd-maybe too: a `<link>` with
-     element children, or a malformed href, reads as no link.
 
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps

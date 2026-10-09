@@ -3,7 +3,8 @@
 --   cat examples/lib/strings.slap examples/lib/parse.slap examples/kv-server.slap | ./slap [port] [snapshot]
 --
 -- Defaults: port 4321, snapshot file kv.snap. One LF-terminated command per
--- connection, one line back, connection closed:
+-- connection, at most 4095 bytes before the LF (a CR before the LF is not
+-- counted), one line back, connection closed:
 --
 --   SET k v...  -> OK        GET k -> VALUE v | NIL   DEL k -> OK
 --   KEYS        -> KEYS ...  SAVE  -> OK              PING  -> PONG
@@ -124,33 +125,28 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 -- ===== connection =====
 
 -- A recv error ends the line like a hang-up, and the log says why.
+-- LINE-CAP + 1 bytes with no LF are too long: the longest line is a head, CR and LF.
 ([] (swap 4096 tcp-recv {'ok () 'no ('rr let "recv failed: " rr cat log [])} case 'ch let
        swap ch cat
        dup has-lf not
        ch len 0 gt and
-       over len LINE-CAP lt and) () while) 'recv-line let
+       over len LINE-CAP le and) () while) 'recv-line let
 
 -- A socket stays on the stack: each word that uses it hands it on or closes it.
 ('rtext let
  rtext LF cat tcp-send {'ok (drop) 'no ('sd let "send failed: " sd cat log)} case tcp-close) 'reply-close let
 
 -- stack: store size client -> store size continue?
-(recv-line 'rline let
- rline len 0 eq (tcp-close 1) (
-   rline has-lf not (
-     rline len LINE-CAP ge (
-       "ERR line too long: no newline within 4096 bytes" reply-close 1
-     ) (tcp-close 1) if
-   ) (
-     -- a line can arrive in parts, each under LINE-CAP, so its length is checked here too
-     rline line-head 'hline let
-     hline len LINE-CAP ge (
-       "ERR line too long: no newline within 4096 bytes" reply-close 1
-     ) (
-       hline print
-       (hline handle-cmd) dip rot rot 'hcont let reply-close hcont
-     ) if
-   ) if
+-- One rule for every line: its head holds at most LINE-CAP - 1 bytes. Without a
+-- LF, the head is at least the bytes that arrived, and a hang-up closes.
+(recv-line 'rline let rline line-head 'hline let
+ hline len LINE-CAP ge (
+   "ERR line too long: a command holds at most 4095 bytes before its newline" reply-close 1
+ ) (
+   rline has-lf (
+     hline print
+     (hline handle-cmd) dip rot rot 'hcont let reply-close hcont
+   ) (tcp-close 1) if
  ) if) 'handle-conn let
 
 -- ===== self-tests =====
