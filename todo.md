@@ -5,25 +5,29 @@
       with `"a" jd-int jd-field jd-maybe` gives none, and an RSS channel
       without its required title, link or description parses. rss's
       `_rss-opt-text` gives "" for an absent field, so rss-to-xml writes
-      `<pubDate></pubDate>` and `<link href=""/>`. Decided: the text of an
-      element with element children is a string with its markup, `<title>A
-      <b>bold</b> post</title>` gives `A <b>bold</b> post`; its text parts stay
-      escaped, so the string is valid markup, and an element with only text
-      gives decoded text as today. Atom `<content type="xhtml">` gives its
-      inner markup, the div included. Links are kept as written: feed.slap
+      `<pubDate></pubDate>` and `<link href=""/>`. Decided: rss's title,
+      description and content fields always hold markup, the element's inner
+      XML: `AT&amp;T` stays `AT&amp;T`, and `<title>A <b>bold</b>
+      post</title>` gives `A <b>bold</b> post`. Atom `<content
+      type="xhtml">` gives its inner markup, the div included. `xd-text` keeps
+      decoding plain text and still fails on element children. feed.slap
+      decodes entities before it prints. Links are kept as written: feed.slap
       prints them as text, never as an href.
   1. Tests first, in json.slap's and xml.slap's self-tests and run_feed.py,
      each checked against the old code: `{"a":"x"}` with `"a" jd-int
-     jd-field jd-maybe` gives 'no and `{}` gives none; the title above gives
-     its markup; an RSS channel without a title gives 'no; rss-to-xml of an
-     item without a pubDate writes no pubDate.
+     jd-field jd-maybe` gives 'no and `{}` gives none; the two titles above
+     give their markup and feed.slap prints `AT&T`; an RSS channel without a
+     title gives 'no; rss-to-xml of an item without a pubDate writes no
+     pubDate.
   2. jd-field and xd-child fail a missing field with a 'no that
      jd-maybe/xd-maybe can tell apart (a distinct message prefix); every other
      'no passes through.
-  3. xml.slap's `_x-collect-text` renders an element child with xml-render
-     instead of failing. Delete the "element has non-text children" message.
-  4. rss.slap: required fields use xd-child without xd-maybe; an absent
-     optional field stays `none`, and rss-to-xml skips it.
+  3. xml.slap: `xd-markup` gives an element's children rendered with
+     xml-render, so text comes back escaped and child elements as markup.
+  4. rss.slap: title, description and content use `xd-markup`; required
+     fields use xd-child without xd-maybe; an absent optional field stays
+     `none`, and rss-to-xml skips it.
+  5. feed.slap decodes entities in those fields before it prints them.
 
 - [ ] A record has the keys its literal names: `into` replaces the value of
       a key the record has and never adds one, so a record type lists only
