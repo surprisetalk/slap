@@ -39,7 +39,7 @@ args 2 drop-n 'REST let
  res must) 'or-die let
 
 FILE read {'ok () 'no ('re let
-  re FILE ": No such file or directory" cat eq ("{\"items\":[]}") ("todo: cannot read " re cat fail) if)} case 'RAW let
+  re FILE is-missing ("{\"items\":[]}") ("todo: cannot read " re cat fail) if)} case 'RAW let
 
 RAW dec-texts jd-run "text"  or-die 'TEXTS let
 RAW dec-dones jd-run "done"  or-die 'DONES let

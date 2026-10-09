@@ -6,7 +6,7 @@
 -- Errors are path-annotated strings: "$.a.b[0].c: expected int, got string".
 
 -- ========== Internal parser: bytes -> tagged value ==========
--- Tagged shapes: n 'int | f 'float | s 'str (text) | bs 'bytes | 0/1 'bool | () 'null
+-- Tagged shapes: n 'int | f 'float | s 'str (text) | bs 'bytes | 0/1 'bool | {} 'null
 --                list 'list | list-of-{'key str 'value cv} 'map
 -- _cbor-parse binds the input as '_cin and every step reads it by index with `nth`,
 -- so no step copies or cuts the input and nothing recurses per byte.
@@ -53,22 +53,22 @@
   ('cd let 'ci let
    ci _chead
    {'ok ('cni let 'carg let 'cm let
-      cm 6 eq (() 'null tag "cbor: tags are not supported" ci _cat no) (
+      cm 6 eq ({} 'null tag "cbor: tags are not supported" ci _cat no) (
       cm 0 eq (
-        carg 0 lt (() 'null tag "cbor: integer past the int64 range" ci _cat no) (carg 'int tag cni ok) if) (
+        carg 0 lt ({} 'null tag "cbor: integer past the int64 range" ci _cat no) (carg 'int tag cni ok) if) (
       cm 1 eq (
-        carg 0 lt (() 'null tag "cbor: integer past the int64 range" ci _cat no) (-1 carg sub 'int tag cni ok) if) (
+        carg 0 lt ({} 'null tag "cbor: integer past the int64 range" ci _cat no) (-1 carg sub 'int tag cni ok) if) (
       cm 2 eq cm 3 eq or (
-        carg 0 lt carg _cn cni sub gt or (() 'null tag "cbor: length past the end of the input" ci _cat no) (
+        carg 0 lt carg _cn cni sub gt or ({} 'null tag "cbor: length past the end of the input" ci _cat no) (
           cm 2 eq (carg cni _cstr 'bytes tag) (carg cni _cstr 'str tag) if cni carg plus ok) if) (
       cm 4 eq cm 5 eq or (
-        cd 255 gt (() 'null tag "cbor: nested deeper than 256" ci _cpos no) (
-        carg 0 lt carg _cn cni sub gt or (() 'null tag "cbor: length past the end of the input" ci _cat no) (
+        cd 255 gt ({} 'null tag "cbor: nested deeper than 256" ci _cpos no) (
+        carg 0 lt carg _cn cni sub gt or ({} 'null tag "cbor: length past the end of the input" ci _cat no) (
           cm 4 eq (
             [] cni ok carg
             (dup 0 gt) (
               1 sub 'ckk let
-              () 'null tag (cd 1 plus _cv-at) pthen (push) dip
+              {} 'null tag (cd 1 plus _cv-at) pthen (push) dip
               {'ok (ok ckk) 'no (no 0)} case) while
             drop swap 'list tag swap) (
             [] dict cni ok carg
@@ -79,20 +79,20 @@
               "" ('cki let cki cd 1 plus _cv-at swap {'str () '_ (drop "cbor: map key is not a text string" fail)} case swap) pthen swap 'cks let
               (cks of {'ok (drop 1) 'no (drop 0)} case 'cdf let cks 0 insert cdf) dip swap 'cdp let
               ('cki let cdp ("cbor: duplicate key \"" cks cat "\"" cat ckp _cpos no) (cki ok) if) then
-              () 'null tag (cd 1 plus _cv-at) pthen swap 'cv let
+              {} 'null tag (cd 1 plus _cv-at) pthen swap 'cv let
               (({} cks 'key into cv 'value into push) dip) dip
               {'ok (ok ckk) 'no (no 0)} case) while
             drop swap drop swap 'map tag swap) if) if) if) (
       ci _cc 31 band 'ca let
       ca 20 eq (0 'bool tag cni ok) (
       ca 21 eq (1 'bool tag cni ok) (
-      ca 22 eq (() 'null tag cni ok) (
+      ca 22 eq ({} 'null tag cni ok) (
       ca 25 eq (carg 5 10 15 _cfloat 'float tag cni ok) (
       ca 26 eq (carg 8 23 127 _cfloat 'float tag cni ok) (
       ca 27 eq (carg bits-float 'float tag cni ok) (
-        () 'null tag "cbor: only false, true and null are supported as simple values" ci _cat no
+        {} 'null tag "cbor: only false, true and null are supported as simple values" ci _cat no
       ) if) if) if) if) if) if) if) if) if) if) if)
-    'no ('cm2 let drop drop () 'null tag cm2 no)} case) '_cv-at let
+    'no ('cm2 let drop drop {} 'null tag cm2 no)} case) '_cv-at let
 
   -- _cend: (i -- st).  No bytes may follow the value.
   ('cti let cti _cc 0 lt (0 ok) ("cbor: expected the end of input after the value" cti _cat no) if) '_cend let
@@ -286,7 +286,7 @@
 
 "f4" 0 'bool tag _row
 "f5" 1 'bool tag _row
-"f6" () 'null tag _row
+"f6" {} 'null tag _row
 
 "40" [] 'bytes tag _row
 "4401020304" [1 2 3 4] 'bytes tag _row
@@ -351,10 +351,10 @@
 "6568656c6c6f" _hx cd-str cd-run "hello" ok eq assert
 "4401020304" _hx cd-bytes cd-run [1 2 3 4] ok eq assert
 "f5" _hx cd-bool cd-run 1 ok eq assert
-"f6" _hx cd-null cd-run () ok eq assert
+"f6" _hx cd-null cd-run {} ok eq assert
 "83010203" _hx cd-int cd-list cd-run [1 2 3] ok eq assert
-"f6" _hx cd-value cd-run () 'null tag ok eq assert
-"81f6" _hx cd-value cd-list cd-run [() 'null tag] ok eq assert
+"f6" _hx cd-value cd-run {} 'null tag ok eq assert
+"81f6" _hx cd-value cd-list cd-run [{} 'null tag] ok eq assert
 "a26161016162820203" _hx "b" cd-int cd-list cd-field cd-run [2 3] ok eq assert
 "a26161016162820203" _hx "a" cd-int cd-field cd-run 1 ok eq assert
 "01" _hx 7 cd-succeed cd-run 7 ok eq assert
@@ -388,5 +388,5 @@ ce-null "f6" _hx eq assert
 0 256 range 'cbor-all-bytes let
 cbor-all-bytes 'bytes tag ce-value (ok) cd-run cbor-all-bytes 'bytes tag ok eq assert
 cbor-all-bytes 'str tag ce-value (ok) cd-run cbor-all-bytes 'str tag ok eq assert
-[] "k" [] 1 _i push "x" 'str tag push -5 _i push 1.25 'float tag push () 'null tag push 0 'bool tag push 'list tag _ent push 'map tag 'cbor-rt let
+[] "k" [] 1 _i push "x" 'str tag push -5 _i push 1.25 'float tag push {} 'null tag push 0 'bool tag push 'list tag _ent push 'map tag 'cbor-rt let
 cbor-rt ce-value (ok) cd-run cbor-rt ok eq assert

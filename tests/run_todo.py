@@ -4,7 +4,7 @@ file, check the bytes it writes are the bytes json.slap can read back, and
 confirm a file it cannot decode is refused and left alone rather than replaced
 with an empty list."""
 
-import json, os, subprocess, sys, tempfile
+import json, os, resource, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -196,6 +196,22 @@ with tempfile.TemporaryDirectory() as d:
         os.chmod(f, 0o644)
         check("read-only-refused", bad and f"cannot write {f}: Permission denied" in err, repr(err[:200]))
         check("read-only-untouched", open(f).read() == text)
+
+    # ---- a write past a file size limit keeps the old file whole ----
+    text = json.dumps({"items": [{"text": "item %d" % i, "done": False} for i in range(60)]})
+    with open(f, "w") as fh:
+        fh.write(text)
+    r = subprocess.run(
+        ["./slap", f, "add", "zzz"],
+        input=SRC,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024)),
+    )
+    check("size-limit-refused", r.returncode != 0 and f"cannot write {f}: File too large" in r.stderr, repr(r.stderr[-300:]))
+    check("size-limit-untouched", open(f).read() == text)
+    check("size-limit-no-temp", os.listdir(d) == ["todo.json"], repr(os.listdir(d)))
 
     # ---- keys and fields todo.slap does not use survive every write ----
     doc = {

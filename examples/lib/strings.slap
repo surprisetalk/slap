@@ -17,3 +17,26 @@
 -- The bytes of the file named by argument i. Dies naming what is missing.
 ('i let args i get {'ok ('p let p read {'ok () 'no ('e let "cannot read " e cat fail)} case) 'no (drop "expected a file name as argument" fail)} case) 'arg-bytes let
 ('s let "/dev/stdout" s write must drop) 'stdout-write let
+-- log-line: (name msg --).  Writes "name: msg" and a newline to stderr.
+('lm let 'ln let "/dev/stderr" ln ": " cat lm cat [] 10 push cat write must drop) 'log-line let
+-- accept-loop: (..s server name (..s client -- ..s continue) -- ..s server).
+-- Hands each client to the handler while it leaves anything but 0. tcp-accept
+-- skips a client that resets before it is accepted, so a failure here is a fault
+-- of the host, such as no free file descriptors: the loop logs it and goes on.
+-- On Linux that fault repeats at once without end, so 100 in a row stop the
+-- program.
+('ah let 'an let
+ 0 ('fails let tcp-accept {
+     'ok (swap (ah apply) dip swap 0 swap)
+     'no ('ae let fails 1 plus 'nf let
+          nf 100 lt (an "accept failed: " ae cat log-line)
+                    (an ": accept failed 100 times in a row; the last: " cat ae cat fail) if
+          nf 1)} case) () while
+ drop) 'accept-loop let
+-- is-missing: (msg path -- int).  1 when read, write or ls failed with msg
+-- because path names no file: no such file, a file where a directory should
+-- be, or a name too long to exist.
+('mp let 'mm let
+ mm mp ": No such file or directory" cat eq
+ mm mp ": Not a directory" cat eq or
+ mm mp ": File name too long" cat eq or) 'is-missing let

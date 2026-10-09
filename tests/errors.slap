@@ -1518,6 +1518,24 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- EXPECT: one path leaves 1 more value on the stack than the other
 0 (dup 3 lt) (1 plus 7) while
 
+-- EXPECT: 'c' is bound after the body on line 1, and it holds a body
+-- the closures chain back to the repeat body's frame, which holds the chain in c
+( 'k let ( k apply 1 plus) ) 'wr let 0 10 (drop (0 plus) 3 (wr) repeat 'c let 0) repeat drop
+
+-- EXPECT: 'c' is bound after the body on line 1, and it holds a body
+-- the closure's frame has the outer frame as its parent, and the outer frame holds it in c
+(5 ('q let (q)) apply 'c let 0) 'outer let outer drop
+
+-- EXPECT: 'keep' takes 'a copyable no-body
+-- EXPECT: a value bound with let after a body was made in its scope cannot hold a body
+-- a generic word's binding cannot later be given a body
+((1) drop 'x let x) 'keep let (2) keep drop
+
+-- EXPECT: copyable no-body
+-- EXPECT: cannot hold a body
+-- a body bound after a literal, then run, is refused where it would become a body
+( 'f let 0 3 (0 plus) repeat drop f 'g let g apply ) 'go let 0
+
 -- EXPECT: 'apply' takes ( ..a -> ..b )
 -- EXPECT: a copy of the body lies below it on the stack
 -- dup gives both copies one type, so one cannot run above the other

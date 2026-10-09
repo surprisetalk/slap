@@ -94,6 +94,35 @@ with tempfile.TemporaryDirectory() as d:
             "404-missing", get(b"/nope.txt").startswith(b"HTTP/1.0 404"), "missing file"
         )
         check("404-missing-dir", get(b"/nope/").startswith(b"HTTP/1.0 404"))
+        check("404-not-a-dir", get(b"/a.txt/x").startswith(b"HTTP/1.0 404"))
+        check("404-name-too-long", get(b"/" + b"a" * 300).startswith(b"HTTP/1.0 404"))
+        # a file or directory it cannot read is a 500 that names the reason
+        if os.geteuid() != 0:
+            locked = os.path.join(root, "locked.txt")
+            with open(locked, "w") as f:
+                f.write("x")
+            os.chmod(locked, 0)
+            r = get(b"/locked.txt")
+            os.chmod(locked, 0o644)
+            os.remove(locked)
+            check(
+                "500-unreadable-file",
+                r.startswith(b"HTTP/1.0 500")
+                and b"Cannot read /locked.txt: Permission denied." in r
+                and root.encode() not in r,
+                repr(r[-200:]),
+            )
+            lockdir = os.path.join(root, "lockdir")
+            os.mkdir(lockdir)
+            os.chmod(lockdir, 0)
+            r = get(b"/lockdir/")
+            os.chmod(lockdir, 0o755)
+            os.rmdir(lockdir)
+            check(
+                "500-unreadable-dir",
+                r.startswith(b"HTTP/1.0 500") and b"Permission denied." in r and root.encode() not in r,
+                repr(r[-200:]),
+            )
 
         # ---- traversal, raw and percent-encoded ----
         for label, path in [
@@ -198,6 +227,15 @@ with tempfile.TemporaryDirectory() as d:
             timeout=20,
         )
         check("fetch-refused", r.returncode != 0, "a dead port must fail, not hang")
+        # a client that resets is logged with its reason, and the server keeps serving
+        harness.reset(port)
+        check("reset-survives", get(b"/a.txt").startswith(b"HTTP/1.0 200"))
+        harness.kill(proc)
+        log = proc.stderr.read()
+        check("reset-logged", "serve: recv failed: Connection reset by peer" in log, repr(log[-300:]))
+        if os.geteuid() != 0:
+            check("500-logged", f"serve: {root}/locked.txt: Permission denied" in log, repr(log[-300:]))
+        harness.accept_failures(check, "serve", [str(port), root], SERVE_SRC, port)
     finally:
         harness.kill(proc)
 

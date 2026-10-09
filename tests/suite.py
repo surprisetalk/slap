@@ -2,7 +2,7 @@
 """Run every check in parallel. `suite.py` is `make test`, `suite.py slow` is
 `make test-slow`, and `suite.py status` is `make status`."""
 
-import concurrent.futures, glob, json, os, random, re, shlex, shutil, socket, subprocess, sys, tempfile, threading, time
+import concurrent.futures, glob, json, os, random, re, resource, shlex, shutil, socket, subprocess, sys, tempfile, threading, time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -285,6 +285,148 @@ def timed_slap(src, limit, want='"no '):
     return r.returncode == 0 and r.stdout.startswith(want), detail + r.stderr[-2000:]
 
 
+# write replaces a regular file whole: through symlinks (relative, absolute, in a subdirectory,
+# a chain), keeping the mode, giving a new file 0666 minus the umask, and under a file size limit,
+# where the old bytes survive and no temp file stays. Where a replacement cannot match the old file
+# (a hard link, a directory the user may not write) it writes in place. A link loop is refused.
+def write_replaces():
+    # realpath: /var is a symlink on macOS, and resolving it would lengthen every path below
+    d = os.path.realpath(tempfile.mkdtemp(prefix="slap-write-"))
+    try:
+        p = lambda *n: os.path.join(d, *n)
+        for name, text in [("t.txt", "old"), ("t2.txt", "old2"), ("h1", "old"), ("big.txt", "k" * 2000), ("deep.txt", "old")]:
+            with open(p(name), "w") as f:
+                f.write(text)
+        os.chmod(p("t.txt"), 0o600)
+        os.link(p("h1"), p("h2"))
+        os.symlink("t.txt", p("link"))
+        os.symlink("link", p("chain"))
+        os.symlink(p("t2.txt"), p("abs"))
+        os.mkdir(p("sub"))
+        os.symlink("../t2.txt", p("sub", "rel"))
+        os.symlink("made.txt", p("dangling"))
+        os.symlink("loop", p("loop"))
+        long = p("a" * 250)
+        with open(long, "w") as f:
+            f.write("old")
+        os.mkdir(p("ro"))
+        with open(p("ro", "f"), "w") as f:
+            f.write("old")
+        os.chmod(p("ro"), 0o555)
+        q = lambda path: '"' + path + '"'
+        prog = " ".join(
+            f'{q(path)} "{text}" write must drop'
+            for path, text in [
+                (p("chain"), "new"), (p("abs"), "abs"), (p("sub", "rel"), "rel"), (p("dangling"), "made"),
+                ("/dev/null", "x"), (p("h1"), "hard"), (long, "long"), (p("ro", "f"), "ro"),
+                # 1021-1022 bytes: the temp name, 3 bytes longer, passes macOS's PATH_MAX of 1024
+                (d + "/" + "./" * ((1013 - len(d)) // 2) + "deep.txt", "deep"),
+            ]
+        ) + f' {q(p("loop"))} "x" write {{\'ok (drop "wrote" print) \'no (print)}} case'
+        r = subprocess.run(
+            ["./slap"], input=prog, capture_output=True, text=True, timeout=10, preexec_fn=lambda: os.umask(0o022)
+        )
+        os.chmod(p("ro"), 0o755)
+        if r.returncode:
+            return False, r.stderr[-1000:]
+        fails = []
+        if r.stdout != f'"{p("loop")}: Too many levels of symbolic links"\n':
+            fails.append(f"a symlink loop must be refused, got {r.stdout!r}")
+        for path, want in [("t.txt", "new"), ("t2.txt", "rel"), ("made.txt", "made"), ("h1", "hard"), ("h2", "hard"), ("deep.txt", "deep"), ("a" * 250, "long"), (os.path.join("ro", "f"), "ro")]:
+            if open(p(path)).read() != want:
+                fails.append(f"{path} holds {open(p(path)).read()!r}, expected {want!r}")
+        if not all(os.path.islink(p(n)) for n in ("link", "chain", "abs", "dangling", os.path.join("sub", "rel"))):
+            fails.append("a write through a symlink must keep the link")
+        for path, mode in [("t.txt", 0o600), ("made.txt", 0o644)]:
+            if os.stat(p(path)).st_mode & 0o777 != mode:
+                fails.append(f"{path} has mode {oct(os.stat(p(path)).st_mode & 0o777)}, expected {oct(mode)}")
+        r = subprocess.run(
+            ["./slap"],
+            input=q(p("big.txt")) + """ 0 3000 range (drop 107) each write {'ok (drop "wrote" print) 'no (print)} case""",
+            capture_output=True,
+            text=True,
+            timeout=10,
+            preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024)),
+        )
+        if r.stdout != f'"{p("big.txt")}: File too large"\n':
+            fails.append(f"a write past the size limit must give File too large, got {r.stdout!r} {r.stderr[-300:]!r} (exit {r.returncode})")
+        if open(p("big.txt")).read() != "k" * 2000:
+            fails.append(f"a failed write must keep the old bytes; big.txt holds {os.path.getsize(p('big.txt'))} bytes")
+        if os.geteuid() != 0:
+            os.chmod(p("t2.txt"), 0o444)
+            r = subprocess.run(["./slap"], input=q(p("t2.txt")) + """ "x" write {'ok (drop "wrote" print) 'no (print)} case""", capture_output=True, text=True, timeout=10)
+            os.chmod(p("t2.txt"), 0o644)
+            if r.stdout != f'"{p("t2.txt")}: Permission denied"\n' or open(p("t2.txt")).read() != "rel":
+                fails.append(f"a read-only file must be refused and kept, got {r.stdout!r}")
+        left = [n for n in os.listdir(d) + os.listdir(p("ro")) + os.listdir(p("sub")) if n.startswith(".slap")]
+        if left:
+            fails.append(f"temp files left behind: {left}")
+        return not fails, "\n".join(fails)
+    finally:
+        os.chmod(os.path.join(d, "ro"), 0o755)
+        shutil.rmtree(d)
+
+
+# With a TTY on stdin, slap is a shell: it prints the stack after each line, and a
+# line that fails to check or to run is discarded, its bindings and stack changes
+# with it. A box may wait on the stack between lines.
+def shell():
+    import pty
+
+    # (line, the stack after it, or None for a box on top)
+    steps = [
+        ("1 2 plus", "3"),
+        ("dup", "3 3"),
+        ("plus 'x let", "(empty)"),
+        ("x 1 plus", "7"),
+        ('"a" plus', "7"),
+        ("0 div", "7"),
+        ("5 'y let 1 0 div", "7"),
+        ("y", "7"),
+        ("(1 plus) 'inc2 let inc2", "8"),
+        ("inc2 (0 div) 'bad let bad", "8"),
+        ("bad", "8"),
+        ("[1 2 3] (0 div) each", "8"),
+        ("drop 5 box", None),
+        ("1 0 div", None),
+        ("free 0 tcp-listen must", "SOCKET"),
+        ("tcp-close 1 0 div", "SOCKET"),
+        ("tcp-close", "(empty)"),
+        ("1 2", "1 2"),
+    ]
+    master, slave = pty.openpty()
+    p = subprocess.Popen(["./slap"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    os.close(slave)
+    # the last line ends without a newline: ^D sends it, and a second ^D ends the input
+    os.write(master, ("\n".join(line for line, _ in steps)).encode() + b"\x04\x04")
+    try:
+        out, err = p.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        return False, "no answer within 10 s"
+    finally:
+        os.close(master)
+    out, err = out.decode(), err.decode()
+    shown = out.split("> ")
+    got = [x.rstrip("\n") for x in shown[1:-1]]
+    fails = []
+    if p.returncode != 0 or shown[0] != "" or shown[-1] != "\n":
+        fails.append(f"exit {p.returncode}, expected 0 (the last line worked) with a prompt per line and a newline at the end")
+    sock = got[14] if len(got) > 14 else ""
+    for i, (line, w) in enumerate(steps):
+        g = got[i] if i < len(got) else "(nothing)"
+        want = "<box>" if w is None else sock if w == "SOCKET" else w
+        if g != want or (w == "SOCKET" and not g.isdigit()):
+            fails.append(f"after {line!r} the stack is {g!r}, expected {want!r}")
+    # each error names the line as typed, counting discarded lines
+    for msg in ["<stdin>:5 ", "'plus' takes int int", "<stdin>:6:3", "division by zero", "unknown word 'y'", "<stdin>:10:", "<stdin>:16:"]:
+        if msg not in err:
+            fails.append(f"stderr lacks {msg!r}")
+    if "Bad file descriptor" in err:
+        fails.append("a socket closed by a discarded line must stay open")
+    return not fails, "\n".join(fails) + "\nstdout: " + out[-600:] + "\nstderr: " + err[-1500:]
+
+
 def recv_silent_peer():
     port = random.randint(41000, 49000)
     # The listener never accepts: the backlog completes the connection, so the client waits.
@@ -385,6 +527,8 @@ def steps(slow):
             ),
             "errors": ("python3 tests/run_errors.py", None),
             "steady memory": (steady, None),
+            "write replaces a file whole": (write_replaces, None),
+            "shell": (shell, None),
             "profile": (profile, None),
             "deep closure chain": (
                 'echo "(0) 100000 (\'c let (c apply 1 plus)) repeat drop" | ./slap',

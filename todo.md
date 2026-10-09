@@ -1,105 +1,17 @@
-- [ ] serve.slap and wiki.slap answer 500 with the reason for a file they
-      cannot read, and 404 only for a missing one. Today both treat every
-      `read` or `ls` 'no as missing: a mode-000 page answers 404, and wiki
-      offers to create a write-only page, whose save replaces its bytes.
-  1. tests/run_serve.py and run_wiki.py first: a mode-000 file answers 500
-     naming "Permission denied"; a missing one stays 404; a write-only wiki
-     page keeps its bytes.
-  2. serve.slap:175 falls through to the listing only on "Is a directory";
-     serve.slap:95 and wiki.slap:100 answer 404 only on "No such file or
-     directory", as todo.slap and kv-server.slap do. That is the third caller
-     of the test, so it moves into strings.slap as one word.
-
-- [ ] A crash, a full disk or a file size limit during `write` leaves the old
-      file whole. Today `write` opens with "wb", which empties the file before
-      it writes: `(ulimit -f 2; todo add zzz)` cut a 1862-byte todo file to
-      1024 bytes. Decided: `write` replaces a regular file atomically. It
-      writes a temp file made with mkstemp beside the target, gives it the
-      target's mode, fsyncs it, and renames it over the target; on any failure
-      it unlinks the temp and gives `"path: reason" no`. A symlink resolves to
-      its target (realpath), so the link stays. A path that exists and is not a
-      regular file (/dev/null, a FIFO, a directory) is written in place as
-      today; /dev/stdout and /dev/stderr keep their streams. slap ignores
-      SIGXFSZ, so a size limit fails the write with EFBIG instead of killing
-      the process and leaving the temp behind. Tradeoffs: the target's
-      directory must be writable; the owner is not kept; each write costs an
-      fsync.
-  1. Tests first, each checked against the old binary: run_todo.py and
-     run_kv.py write under RLIMIT_FSIZE (preexec_fn) and check that the old
-     bytes survive, the exit is nonzero naming "File too large", and no temp
-     file remains. expect.slap: a write through a symlink keeps the link and
-     changes the target; a mode-0600 file keeps its mode; "/dev/null" still
-     takes a write.
-  2. prim_write in slap.c; `signal(SIGXFSZ, SIG_IGN)` in main.
-  3. readme and claude.md's fallible table say write replaces a file
-     atomically.
-
-- [ ] kv-server refuses a SET that would take its store past the size SAVE
-      can write, and keeps serving. Today SAVE builds the snapshot with
-      dict-entries and a fold beside it, and the fold body's `dup` and `fv`
-      copy each value again: past about 1 MB the stack overflows, the server
-      dies with every change since the last save, and a 1-2 MB snapshot loads
-      but dies at the boot save. Decided: a byte count rides on the stack
-      beside the store (snapshot bytes: each key and value plus TAB and LF);
-      SET, and DEL of a key, update it; a SET past the bound answers `ERR
-      store full: N of B bytes` and changes nothing; load-snapshot refuses a
-      file past the bound with its size.
-  1. Tests first: run_kv.py fills the store to just under the bound with raw
-     sockets, checks SAVE, SHUTDOWN and reboot keep every key, then a SET past
-     the bound answers ERR store full and PING still answers; a snapshot file
-     past the bound is refused, untouched.
-  2. save-snapshot binds each entry once and reads key and value from the
-     binding, so a value is never on the stack twice; then measure the
-     largest store SAVE writes and set the bound below it, with a comment
-     naming the measurement's cause (STACK_MAX, two copies of the text).
-  3. handle-cmd and the accept loop thread `store bytes`; the self-tests
-     follow.
-
-- [ ] A closure stored in an outer frame's binding cannot form a cycle: the
-      checker refuses the binding. Today
-      `( 'k let ( k apply 1 plus) ) 'wr let 0 100000 (drop (0 plus) 3 (wr) repeat 'c let 0) repeat drop`
-      reaches 201 MB: F0's `c` holds C3, whose frame F3 holds C2, ..., F1
-      holds `(0 plus)`, whose frame is F0, so no refcount reaches zero. A
-      cycle can also run through a parent link: a closure made by a body that
-      runs in a child of F, bound in F. Decided: reject in the checker; no
-      collector. Rule: in a body that makes a frame (not the top level, whose
-      frame lives forever), a `let` after the first body literal that the
-      body pushes as a value (not an in-place if, while, dip, case or pthen
-      body; in-place bodies count for the literals inside them) may not bind
-      a value that holds a body. A body written right before `'name let` is a
-      word over this frame, which its own binding holds weakly, so it is not a
-      value here. "Holds a body" is a new bit on type variables, as P_COPY is:
-      the let marks the bound type's variables, the bit spreads into lists,
-      records, dicts, tag payloads and results, and a variable with the bit
-      that meets K_FN is refused at that point, generic instances included.
-      Lets before the first such literal stay free, since nothing made in
-      this frame exists yet: `'d let` of a decoder at the start of a word is
-      fine. The message names the binding and the literal's line and says to
-      bind the value before the body is made, or in a word of its own.
-      Tradeoff: some acyclic programs are refused.
-  1. Measure first: run the rule as a warning over the corpus (examples,
-     libs, expect.slap, scale.slap) and count the sites it refuses. If a
-     library idiom such as json.slap's decoders is refused, stop and bring
-     the count back here before going on.
-  2. Tests first, each checked against the old binary: errors.slap gets the
-     program above and a parent-link cycle (a nested binding body returns a
-     closure that the outer body binds); expect.slap gets `'d let` before a
-     literal, and a word bound after a literal.
-  3. Checker: the taint point per frame-making body in ty_range, the bit in
-     ty_bind/ty_need beside P_COPY, the message.
-  4. Breaker and fuzz rounds on the ASan build, with the memory watchdog.
-     readme's closures section and claude.md's Frames paragraph say a cycle
-     cannot form.
-
-- [ ] You type slap at a prompt in the terminal and see the stack after each
-      line ("a nice slap shell"). Decided: there are two shells, one in the
-      terminal and one in sauce (below). Both run one loop in slap.c, so the
-      slap-sdl and wasm builds of sauce get it free; slap.swift needs its own
-      copy. The terminal shell comes first. An error discards its line: the
-      stack and the global bindings return to their state before the line;
-      output the line already wrote stays.
-  1. `./slap` with a TTY on stdin reads lines. The checker's stack type and
-     the global frame persist across lines. An error discards only its line.
+- [ ] A kv-server request line is held to one limit however it arrives: a
+      head of at most 4095 bytes before LF, a trailing CR not counted, whole
+      or in TCP segments. Today recv-line stops once its buffer holds 4096
+      bytes with no LF, so a 4095-byte head with CRLF is refused when sent
+      whole and accepted when the CR and LF arrive in a later segment. Both
+      results are safe (an accepted line still loads from the snapshot); the
+      limit is just not one rule. Three breaker rounds in a row found a limit
+      case here, so fix the rule, not the next case.
+  1. Tests first in run_kv.py: heads of 4094, 4095 and 4096 bytes, LF and
+     CRLF, sent whole and cut at every byte from 4093 to 4097; 4095 is
+     accepted and 4096 refused in every case.
+  2. recv-line reads until LF or until its buffer passes LINE-CAP + 1 (a
+     head, CR and LF); handle-conn refuses a head of LINE-CAP or more after
+     line-head strips the CR.
 
 - [ ] You build a literal from names bound at runtime: `{'x x 'y y}`,
       `[i i] insert` and `[ 1 mk ]` work. Today a `[...]` or `{...}` literal
@@ -118,7 +30,8 @@
      built on every `case` before going on.
   3. Checker: a literal's code is ordinary code on an empty stack. Delete
      ty_literal, ty_lit_depth, tyb_visible, the VF_DICT copy and their
-     messages.
+     messages. A body in a literal then closes over the running frame, so it
+     sets ty_taint as any other body does (today `!ty_literal` exempts it).
   4. into becomes replace-only; delete K_PRE and K_ABS. Then the tag-payload
      task below has one row shape.
   5. Breaker and fuzz rounds on the ASan build. readme and claude.md (Records,
@@ -271,6 +184,19 @@
   9. Then tic80 on the same lua.slap; duskos and decker after.
 
 ## Blocked on you
+
+- [ ] A word may bind, after it makes a body, a body its caller passed in. The
+      cycle rule (`ty_taint`, `ty_no_body`) is sound: a breaker round found no
+      accepted program that leaks. It refuses some programs that cannot
+      cycle, all of one kind, a body that came from the caller and is bound
+      again after the word's first literal: `( 'f let 0 3 (0 plus) repeat
+      drop f 'g let g apply ) 'go let`, and a generic word that binds its
+      input after a literal cannot then take a body. The corpus has none.
+      Decide: keep the strict rule, or track where a body came from (a value
+      bound from the word's input before its first literal stays a caller's
+      body through copies), which needs a provenance mark on types.
+  1. If tracked: the breaker's three false refusals become expect.slap
+     passes, and the cycle cases in errors.slap stay errors.
 
 - [ ] A decoder tells a missing optional field from a present but malformed
       one. `jd-maybe`/`xd-maybe` turn every failure into `none ok`:

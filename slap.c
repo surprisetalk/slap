@@ -11,6 +11,9 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
+#include <signal.h>
+#include <limits.h>
+#include <setjmp.h>
 #ifndef SLAP_WASM
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -79,7 +82,8 @@ static int          src_line_count[SRC_MAX] = { 0 };
 static uint64_t current_loc = LOC_PACK(FID_STDIN, 0, 0);
 static void print_stack_summary(FILE *out);
 static void store_source_lines(const char *src, int fid) {
-    src_text[fid] = strdup(src);
+    free(src_text[fid]); free(src_lines[fid]); /* the shell stores its whole history again for every line */
+    src_text[fid] = strdup(src); if (!src_text[fid]) { fprintf(stderr, "slap: out of memory storing %zu bytes of source\n", strlen(src)); exit(1); }
     int count = 1; for (const char *p = src_text[fid]; *p; p++) if (*p == '\n') count++;
     src_lines[fid] = malloc(count * sizeof(char *)); src_line_count[fid] = 0;
     char *p = src_text[fid];
@@ -95,9 +99,21 @@ static void print_source_line(FILE *out, int fid, int line, int col) {
     if (col > 0) { fprintf(out, "          "); if (from) fprintf(out, "[%zu bytes cut] ", from); for (size_t i = from; i + 1 < (size_t)col; i++) fputc(' ', out); fprintf(out, "^^^\n"); }
 }
 static uint64_t user_loc;
+/* Set while the shell runs a line: an error discards the line instead of ending the process. */
+static jmp_buf *shell_jmp;
+static int dying;
+/* The sockets the shell's line opened (fd+1) and closed (-(fd+1)). A kept line closes what it closed
+   then; a discarded line closes only what it opened, so each socket on the restored stack stays open. */
+static int *shell_socks, shell_socks_n, shell_socks_cap;
+static void shell_sock(int ev) {
+    if (shell_socks_n == shell_socks_cap) { shell_socks_cap = shell_socks_cap ? 2*shell_socks_cap : 16;
+        shell_socks = realloc(shell_socks, (size_t)shell_socks_cap * sizeof *shell_socks);
+        if (!shell_socks) die("shell: out of memory noting %d sockets", shell_socks_cap); }
+    shell_socks[shell_socks_n++] = ev;
+}
 __attribute__((noreturn))
 static void die(const char *fmt, ...) {
-    static int dying = 0; if (LOC_FID(current_loc) == FID_PRELUDE && user_loc) current_loc = user_loc;
+    if (LOC_FID(current_loc) == FID_PRELUDE && user_loc) current_loc = user_loc;
     int fid = LOC_FID(current_loc), line = LOC_LINE(current_loc), col = LOC_COL(current_loc);
     const char *f = src_files[fid];
     va_list ap; va_start(ap, fmt);
@@ -108,6 +124,7 @@ static void die(const char *fmt, ...) {
     fprintf(stderr, "\n\n    "); vfprintf(stderr, fmt, ap); fprintf(stderr, "\n\n");
     print_source_line(stderr, fid, line, col); va_end(ap);
     if (!dying) { dying = 1; print_stack_summary(stderr); fprintf(stderr, "\n"); }
+    if (shell_jmp) { dying = 0; longjmp(*shell_jmp, 1); }
     exit(1);
 }
 static Value stack[STACK_MAX];
@@ -158,6 +175,7 @@ static void lex(const char *src, int fid) {
         if (isspace((unsigned char)*p)) { col++; p++; continue; }
         if (p[0] == '-' && p[1] == '-') { while (*p && *p != '\n') { col++; p++; } continue; }
         if (tok_count >= tok_limit) { current_loc = LOC_PACK(fid, 0, 0); if (fid != FID_STDIN) die("a built-in source has more than %d tokens; the limit is TOK_MAX. Raise TOK_MAX.", tok_limit);
+            if (shell_jmp) die("the shell's lines hold more than %d tokens, the most a program holds. Start a new session.", tok_limit);
             die("the program has more than %d tokens; the limit is %d (TOK_MAX minus %d for the prelude). Split the program.", tok_limit, tok_limit, TOK_MAX-tok_limit); }
         Token *t = &tokens[tok_count];
         t->line = line; t->col = col; t->fid = fid; current_loc = LOC_PACK(fid, line, col);
@@ -572,7 +590,8 @@ enum { K_VAR, K_INT, K_FLOAT, K_SYM, K_LIST, K_DICT, K_BOX, K_SOCK, K_FN, K_REC,
 /* What a value variable must be: protocols a word asks of its inputs. */
 /* copy: the value may be copied, dropped, bound or stored. A box is not, nor a result or tag that
    holds one; the stack carries it from the word that makes it to the word that frees it. */
-enum { P_COPY = 1 };
+/* P_NOFN: holds no body (ty_no_body). */
+enum { P_COPY = 1, P_NOFN = 2 };
 /* rigid: a signature's variable while a body is checked against it. sealed: the stack below a body
    that must not reach it (`each`, `edit`); instances keep it. */
 typedef struct { uint8_t kind, prot, rigid, sealed; int level, a, b, c, link; uint32_t sym; } Ty;
@@ -661,7 +680,8 @@ static void ty_show(char *out, size_t cap, int t, int depth) {
     if (depth > 8 || ++ty_show_calls > 2000) { snprintf(out, cap, "..."); return; }
     t = ty_find(t); char a[256], b[256];
     switch (ty[t].kind) {
-    case K_VAR: { ty_print_var(out, cap, t, '\''); if (ty[t].prot) { size_t l = strlen(out); snprintf(out + l, cap - l, " copyable"); } return; }
+    case K_VAR: { ty_print_var(out, cap, t, '\''); size_t l = strlen(out);
+        snprintf(out + l, cap - l, "%s%s", ty[t].prot & P_COPY ? " copyable" : "", ty[t].prot & P_NOFN ? " no-body" : ""); return; }
     case K_INT: snprintf(out, cap, "int"); return;
     case K_FLOAT: snprintf(out, cap, "float"); return;
     case K_SYM: snprintf(out, cap, "sym"); return;
@@ -720,6 +740,7 @@ static int ty_occurs(int v, int t, int level) {
 static int ty_unify(int a, int b);
 static int ty_unify_at(int a, int b, int depth);
 static int ty_copy_parts(int t);
+static int ty_no_body(int t);
 static int ty_tag_payload(uint32_t tag);
 static int ty_fixed(int v) { return ty[v].rigid || ty[v].sealed; }
 /* A compound kind by name, for a message where the full type would read as another type (`int list`
@@ -752,12 +773,16 @@ static int ty_bind(int v, int t) {
         else if (ty[v].kind == K_RVAR) snprintf(ty_why, sizeof ty_why, "a record would have to contain itself: one path adds a field the other has not");
         else { char s[256]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a value would have to contain itself, as %s", s); }
         return 1; }
-    if ((ty[v].kind == K_VAR || ty[v].kind == K_TVAR) && ty[v].prot) {
+    if ((ty[v].kind == K_VAR || ty[v].kind == K_TVAR || ty[v].kind == K_RVAR) && ty[v].prot) {
         if (ty[t].kind == ty[v].kind && ty_fixed(t) && (ty[v].prot & ~ty[t].prot)) {
-            snprintf(ty_why, sizeof ty_why, "the body needs a copyable value where the signature allows any type"); return 1; }
+            snprintf(ty_why, sizeof ty_why, ty[v].prot & ~ty[t].prot & P_COPY ? "the body needs a copyable value where the signature allows any type"
+                : "a value bound with let after a body was made in its scope cannot hold a body, but the signature allows one here"); return 1; }
         if (ty[t].kind == ty[v].kind) ty[t].prot |= ty[v].prot;
         else {
             int need = ty[v].prot;
+            /* before the link, so a message shows the variable that refused t */
+            if ((need & P_NOFN) && ty_no_body(t)) return 1;
+            need &= ~P_NOFN;
             ty[v].link = t;
             if ((need & P_COPY) && (ty[t].kind == K_RES || ty[t].kind == K_TAG || ty[t].kind == K_TEXT || ty[t].kind == K_TNIL)) {
                 if (ty_copy_parts(t)) return 1;
@@ -791,6 +816,26 @@ static int ty_copy_parts(int t) {
         if (ty_fixed(r) && !(ty[r].prot & P_COPY)) { snprintf(ty_why, sizeof ty_why, "the body needs a copyable value where the signature allows any tagged value"); return 1; }
         ty[r].prot |= P_COPY; }
     return 0;
+}
+/* t holds no body. A let binds such a value after its scope made a body (ty_taint): a body made in a
+   scope keeps that scope's names alive, so a binding there that holds one could keep itself alive and
+   never be freed. Variables, open rows and open tag sets take P_NOFN, so a later binding cannot add a
+   body either. A term's own P_NOFN marks it checked, so a tag whose payload holds the same tag ends. */
+static int ty_no_body(int t) {
+    c_stack_check("while checking what a value holds");
+    t = ty_find(t);
+    if (ty[t].prot & P_NOFN) return 0;
+    switch (ty[t].kind) {
+    case K_FN: snprintf(ty_why, sizeof ty_why, "a value bound with let after a body was made in its scope cannot hold a body, since the binding could keep its own scope alive"); return 1;
+    case K_VAR: case K_TVAR: case K_RVAR:
+        if (ty_fixed(t)) { snprintf(ty_why, sizeof ty_why, "a value bound with let after a body was made in its scope cannot hold a body, but the signature allows one here"); return 1; }
+        ty[t].prot |= P_NOFN; return 0;
+    case K_LIST: case K_DICT: case K_BOX: case K_REC: case K_PRE: case K_TAG: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].a);
+    case K_RES: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].a) || ty_no_body(ty[t].b);
+    case K_REXT: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].b) || ty_no_body(ty[t].c);
+    case K_TEXT: ty[t].prot |= P_NOFN; return ty_no_body(ty_tag_payload(ty[t].sym)) || ty_no_body(ty[t].c);
+    default: return 0;
+    }
 }
 static int ty_row_take(int r, uint32_t label, int *field, int *rest, int depth);
 static int ty_tag_take(int s, uint32_t tag, int *rest, int depth);
@@ -1284,15 +1329,23 @@ static int ty_subst_at(int t, int v, int w, int stamp, int depth) {
     ty_mark[t] = stamp; ty_to[t] = r; return r;
 }
 static int ty_subst(int t, int v, int w) { return ty_subst_at(t, v, w, ++ty_stamp, 0); }
+/* The line where the body being checked first pushed a body as a value, or 0: from there its frame
+   may be kept by a closure, so a let there may not bind a value that holds a body (ty_no_body). An
+   in-place body (if, while, dip, pthen, case clauses) is part of the body around it; any other body
+   starts its own count (ty_taint_new). The top level's frame is never freed. */
+static int ty_taint, ty_taint_new;
 /* in: the stack a signature says the body takes, or 0 for any. */
 static int ty_body(Token *toks, int open, int close, int in) {
+    int own = ty_taint_new, taint = ty_taint; ty_taint_new = 0; if (own) ty_taint = 0;
     /* a body inside a literal runs later, so it may use names bound when the program runs: the top level's */
     int saved = ty_cur, mark = tyb_n, lit = ty_literal, lit_depth = ty_lit_depth; ty_cur = in ? in : ty_new(K_SVAR, 0, 0, 0); in = ty_cur;
     c_stack_check("while checking nested bodies");
     if (lit) ty_lit_depth = ty_body_depth;
     ty_body_depth++; ty_literal = 0; ty_range(toks, open + 1, close); ty_literal = lit; ty_body_depth--; ty_lit_depth = lit_depth;
     ty_undefined(mark);
-    int fn = ty_new(K_FN, in, ty_cur, 0); ty_cur = saved; tyb_n = mark; return fn;
+    int fn = ty_new(K_FN, in, ty_cur, 0); ty_cur = saved; tyb_n = mark;
+    if (own) ty_taint = taint;
+    return fn;
 }
 /* `(body) [sig] effect 'name let`: a word. Inside its body the word has one type (or its declared
    one); after, the type generalizes. */
@@ -1419,6 +1472,13 @@ static void ty_range(Token *toks, int i, int end) {
         case TOK_SYM: { int y = ty_new(K_SYM, 0, 0, 0); ty[y].sym = t->as.sym + 1; ty_push(y); break; }
         case TOK_LPAREN: {
             int close = i + t->span, nm = close + 1, sig_open = 0, sig_close = 0;
+            /* runs in place, as eval_run decides: `(b) dip`, `(b) pthen`, `(t) (e) if`, `(p) (b) while` */
+            int pair = close + 1 < end && toks[close+1].tag == TOK_LPAREN ? close + 1 + toks[close+1].span + 1 : -1;
+            int inplace = (close + 1 < end && (ty_word_is(&toks[close+1], "dip") || ty_word_is(&toks[close+1], "pthen")))
+                || (pair > 0 && pair < end && (ty_word_is(&toks[pair], "if") || ty_word_is(&toks[pair], "while")))
+                || (close + 1 < end && i > 0 && toks[i-1].tag == TOK_RPAREN && (ty_word_is(&toks[close+1], "if") || ty_word_is(&toks[close+1], "while")));
+            /* a literal's bodies are built when the program is read, in the global frame */
+            if (!inplace) { if (!ty_literal && !ty_taint) ty_taint = line; ty_taint_new = 1; }
             if (nm < end && toks[nm].tag == TOK_LBRACKET && nm + toks[nm].span + 1 < end && ty_word_is(&toks[nm + toks[nm].span + 1], "effect")) {
                 sig_open = nm; sig_close = nm + toks[nm].span; nm = sig_close + 2; }
             if (nm + 1 < end && toks[nm].tag == TOK_SYM && toks[nm+1].tag == TOK_WORD && toks[nm+1].as.sym == S_LET) {
@@ -1487,6 +1547,8 @@ static void ty_range(Token *toks, int i, int end) {
                 if (ty_literal) ty_err(line, "a [...] or {...} literal is built when the program is read, so it cannot bind names: a let inside it would bind '%s for the whole program. Bind it outside the literal.", sym_name(toks[i-1].as.sym));
                 ty_pop(); int v = ty_pop();
                 if (ty_need(v, P_COPY)) ty_err(line, "'%s' cannot be let-bound: %s. Keep it on the stack.", sym_name(toks[i-1].as.sym), ty_why);
+                else if (ty_taint && ty_body_depth > 0 && ty_no_body(v))
+                    ty_err(line, "'%s' is bound after the body on line %d, and it holds a body: %s. Bind it before that body is made, or in a word of its own.", sym_name(toks[i-1].as.sym), ty_taint, ty_why);
                 ty_redefined(toks[i-1].as.sym, line, 0); tyb_push(toks[i-1].as.sym, v, 0, line); break;
             }
             if (w == S_TAG) {
@@ -1628,7 +1690,15 @@ static void ty_read_table(Token *toks, int n) {
         ty_table_copy(t, &toks[i]); ty_generalize(t); ty_builtin[toks[i].as.sym] = t; i = close + 1;
     }
 }
+/* The shell keeps values on the stack between lines, so its program may end on a box. */
+static int ty_shell;
 static int infer_program(Token *table, int table_n, Token *toks, int count, int user_start) {
+    /* Each call starts clean: the shell checks every line again with the lines before it. */
+    ty_n = 1; ty_level = 0; ty_links_n = 0; ty_memo_n = 0; ty_slot_rest = 0; ty_rigid_n = 0; ty_rec_n = 0;
+    tyb_n = 0; tyb_prelude = 0; ty_body_depth = 0; ty_lit_depth = -1; ty_in_prelude = 0; ty_literal = 0;
+    ty_errors = 0; ty_on_n = 0; ty_shown = 0; ty_rigid_rest = 0; ty_depth_why = 0; ty_print_count = 0; ty_taint = 0; ty_taint_new = 0;
+    memset(ty_builtin, 0, sizeof ty_builtin); memset(ty_tagpay, 0, sizeof ty_tagpay);
+    if (ty_pending) memset(ty_pending, 0, (size_t)ty_pending_cap * sizeof *ty_pending);
     ty_read_table(table, table_n);
     ty_cur = ty_new(K_SNIL, 0, 0, 0);
     ty_tok_end = count;
@@ -1637,7 +1707,7 @@ static int infer_program(Token *table, int table_n, Token *toks, int count, int 
     ty_range(toks, user_start, count);
     ty_undefined(tyb_prelude);
     /* after an error the stack's types may be made up, so the end is checked only when nothing failed */
-    for (int x = ty_find(ty_cur), hops = -ty_n; !ty_errors && ty[x].kind == K_SCONS; x = ty_rest(x, &hops))
+    for (int x = ty_find(ty_cur), hops = -ty_n; !ty_errors && !ty_shell && ty[x].kind == K_SCONS; x = ty_rest(x, &hops))
         if (ty_need(ty[x].a, P_COPY)) { ty_err(LOC_LINE(current_loc), "the program ends with a value left on the stack that is never freed: %s.", ty_why); break; }
     return ty_errors;
 }
@@ -2612,18 +2682,73 @@ static void prim_read(Frame *e) {
     if(bad) { free(buf); push_path_fail(path,plen,er?strerror(er):"the read did not finish"); free(path); return; }
     stack_room((int)n+2,"read"); push_byte_list(buf,n);free(buf);free(path); push_ok();
 }
+/* Linux's own limit on symlinks met while resolving one path. */
+#define LINK_HOPS_MAX 40
+/* Read once in main: reading the umask means setting it, which races with SDL's threads. */
+static mode_t file_umask;
+/* As fopen "wb" writes: in place, so a failure leaves a short file. Returns 0, or -1 with errno set. */
+static int write_in_place(const char *path, const unsigned char *buf, int len) {
+    FILE *f = fopen(path, "wb"); if (!f) return -1;
+    errno = 0; int bad = (int)fwrite(buf, 1, len, f) != len; bad |= fclose(f) != 0;
+    /* C does not require fwrite or fclose to set errno */
+    if (bad && !errno) errno = EIO;
+    return bad ? -1 : 0;
+}
+/* write replaces a regular file whole: the bytes go to a hidden temp file in its directory, which is
+   renamed over it, so a crash, a full disk or a size limit leaves the old file. A symlink resolves to
+   its target, so the link stays, and a dangling one creates its target. The replacement keeps the
+   mode and group. Where it could not match the old file (another owner, a second hard link, a
+   directory the user may not write, a group or mode the filesystem refuses) or the temp path passes
+   PATH_MAX, the write goes in place,
+   as it does for a device, a FIFO or a directory. Returns 0, or -1 with errno set. */
+static int write_atomic(const char *path, const unsigned char *buf, int len) {
+    char *target = strdup(path), *tmp = NULL, link[PATH_MAX]; struct stat st; int exists = 1, fd = -1, er = 0;
+    if (!target) die("write: out of memory for the path %s", path);
+    for (int hops = 0;; hops++) {
+        if (lstat(target, &st) < 0) { if (errno != ENOENT) { er = errno; goto fail; } exists = 0; break; }
+        if (!S_ISLNK(st.st_mode)) break;
+        if (hops == LINK_HOPS_MAX) { er = ELOOP; goto fail; }
+        ssize_t n = readlink(target, link, sizeof link - 1);
+        if (n < 0 || n == (ssize_t)sizeof link - 1) { er = n < 0 ? errno : ENAMETOOLONG; goto fail; }
+        link[n] = 0;
+        char *slash = strrchr(target, '/'); size_t dl = link[0] == '/' || !slash ? 0 : (size_t)(slash - target) + 1;
+        char *next = malloc(dl + (size_t)n + 1); if (!next) die("write: out of memory resolving the symlink %s", target);
+        memcpy(next, target, dl); memcpy(next + dl, link, (size_t)n + 1); free(target); target = next;
+    }
+    if (exists && (!S_ISREG(st.st_mode) || st.st_nlink > 1 || st.st_uid != geteuid())) goto in_place;
+    /* rename needs only the directory's permission: a file the user may not write stays as it is. */
+    if (exists && access(target, W_OK)) { er = errno; goto fail; }
+    char *slash = strrchr(target, '/'); size_t dl = slash ? (size_t)(slash - target) + 1 : 0;
+    if (!(tmp = malloc(dl + 12))) die("write: out of memory for a temp name beside %s", target);
+    memcpy(tmp, target, dl); memcpy(tmp + dl, ".slapXXXXXX", 12);
+    /* A directory the user may not write, or a temp path past PATH_MAX: in place still works, or gives the reason. */
+    if ((fd = mkstemp(tmp)) < 0) { er = errno; free(tmp); tmp = NULL; if (er == EACCES || er == EPERM || er == ENAMETOOLONG) goto in_place; goto fail; }
+    if (fchmod(fd, exists ? st.st_mode & 0777 : 0666 & ~file_umask) || (exists && fchown(fd, (uid_t)-1, st.st_gid))) {
+        er = errno; if (exists) { close(fd); unlink(tmp); free(tmp); goto in_place; } goto fail; }
+    for (int off = 0; off < len; ) { ssize_t w = write(fd, buf + off, (size_t)(len - off)); if (w < 0 && errno != EINTR) { er = errno; goto fail; } if (w > 0) off += (int)w; }
+    /* Data first, then the name. On macOS fsync leaves the drive's cache, so a power loss there can still lose the write. */
+    if (fsync(fd)) { er = errno; goto fail; }
+    int closed = close(fd); fd = -1; if (closed) { er = errno; goto fail; }
+    if (rename(tmp, target)) { er = errno; goto fail; }
+    free(tmp); free(target); return 0;
+in_place:
+    free(target);
+    return write_in_place(path, buf, len);
+fail:
+    if (fd >= 0) close(fd);
+    if (tmp) unlink(tmp);
+    free(tmp); free(target); errno = er; return -1;
+}
 static void prim_write(Frame *e) {
     (void)e; int len;unsigned char *buf=pop_byte_list_buf("write",&len);int plen;char *path=pop_string_path("write",&plen);
     if(path_has_nul(path,plen)){free(buf);free(path);return;}
     /* Opening /dev/stdout again would skip what print still buffers, and on Linux it truncates a
        file the shell redirected stdout to. Write through the process's own streams instead. */
     FILE *std=strcmp(path,"/dev/stdout")==0?stdout:strcmp(path,"/dev/stderr")==0?stderr:NULL;
-    if(std==stderr) fflush(stdout);
-    FILE *f=std?std:fopen(path,"wb");if(!f){int er=errno;free(buf);push_path_fail(path,plen,strerror(er));free(path);return;}
-    errno=0; size_t n=fwrite(buf,1,len,f); int short_write=(int)n!=len, er=short_write?errno:0;
-    int closed=std?fflush(f):fclose(f); if(closed&&!er) er=errno;
-    /* C does not require fwrite or fclose to set errno */
-    if(short_write||closed){free(buf);push_path_fail(path,plen,er?strerror(er):"the write did not finish");free(path);return;}
+    int failed;
+    if(std){ if(std==stderr) fflush(stdout); errno=0; failed=(int)fwrite(buf,1,len,std)!=len||fflush(std); if(failed&&!errno) errno=EIO; }
+    else failed=write_atomic(path,buf,len)<0;
+    if(failed){int er=errno;free(buf);push_path_fail(path,plen,strerror(er));free(path);return;}
     free(buf);free(path); spush(val_int(1)); push_ok();
 }
 static void prim_ls(Frame *e) {
@@ -2687,7 +2812,7 @@ static void prim_tcp_connect(Frame *e) {
     }
     freeaddrinfo(res);
     if(fd<0){if(last==ETIMEDOUT)snprintf(msg,sizeof msg,"tcp-connect: %s:%s timed out after 10 s",host,ps);else snprintf(msg,sizeof msg,"tcp-connect: cannot connect to %s:%s: %s",host,ps,strerror(last));free(host);push_fail(msg);return;}
-    free(host);spush(val_int(fd));push_ok();
+    free(host); if(shell_jmp) shell_sock(fd+1); spush(val_int(fd));push_ok();
 }
 static void prim_tcp_send(Frame *e) {
     (void)e; int len; unsigned char *buf = pop_byte_list_buf("tcp-send", &len);
@@ -2718,18 +2843,36 @@ static void prim_tcp_recv(Frame *e) {
     if (n < 0) { push_fail(errno == EAGAIN || errno == EWOULDBLOCK ? "timed out after 30 s" : strerror(errno)); return; }
     push_byte_list(buf, n); push_ok();
 }
-static void prim_tcp_close(Frame *e) { (void)e; int fd=(int)pop_int(); if(close(fd)) die("tcp-close: closing socket %d failed: %s", fd, strerror(errno)); }
+static void prim_tcp_close(Frame *e) { (void)e; int fd=(int)pop_int(); if(shell_jmp){shell_sock(-(fd+1));return;} if(close(fd)) die("tcp-close: closing socket %d failed: %s", fd, strerror(errno)); }
 static void prim_tcp_listen(Frame *e) {
     (void)e; int64_t port=pop_int(); if(port<0||port>65535) die("tcp-listen: port %lld is outside 0-65535",(long long)port);
     int fd=socket(AF_INET,SOCK_STREAM,0); if(fd<0){push_fail(strerror(errno));return;}
     int opt=1;setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
     struct sockaddr_in addr={0};addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(0x7f000001);addr.sin_port=htons((uint16_t)port);
     if(bind(fd,(struct sockaddr*)&addr,sizeof(addr))<0||listen(fd,128)<0){char msg[128];snprintf(msg,sizeof msg,"tcp-listen: port %lld: %s",(long long)port,strerror(errno));close(fd);push_fail(msg);return;}
-    spush(val_int(fd));push_ok();
+    if(shell_jmp) shell_sock(fd+1); spush(val_int(fd));push_ok();
 }
+/* A client that resets before tcp-accept is done with it: accept fails with ECONNABORTED or EPROTO
+   (Linux passes pending network errors through; see accept(2)) or EINVAL while the socket still
+   listens, or accept succeeds and macOS then refuses socket options on it with EINVAL or ECONNRESET.
+   That connection is gone, and the next accept waits for another, so tcp-accept takes the next one. */
+static int accept_aborted(int sfd, int er, int accepted) {
+    if (accepted) return er == EINVAL || er == ECONNRESET;
+    if (er == ECONNABORTED || er == EPROTO) return 1;
+    int on = 0; socklen_t l = sizeof on;
+    return er == EINVAL && getsockopt(sfd, SOL_SOCKET, SO_ACCEPTCONN, &on, &l) == 0 && on;
+}
+/* More aborted clients in a row than a flood of hours makes: only a fault of the host reaches it. */
+#define ACCEPT_ABORTS_MAX 1000000L
 static void prim_tcp_accept(Frame *e) {
-    (void)e; int sfd=(int)pop_int(); struct sockaddr_in ca; socklen_t al=sizeof(ca);
-    int cfd=accept(sfd,(struct sockaddr*)&ca,&al); if(cfd<0){spush(val_int(sfd));push_fail(strerror(errno));return;} spush(val_int(sfd)); if(sock_setup(cfd)<0){int er=errno;close(cfd);push_fail(strerror(er));return;} spush(val_int(cfd)); push_ok();
+    (void)e; int sfd=(int)pop_int(); spush(val_int(sfd));
+    for(long aborts=0;;){
+        struct sockaddr_in ca; socklen_t al=sizeof(ca);
+        int cfd=accept(sfd,(struct sockaddr*)&ca,&al), er=errno;
+        if(cfd>=0){ if(sock_setup(cfd)==0){ if(shell_jmp) shell_sock(cfd+1); spush(val_int(cfd)); push_ok(); return; } er=errno; close(cfd); }
+        if(!accept_aborted(sfd,er,cfd>=0)){ push_fail(strerror(er)); return; }
+        if(++aborts==ACCEPT_ABORTS_MAX){ char msg[160]; snprintf(msg,sizeof msg,"%ld clients in a row reset before accept; the last: %s",aborts,strerror(er)); push_fail(msg); return; }
+    }
 }
 #endif
 static inline void prim_strfind_impl(Frame *e, int tagged) {
@@ -2795,6 +2938,93 @@ static void register_prims(void) {
 #undef R
 #undef M
 
+/* A word the checker knows but this build lacks (SDL words in ./slap, tcp-* in wasm) stops the
+   program before anything runs. */
+static void refuse_missing_words(Token *toks, int n) {
+    for(int i=0;i<n;i++){Token*t=&toks[i]; uint32_t w=t->as.sym;
+        if(t->tag!=TOK_WORD||prim_fns[w]||!(ty_builtin[w]||w==S_ON||w==S_SHOW)) continue;
+        current_loc=LOC_PACK(t->fid,t->line,t->col);
+#ifdef SLAP_WASM
+        die("'%s' is not in the wasm build: a browser has no TCP sockets. Remove the tcp-* words from this program.",sym_name(w));
+#else
+        die("'%s' needs the SDL build, but this is the terminal build. Build it with make slap-sdl and run ./slap-sdl.",sym_name(w));
+#endif
+    }
+}
+#ifndef SLAP_WASM
+/* The stack on one line, bottom first, or (empty). */
+static void shell_show_stack(void) {
+    if (!sp) { puts("(empty)"); return; }
+    int n = 0; for (int p = sp; p > 0; p -= val_slots(stack[p-1])) n++;
+    int *ends = malloc((size_t)n * sizeof *ends); if (!ends) die("shell: out of memory listing %d values", n);
+    for (int p = sp, k = n; p > 0; p -= val_slots(stack[p-1])) ends[--k] = p;
+    for (int k = 0, start = 0; k < n; start = ends[k++]) { if (k) putchar(' '); val_print(&stack[start], ends[k] - start, stdout); }
+    putchar('\n'); free(ends);
+}
+/* The shell: reads a line at a time from a terminal, checks it after the lines it accepted before,
+   runs it, and prints the stack. A line that fails to check or to run is discarded: the stack, the
+   global bindings and the sockets on the stack go back to what they were before it; files and
+   network I/O it did stay done. Names are never bound twice, so a line only adds global bindings,
+   and trimming the frame undoes it. A discarded line stays in the history as an empty line, so
+   messages give line numbers as typed. Returns the last line's exit status. */
+static int shell(Token *table, int table_count, Token *combined, int prelude_n) {
+    char *line = NULL, *hist = strdup(""); size_t lcap = 0, hlen = 0; int hist_toks = 0, failed = 0;
+    if (!hist) die("shell: out of memory");
+    ty_shell = 1;
+    for (;;) {
+        fputs("> ", stdout); fflush(stdout);
+        ssize_t n = getline(&line, &lcap, stdin);
+        if (n < 0) { if (ferror(stdin)) die("shell: cannot read the terminal: %s", strerror(errno)); break; }
+        const char *bad = memchr(line, 0, (size_t)n) ? "the line holds a NUL byte; a slap program is text"
+            : hlen + (size_t)n + 1 > (size_t)16 << 20 ? "the session passed 16 MiB of input, the most a program holds; start a new one" : NULL;
+        /* a line ended by ^D, not a newline, still ends here */
+        int nl = n == 0 || line[n-1] != '\n';
+        char *src = malloc(hlen + (size_t)n + 2); if (!src) die("shell: out of memory for %zu bytes of input", hlen + (size_t)n);
+        memcpy(src, hist, hlen); memcpy(src + hlen, line, (size_t)n); if (nl) src[hlen + (size_t)n] = '\n'; src[hlen + (size_t)n + (size_t)nl] = 0;
+        int sp0 = sp, binds0 = global_frame->bind_count;
+        Value *snap = malloc((size_t)(sp0 ? sp0 : 1) * sizeof(Value)); if (!snap) die("shell: out of memory copying the stack");
+        deep_copy_values(snap, stack, sp0);
+        volatile int ok = 0, died = 0, toks = 0; jmp_buf jb; shell_socks_n = 0;
+        if (bad) fprintf(stderr, "shell: %s\n", bad);
+        else if (!setjmp(jb)) {
+            shell_jmp = &jb;
+            store_source_lines(src, FID_STDIN);
+            tok_limit = TOK_MAX - prelude_n; lex(src, FID_STDIN); toks = tok_count;
+            memcpy(&combined[prelude_n], tokens, (size_t)tok_count * sizeof(Token));
+            int errors = infer_program(table, table_count, combined, prelude_n + toks, prelude_n);
+            if (errors) fprintf(stderr, "%d type error(s)\n", errors);
+            else {
+                refuse_missing_words(&combined[prelude_n + hist_toks], toks - hist_toks);
+                current_loc = LOC_PACK(FID_STDIN, 0, 0);
+                eval(&combined[prelude_n + hist_toks], toks - hist_toks, global_frame);
+                ok = 1;
+            }
+        } else died = 1;
+        shell_jmp = NULL;
+        if (ok) {
+            for (int k = 0; k < shell_socks_n; k++) if (shell_socks[k] < 0 && close(-shell_socks[k] - 1)) die("tcp-close: closing socket %d failed: %s", -shell_socks[k] - 1, strerror(errno));
+            deep_free_values(snap, sp0); free(snap); free(hist); hist = src; hlen = strlen(src); hist_toks = toks;
+        } else {
+            if (died) {
+                /* What the line left on the stack and the aux stack is dropped unfreed: after an error it may be half moved. */
+                for (int k = 0; k < shell_socks_n; k++) if (shell_socks[k] > 0) close(shell_socks[k] - 1);
+                asp = 0; staged_n = 0; eval_depth = 0; user_loc = 0;
+                VCPY(stack, snap, sp0); sp = sp0;
+                frame_trim(global_frame, binds0);
+                /* a word the error left running stays pinned; nothing runs between lines */
+                for (int b = 0; b < global_frame->bind_cap; b++) global_frame->bindings[b].pinned = 0;
+            } else deep_free_values(snap, sp0);
+            free(snap); free(src);
+            char *h = realloc(hist, hlen + 2); if (!h) die("shell: out of memory");
+            hist = h; hist[hlen++] = '\n'; hist[hlen] = 0; store_source_lines(hist, FID_STDIN);
+        }
+        failed = !ok;
+        shell_show_stack(); fflush(stdout);
+    }
+    putchar('\n');
+    return failed;
+}
+#endif
 int main(int argc, char **argv) {
     char stack_anchor; c_stack_base = &stack_anchor;
 #ifdef __EMSCRIPTEN__
@@ -2807,6 +3037,12 @@ int main(int argc, char **argv) {
     if(stack_lim<2L<<20) die("the C stack limit is %ld KB, and slap needs at least 2048 KB. Raise it with: ulimit -s 8192", stack_lim/1024);
     c_stack_max=stack_lim-(1L<<20)<7L<<20?stack_lim-(1L<<20):7L<<20;
     rng_state=(uint64_t)time(NULL)^((uint64_t)getpid()<<32); atexit(stdout_check);
+#ifdef SIGXFSZ
+    /* A file size limit (ulimit -f) then fails a write with EFBIG, which write reports, instead of
+       killing the process in the middle of the write. */
+    signal(SIGXFSZ, SIG_IGN);
+#endif
+    file_umask=umask(0); umask(file_umask);
     int check_only=0, profile=0;
     cli_args=malloc(argc*sizeof(char*)); cli_argc=0;
     for(int i=1;i<argc;i++){
@@ -2819,8 +3055,14 @@ int main(int argc, char **argv) {
     prof_on=profile; syms_init(); register_prims();
     global_frame=frame_new(NULL); Frame *global=global_frame;
     store_source_lines(PRELUDE, FID_PRELUDE);
-    lex(PRELUDE, FID_PRELUDE); eval(tokens,tok_count,global);
+    static Token combined[TOK_MAX], table[TOK_MAX]; int cpos=0;
+    lex(PRELUDE, FID_PRELUDE); memcpy(combined,tokens,tok_count*sizeof(Token)); cpos=tok_count; eval(combined,cpos,global);
+    store_source_lines(TYPES, FID_BUILTIN); lex(TYPES, FID_BUILTIN);
+    int table_count=tok_count; memcpy(table,tokens,table_count*sizeof(Token));
     current_loc=LOC_PACK(FID_STDIN,0,0);
+#ifndef SLAP_WASM
+    if(isatty(0)&&!check_only) return shell(table,table_count,combined,cpos);
+#endif
 #ifdef SLAP_WASM
     FILE *f=fopen("program.slap","r"); if(!f){fprintf(stderr,"error: cannot open 'program.slap'\n");return 1;}
 #else
@@ -2841,10 +3083,6 @@ int main(int argc, char **argv) {
     if(sz==0){fprintf(stderr,"usage: slap [--check] [--headless] [--profile] [args...] < file.slap\n");return 1;}
     store_source_lines(src, FID_STDIN);
     static Token user_tokens[TOK_MAX];
-    static Token combined[TOK_MAX]; int cpos=0;
-    static Token table[TOK_MAX]; store_source_lines(TYPES, FID_BUILTIN); lex(TYPES, FID_BUILTIN);
-    int table_count=tok_count; memcpy(table,tokens,table_count*sizeof(Token));
-    lex(PRELUDE, FID_PRELUDE); memcpy(&combined[cpos],tokens,tok_count*sizeof(Token)); cpos+=tok_count;
     int user_start=cpos;
     tok_limit=TOK_MAX-cpos; lex(src, FID_STDIN); int user_tok_count=tok_count;
     memcpy(user_tokens,tokens,user_tok_count*sizeof(Token));
@@ -2853,15 +3091,7 @@ int main(int argc, char **argv) {
     int errors=infer_program(table,table_count,combined,cpos,user_start);
     if(errors>0){fprintf(stderr,"%d type error(s)\n",errors);return 1;}
     if(check_only){fprintf(stderr,"type check passed\n");return 0;}
-    for(int i=0;i<user_tok_count;i++){Token*t=&user_tokens[i]; uint32_t w=t->as.sym;
-        if(t->tag!=TOK_WORD||prim_fns[w]||!(ty_builtin[w]||w==S_ON||w==S_SHOW)) continue;
-        current_loc=LOC_PACK(t->fid,t->line,t->col);
-#ifdef SLAP_WASM
-        die("'%s' is not in the wasm build: a browser has no TCP sockets. Remove the tcp-* words from this program.",sym_name(w));
-#else
-        die("'%s' needs the SDL build, but this is the terminal build. Build it with make slap-sdl and run ./slap-sdl.",sym_name(w));
-#endif
-    }
+    refuse_missing_words(user_tokens,user_tok_count);
     current_loc=LOC_PACK(FID_STDIN,0,0);
     /* Registered after stdout_check, so it runs first, on die too. */
     if(profile){ prof_last=prof_now(); atexit(prof_report); }

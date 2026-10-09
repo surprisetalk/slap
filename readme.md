@@ -29,6 +29,23 @@ echo '2 3 plus print' | slap        # → 5
 slap < examples/euler/1.slap        # → 233168
 ```
 
+With a terminal on stdin, `slap` is a shell. It prints the stack after each line, and a line that fails to check or to run is discarded: the stack, the names it bound and the sockets on the stack go back to what they were before it. Files it wrote and network I/O it did stay done. A box or socket may wait on the stack between lines, each line must close its own brackets, and the session's lines together hold at most a program's tokens. At the end of input the shell exits with the last line's status.
+
+```
+$ slap
+> 1 2 plus
+3
+> dup 'x let
+3
+> x 0 div
+
+-- ERROR <stdin>:3:5 ---------------------------------
+
+    div: division by zero
+...
+3
+```
+
 For the SDL graphics build:
 ```bash
 make slap-sdl                        # requires SDL2
@@ -189,6 +206,8 @@ Functions capture their defining scope:
 15 in-range apply print  -- 0
 ```
 
+A word that has made a body cannot then bind a value holding one with `let`: a body keeps the names of the word that made it alive, so the binding could keep itself alive and never be freed. Bind such a value before the word makes its first body, or in a word of its own.
+
 A body passed as an input is a value: `apply` runs it, and the name passes it on as it is:
 
 ```slap
@@ -271,7 +290,7 @@ drop dict-entries               -- the dict and [{'key "a" 'value 1}]
 
 ### strings
 
-Strings are lists of bytes. A literal holds its UTF-8 bytes, which is what `read` and `tcp-recv` return, so a literal equals the same text read from a file. Escapes: `\n \t \\ \" \0`. `read`, `write` and `ls` fail with the path and the C library's reason: `"todo.json: No such file or directory" no`.
+Strings are lists of bytes. A literal holds its UTF-8 bytes, which is what `read` and `tcp-recv` return, so a literal equals the same text read from a file. Escapes: `\n \t \\ \" \0`. `read`, `write` and `ls` fail with the path and the C library's reason: `"todo.json: No such file or directory" no`. strings.slap's `is-missing` (`msg path -- int`) tells a missing file from any other failure. `write` replaces a regular file whole: it writes a hidden temp file in the file's directory and renames that over the old one, so a crash, a full disk or a size limit leaves the old file. It follows a symlink and keeps the file's mode and group. Where a replacement could not match the old file (another owner, a second hard link, a directory you may not write) and for a device such as `/dev/null`, it writes in place, where a failure leaves a short file. ACLs and extended attributes are not kept.
 
 ```slap
 "hello" len                  -- 5
@@ -542,7 +561,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/json.slap` | Elm-style JSON decoder (requires `strings.slap` for `int-str`) |
 | `examples/lib/cbor.slap` | CBOR (RFC 8949) decoder and encoder over byte lists (requires `strings.slap` for `int-str`) |
 | `examples/lib/http.slap` | `parse-http` (requires `strings.slap` for `crlf`) |
-| `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request`, `arg-count`, `arg-bytes`, `stdout-write` |
+| `examples/lib/strings.slap` | `crlf`, `int-str`, `str-join`, `http-request`, `arg-count`, `arg-bytes`, `stdout-write`, `is-missing`, `log-line`, `accept-loop` |
 
 `jd-run` and `xd-run` return `value ok`, or `msg no` for a syntax error as well as a shape error. A parse error names the byte offset from the start of the input and the byte found there: `json: expected , or ] in an array at byte 3, found '2'`. Neither library recurses per byte or per element, so input size is bounded by memory; nesting deeper than 256 levels is refused. `jd-run` refuses a leading zero (`0123`), a repeated key in one object, and a nonzero number that rounds to 0 or past the float range (`2e308`, `1e-400`; `0e999` is `0.0`); a float is one integer mantissa scaled once by a power of ten, so `0.3` equals the literal `0.3` (for up to 15 digits and a scale within 22; past that it is within a few ulps). `xd-run` refuses a repeated attribute name and a declared encoding other than UTF-8 or US-ASCII; the declaration is `<?xml` and white space, then version, encoding and standalone once each, and any other `<?xml...?>` is a processing instruction. `je-obj` dies on a repeated key, and `xml-render` dies on a repeated attribute name or a name the parser refuses. `jd-one-of` and `xd-one-of` list each alternative's error. Attributes are `{'name 'value}` records, in a parsed element and in `xe-elem`; `je-obj` takes `{'name 'value}` records too. `je-value` writes back what `jd-run` reads with the decoder `(ok)`: the same values in the same key order, so a program can change one field and keep the rest. The text can differ: `1e2` comes back as `100.0`, and `-0` as `0`. `rss-to-xml` gives `xml ok`, or `msg no` for a kind other than `"rss"` or `"atom"`. `jd-str` decodes `\u` escapes, surrogate pairs included, to UTF-8 and refuses a raw control byte; `je-str` escapes every byte under 0x20, so anything it writes reads back.
 
@@ -550,7 +569,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 
 ### networking / http
 
-Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http` from `examples/lib/http.slap`. `tcp-recv` gives up to n bytes, and at most 64 KiB per call. `tcp-recv` gives `'no` after 30 s with no data, `tcp-send` gives `'no` when it has not sent everything after 30 s, and `tcp-connect` gives `'no` after 10 s. `tcp-accept` waits without a limit. `tcp-listen` binds 127.0.0.1 only, so a client on another machine cannot reach a slap server. `http-request` lives in `examples/lib/strings.slap`.
+Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http` from `examples/lib/http.slap`. `tcp-recv` gives up to n bytes, and at most 64 KiB per call. `tcp-recv` gives `'no` after 30 s with no data, `tcp-send` gives `'no` when it has not sent everything after 30 s, and `tcp-connect` gives `'no` after 10 s. `tcp-accept` waits without a limit, and skips a client that resets before it is accepted. strings.slap's `accept-loop` (`..s server name (..s client -- ..s continue) -- ..s server`) hands each client to a body until it leaves 0; it logs a failed accept, such as no free file descriptor, and stops after 100 in a row. `tcp-listen` binds 127.0.0.1 only, so a client on another machine cannot reach a slap server. `http-request` lives in `examples/lib/strings.slap`.
 
 | Word | Effect |
 |------|--------|
@@ -686,7 +705,7 @@ App demos (terminal build):
 | File | Description |
 |------|-------------|
 | `wiki.slap` | HTTP wiki server: browse, edit, and link pages stored as flat text files |
-| `kv-server.slap` + `kv-client.slap` | Persistent key/value store over TCP with a one-shot CLI client |
+| `kv-server.slap` + `kv-client.slap` | Persistent key/value store over TCP with a one-shot CLI client; the store holds at most 1,000,000 bytes of snapshot |
 | `serve.slap` | Static file HTTP server: directory listings, MIME by extension, path-traversal refusal |
 | `fetch.slap` | A small curl. Builds the request with `http-request` and reads the reply with `parse-http` |
 | `feed.slap` | RSS 2.0 and Atom reader — the consumer for `xml.slap` and `rss.slap` |

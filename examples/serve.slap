@@ -88,13 +88,22 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
  "a{text-decoration:none}li{margin:.2em 0}</style><h1>" cat ltitle cat "</h1>" cat
  lbody cat) 'layout let
 
+(404 "text/html; charset=utf-8" "<p>No such file or directory.</p>" "404" swap layout) 'not-found let
+("serve" swap log-line) 'log let
+-- server-error: (msg fspath shown -- code type body).  A read or ls of fspath
+-- failed with msg for a reason other than a missing file, such as permissions.
+-- The log gets msg; the client gets the reason under the name it asked for,
+-- since where ROOT lives is the server's own business.
+('ss let 'sp let 'sm let sm log
+ 500 "text/html; charset=utf-8" "<p>Cannot read " ss sm sp len 2 plus drop-n ": " swap cat cat esc cat ".</p>" cat
+ "500" swap layout) 'server-error let
+
 -- Links are absolute, built from the directory's own path. Relative hrefs would
 -- resolve against /sub for a request to /sub and against /sub/ for /sub/, so
 -- half the links in a listing would be wrong depending on how it was reached.
 ('ip let ip "/" ends-with (ip) (ip "/" cat) if 'base let
  ROOT base cat ls {
-   'no (drop 404 "text/html; charset=utf-8"
-        "<p>No such file or directory.</p>" "404" swap layout)
+   'no (ROOT base cat base server-error)
    'ok ('entries let
         200 "text/html; charset=utf-8"
         -- `sort` takes only an int list, so a list of names
@@ -119,7 +128,8 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
  rcode 404 eq ("404 Not Found") (
  rcode 405 eq ("405 Method Not Allowed") (
  rcode 413 eq ("413 Content Too Large") (
- "500 Internal Server Error") if) if) if) if) if) if) 'status-line let
+ rcode 500 eq ("500 Internal Server Error") (
+ "serve: no status line for code " rcode int-str cat fail) if) if) if) if) if) if) if) 'status-line let
 
 -- HEAD must report the Content-Length the body would have had, so the length is
 -- computed from the real body and only the body itself is withheld.
@@ -129,7 +139,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
  "Content-Length: " cat rbody len int-str cat crlf cat
  "Connection: close" cat crlf cat crlf cat
  rhead () (rbody cat) if
- tcp-send {'ok (drop) 'no (drop)} case) 'respond let
+ tcp-send {'ok (drop) 'no ('sd let "send failed: " sd cat log)} case) 'respond let
 
 -- Only GET and HEAD are served and neither carries a body, so a request is
 -- complete at the header terminator. A POST body is never read; the connection
@@ -137,7 +147,7 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
 ('rr let rr crlf crlf cat str-find {'ok (drop 1) 'no (drop 0)} case) 'req-complete let
 
 ([]
- (swap 4096 tcp-recv {'ok () 'no (drop [])} case 'ch let
+ (swap 4096 tcp-recv {'ok () 'no ('rr let "recv failed: " rr cat log [])} case 'ch let
   swap ch cat
   dup req-complete not
   ch len 0 gt and
@@ -168,13 +178,14 @@ args len 1 gt (args 1 get must) (".") if 'ROOT let
    "<p>Refused: a path may hold letters, digits, dot, dash, underscore and slash, and may not contain \"..\".</p>"
    "403" swap layout rhead
  ) (
-   -- A directory is whatever `read` will not open, so there is no need to know
-   -- which one it is up front: try the file, and fall through to the listing.
-   -- index-page answers 404 when `ls` will not open it either, which is the
-   -- genuinely-missing case.
-   ROOT path cat read {
+   -- Try the file first: read of a directory fails with "Is a directory", and
+   -- only then does the path get a listing.
+   ROOT path cat 'fp let
+   fp read {
      'ok ('bytes let 200 path mime bytes rhead)
-     'no (drop path index-page rhead)
+     'no ('re let
+          re fp ": Is a directory" cat eq (path index-page) (
+          re fp is-missing (not-found) (re fp path server-error) if) if rhead)
    } case
  ) if) 'serve-path let
 
@@ -246,5 +257,5 @@ tr2 1 get must "/x" eq assert
 ROOT ls must drop  -- an unreadable root is a deployment bug: fail at boot, not per request
 PORT print
 PORT tcp-listen must
-(tcp-accept must handle 1) () while
+"serve" (handle 1) accept-loop
 tcp-close

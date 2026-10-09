@@ -144,9 +144,64 @@ def main():
                 fetch(base + "/edit/Cap", data=b"content=" + b"a" * 4000)[0] == 413,
             )
 
+            # a page it cannot read is a 500 naming the reason, never an offer
+            # to create it; a save it cannot write and an index it cannot list
+            # are 500s too, and the server stays up
+            if os.geteuid() != 0:
+                locked = os.path.join(pages, "Locked.txt")
+                for label, mode in [("mode-000", 0), ("write-only", 0o200)]:
+                    with open(locked, "w") as f:
+                        f.write("keep me\n")
+                    os.chmod(locked, mode)
+                    for path in ["/Locked", "/edit/Locked"]:
+                        code, body = fetch(base + path)
+                        check(
+                            f"{label}-{path}-500",
+                            code == 500
+                            and "Cannot read page Locked: Permission denied." in body
+                            and pages not in body
+                            and "create it" not in body
+                            and "<textarea" not in body,
+                            f"(code {code}) {body[-200:]}",
+                        )
+                    if mode == 0:
+                        code, body = fetch(base + "/edit/Locked", data=b"content=new")
+                        check(
+                            "unwritable-save-500",
+                            code == 500 and "Cannot save page Locked: Permission denied." in body and pages not in body,
+                            f"(code {code}) {body[-200:]}",
+                        )
+                    os.chmod(locked, 0o644)
+                    check(f"{label}-untouched", open(locked).read() == "keep me\n")
+                os.remove(locked)
+                os.chmod(pages, 0o300)
+                code, body = fetch(base + "/index")
+                os.chmod(pages, 0o755)
+                check(
+                    "unlistable-index-500",
+                    code == 500 and "Cannot list the pages: Permission denied." in body and pages not in body,
+                    f"(code {code}) {body[-200:]}",
+                )
+            # with the pages directory gone, a page is not missing: no offer to create it
+            os.rename(pages, pages + ".gone")
+            for path in ["/Nope", "/edit/Nope"]:
+                code, body = fetch(base + path)
+                check(f"dir-gone-{path}-500", code == 500 and "create it" not in body and "<textarea" not in body, f"(code {code})")
+            os.rename(pages + ".gone", pages)
+
             code, body = fetch(base + "/")
             check("still-alive", code == 200, f"(code {code})")
             check("server-running", proc.poll() is None)
+            # a client that resets is logged with its reason, and the server keeps serving
+            harness.reset(port)
+            code, body = fetch(base + "/")
+            check("reset-survives", code == 200, f"(code {code})")
+            harness.kill(proc)
+            log = proc.stderr.read()
+            check("reset-logged", "wiki: recv failed: Connection reset by peer" in log, repr(log[-300:]))
+            if os.geteuid() != 0:
+                check("500-logged", f"wiki: {pages}/Locked.txt: Permission denied" in log, repr(log[-300:]))
+            harness.accept_failures(check, "wiki", [str(port), pages], src, port)
         finally:
             harness.kill(proc)
 

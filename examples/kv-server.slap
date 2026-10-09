@@ -11,16 +11,24 @@
 --
 -- Anything else answers ERR <why>. Keys are 1-64 printable non-space bytes;
 -- values may hold spaces but not tabs (the snapshot is one key TAB value LF
--- per line). The store is a dict threaded on the stack -- a dict is a heap
--- object, so binding one would alias it; the checker now rejects `'name let`
--- on a dict outright.
+-- per line). The store holds at most 1000000 bytes of snapshot; a SET past that
+-- answers ERR store full. The store and its size are threaded on the stack,
+-- since a lookup of a bound dict copies it.
 
 args len 0 gt (args 0 get must ok parse-int must len 0 eq assert dup 0 gt over 65536 lt and assert) (4321) if 'PORT let
 args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 4096 'LINE-CAP let
+-- SAVE lists the store on the stack, which holds 2097152 slots (STACK_MAX in
+-- slap.c). A pair's record takes 3 slots more than its snapshot line, and past
+-- the 94 one-byte keys a line is at least 5 bytes, so the list stays under 1.6
+-- slots a byte. KEYS and the reply fit beside it.
+1000000 'STORE-CAP let
+-- pair-bytes: (key value -- n).  The pair's line in the snapshot: key, TAB, value, LF.
+('pv let 'pk let pk len pv len plus 2 plus) 'pair-bytes let
+('fb let "the store would hold " fb int-str cat " of " cat STORE-CAP int-str cat " bytes" cat) 'full-text let
 ([] 10 push) 'LF let
 ([] 9 push) 'TAB let
-('lm let "/dev/stderr" "kv-server: " lm cat LF cat write must drop) 'log let
+("kv-server" swap log-line) 'log let
 
 -- ===== pure helpers =====
 
@@ -54,25 +62,28 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 -- since the boot save would overwrite the store.
 ('cw let 'cn let "refusing to load corrupt snapshot " SNAP cat " -- line " cat cn int-str cat ": " cat cw cat fail) 'corrupt let
 
--- load-line: (store line n -- store).  Line n of the snapshot into the store.
-('lnum let 'll let
+-- load-line: (store size line n -- store size).  Line n of the snapshot into the store.
+('lnum let 'll let 'lsz let
  ll len 0 eq (lnum "the line is empty" corrupt) () if
+ ll len LINE-CAP gt (lnum "the line holds " ll len int-str cat " bytes, more than a SET can write" cat corrupt) () if
  ll TAB str-find {'ok () 'no (drop lnum "the line has no TAB separator" corrupt)} case 'tp let
  ll tp take-n 'lk let ll tp 1 plus drop-n 'lv let
  lk valid-key not (lnum "bad key: expected 1-64 printable bytes, no spaces" corrupt) () if
  lv (32 lt) filter len 0 gt (lnum "the value holds a control byte" corrupt) () if
  lk of {'ok (drop lnum "key " lk cat " appears twice" cat corrupt) 'no (drop)} case
- lk lv insert) 'load-line let
+ lsz lk lv pair-bytes plus 'nsz let
+ nsz STORE-CAP gt (lnum nsz full-text corrupt) () if
+ lk lv insert nsz) 'load-line let
 
 (dict SNAP read {
-   'no ('re let re SNAP ": No such file or directory" cat eq () ("cannot read snapshot " re cat fail) if)
+   'no ('re let re SNAP is-missing (0) ("cannot read snapshot " re cat fail) if)
    'ok ('sr let
         sr len 'sn let
         sn 0 gt (sn 1 sub 'sr nth must 10 eq not) (0) if (
           "refusing to load corrupt snapshot " SNAP cat " -- the last line has no newline" cat fail) () if
         -- The loop reads the text by index with nth, since a lookup of sr would
-        -- copy all of it. stack: store, the index of the next line, its number
-        0 1 (over sn lt) ('ln let 'p let
+        -- copy all of it. stack: store, its size, the index of the next line, its number
+        0 0 1 (over sn lt) ('ln let 'p let
           p (dup 'sr nth must 10 eq not) (1 plus) while 'e let
           p e range ('i let i 'sr nth must) each ln load-line
           e 1 plus ln 1 plus) while
@@ -81,25 +92,34 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 
 -- ===== protocol =====
 
-('cl let cl split-first 'rest let upper 'cmd let
- cmd "PING" eq ("PONG") (
+-- pair-size: (store key -- store n).  The key's pair-bytes in the store; 0 when absent.
+('sk let sk of {'ok ('sv let sk sv pair-bytes) 'no (drop 0)} case) 'pair-size let
+
+-- handle-cmd: (store size line -- store size reply continue?).  Each branch leaves
+-- its reply and the store's new size.
+('cl let 'sz let cl split-first 'rest let upper 'cmd let
+ cmd "PING" eq ("PONG" sz) (
  cmd "GET" eq (
-   rest valid-key (rest of {'ok ('gv let "VALUE " gv cat) 'no (drop "NIL")} case) (bad-key) if) (
+   rest valid-key (rest of {'ok ('gv let "VALUE " gv cat) 'no (drop "NIL")} case) (bad-key) if sz) (
  cmd "SET" eq (
    rest split-first 'sval let 'skey let
    skey valid-key (
      sval (32 lt) filter len 0 gt (
-       "ERR value must not contain control bytes (TAB, CR, etc.)"
-     ) (skey sval insert "OK") if) (bad-key) if) (
+       "ERR value must not contain control bytes (TAB, CR, etc.)" sz
+     ) (
+       skey pair-size sz swap sub skey sval pair-bytes plus 'nsz let
+       nsz STORE-CAP gt ("ERR store full: " nsz full-text cat sz)
+                        (skey sval insert "OK" nsz) if) if) (bad-key sz) if) (
  cmd "DEL" eq (
-   rest valid-key (rest remove "OK") (bad-key) if) (
- cmd "KEYS" eq (dict-keys " " str-join "KEYS " swap cat) (
- cmd "SAVE" eq (save-snapshot {'ok (drop "OK") 'no ('se let "ERR save failed: " se cat)} case) (
- cmd "SHUTDOWN" eq (save-snapshot {'ok (drop "BYE") 'no ('se let "ERR save failed: " se cat "; still running" cat)} case) (
- cmd len 0 eq ("ERR empty command; try PING")
-              ("ERR unknown command: " cmd cat "; try SET GET DEL KEYS SAVE PING SHUTDOWN" cat) if
+   rest valid-key (rest pair-size sz swap sub 'nsz let rest remove "OK" nsz) (bad-key sz) if) (
+ cmd "KEYS" eq (dict-keys "KEYS" (" " swap cat cat) fold sz) (
+ cmd "SAVE" eq (save-snapshot {'ok (drop "OK") 'no ('se let "ERR save failed: " se cat)} case sz) (
+ cmd "SHUTDOWN" eq (save-snapshot {'ok (drop "BYE") 'no ('se let "ERR save failed: " se cat "; still running" cat)} case sz) (
+ cmd len 0 eq ("ERR empty command; try PING" sz)
+              ("ERR unknown command: " cmd cat "; try SET GET DEL KEYS SAVE PING SHUTDOWN" cat sz) if
  ) if) if) if) if) if) if) if
- dup "BYE" eq cmd "SHUTDOWN" eq and not) 'handle-cmd let
+ -- only SHUTDOWN copies its reply: KEYS can answer with most of a megabyte
+ swap cmd "SHUTDOWN" eq (dup "BYE" eq not) (1) if) 'handle-cmd let
 
 -- ===== connection =====
 
@@ -114,7 +134,7 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 ('rtext let
  rtext LF cat tcp-send {'ok (drop) 'no ('sd let "send failed: " sd cat log)} case tcp-close) 'reply-close let
 
--- stack: store client -> store continue?
+-- stack: store size client -> store size continue?
 (recv-line 'rline let
  rline len 0 eq (tcp-close 1) (
    rline has-lf not (
@@ -122,8 +142,14 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
        "ERR line too long: no newline within 4096 bytes" reply-close 1
      ) (tcp-close 1) if
    ) (
-     rline line-head 'hline let hline print
-     (hline handle-cmd) dip rot rot 'hcont let reply-close hcont
+     -- a line can arrive in parts, each under LINE-CAP, so its length is checked here too
+     rline line-head 'hline let
+     hline len LINE-CAP ge (
+       "ERR line too long: no newline within 4096 bytes" reply-close 1
+     ) (
+       hline print
+       (hline handle-cmd) dip rot rot 'hcont let reply-close hcont
+     ) if
    ) if
  ) if) 'handle-conn let
 
@@ -140,8 +166,9 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 "GET x" LF cat "junk" cat line-head "GET x" eq assert
 "no newline" has-lf not assert
 
-dict
+dict 0
 "SET a hello world" handle-cmd 1 eq assert "OK" eq assert
+dup 14 eq assert   -- a TAB hello world LF
 "GET a" handle-cmd 1 eq assert "VALUE hello world" eq assert
 "get a" handle-cmd 1 eq assert "VALUE hello world" eq assert
 "GET nope" handle-cmd 1 eq assert "NIL" eq assert
@@ -157,6 +184,19 @@ dict
 "GET sp" handle-cmd 1 eq assert "VALUE a b c" eq assert
 "" handle-cmd 1 eq assert "ERR empty command; try PING" eq assert
 "FLY" handle-cmd 1 eq assert 4 take-n "ERR " eq assert
+dup 13 eq assert   -- b x and sp "a b c": 4 and 9
+drop drop
+-- the size reaches STORE-CAP and no further; DEL and a replacing SET take a pair's old size off
+dict STORE-CAP 3 sub
+"SET k v" handle-cmd 1 eq assert "ERR store full: the store would hold 1000001 of 1000000 bytes" eq assert
+dup STORE-CAP 3 sub eq assert
+"GET k" handle-cmd 1 eq assert "NIL" eq assert
+1 sub "SET k v" handle-cmd 1 eq assert "OK" eq assert
+dup STORE-CAP eq assert
+"SET k" handle-cmd 1 eq assert "OK" eq assert
+dup STORE-CAP 1 sub eq assert
+"DEL k" handle-cmd 1 eq assert "OK" eq assert
+STORE-CAP 4 sub eq assert
 drop
 -- SAVE/SHUTDOWN touch the filesystem, so they're exercised in run_kv.py, not here.
 [97 13 98 10] line-head [97 13 98] eq assert   -- embedded CR is preserved (surfaces as invalid input)
@@ -166,16 +206,8 @@ drop
 -- ===== serve =====
 
 load-snapshot
-save-snapshot must drop  -- an unwritable snapshot is a deployment bug: fail at boot, not on the first SAVE
+swap save-snapshot must drop swap  -- an unwritable snapshot is a deployment bug: fail at boot, not on the first SAVE
 PORT print
 PORT tcp-listen must
--- stack: store server failures; the client goes above the store for handle-conn,
--- then the server comes back up. accept fails on a client that resets before it
--- is accepted; 100 failures in a row is a fault of the host, such as no free
--- file descriptors, and each retry is immediate.
-0 ('fails let tcp-accept {
-    'ok (rot swap handle-conn (swap) dip 0 swap)
-    'no ('ae let fails 1 plus 'nf let
-         nf 100 lt ("accept failed: " ae cat log) ("accept failed 100 times in a row; the last: " ae cat fail) if
-         nf 1)} case) () while
-drop tcp-close
+-- stack: store size server
+"kv-server" (handle-conn) accept-loop tcp-close

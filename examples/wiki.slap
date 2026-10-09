@@ -96,30 +96,49 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
  lbody cat) 'layout let
 
 (400 ctype "<p>Invalid page name: 1-64 letters, digits, dash, underscore.</p>" "Bad Request" swap layout) 'bad-name let
+("wiki" swap log-line) 'log let
+-- server-error: (msg fspath what -- code type body).  A read, write or ls of
+-- fspath failed with msg for a reason other than a missing page, such as
+-- permissions. The log gets msg; the client gets what failed and the reason,
+-- since where DIR lives is the server's own business.
+('sw let 'sp let 'sm let sm log
+ 500 ctype "<p>" sw cat ": " cat sm sp len 2 plus drop-n esc cat ".</p>" cat "Server Error" swap layout) 'server-error let
+
+-- page-missing: (msg name -- int).  1 when the page's read failed with msg because
+-- the page does not exist. With the pages directory gone, no page is missing: the
+-- server is broken, and an offer to create the page would fail on save.
+('pn let 'pm let pm pn page-path is-missing DIR ls {'ok (drop 1) 'no (drop 0)} case and) 'page-missing let
 
 ('vn let vn page-path read {
    'ok ('vraw let 200 ctype
         vraw render "<p><a href='/edit/" vn cat "'>edit</a></p>" cat cat
         vn swap layout)
-   'no (drop 404 ctype
+   'no ('ve let ve vn page-missing (404 ctype
         "<p>No such page.</p><p><a href='/edit/" vn cat "'>create it</a></p>" cat
-        vn swap layout)
+        vn swap layout) (ve vn page-path "Cannot read page " vn cat server-error) if)
  } case) 'view-page let
 
-('en let 200 ctype
- "<form method=POST action='/edit/" en cat "'><textarea name=content rows=20>" cat
- en page-path read "" default esc cat
+-- edit-form: (name text -- code type body).
+('etext let 'fn let 200 ctype
+ "<form method=POST action='/edit/" fn cat "'><textarea name=content rows=20>" cat
+ etext esc cat
  "</textarea><p><button>save</button></p></form>" cat
- "edit " en cat swap layout) 'edit-page let
+ "edit " fn cat swap layout) 'edit-form let
 
-(200 ctype
- "<ul>" DIR ls must
- (".txt" ends-with) filter
- ('sfn let sfn sfn len 4 sub take-n) each
- (valid-name) filter
- [] ('ip let "<li><a href='/" ip cat "'>" cat ip cat "</a></li>" cat cat) fold
- cat "</ul>" cat
- "index" swap layout) 'index-page let
+-- A missing page edits as empty; a page it cannot read gets no form, since saving
+-- an empty form would replace it.
+('en let en page-path read {
+   'ok (en swap edit-form)
+   'no ('ee let ee en page-missing (en "" edit-form) (ee en page-path "Cannot read page " en cat server-error) if)
+ } case) 'edit-page let
+
+(DIR ls {
+   'ok ((".txt" ends-with) filter
+        ('sfn let sfn sfn len 4 sub take-n) each
+        (valid-name) filter
+        [] ('ip let "<li><a href='/" ip cat "'>" cat ip cat "</a></li>" cat cat) fold 'lis let
+        200 ctype "<ul>" lis cat "</ul>" cat "index" swap layout)
+   'no (DIR "Cannot list the pages" server-error)} case) 'index-page let
 
 -- ===== http =====
 
@@ -163,19 +182,19 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
 
 -- accumulate one request: until headers + declared body arrive, peer closes, or 12k cap
 ([]
- (swap 4096 tcp-recv {'ok () 'no (drop [])} case 'ch let
+ (swap 4096 tcp-recv {'ok () 'no ('rr let "recv failed: " rr cat log [])} case 'ch let
   swap ch cat
   dup req-complete not
   ch len 0 gt and
   over len REQ-CAP lt and) () while) 'recv-http let
 
 ('rbody let 'rextra let 'rcode let
- "HTTP/1.0 " rcode 200 eq ("200 OK") (rcode 303 eq ("303 See Other") (rcode 404 eq ("404 Not Found") (rcode 405 eq ("405 Method Not Allowed") (rcode 413 eq ("413 Content Too Large") ("400 Bad Request") if) if) if) if) if cat crlf cat
+ "HTTP/1.0 " rcode 200 eq ("200 OK") (rcode 303 eq ("303 See Other") (rcode 404 eq ("404 Not Found") (rcode 405 eq ("405 Method Not Allowed") (rcode 413 eq ("413 Content Too Large") (rcode 400 eq ("400 Bad Request") (rcode 500 eq ("500 Internal Server Error") ("wiki: no status line for code " rcode int-str cat fail) if) if) if) if) if) if) if cat crlf cat
  rextra cat
  "Content-Length: " cat rbody len int-str cat crlf cat
  "Connection: close" cat crlf cat crlf cat
  rbody cat
- tcp-send {'ok (drop) 'no (drop)} case) 'respond let
+ tcp-send {'ok (drop) 'no ('sd let "send failed: " sd cat log)} case) 'respond let
 
 -- ===== routing =====
 
@@ -195,10 +214,11 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
        rb "content=" starts-with (
          rb 8 drop-n url-decode (13 neq) filter 'rcontent let
          rcontent len 2000 le (
-           rpn page-path rcontent write must drop
-           303
-           ctype "Location: /" cat rpn cat crlf cat
-           "<p>saved: <a href='/" rpn cat "'>" cat rpn cat "</a></p>" cat "saved" swap layout
+           rpn page-path rcontent write {
+             'ok (drop 303
+                  ctype "Location: /" cat rpn cat crlf cat
+                  "<p>saved: <a href='/" rpn cat "'>" cat rpn cat "</a></p>" cat "saved" swap layout)
+             'no (rpn page-path "Cannot save page " rpn cat server-error)} case
          ) (413 ctype "<p>Too large: pages are capped at 2000 characters in this demo.</p>" "Too Large" swap layout) if
        ) (400 ctype "<p>Expected a form field named 'content'.</p>" "Bad Request" swap layout) if
      ) (bad-name) if
@@ -264,5 +284,5 @@ tr2 2 get must "hello" eq assert
 
 DIR ls must drop  -- a missing pages dir is a deployment bug: fail at boot, not on first save
 PORT tcp-listen must
-(tcp-accept must handle 1) () while
+"wiki" (handle 1) accept-loop
 tcp-close

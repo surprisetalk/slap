@@ -3,7 +3,7 @@
 -- Errors are path-annotated strings: "$.a.b[0].c: expected int, got string".
 
 -- ========== Internal parser: string -> tagged JSON value ==========
--- Tagged shapes: n 'int | f 'float | s 'str | 0/1 'bool | () 'null
+-- Tagged shapes: n 'int | f 'float | s 'str | 0/1 'bool | {} 'null
 --                list 'arr | list-of-{'key str 'value jv} 'obj
 -- _json-parse binds the input as '_jin and every step reads it by index with
 -- `nth`, so no token copies or cuts the input and nothing recurses per byte.
@@ -105,25 +105,25 @@
    jni _jc 45 eq (-1 jni 1 plus) (1 jni) if 'jn1 let 'jsg let
    0 jn1 _jdigits 'jn2 let 'jint let
    jn2 _jc 'jc let
-   jn2 jn1 eq (() 'null tag "json: expected a digit" jn2 _jat no) (
-   jn2 jn1 sub 18 gt (() 'null tag "json: number has more than 18 digits before the point" jn1 _jpos no) (
-   jn2 jn1 sub 1 gt jn1 _jc 48 eq and (() 'null tag "json: leading zero in a number" jn1 _jpos no) (
+   jn2 jn1 eq ({} 'null tag "json: expected a digit" jn2 _jat no) (
+   jn2 jn1 sub 18 gt ({} 'null tag "json: number has more than 18 digits before the point" jn1 _jpos no) (
+   jn2 jn1 sub 1 gt jn1 _jc 48 eq and ({} 'null tag "json: leading zero in a number" jn1 _jpos no) (
    jc 46 eq jc 101 eq or jc 69 eq or (
      jint 0 jn2 jc 46 eq (1 plus
        (dup _jc 'jd let jd 48 ge jd 57 le and)
        ('jfi let 'jfs let 'jfm let jfi _jc 48 sub 'jfd let
          jfm 100000000000000000 lt (jfm 10 mul jfd plus jfs 1 sub) (jfm jfs) if
          jfi 1 plus) while) () if 'jni2 let 'jsc let 'jm let
-     jc 46 eq jni2 jn2 1 plus eq and (() 'null tag "json: expected a digit after ." jni2 _jat no) (
+     jc 46 eq jni2 jn2 1 plus eq and ({} 'null tag "json: expected a digit after ." jni2 _jat no) (
      jni2 _jexp {'ok ('jxi let jsc plus 'jsx let
          jm 0 eq (0.0 jsg itof fmul 'float tag jxi ok) (
          jm itof jsx -300 lt (10.0 300 itof fpow fdiv jsx 300 plus) (jsx) if 'jsy let 'jv0 let
          10.0 jsy 0 lt (0 jsy sub) (jsy) if itof fpow 'jp let
          jp _jfin (
            jv0 jsy 0 lt (jp fdiv) (jp fmul) if jsg itof fmul 'jv let
-           jv _jfin jv 0.0 eq not and (jv 'float tag jxi ok) (() 'null tag "json: number past the float range" jni _jpos no) if
-         ) (() 'null tag "json: number past the float range" jni _jpos no) if) if)
-       'no ('jm2 let drop () 'null tag jm2 no)} case) if
+           jv _jfin jv 0.0 eq not and (jv 'float tag jxi ok) ({} 'null tag "json: number past the float range" jni _jpos no) if
+         ) ({} 'null tag "json: number past the float range" jni _jpos no) if) if)
+       'no ('jm2 let drop {} 'null tag jm2 no)} case) if
    ) (jint jsg mul 'int tag jn2 ok) if) if) if) if) '_jnum let
 
   -- _jarr-next: (i -- more st).  Reads the separator after an array element.
@@ -148,14 +148,14 @@
   -- refused.  An object entry is
   -- {'key str 'value jv}.
   ('jd let _jws 'ji let ji _jc 'jc let
-   jd 255 gt jc 91 eq jc 123 eq or and (() 'null tag "json: nested deeper than 256" ji _jpos no) (
-   jc 0 lt (() 'null tag "json: unexpected end of input; expected a value" ji _jat no) (
+   jd 255 gt jc 91 eq jc 123 eq or and ({} 'null tag "json: nested deeper than 256" ji _jpos no) (
+   jc 0 lt ({} 'null tag "json: unexpected end of input; expected a value" ji _jat no) (
    jc 34 eq (ji _jstr swap 'str tag swap) (
    jc 91 eq (
      ji 1 plus _jws 'jai let
      jai _jc 93 eq ([] 'arr tag jai 1 plus ok) (
        [] jai ok 1
-       (dup) (drop () 'null tag (jd 1 plus _jv-at) pthen (push) dip 0 (_jarr-next) pthen swap) while
+       (dup) (drop {} 'null tag (jd 1 plus _jv-at) pthen (push) dip 0 (_jarr-next) pthen swap) while
        drop swap 'arr tag swap) if) (
    jc 123 eq (
      ji 1 plus _jws 'joi let
@@ -165,15 +165,15 @@
          "" (_jkey) pthen swap 'jk let
          (jk of {'ok (drop 1) 'no (drop 0)} case 'jdf let jk 0 insert jdf) dip swap 'jdp let
          ('jdi let jdp ("json: duplicate key \"" jk cat "\"" cat jkp _jpos no) (jdi ok) if) then
-         (_jcolon) then () 'null tag (jd 1 plus _jv-at) pthen swap 'jv let
+         (_jcolon) then {} 'null tag (jd 1 plus _jv-at) pthen swap 'jv let
          (({} jk 'key into jv 'value into push) dip) dip
          0 (_jobj-next) pthen swap) while
        drop swap drop swap 'obj tag swap) if) (
    jc 116 eq (1 'bool tag ji "true" _jlit) (
    jc 102 eq (0 'bool tag ji "false" _jlit) (
-   jc 110 eq (() 'null tag ji "null" _jlit) (
+   jc 110 eq ({} 'null tag ji "null" _jlit) (
    jc 45 eq jc 48 ge jc 57 le and or (ji _jnum) (
-     () 'null tag "json: expected a value: { [ \" - a digit true false or null" ji _jat no
+     {} 'null tag "json: expected a value: { [ \" - a digit true false or null" ji _jat no
    ) if) if) if) if) if) if) if) if) if) '_jv-at let
 
   -- _jend: (i -- st).  Only whitespace may follow the value.
@@ -319,7 +319,7 @@
 "-1.5" jd-float jd-run -1.5 ok eq assert
 "true" jd-bool jd-run 1 ok eq assert
 "false" jd-bool jd-run 0 ok eq assert
-"null" jd-null jd-run () ok eq assert
+"null" jd-null jd-run {} ok eq assert
 "\"hello\"" jd-str jd-run "hello" ok eq assert
 "\"\"" jd-str jd-run "" ok eq assert
 

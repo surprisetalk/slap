@@ -3,7 +3,7 @@
 server, drive it through the Slap client, verify persistence survives a
 restart, and confirm hostile input fails safely rather than crashing the loop."""
 
-import os, random, re, resource, shutil, socket, struct, subprocess, sys, tempfile, time
+import os, random, resource, shutil, socket, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -105,17 +105,26 @@ def main():
             )
             # a short line with no newline is an early disconnect, NOT an oversize
             # line -- the server must not misreport it as "line too long"
+            # a line sent in parts is held to LINE-CAP like one sent whole
+            s = socket.create_connection(("127.0.0.1", port), timeout=5)
+            s.sendall(b"SET split " + b"w" * 3500)
+            time.sleep(0.3)
+            s.sendall(b"w" * 3500 + b"\n")
+            reply = s.recv(4096)
+            s.close()
+            check("split-line-too-long", reply.startswith(b"ERR line too long"), repr(reply[:80]))
+            check("split-line-not-stored", client("get", "split") == "NIL\n")
             check(
                 "early-close-not-misreported",
                 "line too long" not in raw(b"GET greeting", half_close=True),
             )
             # a client that resets mid-line is a recv error: logged with its
             # reason (checked after shutdown), and the server keeps serving
-            s = socket.create_connection(("127.0.0.1", port), timeout=5)
-            s.sendall(b"GET gree")
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-            s.close()
+            harness.reset(port)
             check("reset-survives", client("ping") == "PONG\n")
+            # clients that reset before accept never stop the server
+            harness.reset_burst(port)
+            check("reset-burst-survives", client("ping") == "PONG\n")
 
             # SAVE's own on-disk write, verified BEFORE the SHUTDOWN path (which
             # saves independently) so a broken SAVE can't hide behind SHUTDOWN
@@ -139,8 +148,7 @@ def main():
             proc.wait(5)
             check("shutdown-exit-0", proc.returncode == 0, f"(code {proc.returncode})")
             log = proc.stderr.read()
-            # the reset reaches accept or recv, depending on when it arrives
-            check("reset-logged", re.search(r"kv-server: (accept|recv) failed: \w", log), repr(log[-300:]))
+            check("reset-logged", "kv-server: recv failed: Connection reset by peer" in log, repr(log[-300:]))
 
             proc = harness.boot("kv", [str(port), snap], server_src, port)
             check("reload-survives", client("get", "greeting") == "VALUE hi\n")
@@ -211,6 +219,67 @@ def main():
                 if text is not None:
                     check(f"{label}-untouched", open(snap, newline="").read() == text)
 
+            # a SAVE past a file size limit keeps the old snapshot whole
+            with open(snap, "w") as f:
+                f.write("a\tb\n")
+            proc = harness.boot(
+                "kv",
+                [str(port), snap],
+                server_src,
+                port,
+                lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024)),
+            )
+            check("cap-set", raw(f"SET big {'v' * 2000}\n".encode()) == "OK\n")
+            saved = raw(b"SAVE\n")
+            check("size-limit-save-refused", saved == f"ERR save failed: {snap}: File too large\n", repr(saved))
+            check("size-limit-save-untouched", open(snap).read() == "a\tb\n")
+            check("size-limit-no-temp", sorted(os.listdir(d)) == ["kv.snap"], repr(os.listdir(d)))
+            check("size-limit-survives", raw(b"PING\n") == "PONG\n")
+            harness.kill(proc)
+
+            # The store holds at most 1000000 bytes of snapshot. Large values,
+            # many small pairs and 64-byte keys, 100 under the bound, SAVE and
+            # answer KEYS; a SET one past it changes nothing, a SET to it and a
+            # SET after a DEL do; SHUTDOWN saves the full store, and it loads.
+            for label, pairs in [
+                ("big-values", [(f"k{i:03d}", "v" * 3990) for i in range(250)]),
+                ("small-pairs", [(f"k{i:06d}", f"v{i:07d}") for i in range(58800)]),
+                ("long-keys", [(f"{i:064d}", "") for i in range(15150)]),
+            ]:
+                fill = 1000000 - 100 - sum(len(k) + len(v) + 2 for k, v in pairs)
+                if fill:
+                    pairs.append(("zfill", "f" * (fill - 7)))
+                with open(snap, "w") as f:
+                    f.write("".join(f"{k}\t{v}\n" for k, v in pairs))
+                t0 = time.monotonic()
+                proc = harness.boot("kv", [str(port), snap], server_src, port)
+                check(f"{label}-save", raw(b"SAVE\n") == "OK\n")
+                keys = raw(b"KEYS\n")
+                check(f"{label}-keys", keys.startswith("KEYS ") and len(keys.split()) == len(pairs) + 1, repr(keys[:80]))
+                k, v = pairs[-1]
+                full = raw(f"SET zz {'w' * 97}\n".encode())
+                check(f"{label}-full", full == "ERR store full: the store would hold 1000001 of 1000000 bytes\n", repr(full[:120]))
+                check(f"{label}-full-changes-nothing", raw(b"GET zz\n") == "NIL\n")
+                check(f"{label}-full-replace", raw(f"SET {k} {v}{'w' * 101}\n".encode()).startswith("ERR store full"))
+                check(f"{label}-full-replace-keeps", raw(f"GET {k}\n".encode()) == f"VALUE {v}\n")
+                check(f"{label}-to-the-bound", raw(f"SET zy {'w' * 96}\n".encode()) == "OK\n")
+                check(f"{label}-del", raw(b"DEL zy\n") == "OK\n" and raw(f"SET zy {'w' * 96}\n".encode()) == "OK\n")
+                check(f"{label}-shutdown", raw(b"SHUTDOWN\n") == "BYE\n")
+                proc.wait(10)
+                proc = harness.boot("kv", [str(port), snap], server_src, port)
+                check(f"{label}-reloaded", raw(b"GET zy\n") == f"VALUE {'w' * 96}\n")
+                harness.kill(proc)
+                check(f"{label}-fast", time.monotonic() - t0 < 5, f"{time.monotonic() - t0:.1f} s")
+            # a snapshot file past the bound, or with a line longer than any SET writes, is refused, untouched
+            text = "".join(f"k{i:03d}\t{'v' * 3990}\n" for i in range(251))
+            with open(snap, "w") as f:
+                f.write(text)
+            boot_refused("past-bound", f"refusing to load corrupt snapshot {snap} -- line 251: the store would hold 1002996 of 1000000 bytes", text)
+            text = "a\t" + "v" * 4095 + "\n"
+            with open(snap, "w") as f:
+                f.write(text)
+            boot_refused("long-line", f"refusing to load corrupt snapshot {snap} -- line 1: the line holds 4097 bytes, more than a SET can write", text)
+
             # a torn last line (no LF) is refused like a line with no TAB
             with open(snap, "w") as f:
                 f.write("good\tvalue here\ntorn\tval")
@@ -245,7 +314,7 @@ def main():
             big = os.path.join(d, "big.snap")
             for label, lines in [
                 ("many-lines", [f"k{i}\tv{i}\n" for i in range(50000)]),
-                ("big-values", [f"k{i}\t{'v' * 4000}\n" for i in range(300)]),
+                ("big-values", [f"k{i}\t{'v' * 4000}\n" for i in range(240)]),
             ]:
                 with open(big, "w") as f:
                     f.write("".join(lines))
@@ -257,37 +326,8 @@ def main():
                 check(f"{label}-loaded", raw(f"GET {key}\n".encode()) == f"VALUE {value}\n")
                 harness.kill(proc)
 
-            # With no free file descriptor, accept fails: on macOS once per
-            # connection, on Linux without end. The server stops after 100
-            # failures in a row.
-            p = subprocess.Popen(
-                ["./slap", str(port), snap],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-                preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (4, 4)),
-            )
-            p.stdin.write(server_src)
-            p.stdin.close()
-            for _ in range(300):
-                if p.poll() is not None:
-                    break
-                try:
-                    socket.create_connection(("127.0.0.1", port), timeout=1).close()
-                except OSError:
-                    time.sleep(0.01)
-            try:
-                p.wait(5)
-            except subprocess.TimeoutExpired:
-                harness.kill(p)
-            err = p.stderr.read()
-            check(
-                "accept-failures-bounded",
-                p.returncode not in (0, None, -15, -9)
-                and "accept failed 100 times in a row; the last: Too many open files" in err,
-                f"(code {p.returncode}) {err[-300:]!r}",
-            )
+            # The server stops after 100 accept failures in a row.
+            harness.accept_failures(check, "kv-server", [str(port), snap], server_src, port)
         finally:
             harness.kill(proc)
 

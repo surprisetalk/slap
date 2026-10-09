@@ -652,6 +652,12 @@ fs-path read must [0 127 255] eq assert
 fs-path [42] write must drop
 fs-path read must [42] eq assert
 
+-- ===== bindings that cannot form a cycle =====
+-- a body bound before the scope makes one, a word bound after, and a value without a body
+( 'd let (d apply) ) 'mk-apply let 5 (1 plus) mk-apply apply 6 eq assert
+( (1) drop (2 plus) 'two let 5 two ) 'w-after let w-after 7 eq assert
+( (1) drop 5 'v let v ) apply 5 eq assert
+
 -- ===== float-str =====
 -- The shortest of %.15g, %.16g and %.17g that reads back as the same float, with a point.
 1.5 float-str "1.5" eq assert
@@ -753,6 +759,11 @@ crlf 1 get must 10 eq assert
 "." "x" write {'ok (drop "") 'no ()} case ".: Is a directory" eq assert
 "/nonexistent-slap-dir" ls {'ok (drop "") 'no ()} case "/nonexistent-slap-dir: No such file or directory" eq assert
 "readme.md" ls {'ok (drop "") 'no ()} case "readme.md: Not a directory" eq assert
+-- is-missing (strings.slap) reads libc's text, so a real read keeps its wording honest
+"/nonexistent-slap-dir/x" read {'ok (drop "") 'no ()} case "/nonexistent-slap-dir/x" is-missing assert
+"readme.md/x" read {'ok (drop "") 'no ()} case "readme.md/x" is-missing assert
+"." read {'ok (drop "") 'no ()} case "." is-missing not assert
+"b: No such file or directory" "a" is-missing not assert
 "a\0b" 80 tcp-connect {'ok (tcp-close 0) 'no ("tcp-connect: the host contains a NUL byte" eq assert 1)} case 1 eq assert
 
 -- recv-all: (socket -- socket bytes).  Reads until the peer closes.
