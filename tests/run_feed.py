@@ -100,6 +100,22 @@ with tempfile.TemporaryDirectory() as d:
         repr(r.stdout[:200]) + r.stderr[:200],
     )
 
+    # A title holds markup: feed.slap decodes its entities and keeps its tags.
+    markup = os.path.join(d, "markup.xml")
+    with open(markup, "w") as f:
+        f.write(
+            "<rss><channel><title>AT&amp;T</title><link>L</link><description>d</description>"
+            "<item><title>A <b>bold</b> post</title></item></channel></rss>"
+        )
+    r = run(markup)
+    check(
+        "markup-titles",
+        r.returncode == 0
+        and r.stdout.startswith("== AT&T (rss)\n")
+        and " 1. A <b>bold</b> post\n" in r.stdout,
+        repr(r.stdout[:200]) + r.stderr[:200],
+    )
+
     # A feed far past the old ceiling of 116 items, which recursion per element set.
     big = os.path.join(d, "big.xml")
     with open(big, "w") as f:
@@ -134,8 +150,15 @@ with tempfile.TemporaryDirectory() as d:
 
     # 3- and 4-byte characters, a cut on a character start, and stray
     # continuation bytes after a whole character, which the cut keeps whole.
-    items = [("a" + "\u20ac" * 300, "x"), ("t2", "ab" + "\U0001F600" * 40), ("t3", "a" * 64 + "é")]
-    body = "".join(f"<item><title>{t}</title><description>{s}</description></item>" for t, s in items)
+    items = [
+        ("a" + "\u20ac" * 300, "x"),
+        ("t2", "ab" + "\U0001f600" * 40),
+        ("t3", "a" * 64 + "é"),
+    ]
+    body = "".join(
+        f"<item><title>{t}</title><description>{s}</description></item>"
+        for t, s in items
+    )
     with open(utf8, "wb") as f:
         f.write(
             (
@@ -144,15 +167,33 @@ with tempfile.TemporaryDirectory() as d:
                 "<item><title>t4</title><description>"
             ).encode()
             + b"a" * 60
-            + "\U0001F600".encode()
+            + "\U0001f600".encode()
             + b"\x80\x80\x80aaaa"
             + b"</description></item></channel></rss>"
         )
-    r = subprocess.run(["./slap", utf8], input=SRC.encode(), capture_output=True, timeout=20)
+    r = subprocess.run(
+        ["./slap", utf8], input=SRC.encode(), capture_output=True, timeout=20
+    )
     check("utf8-wide-exit-0", r.returncode == 0, r.stderr[:300])
     out = r.stdout
-    check("utf8-3-byte-cut", (" 1. a" + "\u20ac" * 170 + "\n").encode() in out, repr(out[:80]))
-    check("utf8-4-byte-cut", ("    ab" + "\U0001F600" * 15 + "...\n").encode() in out, repr(out[-400:]))
-    check("utf8-cut-on-start", ("    " + "a" * 64 + "...\n").encode() in out, repr(out[-400:]))
-    check("utf8-stray-bytes-kept-whole", b"    " + b"a" * 60 + "\U0001F600...\n".encode() in out, repr(out[-200:]))
+    check(
+        "utf8-3-byte-cut",
+        (" 1. a" + "\u20ac" * 170 + "\n").encode() in out,
+        repr(out[:80]),
+    )
+    check(
+        "utf8-4-byte-cut",
+        ("    ab" + "\U0001f600" * 15 + "...\n").encode() in out,
+        repr(out[-400:]),
+    )
+    check(
+        "utf8-cut-on-start",
+        ("    " + "a" * 64 + "...\n").encode() in out,
+        repr(out[-400:]),
+    )
+    check(
+        "utf8-stray-bytes-kept-whole",
+        b"    " + b"a" * 60 + "\U0001f600...\n".encode() in out,
+        repr(out[-200:]),
+    )
 print(f"feed: {count[0]} checks passed")

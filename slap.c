@@ -580,13 +580,12 @@ static void syms_init(void) {
    a function from the stack it takes to the stack it leaves, whose untouched rest is a variable, so a
    word works on any stack below what it touches. Levels decide what a word's type generalizes. */
 enum { K_VAR, K_INT, K_FLOAT, K_SYM, K_LIST, K_DICT, K_BOX, K_SOCK, K_FN, K_REC, K_RES, K_TAG,
-       K_SVAR, K_SNIL, K_SCONS, K_RVAR, K_RNIL, K_REXT, K_LSYM, K_TVAR, K_TNIL, K_TEXT, K_PRE, K_ABS };
+       K_SVAR, K_SNIL, K_SCONS, K_RVAR, K_RNIL, K_REXT, K_LSYM, K_TVAR, K_TNIL, K_TEXT };
 /* Every symbol has the one type K_SYM, and two of them always unify. A K_SYM that a symbol literal made
    keeps the literal's name plus one in `sym`; `{...}` keys and `on` read it, and `nth` reads its name from
    the token before it. Record keys are K_LSYM. */
-/* A row field is K_PRE (the record has the key, of type a) or K_ABS (it has not), or a variable for
-   either. A closed row (K_RNIL) has no other key. `into` sets a key whether or not the record had it,
-   as the runtime replaces a key it finds. */
+/* A row field is the type of its key's value. A closed row (K_RNIL) has no other key. A record has the
+   keys its literal names: `into` replaces the value of a key the record has, and never adds one. */
 /* What a value variable must be: protocols a word asks of its inputs. */
 /* copy: the value may be copied, dropped, bound or stored. A box is not, nor a result or tag that
    holds one; the stack carries it from the word that makes it to the word that frees it. */
@@ -698,17 +697,12 @@ static void ty_show(char *out, size_t cap, int t, int depth) {
         for (int hops = 0; ty[r].kind == K_TEXT; r = ty_find(ty[r].c), hops++) { if (hops == ty_n) die("type checker bug: a tag set links in a cycle"); ty_put(out, cap, &len, " '%s", sym_name(ty[r].sym)); }
         if (ty[r].kind == K_TVAR) { char v[16]; ty_print_var(v, sizeof v, r, '.'); ty_put(out, cap, &len, " | .%s", v); }
         return; }
-    case K_PRE: ty_show(out, cap, ty[t].a, depth + 1); return;
-    case K_ABS: snprintf(out, cap, "absent"); return;
     case K_REC: case K_REXT: case K_RNIL: {
         size_t len = 0; int r = ty[t].kind == K_REC ? ty_find(ty[t].a) : t, n = 0; ty_put(out, cap, &len, "{");
         for (int hops = 0; ty[r].kind == K_REXT; hops++) {
             if (hops == ty_n) die("type checker bug: a row links in a cycle");
-            int f = ty_find(ty[r].b);
-            if (ty[f].kind != K_ABS) {
-                if (ty[f].kind == K_PRE) ty_show(a, sizeof a, ty[f].a, depth + 1); else { ty_show(a, sizeof a, f, depth + 1); strncat(a, "?", sizeof a - strlen(a) - 1); }
-                ty_put(out, cap, &len, "%s'%s %s", n ? " " : "", sym_name(ty[ty[r].a].sym), a); n++;
-            }
+            ty_show(a, sizeof a, ty[r].b, depth + 1);
+            ty_put(out, cap, &len, "%s'%s %s", n ? " " : "", sym_name(ty[ty[r].a].sym), a); n++;
             r = ty_find(ty[r].c);
         }
         if (ty[r].kind == K_RVAR) { char v[16]; ty_print_var(v, sizeof v, r, '.'); ty_put(out, cap, &len, "%s| .%s", n ? " " : "", v); }
@@ -830,7 +824,7 @@ static int ty_no_body(int t) {
     case K_VAR: case K_TVAR: case K_RVAR:
         if (ty_fixed(t)) { snprintf(ty_why, sizeof ty_why, "a value bound with let after a body was made in its scope cannot hold a body, but the signature allows one here"); return 1; }
         ty[t].prot |= P_NOFN; return 0;
-    case K_LIST: case K_DICT: case K_BOX: case K_REC: case K_PRE: case K_TAG: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].a);
+    case K_LIST: case K_DICT: case K_BOX: case K_REC: case K_TAG: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].a);
     case K_RES: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].a) || ty_no_body(ty[t].b);
     case K_REXT: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].b) || ty_no_body(ty[t].c);
     case K_TEXT: ty[t].prot |= P_NOFN; return ty_no_body(ty_tag_payload(ty[t].sym)) || ty_no_body(ty[t].c);
@@ -888,10 +882,7 @@ static int ty_unify_chain(int a, int b, int depth) {
         if (ty[a].kind == K_REXT) { if (ty_row_take(b, ty[ty[a].a].sym, &f, &rest, 0)) return 1; }
         else if (ty_tag_take(b, ty[a].sym, &rest, 0)) return 1;
         if (ty_isvar(ty[tail].kind) && ty_find(tail) != tail) { snprintf(ty_why, sizeof ty_why, "these two rows would have to contain each other"); return 1; }
-        if (f) { int fa = ty_find(ty[a].b), fb = ty_find(f);
-            if ((ty[fa].kind == K_ABS && ty[fb].kind == K_PRE) || (ty[fa].kind == K_PRE && ty[fb].kind == K_ABS)) {
-                snprintf(ty_why, sizeof ty_why, "one record has '%s and the other has not", sym_name(ty[ty[a].a].sym)); return 1; }
-            if (ty_unify_at(fa, fb, depth + 1)) return 1; }
+        if (f && ty_unify_at(ty[a].b, f, depth + 1)) return 1;
         a = ty[a].c; b = rest; continue;
     }
     default: {
@@ -926,7 +917,7 @@ static int ty_row_take(int r, uint32_t label, int *field, int *rest, int depth) 
         if (ty_bind(r, ty_new(K_REXT, l, f, rr))) return 1;
         *field = f; *rest = rr; return 0;
     }
-    if (ty[r].kind == K_RNIL) { *field = ty_new(K_ABS, 0, 0, 0); *rest = r; return 0; }
+    if (ty[r].kind == K_RNIL) { snprintf(ty_why, sizeof ty_why, "one record has '%s and the other has not", sym_name(label)); return 1; }
     snprintf(ty_why, sizeof ty_why, "this is not a record row"); return 1;
 }
 
@@ -1092,7 +1083,7 @@ static int ty_parse(Token *toks, int *i, int end, TyNames *nm) {
                 base = ty_new(K_TAG, row, 0, 0); }
         } else {
             int row = rest_sym ? ty_named(nm, rest_sym, K_RVAR) : ty_new(K_RNIL, 0, 0, 0);
-            for (int k = 0; k < n; k++) row = ty_new(K_REXT, ty_sym(K_LSYM, keys[k]), ty_new(K_PRE, types[k], 0, 0), row);
+            for (int k = 0; k < n; k++) row = ty_new(K_REXT, ty_sym(K_LSYM, keys[k]), types[k], row);
             base = ty_new(K_REC, row, 0, 0);
         }
     } else TY_DIE(t, "type annotation: a type is expected");
@@ -1460,6 +1451,16 @@ static void ty_item(int k, int t) {
     if (k >= ty_items_cap) { ty_items_cap = ty_items_cap ? 2*ty_items_cap : 1024; ty_items = realloc(ty_items, (size_t)ty_items_cap * sizeof(int)); if (!ty_items) die("type checker: out of memory for %d values", ty_items_cap); }
     ty_items[k] = t;
 }
+/* A literal holds what its code leaves above the empty stack it starts on. A stack that ends in a
+   variable instead comes from a call whose effect is not known yet, so the count of values is not known.
+   The caller skips this after an error in the literal's code, which also leaves a variable. */
+static int ty_lit_open(int out, int line) {
+    int s = ty_find(out);
+    for (int hops = -ty_n; ty[s].kind == K_SCONS; s = ty_rest(s, &hops)) {}
+    if (ty[s].kind == K_SNIL) return 0;
+    ty_err(line, "the checker cannot count what this literal holds: its code ends in a call whose effect is not known yet (a recursive call or a body passed in), or in fail, which leaves any stack. Run the call before the literal and bind its result, as in `x f 'r let [r]`; write fail outside the literal.");
+    return 1;
+}
 static void ty_range(Token *toks, int i, int end) {
     for (; i < end; i++) {
         Token *t = &toks[i]; int line = t->line; current_loc = LOC_PACK(t->fid, t->line, t->col);
@@ -1496,7 +1497,8 @@ static void ty_range(Token *toks, int i, int end) {
                 i = close + 1; break;
             }
             /* a list literal: its elements have one type. ty_body may move the pool, so ty is read after it returns. */
-            int fn = ty_body(toks, i, close, 0, 1), out = ty[fn].b;
+            int e0 = ty_errors, fn = ty_body(toks, i, close, 0, 1), out = ty[fn].b;
+            if (ty_errors == e0 && ty_lit_open(out, line)) { ty_push(ty_new(K_VAR, 0, 0, 0)); i = close; break; }
             int el = ty_new(K_VAR, 0, 0, 0); ty[el].prot = P_COPY;
             for (int s = ty_find(out), k = 0, hops = -ty_n; ty[s].kind == K_SCONS; s = ty_rest(s, &hops), k++)
                 if (ty_need(ty[s].a, P_COPY)) { ty_err(line, "a list literal holds only values that can be copied: %s.", ty_why); break; }
@@ -1507,7 +1509,8 @@ static void ty_range(Token *toks, int i, int end) {
             int close = i + t->span;
             if (close + 1 < end && toks[close+1].tag == TOK_WORD && toks[close+1].as.sym == S_CASE) { ty_case(toks, i, close, line); i = close + 1; break; }
             /* a {...} literal: a record, each value written after its 'key */
-            int fn = ty_body(toks, i, close, 0, 1), out = ty[fn].b, n = 0;
+            int e0 = ty_errors, fn = ty_body(toks, i, close, 0, 1), out = ty[fn].b, n = 0;
+            if (ty_errors == e0 && ty_lit_open(out, line)) { ty_push(ty_new(K_VAR, 0, 0, 0)); i = close; break; }
             for (int s = ty_find(out), hops = -ty_n; ty[s].kind == K_SCONS; s = ty_rest(s, &hops)) ty_item(n++, ty[s].a);
             for (int k = 0; k < n; k++) if (ty_need(ty_items[k], P_COPY)) { ty_err(line, "a record holds only values that can be copied: %s.", ty_why); break; }
             int rec = n % 2 == 0;
@@ -1526,7 +1529,7 @@ static void ty_range(Token *toks, int i, int end) {
                     if (l < 0) { ty_err(line, "this {...} literal pairs each value with a symbol, so it is a record, but key %d is a symbol this literal computes. Write each key in the literal, as in {'name 1}.", (n - k) / 2 + 1); continue; }
                     for (int m = 1; m < k; m += 2) if (ty_sym_name(ty_items[m]) == l) twice = 1;
                     if (twice) { ty_err(line, "this record literal has '%s twice.", sym_name(l)); continue; }
-                    row = ty_new(K_REXT, ty_sym(K_LSYM, (uint32_t)l), ty_new(K_PRE, ty_items[k-1], 0, 0), row);
+                    row = ty_new(K_REXT, ty_sym(K_LSYM, (uint32_t)l), ty_items[k-1], row);
                 }
                 ty_push(ty_new(K_REC, row, 0, 0)); i = close; break; }
         }
@@ -1568,21 +1571,38 @@ static void ty_range(Token *toks, int i, int end) {
                     ty_err(line, "'%s' needs its key written right before it, as in `%s'name %s`. For keys that are data, use a dict: `d key of`.", sym_name(w), w == S_EDIT ? "(1 plus) " : "", sym_name(w));
                     ty_cur = ty_new(K_SVAR, 0, 0, 0); break;
                 }
+                if (w == S_INTO) {
+                    /* into on a closed record without the key: the fix is the literal that builds the record */
+                    int st = ty_find(ty_cur), rec = 0, row = 0;
+                    for (int k = 0; k < 2 && ty[st].kind == K_SCONS; k++) st = ty_find(ty[st].b);
+                    if (ty[st].kind == K_SCONS && ty[rec = ty_find(ty[st].a)].kind == K_REC)
+                        for (row = ty_find(ty[rec].a); ty[row].kind == K_REXT && ty[ty[row].a].sym != toks[kt].as.sym; row = ty_find(ty[row].c)) {}
+                    if (row && ty[row].kind == K_RNIL) {
+                        char rs[256], ex[64] = "…"; Token *vt = kt > 0 ? &toks[kt-1] : 0; ty_print_count = 0; ty_show(rs, sizeof rs, rec, 0);
+                        if (vt && vt->tag == TOK_INT) snprintf(ex, sizeof ex, "%lld", (long long)vt->as.i);
+                        else if (vt && vt->tag == TOK_FLOAT) snprintf(ex, sizeof ex, "%g", vt->as.f);
+                        else if (vt && vt->tag == TOK_WORD && tyb_find(vt->as.sym) >= 0 && !tyb[tyb_find(vt->as.sym)].word) snprintf(ex, sizeof ex, "%s", sym_name(vt->as.sym));
+                        else if (vt && vt->tag == TOK_SYM) snprintf(ex, sizeof ex, "'%s", sym_name(vt->as.sym));
+                        const char *k = sym_name(toks[kt].as.sym);
+                        ty_err(line, "into replaces the value of a key the record has, but this record, %s, has no '%s. A record has the keys its literal names: build it with '%s, as in {'%s %s}.", rs, k, k, k, ex);
+                        ty_pop(); ty_pop(); break;
+                    }
+                }
                 int key = ty_sym(K_LSYM, toks[kt].as.sym), s0 = ty_new(K_SVAR, 0, 0, 0), r = ty_new(K_RVAR, 0, 0, 0), v = ty_new(K_VAR, 0, 0, 0), in, out;
                 ty[v].prot = P_COPY;
                 int sym = ty_new(K_SYM, 0, 0, 0);
                 if (w == S_AT) {
-                    in = ty_new(K_SCONS, sym, ty_new(K_SCONS, ty_new(K_REC, ty_new(K_REXT, key, ty_new(K_PRE, v, 0, 0), r), 0, 0), s0, 0), 0);
+                    in = ty_new(K_SCONS, sym, ty_new(K_SCONS, ty_new(K_REC, ty_new(K_REXT, key, v, r), 0, 0), s0, 0), 0);
                     out = ty_new(K_SCONS, v, s0, 0);
                 } else if (w == S_INTO) {
                     int old = ty_new(K_REC, ty_new(K_REXT, key, ty_new(K_VAR, 0, 0, 0), r), 0, 0);
                     in = ty_new(K_SCONS, sym, ty_new(K_SCONS, v, ty_new(K_SCONS, old, s0, 0), 0), 0);
-                    out = ty_new(K_SCONS, ty_new(K_REC, ty_new(K_REXT, key, ty_new(K_PRE, v, 0, 0), r), 0, 0), s0, 0);
+                    out = ty_new(K_SCONS, ty_new(K_REC, ty_new(K_REXT, key, v, r), 0, 0), s0, 0);
                 } else {
                     int u = ty_new(K_VAR, 0, 0, 0), below = ty_new(K_SVAR, 0, 0, 0); ty[below].sealed = 1; ty[u].prot = P_COPY;
                     int body = ty_new(K_FN, ty_new(K_SCONS, v, below, 0), ty_new(K_SCONS, u, below, 0), 0);
-                    in = ty_new(K_SCONS, sym, ty_new(K_SCONS, body, ty_new(K_SCONS, ty_new(K_REC, ty_new(K_REXT, key, ty_new(K_PRE, v, 0, 0), r), 0, 0), s0, 0), 0), 0);
-                    out = ty_new(K_SCONS, ty_new(K_REC, ty_new(K_REXT, key, ty_new(K_PRE, u, 0, 0), r), 0, 0), s0, 0);
+                    in = ty_new(K_SCONS, sym, ty_new(K_SCONS, body, ty_new(K_SCONS, ty_new(K_REC, ty_new(K_REXT, key, v, r), 0, 0), s0, 0), 0), 0);
+                    out = ty_new(K_SCONS, ty_new(K_REC, ty_new(K_REXT, key, u, r), 0, 0), s0, 0);
                 }
                 ty_apply(ty_new(K_FN, in, out, 0), sym_name(w), line, 0); break;
             }
@@ -1659,7 +1679,7 @@ static void ty_held_copy(int t, Token *tok) {
         if (ty_mark[x] == stamp) continue;
         ty_mark[x] = stamp;
         int held = ty[x].kind == K_LIST || ty[x].kind == K_DICT || ty[x].kind == K_BOX ? ty_find(ty[x].a)
-                 : ty[x].kind == K_REXT && ty[ty_find(ty[x].b)].kind == K_PRE ? ty_find(ty[ty_find(ty[x].b)].a) : 0;
+                 : ty[x].kind == K_REXT ? ty_find(ty[x].b) : 0;
         if (held) {
             if (h == ty_held_cap) { ty_held_cap = ty_held_cap ? 2*ty_held_cap : 256; ty_held = realloc(ty_held, (size_t)ty_held_cap * sizeof(int)); if (!ty_held) die("type checker: out of memory for %d held types", ty_held_cap); }
             ty_held[h++] = held; }
@@ -2044,19 +2064,14 @@ static void prim_at(Frame *env) {
     sp=base+ref.slots;
 }
 #define REC_PREAMBLE Value rec_top=speek();int rec_s=val_slots(rec_top),rec_len=(int)rec_top.as.compound.len,rec_base=sp-rec_s
-/* [rec][value] -> [rec'] with value under key. Appending turns the old header
-   slot into the key; replacing moves the value over the old field. */
+/* [rec][value] -> [rec'] with value under key: the value moves over the old field. The checker proves
+   the record has the key. */
 static void rec_put(uint32_t key) {
     int v_s=val_slots(stack[sp-1]),v_base=sp-v_s;
     Value rec_top=stack[v_base-1];
     int rec_s=val_slots(rec_top),rec_len=(int)rec_top.as.compound.len,rec_base=v_base-rec_s;
     int found; ElemRef ex=record_field(&stack[rec_base],rec_s,rec_len,key,&found);
     rec_top.loc=0;
-    if(!found) {
-        stack[v_base-1]=val_sym(key);
-        rec_top.as.compound.len=(uint32_t)(rec_len+1); rec_top.as.compound.slots=(uint32_t)(rec_s+v_s+1);
-        spush(rec_top); return;
-    }
     int old_base=rec_base+ex.base,os=ex.slots;
     if(os==v_s) { deep_free_values(&stack[old_base],os); memmove(&stack[old_base],&stack[v_base],(size_t)v_s*sizeof(Value)); sp=v_base; return; }
     replace_run(old_base,os,v_s);

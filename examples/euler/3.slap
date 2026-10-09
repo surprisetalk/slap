@@ -2,7 +2,7 @@
 -- Largest prime factor of 600851475143.
 -- Answer: 6857
 
-{} 600851475143 'n into 2 'i into
+{'n 600851475143 'i 2}
 (dup 'i at dup mul over 'n at le)
 (
   dup 'n at 'n let  dup 'i at 'i let

@@ -20,7 +20,7 @@
 
 -- Reads one "Key: value" line.
 ('ph-l let ph-l ":" str-find {
-  'ok ('ph-i let {} ph-l ph-i take-n 'key into ph-l ph-i 1 plus drop-n ph-trim 'value into ok)
+  'ok ('ph-i let {'key ph-l ph-i take-n 'value ph-l ph-i 1 plus drop-n ph-trim} ok)
   'no (drop "header line has no colon" no)} case) 'ph-header let
 
 ('ph-raw let ph-raw crlf crlf cat str-find {
@@ -34,7 +34,7 @@
       ph-ls (":" str-find {'ok (drop 1) 'no (drop 0)} case) filter len ph-ls len eq
         (ph-ls [] (ph-header must push) fold 'ph-hs let
           -- The body goes in first: a copy of ph-raw beside a long headers list overflows the stack.
-          {} ph-raw ph-s 4 plus drop-n 'body into ph-code 'status into ph-hs 'headers into ok)
+          {'body ph-raw ph-s 4 plus drop-n 'status ph-code 'headers ph-hs} ok)
         ("header line has no colon" no) if) then)
   } case) 'parse-http let
 

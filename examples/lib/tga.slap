@@ -9,7 +9,7 @@
    data 16 get must 'd let 18 data 0 get must plus 'p0 let w h mul d 8 div mul 'pn let
    d 24 eq d 32 eq or not ("tga: pixel depth must be 24 or 32" no) (
    data len p0 pn plus lt ("tga: pixel data is shorter than width x height x depth" no) (
-     {} w 'width into h 'height into d 'depth into data p0 drop-n pn take-n 'pixels into ok) if) if) if) if) 'tga-decode let
+     {'width w 'height h 'depth d 'pixels data p0 drop-n pn take-n} ok) if) if) if) if) 'tga-decode let
 ('px let 'd let 'h let 'w let [] 0 push 0 push 2 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push 0 push w byte-mask push w 8 shr byte-mask push h byte-mask push h 8 shr byte-mask push d push 0 push px cat) 'tga-header let
 (dup 'width at swap dup 'height at swap dup 'depth at swap 'pixels at tga-header) 'tga-encode let
 

@@ -2,7 +2,7 @@
 -- Sum of even Fibonacci numbers not exceeding 4,000,000.
 -- Answer: 4613732
 
-{} 0 'total into 1 'a into 1 'b into
+{'total 0 'a 1 'b 1}
 (dup 'a at 4000000 le)
 (
   dup 'a at 'a let

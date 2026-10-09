@@ -208,9 +208,13 @@ nip
 -- EXPECT: sym is not int.
 'x (1) (2) if
 
--- EXPECT: 'into' takes {'x 'a? | ..b} int sym
+-- EXPECT: 'into' takes {'x 'a | ..b} int sym
 -- EXPECT: int is not a record.
 42 1 'x into
+
+-- EXPECT: into replaces the value of a key the record has, but this record, {}, has no 'a.
+-- EXPECT: A record has the keys its literal names: build it with 'a, as in {'a 5}.
+{} 5 'a into drop
 
 -- EXPECT: 'edit' takes {'x int | ..a} ( ..b int -> ..b int ) sym
 -- EXPECT: int list is not a record.
@@ -724,7 +728,7 @@ dict "a" 1 insert (drop 0) each drop
 -- EXPECT: 'into' takes
 -- EXPECT: int box is a box: it cannot be copied
 -- into record would smuggle box past linearity
-{} 42 box 'b into drop
+{'b 0} 42 box 'b into drop
 
 -- EXPECT: 'set' takes 'a copyable list int 'a copyable
 -- EXPECT: int box is a box: it cannot be copied
@@ -1364,12 +1368,8 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 0 ({'a 1}) {'b 1} if 'a at
 
 -- EXPECT: TYPE ERROR
--- two records that extend one base, one overriding a key
+-- the two branches replace 'a with records of different types
 {'a {'x 1}} 1 ({'y 1} 'a into) () if 'a at 'x at
-
--- EXPECT: TYPE ERROR
--- two records that extend one base meet in a list
-{'a {'x 1}} 'r let r {'y 1} 'a into r 5 'q into couple first 'a at 'x at
 
 -- EXPECT: TYPE ERROR
 -- a signature after a body not written in place
@@ -1591,12 +1591,36 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- a {...} literal is a record; its keys must be symbols written in it
 {['x 'y] 0 get must 5} drop
 
+-- EXPECT: the checker cannot count what this literal holds
+-- a list literal whose code ends in a recursive call: its element type was left open
+('n let n 0 gt ([n 1 sub h] 0 get must "x" cat len) (5) if) 'h let 3 h print
+
+-- EXPECT: the checker cannot count what this literal holds
+-- a record literal whose code ends in a body passed in
+('f let {'v 5 f apply}) 'rv let (1 plus) rv 'v at print
+
+-- EXPECT: 1 type error(s)
+-- an error inside a literal is the only one: the literal's count is not blamed on a call
+[ drop ] drop
+
+-- EXPECT: as in {'b …}.
+-- the example value is the token before the key only when it is a value, not a call
+{} 1 2 plus 'b into drop
+
+-- EXPECT: 'with-w' takes {'w 'a | ..b}
+-- a word that replaces 'w takes only records that have 'w
+('wr let wr 5 'w into) 'with-w let {'a 1} with-w drop
+
+-- EXPECT: or in fail, which leaves any stack
+-- a literal that ends in fail: refused, though fail never returns
+[1 "a" fail] print
+
 -- EXPECT: this record literal has 'a twice.
 {'a 1 'a 2} drop
 
 -- EXPECT: 'zz
 -- a message that shows a record of 35 fields
-{} 0 'k0 into 1 'k1 into 2 'k2 into 3 'k3 into 4 'k4 into 5 'k5 into 6 'k6 into 7 'k7 into 8 'k8 into 9 'k9 into 10 'k10 into 11 'k11 into 12 'k12 into 13 'k13 into 14 'k14 into 15 'k15 into 16 'k16 into 17 'k17 into 18 'k18 into 19 'k19 into 20 'k20 into 21 'k21 into 22 'k22 into 23 'k23 into 24 'k24 into 25 'k25 into 26 'k26 into 27 'k27 into 28 'k28 into 29 'k29 into 30 'k30 into 31 'k31 into 32 'k32 into 33 'k33 into 34 'k34 into 'zz at
+{'k0 0 'k1 1 'k2 2 'k3 3 'k4 4 'k5 5 'k6 6 'k7 7 'k8 8 'k9 9 'k10 10 'k11 11 'k12 12 'k13 13 'k14 14 'k15 15 'k16 16 'k17 17 'k18 18 'k19 19 'k20 20 'k21 21 'k22 22 'k23 23 'k24 24 'k25 25 'k26 26 'k27 27 'k28 28 'k29 29 'k30 30 'k31 31 'k32 32 'k33 33 'k34 34} 'zz at
 
 -- EXPECT: cannot reach the stack below them
 -- each's body gets one element; the runtime keeps earlier results under it
@@ -1665,7 +1689,7 @@ h print
 1 "a" plus
 
 -- EXPECT: 'plus' takes
-( dup {} swap 'a into swap 'b into ) 'f1 let
+( dup {'a 0 'b 0} swap 'a into swap 'b into ) 'f1 let
 ( f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 f1 ) 'g let
 ( f1 f1 ) 'f2 let ( f2 f2 ) 'f3 let ( f3 f3 ) 'f4 let ( f4 f4 ) 'f5 let ( f5 f5 ) 'f6 let
 1 "a" plus

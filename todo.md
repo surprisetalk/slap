@@ -1,53 +1,3 @@
-- [ ] A decoder tells a missing optional field from a present but malformed
-      one, as Elm's `optionalField` does: a missing field gives `none`, and a
-      present field that fails its decoder fails the decode. Today
-      `jd-maybe`/`xd-maybe` turn every failure into `none ok`: `{"a":"x"}`
-      with `"a" jd-int jd-field jd-maybe` gives none, and an RSS channel
-      without its required title, link or description parses. rss's
-      `_rss-opt-text` gives "" for an absent field, so rss-to-xml writes
-      `<pubDate></pubDate>` and `<link href=""/>`. Decided: rss's title,
-      description and content fields always hold markup, the element's inner
-      XML: `AT&amp;T` stays `AT&amp;T`, and `<title>A <b>bold</b>
-      post</title>` gives `A <b>bold</b> post`. Atom `<content
-      type="xhtml">` gives its inner markup, the div included. `xd-text` keeps
-      decoding plain text and still fails on element children. feed.slap
-      decodes entities before it prints. Links are kept as written: feed.slap
-      prints them as text, never as an href.
-  1. Tests first, in json.slap's and xml.slap's self-tests and run_feed.py,
-     each checked against the old code: `{"a":"x"}` with `"a" jd-int
-     jd-field jd-maybe` gives 'no and `{}` gives none; the two titles above
-     give their markup and feed.slap prints `AT&T`; an RSS channel without a
-     title gives 'no; rss-to-xml of an item without a pubDate writes no
-     pubDate.
-  2. jd-field and xd-child fail a missing field with a 'no that
-     jd-maybe/xd-maybe can tell apart (a distinct message prefix); every other
-     'no passes through.
-  3. xml.slap: `xd-markup` gives an element's children rendered with
-     xml-render, so text comes back escaped and child elements as markup.
-  4. rss.slap: title, description and content use `xd-markup`; required
-     fields use xd-child without xd-maybe; an absent optional field stays
-     `none`, and rss-to-xml skips it.
-  5. feed.slap decodes entities in those fields before it prints them.
-
-- [ ] A record has the keys its literal names: `into` replaces the value of
-      a key the record has and never adds one, so a record type lists only
-      present keys and the tag-payload task below has one row shape. Measured
-      with a replace-only `into` in a scratch build: the checker refuses 107
-      sites (rss.slap 23, xml.slap 8, json.slap 7, cbor.slap 6, expect.slap
-      25, a dozen examples). rss.slap builds records one key at a time (`{}
-      "rss" 'kind into`, `('title into) xd-map2`); now that literals read
-      runtime names, each decoder builds its record in one literal after it
-      decodes the fields.
-  1. Tests first: errors.slap: `{} 5 'a into` says the record has no 'a and
-     shows `{'a 5}` as the way to build it. expect.slap's into-adds-a-key
-     cases become literals.
-  2. Checker: `into` takes `{'k 'p | 'r}` and leaves `{'k 't | 'r}`. Delete
-     K_PRE, K_ABS and every check on them.
-  3. Migrate each refused site to a literal: rss, xml, json, cbor, the
-     examples, expect.slap.
-  4. readme's records paragraph: `into` replaces; a literal builds a record.
-     claude.md's Records paragraph follows.
-
 - [ ] You tag a value with any payload, and `'ok`/`'no` are ordinary tags: a
       tagged type lists each tag with its payload, as a record type lists each
       key with its value. Today every tag but 'ok/'no has one payload type in
@@ -58,8 +8,7 @@
       `{'ok int 'no str} either` is a closed tag set. Gains:
       `{'ok (…) 'no (…) 'retry (…)} case` works, and a program's 'int no
       longer collides with json.slap's. Tradeoff: the checker gains cyclic
-      types, and the runtime trusts it. Do this after the replace-only `into`
-      task; the signature task follows this one.
+      types, and the runtime trusts it. The signature task follows this one.
   1. Tests first; check each fails against the old binary. expect.slap: the
      three-clause case above; `5 'n tag` and `"x" 'n tag` in two words that
      never meet. errors.slap: a mismatch on a recursive type prints it with

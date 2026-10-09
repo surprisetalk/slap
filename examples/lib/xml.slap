@@ -3,7 +3,7 @@
 -- A node is `element 'elem tag` or `text 'text tag`.
 -- _xml-parse returns the root `element ok`, or `msg no` for input that is not well-formed.
 -- Decoders (xd-*) are first-class composable values. Run with xd-run or xd-eval.
--- Errors are XPath-ish strings: "/rss/channel/item[2]/title: missing".
+-- Errors are XPath-ish strings: "/rss/channel/item[2]: missing <title>".
 
 -- ========== Char predicates ==========
 
@@ -23,6 +23,43 @@
  over 95 eq or
  over 58 eq or
  swap 46 eq or) '_x-name-char? let
+
+-- ========== Entities ==========
+
+-- _x-utf8: (codepoint -- bytes ok | msg no)
+('cp let
+ cp 1 lt cp 1114111 gt or cp 55296 ge cp 57343 le and or ("xml: numeric entity is not a character" no) (
+ cp 128 lt ([] cp push ok) (
+ cp 2048 lt ([] 192 cp 6 shr bor push 128 cp 63 band bor push ok) (
+ cp 65536 lt ([] 224 cp 12 shr bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push ok) (
+   [] 240 cp 18 shr bor push 128 cp 12 shr 63 band bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push ok
+ ) if) if) if) if) '_x-utf8 let
+
+-- _x-num-entity: (digits base -- codepoint ok | msg no).  A bad digit poisons the fold with -1.
+('xbase let 'xds let
+ xds len 0 eq ("xml: empty numeric entity" no) (
+ xds len 8 gt ("xml: numeric entity longer than 8 digits" no) (
+   xds 0 ('xd let 'xacc let
+     xd 48 ge xd 57 le and (xd 48 sub) (
+     xbase 16 eq xd 97 ge xd 102 le and and (xd 87 sub) (
+     xbase 16 eq xd 65 ge xd 70 le and and (xd 55 sub) (-1) if) if) if 'xdv let
+     xacc 0 lt xdv 0 lt or xdv xbase ge or (-1) (xacc xbase mul xdv plus) if) fold
+   dup 0 lt (drop "xml: bad digit in a numeric entity" no) (ok) if) if) if) '_x-num-entity let
+
+-- _x-entity: (body -- bytes ok | msg no).  body is what lies between & and ;.
+('xb let
+ xb len 0 eq ("xml: empty entity &;" no) (
+ xb 0 get must 35 eq (
+   xb 1 drop-n 'xn let
+   xn len 0 gt (xn 0 get must 'xh let xh 120 eq xh 88 eq or) (0) if
+   (xn 1 drop-n 16) (xn 10) if _x-num-entity (_x-utf8) then
+ ) (
+   xb "amp" eq ([] 38 push ok) (
+   xb "lt" eq ([] 60 push ok) (
+   xb "gt" eq ([] 62 push ok) (
+   xb "quot" eq ([] 34 push ok) (
+   xb "apos" eq ([] 39 push ok) (
+     "xml: unknown entity &" xb cat ";" cat no) if) if) if) if) if) if) if) '_x-entity let
 
 -- ========== Parser ==========
 -- _xml-parse binds the source as '_xin and every step reads it by index with
@@ -62,43 +99,6 @@
    xc0 _x-name-start? not ([] "xml: expected a name" xni _xhere no) (
      xni (dup _xc _x-name-char?) (1 plus) while 'xne let xni xne _xslice xne ok) if) '_xname let
 
-  -- ========== Entities ==========
-
-  -- _x-utf8: (codepoint -- bytes ok | msg no)
-  ('cp let
-   cp 1 lt cp 1114111 gt or cp 55296 ge cp 57343 le and or ("xml: numeric entity is not a character" no) (
-   cp 128 lt ([] cp push ok) (
-   cp 2048 lt ([] 192 cp 6 shr bor push 128 cp 63 band bor push ok) (
-   cp 65536 lt ([] 224 cp 12 shr bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push ok) (
-     [] 240 cp 18 shr bor push 128 cp 12 shr 63 band bor push 128 cp 6 shr 63 band bor push 128 cp 63 band bor push ok
-   ) if) if) if) if) '_x-utf8 let
-
-  -- _x-num-entity: (digits base -- codepoint ok | msg no).  A bad digit poisons the fold with -1.
-  ('xbase let 'xds let
-   xds len 0 eq ("xml: empty numeric entity" no) (
-   xds len 8 gt ("xml: numeric entity longer than 8 digits" no) (
-     xds 0 ('xd let 'xacc let
-       xd 48 ge xd 57 le and (xd 48 sub) (
-       xbase 16 eq xd 97 ge xd 102 le and and (xd 87 sub) (
-       xbase 16 eq xd 65 ge xd 70 le and and (xd 55 sub) (-1) if) if) if 'xdv let
-       xacc 0 lt xdv 0 lt or xdv xbase ge or (-1) (xacc xbase mul xdv plus) if) fold
-     dup 0 lt (drop "xml: bad digit in a numeric entity" no) (ok) if) if) if) '_x-num-entity let
-
-  -- _x-entity: (body -- bytes ok | msg no).  body is what lies between & and ;.
-  ('xb let
-   xb len 0 eq ("xml: empty entity &;" no) (
-   xb 0 get must 35 eq (
-     xb 1 drop-n 'xn let
-     xn len 0 gt (xn 0 get must 'xh let xh 120 eq xh 88 eq or) (0) if
-     (xn 1 drop-n 16) (xn 10) if _x-num-entity (_x-utf8) then
-   ) (
-     xb "amp" eq ([] 38 push ok) (
-     xb "lt" eq ([] 60 push ok) (
-     xb "gt" eq ([] 62 push ok) (
-     xb "quot" eq ([] 34 push ok) (
-     xb "apos" eq ([] 39 push ok) (
-       "xml: unknown entity &" xb cat ";" cat no) if) if) if) if) if) if) if) '_x-entity let
-
   -- _xentity: (i -- bytes st).  i is just past '&'.  A body past 32 bytes is unterminated.
   ('xei let
    xei (dup _xc 'xec let xec 59 eq not xec 0 ge and) (1 plus) while 'xej let
@@ -137,7 +137,7 @@
          [] (_xattr-val) pthen swap 'xav let
          (xan of {'ok (drop 1) 'no (drop 0)} case 'xdf let xan 0 insert xdf) dip swap 'xdp let
          ('xdi let xdp ("xml: duplicate attribute " xan cat xsj _xpos no) (xdi ok) if) then
-         (({} xan 'name into xav 'value into push) dip) dip 1 swap) if) if) pthen swap) while
+         (({'name xan 'value xav} push) dip) dip 1 swap) if) if) pthen swap) while
    drop swap drop) '_xattrs let
 
   -- ========== Elements ==========
@@ -146,7 +146,7 @@
   ('xci let xci "]]>" _xpast {'ok ('xck let xci xck 3 sub _xslice xck ok) 'no ([] swap no)} case) '_xcdata let
 
   -- _xnone: (-- element).  What a failed step leaves in place of an element.
-  ({} "" 'name into [] 'attrs into [] 'children into) '_xnone let
+  ({'name "" 'attrs [] 'children []}) '_xnone let
 
   -- _xelem: (i depth -- element st).  i is at '<'.  The children, up to and
   -- through </name>, are read by _xelem one level deeper.  Nesting past 256 is
@@ -174,7 +174,7 @@
                xhi _xtext swap 'text tag swap (push) dip 1 swap
              ) if) if) if) if) if) if) pthen swap) while
          drop) ([] "xml: expected > or /> after <" xen cat xrj _xhere no) if) if) pthen swap 'xek let
-     {} xen 'name into xea 'attrs into xek 'children into swap) if) if) '_xelem let
+     {'name xen 'attrs xea 'children xek} swap) if) if) '_xelem let
 
   -- ========== Document ==========
 
@@ -257,12 +257,12 @@
 (('attrs at ok)) 'xd-attrs let
 
 -- xd-attr: (name -- dec).
-('n let ('attrs at n _x-find-attr {'ok (ok) 'no (drop "/@" n cat ": missing attribute" cat no)} case)) 'xd-attr let
+('n let ('attrs at n _x-find-attr {'ok (ok) 'no (drop ": missing @" n cat no)} case)) 'xd-attr let
 
 -- xd-child: (name dec -- dec').  The first child element with the name.
 ('d let 'n let ('children at (n eq) _x-elems 0 get
    {'ok (d apply {'ok (ok) 'no ("/" n cat swap cat no)} case)
-       'no (drop "/" n cat ": no such child" cat no)} case)) 'xd-child let
+       'no (drop ": missing <" n cat ">" cat no)} case)) 'xd-child let
 
 -- xd-children: (name dec -- dec').  Every child element with the name.
 ('d let 'n let ('children at (n eq) _x-elems d _xa-list {'ok (ok) 'no ("/" n cat swap cat no)} case)) 'xd-children let
@@ -277,24 +277,26 @@
 ('f let 'd let (d apply (f apply ok) then)) 'xd-map let
 
 -- xd-map2: (dec1 dec2 f -- dec).  f: (value1 value2 -- value).  Both decoders
--- read the same element; `{} xd-succeed "t" xd-text ('title into) xd-map2`
--- builds a record one field at a time.
+-- read the same element; `"t" xd-text "u" xd-text ('u let 't let {'title t 'url u}) xd-map2`
+-- builds a record of two fields.
 ('f let 'd2 let 'd1 let ('e let e d1 apply ('a let e d2 apply (a swap f apply ok) then) then)) 'xd-map2 let
 
 -- xd-and-then: (dec f -- dec').  f: (value -- dec2), and dec2 reads the same element.
 ('f let 'd let ('e let e d apply (f apply e swap apply) then)) 'xd-and-then let
 
 -- xd-one-of: (decs -- dec).  The first decoder that succeeds wins.  If none does,
--- the error lists each one's: ": oneOf: [0] /a: missing; [1] ...".
+-- the error lists each one's: ": oneOf: [0] : missing <a>; [1] ...".
 ('ds let ('e let
-   ds {} 0 'n into "" 'msg into no
+   ds {'n 0 'msg ""} no
    ('dd let {'ok (ok) 'no ('r let e dd apply {'ok (ok) 'no ('m let
-       {} r 'n at 1 plus 'n into
-          r 'msg at r 'n at 0 gt ("; " cat) () if "[" cat r 'n at int-str cat "] " cat m cat 'msg into no)} case)} case) fold
+       {'n r 'n at 1 plus
+        'msg r 'msg at r 'n at 0 gt ("; " cat) () if "[" cat r 'n at int-str cat "] " cat m cat} no)} case)} case) fold
    {'ok (ok) 'no ('r let ": oneOf: " r 'n at 0 eq ("no decoders") (r 'msg at) if cat no)} case)) 'xd-one-of let
 
--- xd-maybe: (dec -- dec').  value ok ok, or none ok when dec fails.
-('d let (d apply {'ok (ok ok) 'no (drop none ok)} case)) 'xd-maybe let
+-- xd-maybe: (dec -- dec').  value ok ok, or none ok when the child or attribute dec reads is
+-- missing.  Every other failure passes through: a child that is there but malformed fails.
+-- A missing child or attribute is the one failure whose message starts with ": missing ".
+('d let (d apply {'ok (ok ok) 'no ('m let ": missing " dup len m swap take-n eq (none ok) (m no) if)} case)) 'xd-maybe let
 
 ('v let (drop v ok)) 'xd-succeed let
 ('m let (drop ": " m cat no)) 'xd-fail let
@@ -318,7 +320,7 @@
 ('text tag) 'xe-text let
 
 -- xe-elem: (name attrs children -- node).  attrs is a list of {'name 'value} records.
-('kids let 'ats let 'nm let {} nm 'name into ats 'attrs into kids 'children into 'elem tag) 'xe-elem let
+('kids let 'ats let 'nm let {'name nm 'attrs ats 'children kids} 'elem tag) 'xe-elem let
 
 -- ========== Encoder (xml-render) ==========
 
@@ -346,6 +348,22 @@
             0 peek {'ok (drop 1) 'no (drop 0)} case 'more let
             (xml-render) each flatten 'inner let
             st more (">" cat inner cat "</" cat nm cat ">" cat) ("/>" cat) if)} case) 'xml-render let
+
+-- ========== Markup ==========
+
+-- xd-markup: the element's children as XML, trimmed as xd-text trims: text stays escaped, and a
+-- child element stays markup.  <t>A <b>AT&amp;T</b></t> gives "A <b>AT&amp;T</b>".
+(('children at (xml-render) each flatten _x-trim ok)) 'xd-markup let
+
+-- xml-unescape: (markup -- text ok | msg no).  Decodes each entity and keeps the rest, tags
+-- included: "A <b>AT&amp;T</b>" gives "A <b>AT&T</b>".  It undoes xe-text xml-render.
+-- The text grows on the stack: a lookup of a bound text would copy it once per entity.  The
+-- first part comes off the split list in place (reverse, pop), since a copy of the list could
+-- overflow the stack.  str-split gives at least one part.
+("&" str-split reverse pop must ok swap reverse swap
+ ('xup let (xup ";" str-find
+   {'ok ('xk let xup xk take-n _x-entity {'ok (cat xup xk 1 plus drop-n cat ok) 'no (swap drop no)} case)
+    'no (drop drop "xml: & starts no entity; expected &name; or &#digits;" no)} case) then) fold) 'xml-unescape let
 
 -- ========== Pretty-print variant ==========
 
@@ -434,6 +452,18 @@ nks 1 get must node-name "c" eq assert
 ("x" xd-attr xd-maybe) 'maybe-x-attr let
 "<a/>" maybe-x-attr xd-run none ok eq assert
 "<a x=\"1\"/>" maybe-x-attr xd-run "1" ok ok eq assert
+-- A missing child is none, and a present child that fails its decoder fails the decode
+"<a/>" "b" xd-text xd-child xd-maybe xd-run none ok eq assert
+"<a><b><c/></b></a>" "b" xd-text xd-child xd-maybe xd-run xerr "/a/b/text(): element has non-text children" eq assert
+"<a><b/></a>" ["b" "c"] xd-text xd-at xd-maybe xd-run xerr "/a/b: missing <c>" eq assert
+
+-- xd-markup: the children as XML, so text stays escaped and an element stays markup
+"<a> AT&amp;T </a>" xd-markup xd-run "AT&amp;T" ok eq assert
+"<a>A <b>bold</b> post</a>" xd-markup xd-run "A <b>bold</b> post" ok eq assert
+-- xml-unescape decodes each entity and keeps the tags
+"A <b x=\"&quot;\">AT&amp;T &#65;&lt;</b>" xml-unescape "A <b x=\"\"\">AT&T A<</b>" ok eq assert
+"a & b" xml-unescape xerr "xml: & starts no entity; expected &name; or &#digits;" eq assert
+"&bogus;" xml-unescape xerr "xml: unknown entity &bogus;" eq assert
 
 ([] "wrong" xd-fail push xd-text push xd-one-of) 'first-int-fail-then-text let
 "<a>hi</a>" first-int-fail-then-text xd-run "hi" ok eq assert
@@ -442,8 +472,8 @@ nks 1 get must node-name "c" eq assert
 "<a>hi</a>" tag-eq-text xd-run "a=hi" ok eq assert
 
 -- Adversarial
-"<a/>" "id" xd-attr xd-run xerr "/a/@id: missing attribute" eq assert
-"<a/>" "b" xd-text xd-child xd-run xerr "/a/b: no such child" eq assert
+"<a/>" "id" xd-attr xd-run xerr "/a: missing @id" eq assert
+"<a/>" "b" xd-text xd-child xd-run xerr "/a: missing <b>" eq assert
 "<a><b><c/></b></a>" "b" xd-text xd-child xd-run xerr
   "/a/b/text(): element has non-text children" eq assert
 "<a><b>1</b><b><c/></b></a>" "b" xd-text xd-children xd-run xerr
@@ -452,7 +482,7 @@ nks 1 get must node-name "c" eq assert
 ([] xd-one-of) 'empty-one let
 "<a/>" empty-one xd-run xerr "/a: oneOf: no decoders" eq assert
 ([] "x" xd-attr push "y" xd-attr push xd-one-of) 'two-attrs let
-"<a/>" two-attrs xd-run xerr "/a: oneOf: [0] /@x: missing attribute; [1] /@y: missing attribute" eq assert
+"<a/>" two-attrs xd-run xerr "/a: oneOf: [0] : missing @x; [1] : missing @y" eq assert
 
 -- xd-attrs: returns a list of {'name 'value} records
 "<a x=\"1\" y=\"2\"/>" xd-attrs xd-run must 'atsv let
@@ -478,7 +508,7 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 -- xe-text / xe-elem combinators roundtrip
 "hello & friends" xe-text xml-render "hello &amp; friends" eq assert
 "p" [] [] "hi" xe-text push xe-elem xml-render "<p>hi</p>" eq assert
-"p" [] {} "id" 'name into "a&b" 'value into push {} "k" 'name into "\"v\"" 'value into push [] xe-elem xml-render
+"p" [] {'name "id" 'value "a&b"} push {'name "k" 'value "\"v\""} push [] xe-elem xml-render
   "<p id=\"a&amp;b\" k=\"&quot;v&quot;\"/>" eq assert
 
 -- xml-pretty: basic indentation

@@ -5,7 +5,7 @@
 -- mul-digits: digits n -> digits' (multiplies big number by n)
 (
   'n let 'ds let
-  {} 0 'carry into [] 'result into 0 'j into
+  {'carry 0 'result [] 'j 0}
   (dup 'j at ds len lt)
   (
     dup 'j at ds swap get must n mul over 'carry at plus 'val let

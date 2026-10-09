@@ -48,14 +48,17 @@
 "<a>" 50000 ("&#65;" cat) repeat "</a>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
 "<a>" 30000 ("t<b>x</b>" cat) repeat "</a>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
 
+-- xml.slap: xml-unescape of 300000 entities runs in one pass
+"" 300000 ("&amp;" cat) repeat xml-unescape {'ok (len) 'no (drop -1)} case 300000 eq assert
+
 -- xml.slap: a 300000-byte element name and a 300000-byte attribute name
 "<" [] 300000 (97 push) repeat cat "/>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
 "<a " [] 300000 (97 push) repeat cat "=\"1\"/>" cat _xml-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
 
 -- rss.slap: 6000 items
-"<rss><channel><title>t</title>" 6000 ("<item><title>a</title><link>b</link></item>" cat) repeat "</channel></rss>" cat rss-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
+"<rss><channel><title>t</title><link>l</link><description>d</description>" 6000 ("<item><title>a</title><link>b</link></item>" cat) repeat "</channel></rss>" cat rss-parse {'ok (drop 1) 'no (drop 0)} case 1 eq assert
 
 -- cbor.slap: a 300000-element array, a 300000-byte string and a 40000-entry map read and written in one pass
 [154 0 4 147 224] 300000 (1 push) repeat (ok) cd-run {'ok (drop 1) 'no (drop 0)} case assert
 [122 0 4 147 224] 300000 (120 push) repeat (ok) cd-run {'ok ({'str (len) '_ (drop -1)} case) 'no (drop -1)} case 300000 eq assert
-0 40000 range [] ('k let {} "k" k int-str cat 'name into 1 ce-int 'value into push) fold ce-map (ok) cd-run {'ok ({'map (len) '_ (drop -1)} case) 'no (drop -1)} case 40000 eq assert
+0 40000 range [] ('k let {'name "k" k int-str cat 'value 1 ce-int} push) fold ce-map (ok) cd-run {'ok ({'map (len) '_ (drop -1)} case) 'no (drop -1)} case 40000 eq assert

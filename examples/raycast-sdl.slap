@@ -7,8 +7,8 @@
 -- [px py angle w s a d left right] as one flat list. Slots 3 to 8 hold 1.0
 -- while a key is down. All slots are floats: a list is homogeneous. Each run
 -- starts facing a random direction.
-{'w 0 'h 0} [] PX0 push PY0 push 1000000 random itof 1000000.0 fdiv tau fmul push
-0.0 push 0.0 push 0.0 push 0.0 push 0.0 push 0.0 push 'st into
+{'w 0 'h 0 'st [] PX0 push PY0 push 1000000 random itof 1000000.0 fdiv tau fmul push
+  0.0 push 0.0 push 0.0 push 0.0 push 0.0 push 0.0 push}
 
 -- SDL keycodes: ASCII for letters; arrows 1073741906 up, 1073741905 down,
 -- 1073741904 left, 1073741903 right. A key outside the table gives -1.

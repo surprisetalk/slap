@@ -192,9 +192,9 @@ dict "k" 1 insert [] swap push 0 peek must dict-keys len 1 eq assert drop drop
 -- ===== Records: into =====
 {'x 10 'y 20} 30 'x into 'x at 30 eq assert
 
--- into replaces a key in place and appends an unknown one, so field order never
--- moves. A replacement of a different width has to slide the fields after it,
--- which is the case a same-width overwrite above cannot catch: every position in
+-- into replaces a key in place, so field order never moves. A replacement of a
+-- different width has to slide the fields after it, which is the case a
+-- same-width overwrite above cannot catch: every position in
 -- the record is exercised, because the first and last field are the two that a
 -- wrong offset gets right by accident.
 {'x 1 'y 2 'z 3} [7 8 9] 'x into {'x [7 8 9] 'y 2 'z 3} eq assert
@@ -204,10 +204,10 @@ dict "k" 1 insert [] swap push 0 peek must dict-keys len 1 eq assert drop drop
 {'x 1 'y [1 2 3] 'z 3} 9 'y into {'x 1 'y 9 'z 3} eq assert
 {'x 1 'y 2 'z [1 2 3]} 9 'z into {'x 1 'y 2 'z 9} eq assert
 
--- A 20001-slot record field: append, then a wider replacement, then a narrower
--- one. 'n is read back each time; `at` walks from the header, so it only finds
+-- A 20001-slot record field: built in the literal, then a wider replacement, then
+-- a narrower one. 'n is read back each time; `at` walks from the header, so it only finds
 -- 'n if the big field's slot count is right.
-{} 1 'n into 0 20000 range 'big into
+{'n 1 'big 0 20000 range}
   dup 'n at 1 eq assert
   0 30000 range 'big into
   dup 'n at 1 eq assert
@@ -325,9 +325,6 @@ free
 -- multiple record fields
 {'a 1 'b 2 'c 3} 'b at 2 eq assert
 {'a 1 'b 2 'c 3} 'c at 3 eq assert
-
--- record into creates new field
-{'a 1} 2 'b into 'b at 2 eq assert
 
 -- while that never executes body
 10 (dup 5 lt) (2 mul) while 10 eq assert
@@ -495,8 +492,8 @@ free
 5 0 pow 1 eq assert
 7 1 pow 7 eq assert
 
--- ===== Complex: records built incrementally =====
-{} 10 'x into 20 'y into 30 'z into
+-- ===== Complex: records built in a literal =====
+{'x 10 'y 20 'z 30}
   dup 'x at 10 eq assert
   dup 'y at 20 eq assert
   'z at 30 eq assert
@@ -944,7 +941,7 @@ x (2 mul ok) then -1 default 84 eq assert
 42 'mc tag {'ma (1 plus) 'mb (2 plus) 'mc (3 plus)} case 45 eq assert
 
 -- recursive tagged: build a linked list with tags
-('tl let 'hd let {} hd 'hd into tl 'tl into 'cons tag) 'cons let
+('tl let 'hd let {'hd hd 'tl tl} 'cons tag) 'cons let
 
 (0 'nil tag) 'nil let
 nil {'nil (drop 0) 'cons ('hd at)} case 0 eq assert
@@ -1045,12 +1042,12 @@ dup 'lives at 3 eq assert
 -- ===== Adversarial: Record Edit =====
 
 -- edit that changes value len (int -> list)
-{} 1 'a into 2 'b into (drop [10 20 30]) 'a edit
+{'a 1 'b 2} (drop [10 20 30]) 'a edit
   dup 'a at [10 20 30] eq assert
   'b at 2 eq assert
 
 -- edit on record with many fields
-{} 1 'a into 2 'b into 3 'c into 4 'd into 5 'e into
+{'a 1 'b 2 'c 3 'd 4 'e 5}
   (100 plus) 'c edit
   dup 'a at 1 eq assert
   dup 'b at 2 eq assert
@@ -1059,32 +1056,32 @@ dup 'lives at 3 eq assert
   'e at 5 eq assert
 
 -- chained edit then at on every field
-{} 0 'x into 0 'y into 0 'z into
+{'x 0 'y 0 'z 0}
   (10 plus) 'x edit (20 plus) 'y edit (30 plus) 'z edit
   dup 'x at 10 eq assert
   dup 'y at 20 eq assert
   'z at 30 eq assert
 
 -- edit with body that doubles a list
-{} [1 2] 'data into (dup cat) 'data edit 'data at [1 2 1 2] eq assert
+{'data [1 2]} (dup cat) 'data edit 'data at [1 2 1 2] eq assert
 
 -- ===== Adversarial: Stack Combinators =====
 
 -- over with records
-{} 1 'x into  {} 2 'y into  over 'x at 1 eq assert drop drop
+{'x 1}  {'y 2}  over 'x at 1 eq assert drop drop
 
 -- rot with 3 different compound values
 [1] [2 3] [4 5 6] rot [1] eq assert [4 5 6] eq assert [2 3] eq assert
 
 -- rot with a record, a tagged value and an int
-{} 1 'x into  7 'tg tag  3  rot  {} 1 'x into eq assert  3 eq assert  7 'tg tag eq assert
+{'x 1}  7 'tg tag  3  rot  {'x 1} eq assert  3 eq assert  7 'tg tag eq assert
 1 [2 3] 4 rot 1 eq assert 4 eq assert [2 3] eq assert
 
 -- nip with tagged values
 42 ok 99 ok nip -1 default 99 eq assert
 
 -- tuck with records
-{} 1 'a into  {} 2 'b into  swap over 'b at 2 eq assert 'a at 1 eq assert 'b at 2 eq assert
+{'a 1}  {'b 2}  swap over 'b at 2 eq assert 'a at 1 eq assert 'b at 2 eq assert
 
 -- over with tagged values
 1 ok 2 ok over -1 default 1 eq assert drop drop
@@ -1544,9 +1541,9 @@ outer-val 99 eq assert
 
 -- `at` on a record field past 16384 slots
 (
-  {} 0 20000 range 'big into 'big at len 20000 eq assert
-  {} 0 20000 range 'big into 1 'n into 'big at len 20000 eq assert
-  {} 0 20000 range 'big into 1 'n into 'n at 1 eq assert
+  {'big 0 20000 range} 'big at len 20000 eq assert
+  {'big 0 20000 range 'n 1} 'big at len 20000 eq assert
+  {'big 0 20000 range 'n 1} 'n at 1 eq assert
 ) 'test-record-field-past-local-max let test-record-field-past-local-max
 
 -- 100000-character token runs: parse.slap's combinators must not recurse per
@@ -1578,7 +1575,7 @@ scope-outer 100 eq assert
 ([0 20000 range] 0 get must len 20000 eq assert) 'big-get let big-get
 ([] 0 (dup 9000 lt) (swap [1] push swap 1 plus) while drop
  0 [1 2] set must dup len 9000 eq assert 0 get must [1 2] eq assert) 'big-set let big-set
-({} 0 20000 range 'f into (1 push) 'f edit 'f at len 20001 eq assert) 'big-edit let big-edit
+({'f 0 20000 range} (1 push) 'f edit 'f at len 20001 eq assert) 'big-edit let big-edit
 (0 300000 range no 0 (drop 0 1 ok) pthen {'ok (drop -2) 'no (len)} case 300000 eq assert 0 eq assert) 'big-pthen let big-pthen
 ([1 2] no "fallback" (drop "x" 1 ok) pthen drop "fallback" eq assert) 'multi-slot-default let multi-slot-default
 (5 'k let
@@ -1728,17 +1725,17 @@ dict "a" of {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq asse
 
 -- ===== at and edit never fail: the checker proves the key =====
 {'x 10 'y 20} 'x at 10 eq assert
-{} 5 'a into 'a at 5 eq assert
-{'a 1} 2 'b into dup 'b at 2 eq assert 'a at 1 eq assert
+{'a 5} 'a at 5 eq assert
+{'a 1 'b 0} 2 'b into dup 'b at 2 eq assert 'a at 1 eq assert
 {'x 10 'y 20} 'rxy let rxy 'x at rxy 'y at plus 30 eq assert
 {'p {'q 7}} 'p at 'q at 7 eq assert
 {'x 10} dup 'x at swap drop 10 eq assert
 {'a 1 'b 2} (10 plus) 'a edit dup 'a at 11 eq assert 'b at 2 eq assert
 {'a [1 2]} (3 push) 'a edit 'a at [1 2 3] eq assert
-({} 5 'a into) 'mk-a let mk-a 'a at 5 eq assert
+({'a 5}) 'mk-a let mk-a 'a at 5 eq assert
 -- a word's input stands for whatever record its caller passes: the caller must pass the keys it reads
 ('sxr let sxr 'x at sxr 'y at plus) 'sum-xy let {'x 1 'y 2} sum-xy 3 eq assert {'x 1 'y 2 'z 3} sum-xy 3 eq assert
-('wr let wr 5 'w into) 'with-w let {'a 1} with-w dup 'w at 5 eq assert 'a at 1 eq assert
+('wr let wr 5 'w into) 'with-w let {'a 1 'w 0} with-w dup 'w at 5 eq assert 'a at 1 eq assert
 ((1 plus) 'n edit) 'bump let {'n 1 'm 9} bump dup 'n at 2 eq assert 'm at 9 eq assert
 (dup 'n at 0 eq (drop 0) ((1 sub) 'n edit count-n 1 plus) if) 'count-n let {'n 3 'o 0} count-n 3 eq assert
 -- loops and list bodies see the records they run on
@@ -1808,8 +1805,8 @@ own-set 1 eq assert drop
 own-set2 1 eq assert drop
 
 -- equality is structural: a record's field order and a dict's making do not matter
-{'a 1 'b 2} {} 2 'b into 1 'a into eq assert
-[{'a 1 'b 2}] [] {} 2 'b into 1 'a into push eq assert
+{'a 1 'b 2} {'b 2 'a 1} eq assert
+[{'a 1 'b 2}] [] {'b 2 'a 1} push eq assert
 dict "k" 1 insert dict "k" 1 insert eq assert
 dict "k" 1 insert dict "k" 2 insert eq not assert
 -- two closures are equal only when they share code and frame
@@ -1824,7 +1821,7 @@ dict "k" 1 insert dict "k" 2 insert eq not assert
 -- ===== Done =====
 -- [] and {} in a body that runs many times give a fresh empty value each time
 ([] 1 push len) 'fresh-list let fresh-list fresh-list plus 2 eq assert
-({} 1 'x into 'x at) 'fresh-rec let fresh-rec fresh-rec plus 2 eq assert
+({'x 1} 'x at) 'fresh-rec let fresh-rec fresh-rec plus 2 eq assert
 
 -- nth reads its list's name from the symbol written right before it; every symbol has one type
 [1 2] 'xs let 1 'xs nth must 2 eq assert

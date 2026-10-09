@@ -77,8 +77,8 @@ RAW "items" (ok) jd-list jd-field jd-run must 'ITEMS let
 CMD "list" eq (ITEMS) (
 CMD "add" eq (
   REST len 0 eq ("todo: add needs some text -- try: add buy milk" fail) () if
-  ITEMS [] {} "text" 'key into REST " " str-join 'str tag 'value into push
-           {} "done" 'key into 0 'bool tag 'value into push 'obj tag push) (
+  ITEMS [] {'key "text" 'value REST " " str-join 'str tag} push
+           {'key "done" 'value 0 'bool tag} push 'obj tag push) (
 CMD "done" eq ("done" one-idx 1 sub 1 set-done) (
 CMD "undone" eq ("undone" one-idx 1 sub 0 set-done) (
 CMD "rm" eq (

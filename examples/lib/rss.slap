@@ -4,38 +4,45 @@
 --
 -- rss-parse: (source-string -- feed-record ok | err no)
 -- Feed record: {'kind "rss"|"atom" 'title 'link 'description 'items [...]}
--- 'link is `string ok` or none.
--- Item record: {'title 'link 'summary 'published 'id}
+-- Item record: {'title 'link 'summary 'published 'id 'attrs}
+-- Every field but 'kind, the feed's 'title, 'items and 'attrs is `value ok`, or none when the
+-- feed leaves it out.  Titles, 'description and 'summary hold markup, the element's inner XML
+-- (xd-markup): AT&amp;T stays AT&amp;T.  'link, 'published and 'id hold text (xd-text).
+-- An RSS channel needs <title>, <link> and <description>, and an Atom feed needs <title>.
 
 -- ========== Helpers ==========
 
--- _rss-opt-text: (name -- dec).  The trimmed text of the first <name> child, or "".
-('n let n xd-text xd-child xd-maybe ("" default) xd-map) '_rss-opt-text let
+-- _rss-opt: (name dec -- dec').  dec on the first <name> child, or none when there is none.
+(xd-child xd-maybe) '_rss-opt let
 
--- Atom's <summary> falls back to <content>, and <published> to <updated>.
-("summary" _rss-opt-text ('v let v "" eq ("content" _rss-opt-text) (v xd-succeed) if) xd-and-then) '_atom-summary-dec let
-("published" _rss-opt-text ('v let v "" eq ("updated" _rss-opt-text) (v xd-succeed) if) xd-and-then) '_atom-published-dec let
+-- _rss-nonempty: (text -- text ok | none).  Empty text counts as absent: an empty link is no link.
+(dup "" eq (drop none) (ok) if) '_rss-nonempty let
+
+-- Atom's <summary> falls back to <content>, and <published> to <updated>, when it is absent or empty.
+("summary" xd-markup _rss-opt ((_rss-nonempty) then) xd-map
+   ({'ok (ok xd-succeed) 'no (drop "content" xd-markup _rss-opt)} case) xd-and-then) '_atom-summary-dec let
+("published" xd-text _rss-opt ((_rss-nonempty) then) xd-map
+   ({'ok (ok xd-succeed) 'no (drop "updated" xd-text _rss-opt)} case) xd-and-then) '_atom-published-dec let
 
 -- ========== RSS 2.0 ==========
 
--- _rss-link: (-- dec).  The text of the first <link>, or none when it is missing or empty.
-("link" xd-text xd-child xd-maybe ({'ok (dup "" eq (drop none) (ok) if) 'no (drop none)} case) xd-map) '_rss-link let
--- Each record is built one field at a time: xd-map2 runs a field's decoder and
--- puts its value into the record.
+-- Each decoder reads its fields in turn, then builds its record in one literal.
+-- The first field that fails ends the decode with its message.
+(('e let
+   e "title" xd-markup _rss-opt apply ('ttl let
+   e "link" xd-text _rss-opt ((_rss-nonempty) then) xd-map apply ('lnk let
+   e "description" xd-markup _rss-opt apply ('smy let
+   e "pubDate" xd-text _rss-opt apply ('pub let
+   e "guid" xd-text _rss-opt apply ('gid let
+   e xd-attrs apply ('atl let
+   {'title ttl 'link lnk 'summary smy 'published pub 'id gid 'attrs atl} ok) then) then) then) then) then) then)) '_rss2-item let
 
-({} xd-succeed
-   "title"       _rss-opt-text ('title into) xd-map2
-   _rss-link     ('link into) xd-map2
-   "description" _rss-opt-text ('summary into) xd-map2
-   "pubDate"     _rss-opt-text ('published into) xd-map2
-   "guid"        _rss-opt-text ('id into) xd-map2
-   xd-attrs      ('attrs into) xd-map2) '_rss2-item let
-
-({} "rss" 'kind into xd-succeed
-   "title"       _rss-opt-text ('title into) xd-map2
-   _rss-link     ('link into) xd-map2
-   "description" _rss-opt-text ('description into) xd-map2
-   "item" _rss2-item xd-children ('items into) xd-map2) '_rss2-channel let
+(('e let
+   e "title" xd-markup xd-child apply ('ttl let
+   e "link" xd-text xd-child (_rss-nonempty) xd-map apply ('lnk let
+   e "description" xd-markup xd-child apply ('dsc let
+   e "item" _rss2-item xd-children apply ('its let
+   {'kind "rss" 'title ttl 'link lnk 'description dsc ok 'items its} ok) then) then) then) then)) '_rss2-channel let
 
 ("channel" _rss2-channel xd-child) '_rss2-feed let
 
@@ -47,24 +54,26 @@
 ("rel" xd-attr xd-maybe ("" default) xd-map
    ('r let r "" eq r "alternate" eq or)
    xd-map
-   ('alt let alt ("href" xd-attr xd-maybe ({'ok (_x-trim dup "" eq (drop none) (ok) if) 'no (drop none)} case) xd-map)
+   ('alt let alt ("href" xd-attr xd-maybe ({'ok (_x-trim _rss-nonempty) 'no (drop none)} case) xd-map)
      (none xd-succeed) if) xd-and-then) '_atom-link-href let
 ("link" _atom-link-href xd-children
    (none ('o let 'acc let acc {'ok (ok) 'no (drop o)} case) fold) xd-map) '_atom-link let
 
-({} xd-succeed
-   "title" _rss-opt-text ('title into) xd-map2
-   _atom-link            ('link into) xd-map2
-   _atom-summary-dec     ('summary into) xd-map2
-   _atom-published-dec   ('published into) xd-map2
-   "id" _rss-opt-text    ('id into) xd-map2
-   xd-attrs              ('attrs into) xd-map2) '_atom-entry let
+(('e let
+   e "title" xd-markup _rss-opt apply ('ttl let
+   e _atom-link apply ('lnk let
+   e _atom-summary-dec apply ('smy let
+   e _atom-published-dec apply ('pub let
+   e "id" xd-text _rss-opt apply ('gid let
+   e xd-attrs apply ('atl let
+   {'title ttl 'link lnk 'summary smy 'published pub 'id gid 'attrs atl} ok) then) then) then) then) then) then)) '_atom-entry let
 
-({} "atom" 'kind into xd-succeed
-   "title" _rss-opt-text    ('title into) xd-map2
-   _atom-link               ('link into) xd-map2
-   "subtitle" _rss-opt-text ('description into) xd-map2
-   "entry" _atom-entry xd-children ('items into) xd-map2) '_atom-feed let
+(('e let
+   e "title" xd-markup xd-child apply ('ttl let
+   e _atom-link apply ('lnk let
+   e "subtitle" xd-markup _rss-opt apply ('dsc let
+   e "entry" _atom-entry xd-children apply ('its let
+   {'kind "atom" 'title ttl 'link lnk 'description dsc 'items its} ok) then) then) then) then)) '_atom-feed let
 
 -- ========== Dispatch on root tag ==========
 
@@ -90,79 +99,68 @@
 ('id at) 'rss-item-id let
 ('attrs at) 'rss-item-attrs let
 
--- ========== RSS 2.0 generation (rss-to-xml) ==========
+-- ========== Generation (rss-to-xml) ==========
+-- Each element is written from markup.  _rss-kids reads the markup back as XML, so a field
+-- that is not markup is refused rather than written.  A text field is escaped first.
 
--- _rss-text-elem: (name-str value-str -- element-record).
--- Builds <name>value</name>.
-('v let 'n let
-  n [] [] v xe-text push xe-elem) '_rss-text-elem let
+-- _rss-esc: (text ok | none -- markup ok | none).
+((xe-text xml-render ok) then) '_rss-esc let
 
--- _rss-make-item: (normalized-item-record -- item-element-record).
-('item let
-  []
-  "title"       item rss-item-title     _rss-text-elem push
-  item rss-item-link {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
-  "description" item rss-item-summary   _rss-text-elem push
-  "pubDate"     item rss-item-published _rss-text-elem push
-  "guid"        item rss-item-id        _rss-text-elem push
-  'kids let
-  "item" [] kids xe-elem) '_rss-make-item let
+-- _rss-kids: (kids fields -- kids' ok | msg no).  fields: [{'name 'markup}], each 'markup
+-- `markup ok` or none.  Adds <name>markup</name> to kids for each field that is not none.
+(swap ok ('f let (f 'markup at {'ok ('m let 'ks let f 'name at 'n let
+    "<" n cat ">" cat m cat "</" cat n cat ">" cat _xml-parse
+    {'ok ('elem tag ks swap push ok)
+     'no ('e let "rss-to-xml: <" n cat "> must hold XML markup, as rss-parse gives it; escape plain text with xe-text xml-render. In <" cat n cat ">…</" cat n cat ">, where the markup starts at byte " cat n len 2 plus int-str cat ": " cat e cat no)} case)
+   'no (drop ok)} case) then) fold) '_rss-kids let
 
--- _rss-make-channel: (feed-record -- channel-element-record).
+-- _atom-link-elem: (href-str -- link-element).  <link href="..." rel="alternate"/>.
+('href let "link" [{'name "href" 'value href} {'name "rel" 'value "alternate"}] [] xe-elem) '_atom-link-elem let
+
+-- _rss-make-item: (kids item -- kids' ok | msg no).  Adds <item>.
+('item let 'kids let
+  [] [{'name "title"       'markup item rss-item-title}
+      {'name "link"        'markup item rss-item-link _rss-esc}
+      {'name "description" 'markup item rss-item-summary}
+      {'name "pubDate"     'markup item rss-item-published _rss-esc}
+      {'name "guid"        'markup item rss-item-id _rss-esc}] _rss-kids
+  ('ik let kids "item" [] ik xe-elem push ok) then) '_rss-make-item let
+
+-- _atom-make-entry: (kids item -- kids' ok | msg no).  Adds <entry>.
+('item let 'kids let
+  [] item rss-item-link {'ok (_atom-link-elem push) 'no (drop)} case
+  [{'name "title"     'markup item rss-item-title}
+   {'name "summary"   'markup item rss-item-summary}
+   {'name "published" 'markup item rss-item-published _rss-esc}
+   {'name "id"        'markup item rss-item-id _rss-esc}] _rss-kids
+  ('ek let kids "entry" [] ek xe-elem push ok) then) '_atom-make-entry let
+
+-- _rss-make-channel: (feed -- channel-element ok | msg no).  RSS needs a channel link, so an
+-- absent one is written empty, which rss-parse reads back as none.
 ('feed let
-  []
-  "title"       feed rss-title       _rss-text-elem push
-  feed rss-link {'ok ("link" swap _rss-text-elem push) 'no (drop)} case
-  "description" feed rss-description _rss-text-elem push
-  feed rss-items (_rss-make-item) each cat
-  'kids let
-  "channel" [] kids xe-elem) '_rss-make-channel let
+  feed rss-description {'ok (ok) 'no (drop "rss-to-xml: an RSS channel needs a description, and this feed's 'description is none; give it one, or write the feed with 'kind \"atom\"" no)} case
+  ('d let [] [{'name "title"       'markup feed rss-title ok}
+              {'name "link"        'markup feed rss-link "" default xe-text xml-render ok}
+              {'name "description" 'markup d ok}] _rss-kids) then
+  ('k0 let feed rss-items k0 ok ('it let (it _rss-make-item) then) fold) then
+  ('ck let "channel" [] ck xe-elem ok) then) '_rss-make-channel let
 
--- ========== Atom generation ==========
-
--- _atom-link-elem: (href-str -- link-element-record).
--- <link href="..." rel="alternate"/>.
-('href let
-  "link"
-  [] {} "href" 'name into href 'value into push {} "rel" 'name into "alternate" 'value into push
-  []
-  xe-elem) '_atom-link-elem let
-
--- _atom-make-entry: (normalized-item-record -- entry-element-record).
--- Uses 'summary for <summary>, 'published for <published>, 'id for <id>,
--- and builds <link href=...> from 'link.
-('item let
-  []
-  "title"     item rss-item-title     _rss-text-elem push
-  item rss-item-link {'ok (_atom-link-elem push) 'no (drop)} case
-  "summary"   item rss-item-summary   _rss-text-elem push
-  "published" item rss-item-published _rss-text-elem push
-  "id"        item rss-item-id        _rss-text-elem push
-  'kids let
-  "entry" [] kids xe-elem) '_atom-make-entry let
-
--- _atom-make-feed: (feed-record -- feed-element-record).
+-- _atom-make-feed: (feed -- feed-element ok | msg no).
 ('feed let
-  []
-  "title"    feed rss-title       _rss-text-elem push
-  feed rss-link {'ok (_atom-link-elem push) 'no (drop)} case
-  "subtitle" feed rss-description _rss-text-elem push
-  feed rss-items (_atom-make-entry) each cat
-  'kids let
-  "feed"
-    [] {} "xmlns" 'name into "http://www.w3.org/2005/Atom" 'value into push
-    kids xe-elem) '_atom-make-feed let
+  [] feed rss-link {'ok (_atom-link-elem push) 'no (drop)} case
+  [{'name "title"    'markup feed rss-title ok}
+   {'name "subtitle" 'markup feed rss-description}] _rss-kids
+  ('k0 let feed rss-items k0 ok ('it let (it _atom-make-entry) then) fold) then
+  ('fk let "feed" [{'name "xmlns" 'value "http://www.w3.org/2005/Atom"}] fk xe-elem ok) then) '_atom-make-feed let
 
 -- rss-to-xml: (feed-record -- xml-string ok | msg no).
 -- Dispatches on feed's 'kind field: "rss" → RSS 2.0, "atom" → Atom.  Any other kind is an error.
 ('feed let
   feed rss-kind "atom" eq (
-    feed _atom-make-feed xml-render ok
+    feed _atom-make-feed (xml-render ok) then
   ) (
   feed rss-kind "rss" eq (
-    feed _rss-make-channel 'ch let
-    "rss" [] {} "version" 'name into "2.0" 'value into push [] ch push xe-elem
-    xml-render ok
+    feed _rss-make-channel ('ch let "rss" [{'name "version" 'value "2.0"}] [ch] xe-elem xml-render ok) then
   ) ("rss-to-xml: expected kind \"rss\" or \"atom\", got \"" feed rss-kind cat "\"" cat no) if) if) 'rss-to-xml let
 
 -- ========== Tests ==========
@@ -196,15 +194,16 @@ _rss-sample rss-parse must 'feed let
 feed rss-kind "rss" eq assert
 feed rss-title "My Blog" eq assert
 feed rss-link "http://example.com" ok eq assert
-feed rss-description "A sample blog" eq assert
+feed rss-description "A sample blog" ok eq assert
 feed rss-items 'items let
 items len 2 eq assert
-items 0 get must rss-item-title "First Post" eq assert
+items 0 get must rss-item-title "First Post" ok eq assert
 items 0 get must rss-item-link "http://example.com/1" ok eq assert
-items 0 get must rss-item-summary "Hello & welcome" eq assert
-items 0 get must rss-item-id "http://example.com/1" eq assert
-items 1 get must rss-item-title "Second Post" eq assert
-items 1 get must rss-item-summary "<p>html body</p>" eq assert
+items 0 get must rss-item-summary "Hello &amp; welcome" ok eq assert
+items 0 get must rss-item-published "Mon, 01 Jan 2024 00:00:00 +0000" ok eq assert
+items 0 get must rss-item-id "http://example.com/1" ok eq assert
+items 1 get must rss-item-title "Second Post" ok eq assert
+items 1 get must rss-item-summary "&lt;p&gt;html body&lt;/p&gt;" ok eq assert
 
 -- Atom sample
 (
@@ -233,12 +232,12 @@ _atom-sample rss-parse must 'afeed let
 afeed rss-kind "atom" eq assert
 afeed rss-title "Atom Blog" eq assert
 afeed rss-link "http://example.com" ok eq assert
-afeed rss-description "A sample atom feed" eq assert
+afeed rss-description "A sample atom feed" ok eq assert
 afeed rss-items 'aitems let
 aitems len 2 eq assert
-aitems 0 get must rss-item-title "Atom First" eq assert
+aitems 0 get must rss-item-title "Atom First" ok eq assert
 aitems 0 get must rss-item-link "http://example.com/a1" ok eq assert
-aitems 0 get must rss-item-id "urn:uuid:1" eq assert
+aitems 0 get must rss-item-id "urn:uuid:1" ok eq assert
 
 -- Atom link: the first alternate (or rel-less) link with an href wins.  Self,
 -- replies and hrefless links come first here; a feed without one has no link.
@@ -264,7 +263,7 @@ al rss-items 1 get must rss-item-link none eq assert
   rss-link "http://u/after" ok eq assert
 "<feed><title>F</title><link href=\"  \"/><link href=\" http://u/pad \"/></feed>" rss-parse must
   rss-link "http://u/pad" ok eq assert
-"<rss><channel><title>T</title><link></link><description>d</description><item><title>I</title></item></channel></rss>" rss-parse must 'el let
+"<rss><channel><title>T</title><link></link><description>d</description><item><title>I</title><link/></item></channel></rss>" rss-parse must 'el let
 el rss-link none eq assert
 el rss-items 0 get must rss-item-link none eq assert
 
@@ -272,12 +271,27 @@ el rss-items 0 get must rss-item-link none eq assert
 "<html><body>hi</body></html>" rss-parse xerr
   "/html: unknown feed format: html" eq assert
 
--- Missing optional field: no description in channel
-(
-"<rss><channel><title>X</title><link>Y</link></channel></rss>") '_rss-no-desc let
-_rss-no-desc rss-parse must 'nd let
-nd rss-description "" eq assert
-nd rss-items len 0 eq assert
+-- A channel needs its title, link and description; an item needs none of its fields, and an absent one is none
+"<rss><channel><link>L</link><description>d</description></channel></rss>" rss-parse xerr "/rss/channel: missing <title>" eq assert
+"<rss><channel><title>T</title><description>d</description></channel></rss>" rss-parse xerr "/rss/channel: missing <link>" eq assert
+"<rss><channel><title>T</title><link>L</link></channel></rss>" rss-parse xerr "/rss/channel: missing <description>" eq assert
+"<feed><entry/></feed>" rss-parse xerr "/feed: missing <title>" eq assert
+"<rss><channel><title>T</title><link>L</link><description>d</description><item/></channel></rss>" rss-parse must rss-items 0 get must 'bare let
+[bare rss-item-title bare rss-item-summary bare rss-item-published bare rss-item-id] [none none none none] eq assert
+"<feed><title>F</title><entry/></feed>" rss-parse must rss-items 0 get must 'abare let
+[abare rss-item-title abare rss-item-summary abare rss-item-published abare rss-item-id] [none none none none] eq assert
+-- A field that is there but malformed fails the parse
+"<rss><channel><title>T</title><link>L</link><description>d</description><item><pubDate><b/></pubDate></item></channel></rss>" rss-parse xerr
+  "/rss/channel/item[0]/pubDate/text(): element has non-text children" eq assert
+
+-- Title, description and content hold markup, the element's inner XML
+"<rss><channel><title>AT&amp;T</title><link>L</link><description>A <b>bold</b> post</description></channel></rss>" rss-parse must 'mk let
+mk rss-title "AT&amp;T" eq assert
+mk rss-description "A <b>bold</b> post" ok eq assert
+"<feed><title>F</title><entry><content type=\"xhtml\">
+  <div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Hi &amp; bye</p></div>
+</content></entry></feed>" rss-parse must rss-items 0 get must rss-item-summary
+  "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p>Hi &amp; bye</p></div>" ok eq assert
 
 -- Atom content fallback (no <summary>, has <content>)
 (
@@ -285,7 +299,7 @@ nd rss-items len 0 eq assert
   <entry><title>T</title><content>body via content</content><id>1</id></entry>
 </feed>") '_atom-content-sample let
 _atom-content-sample rss-parse must 'ac let
-ac rss-items 0 get must rss-item-summary "body via content" eq assert
+ac rss-items 0 get must rss-item-summary "body via content" ok eq assert
 
 -- Atom updated fallback (no <published>, has <updated>)
 (
@@ -293,11 +307,14 @@ ac rss-items 0 get must rss-item-summary "body via content" eq assert
   <entry><title>T</title><updated>2024-03-01</updated><id>1</id></entry>
 </feed>") '_atom-updated-sample let
 _atom-updated-sample rss-parse must 'au let
-au rss-items 0 get must rss-item-published "2024-03-01" eq assert
+au rss-items 0 get must rss-item-published "2024-03-01" ok eq assert
+-- An empty <summary> or <published> counts as absent, so the fallback still fires
+"<feed><title>F</title><entry><summary/><content>c</content><published> </published><updated>u</updated></entry></feed>" rss-parse must rss-items 0 get must 'ae let
+[ae rss-item-summary ae rss-item-published] ["c" ok "u" ok] eq assert
 
 -- Item attrs exposed (podcast enclosure pattern)
 (
-"<rss><channel><title>Pod</title>
+"<rss><channel><title>Pod</title><link>L</link><description>d</description>
   <item isPermaLink=\"true\"><title>Ep1</title><guid>ep1</guid></item>
 </channel></rss>") '_rss-pod-sample let
 _rss-pod-sample rss-parse must 'pod let
@@ -308,15 +325,9 @@ pod-attrs 0 get must 'value at "true" eq assert
 
 -- rss-to-xml: roundtrip via parse → generate → reparse.
 -- Build a feed record by hand and serialize.
-{} "rss" 'kind into
-    "My Feed" 'title into
-    "http://example.com" ok 'link into
-    "A feed" 'description into
-    []
-      {} "Post 1" 'title into "http://a/1" ok 'link into "body 1" 'summary into
-          "Mon, 01 Jan 2024" 'published into "http://a/1" 'id into [] 'attrs into
-      push
-    'items into
+{'kind "rss" 'title "My &amp; Feed" 'link "http://example.com" ok 'description "A <i>feed</i>" ok
+ 'items [{'title "Post 1" ok 'link "http://a/1" ok 'summary "body 1" ok
+          'published "Mon, 01 Jan 2024" ok 'id "http://a/1" ok 'attrs []}]}
 'built-feed let
 
 built-feed rss-to-xml must 'xml-out let
@@ -324,20 +335,15 @@ built-feed rss-to-xml must 'xml-out let
 -- The generated XML should reparse to the same normalized fields.
 xml-out rss-parse must 'rt let
 rt rss-kind "rss" eq assert
-rt rss-title "My Feed" eq assert
-rt rss-items 0 get must rss-item-title "Post 1" eq assert
+rt rss-title "My &amp; Feed" eq assert
+rt rss-description "A <i>feed</i>" ok eq assert
+rt rss-items 0 get must rss-item-title "Post 1" ok eq assert
 rt rss-items 0 get must rss-item-link "http://a/1" ok eq assert
 
 -- Atom output roundtrip: build an atom feed, serialize, reparse.
-{} "atom" 'kind into
-    "Atom Feed" 'title into
-    "http://example.com" ok 'link into
-    "Atom desc" 'description into
-    []
-      {} "Atom Post" 'title into "http://a/1" ok 'link into "atom body" 'summary into
-          "2024-01-01T00:00:00Z" 'published into "urn:uuid:1" 'id into [] 'attrs into
-      push
-    'items into
+{'kind "atom" 'title "Atom Feed" 'link "http://example.com" ok 'description "Atom desc" ok
+ 'items [{'title "Atom Post" ok 'link "http://a/1" ok 'summary "atom body" ok
+          'published "2024-01-01T00:00:00Z" ok 'id "urn:uuid:1" ok 'attrs []}]}
 'atom-feed let
 
 atom-feed rss-to-xml must 'atom-xml let
@@ -345,21 +351,31 @@ atom-xml rss-parse must 'art let
 art rss-kind "atom" eq assert
 art rss-title "Atom Feed" eq assert
 art rss-link "http://example.com" ok eq assert
-art rss-items 0 get must rss-item-title "Atom Post" eq assert
+art rss-items 0 get must rss-item-title "Atom Post" ok eq assert
 art rss-items 0 get must rss-item-link "http://a/1" ok eq assert
-art rss-items 0 get must rss-item-id "urn:uuid:1" eq assert
+art rss-items 0 get must rss-item-id "urn:uuid:1" ok eq assert
 
--- rss-to-xml leaves out an absent link, and the reparse gives none again.
+-- rss-to-xml writes no element for an absent field.  RSS needs a channel link,
+-- so an absent one is written empty, which reads back as none.
+{'title "I" ok 'link none 'summary none 'published none 'id none 'attrs []} 'bare-item let
+{'kind "rss" 'title "T" 'link none 'description "d" ok 'items [bare-item]} rss-to-xml must
+  "<rss version=\"2.0\"><channel><title>T</title><link/><description>d</description><item><title>I</title></item></channel></rss>" eq assert
+{'kind "atom" 'title "T" 'link none 'description none 'items [bare-item]} rss-to-xml must
+  "<feed xmlns=\"http://www.w3.org/2005/Atom\"><title>T</title><entry><title>I</title></entry></feed>" eq assert
 ["rss" "atom"] ('k let
-  {} k 'kind into "T" 'title into none 'link into "d" 'description into
-    [] {} "I" 'title into none 'link into "s" 'summary into "p" 'published into "i" 'id into [] 'attrs into push
-    'items into
+  {'kind k 'title "T" 'link none 'description "d" ok 'items [bare-item]}
   rss-to-xml must rss-parse must 'nl let
   nl rss-link none eq nl rss-items 0 get must rss-item-link none eq and) each [1 1] eq assert
 
+-- rss-to-xml refuses what the format cannot hold or what is not markup
+{'kind "rss" 'title "T" 'link none 'description none 'items []} rss-to-xml xerr
+  "rss-to-xml: an RSS channel needs a description, and this feed's 'description is none; give it one, or write the feed with 'kind \"atom\"" eq assert
+{'kind "atom" 'title "AT&T" 'link none 'description none 'items []} rss-to-xml xerr
+  "rss-to-xml: <title> must hold XML markup, as rss-parse gives it; escape plain text with xe-text xml-render. In <title>…</title>, where the markup starts at byte 7: xml: unterminated entity at byte 9" eq assert
+
 -- rss-to-xml accepts the kind "rss" or "atom" only.
 ["Atom" "RSS" "" "feed"] ('k let
-  {} k 'kind into "T" 'title into none 'link into "d" 'description into [] 'items into
+  {'kind k 'title "T" 'link none 'description "d" ok 'items []}
   rss-to-xml xerr "rss-to-xml: expected kind \"rss\" or \"atom\", got \"" k cat "\"" cat eq) each [1 1 1 1] eq assert
 
 -- A feed in another encoding is an error, not UTF-8 misread.

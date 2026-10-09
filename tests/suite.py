@@ -194,7 +194,7 @@ STEADY = [
     f"0 100000 (drop [] {DICT} push {DICT} push 1 take-n drop 0) repeat drop",
     f"0 100000 (drop [] {DICT} push {DICT} push 1 drop-n drop 0) repeat drop",
     f"0 100000 (drop [] {DICT} push {DICT} push {DICT} index-of must) repeat drop",
-    f"0 100000 (drop {{}} {DICT} 'd into 1 'n into 'n at) repeat drop",
+    f"0 100000 (drop {{'d {DICT} 'n 1}} 'n at) repeat drop",
     f"0 100000 (drop [] {DICT} push {DICT} push (drop 0) filter len) repeat drop",
 ]
 
@@ -554,11 +554,11 @@ def steps(slow):
                     ("strings", "parse", "json", "xml", "rss", "cbor"),
                     [
                         (
-                            """[] {} "a" 'name into 1 je-int 'value into push {} "a" 'name into 2 je-int 'value into push je-obj print""",
+                            """[] {'name "a" 'value 1 je-int} push {'name "a" 'value 2 je-int} push je-obj print""",
                             'json: je-obj: duplicate key "a"',
                         ),
                         (
-                            """[] {} "a" 'name into 1 ce-int 'value into push {} "a" 'name into 2 ce-int 'value into push ce-map print""",
+                            """[] {'name "a" 'value 1 ce-int} push {'name "a" 'value 2 ce-int} push ce-map print""",
                             'cbor: ce-map: duplicate key "a"',
                         ),
                         (
@@ -566,11 +566,11 @@ def steps(slow):
                             "cbor: ce-bool: expected 0 or 1, got 2",
                         ),
                         (
-                            """"r" [] {} "x" 'name into "1" 'value into push {} "x" 'name into "2" 'value into push [] xe-elem xml-render print""",
+                            """"r" [] {'name "x" 'value "1"} push {'name "x" 'value "2"} push [] xe-elem xml-render print""",
                             'xml: duplicate attribute "x" in <r>',
                         ),
                         (
-                            """"r" [] {} "x y" 'name into "1" 'value into push [] xe-elem xml-render print""",
+                            """"r" [] {'name "x y" 'value "1"} push [] xe-elem xml-render print""",
                             'xml: attribute name "x y" in <r> is not an XML name',
                         ),
                         (

@@ -6,20 +6,18 @@
 
 -- on resize: keep the canvas size, spread the 7x5 homes across it, and put
 -- every dot at rest on its home. Home (c, r) sits at the center of cell (c, r).
+-- The mouse position and the frame count carry over.
 (
   'rh let 'rw let
-  rw 'w into  rh 'h into
+  dup 'mx at 'fmx let  dup 'my at 'fmy let  'frame at 'ffr let
   0 N range (COLS mod 2 mul 1 plus rw mul COLS 2 mul div) each 'nx let
   0 N range (COLS div 2 mul 1 plus rh mul ROWS 2 mul div) each 'ny let
-  nx 'hxs into  ny 'hys into  nx 'xs into  ny 'ys into
-  [] N (0 push) repeat 'vxs into
-  [] N (0 push) repeat 'vys into
+  {'mx fmx 'my fmy 'frame ffr 'w rw 'h rh 'hxs nx 'hys ny 'xs nx 'ys ny
+   'vxs [] N (0 push) repeat 'vys [] N (0 push) repeat}
 ) 'fit let
 
 -- State: record with xs ys vxs vys mx my, canvas size and homes
-{}
-  -1 'mx into  -1 'my into  0 'frame into
-  640 480 fit
+{'mx -1 'my -1 'frame 0} 640 480 fit
 
 (fit) 'resize on
 

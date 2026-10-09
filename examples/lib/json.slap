@@ -166,7 +166,7 @@
          (jk of {'ok (drop 1) 'no (drop 0)} case 'jdf let jk 0 insert jdf) dip swap 'jdp let
          ('jdi let jdp ("json: duplicate key \"" jk cat "\"" cat jkp _jpos no) (jdi ok) if) then
          (_jcolon) then {} 'null tag (jd 1 plus _jv-at) pthen swap 'jv let
-         (({} jk 'key into jv 'value into push) dip) dip
+         (({'key jk 'value jv} push) dip) dip
          0 (_jobj-next) pthen swap) while
        drop swap drop swap 'obj tag swap) if) (
    jc 116 eq (1 'bool tag ji "true" _jlit) (
@@ -229,14 +229,16 @@
 -- jd-one-of: (decs -- dec).  The first decoder that succeeds wins.  If none does,
 -- the error lists each one's: ": oneOf: [0] .a: expected int, got string; [1] ...".
 ('ds let ('jv let
-   ds {} 0 'n into "" 'msg into no
+   ds {'n 0 'msg ""} no
    ('dd let {'ok (ok) 'no ('r let jv dd apply {'ok (ok) 'no ('m let
-       {} r 'n at 1 plus 'n into
-          r 'msg at r 'n at 0 gt ("; " cat) () if "[" cat r 'n at int-str cat "] " cat m cat 'msg into no)} case)} case) fold
+       {'n r 'n at 1 plus
+           'msg r 'msg at r 'n at 0 gt ("; " cat) () if "[" cat r 'n at int-str cat "] " cat m cat} no)} case)} case) fold
    {'ok (ok) 'no ('r let ": oneOf: " r 'n at 0 eq ("no decoders") (r 'msg at) if cat no)} case)) 'jd-one-of let
 
--- jd-maybe: (dec -- dec').  value ok ok, or none ok when dec fails.
-('d let (d apply {'ok (ok ok) 'no (drop none ok)} case)) 'jd-maybe let
+-- jd-maybe: (dec -- dec').  value ok ok, or none ok when the field dec reads is missing.
+-- Every other failure passes through: a field that is there but malformed fails.  A missing
+-- field is the one failure whose message starts with ": missing field ".
+('d let (d apply {'ok (ok ok) 'no ('m let ": missing field \"" dup len m swap take-n eq (none ok) (m no) if)} case)) 'jd-maybe let
 
 ('v let (drop v ok)) 'jd-succeed let
 ('m let (drop ": " m cat no)) 'jd-fail let
@@ -304,7 +306,7 @@
   'bool (("true") ("false") if)
   'null (drop "null")
   'arr ((je-value) each je-list)
-  'obj (('e let {} e 'key at 'name into e 'value at je-value 'value into) each je-obj)} case) 'je-value let
+  'obj (('e let e 'value at je-value 'ev let {'name e 'key at 'value ev}) each je-obj)} case) 'je-value let
 
 -- ========== Tests ==========
 
@@ -368,9 +370,11 @@
 "\"hi\"" int-or-str jd-run "hi" ok eq assert
 "42" int-or-str jd-run "42" ok eq assert
 
--- Maybe
+-- Maybe: a missing field is none, and a present field that fails its decoder fails the decode
 "{\"a\": 1}" "a" jd-int jd-field jd-maybe jd-run 1 ok ok eq assert
 "{}" "a" jd-int jd-field jd-maybe jd-run none ok eq assert
+"{\"a\":\"x\"}" "a" jd-int jd-field jd-maybe jd-run jerr "$.a: expected int, got string" eq assert
+"{\"a\":{}}" "a" "b" jd-int jd-field jd-field jd-maybe jd-run jerr "$.a: missing field \"b\"" eq assert
 
 -- Nested complex
 ("id" jd-int jd-field) 'id-dec let
@@ -422,8 +426,8 @@
 [] 1 je-int push 2 je-int push 3 je-int push je-list "[1,2,3]" eq assert
 
 [] je-obj "{}" eq assert
-[] {} "a" 'name into 1 je-int 'value into push je-obj "{\"a\":1}" eq assert
-[] {} "a" 'name into 1 je-int 'value into push {} "b" 'name into "hi" je-str 'value into push je-obj
+[] {'name "a" 'value 1 je-int} push je-obj "{\"a\":1}" eq assert
+[] {'name "a" 'value 1 je-int} push {'name "b" 'value "hi" je-str} push je-obj
   "{\"a\":1,\"b\":\"hi\"}" eq assert
 
 -- je-value writes back what the parser read, floats included

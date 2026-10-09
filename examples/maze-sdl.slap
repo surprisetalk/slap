@@ -5,7 +5,7 @@
 --   cat examples/maze.slap examples/maze-sdl.slap | ./slap-sdl
 
 -- model: the maze and the canvas size
-{'w 0 'h 0} build 'st into
+{'w 0 'h 0 'st build}
 
 (drop (drop build) 'st edit) 'keydown on
 

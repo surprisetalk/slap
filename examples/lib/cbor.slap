@@ -80,7 +80,7 @@
               (cks of {'ok (drop 1) 'no (drop 0)} case 'cdf let cks 0 insert cdf) dip swap 'cdp let
               ('cki let cdp ("cbor: duplicate key \"" cks cat "\"" cat ckp _cpos no) (cki ok) if) then
               {} 'null tag (cd 1 plus _cv-at) pthen swap 'cv let
-              (({} cks 'key into cv 'value into push) dip) dip
+              (({'key cks 'value cv} push) dip) dip
               {'ok (ok ckk) 'no (no 0)} case) while
             drop swap drop swap 'map tag swap) if) if) if) (
       ci _cc 31 band 'ca let
@@ -142,14 +142,16 @@
 
 -- cd-one-of: (decs -- dec).  The first decoder that succeeds wins; if none does, the error lists each one's.
 ('ds let ('cv let
-   ds {} 0 'n into "" 'msg into no
+   ds {'n 0 'msg ""} no
    ('dd let {'ok (ok) 'no ('r let cv dd apply {'ok (ok) 'no ('m let
-       {} r 'n at 1 plus 'n into
-          r 'msg at r 'n at 0 gt ("; " cat) () if "[" cat r 'n at int-str cat "] " cat m cat 'msg into no)} case)} case) fold
+       {'n r 'n at 1 plus
+           'msg r 'msg at r 'n at 0 gt ("; " cat) () if "[" cat r 'n at int-str cat "] " cat m cat} no)} case)} case) fold
    {'ok (ok) 'no ('r let ": oneOf: " r 'n at 0 eq ("no decoders") (r 'msg at) if cat no)} case)) 'cd-one-of let
 
--- cd-maybe: (dec -- dec').  value ok ok, or none ok when dec fails.
-('d let (d apply {'ok (ok ok) 'no (drop none ok)} case)) 'cd-maybe let
+-- cd-maybe: (dec -- dec').  value ok ok, or none ok when the field dec reads is missing.
+-- Every other failure passes through: a field that is there but malformed fails.  A missing
+-- field is the one failure whose message starts with ": missing field ".
+('d let (d apply {'ok (ok ok) 'no ('m let ": missing field \"" dup len m swap take-n eq (none ok) (m no) if)} case)) 'cd-maybe let
 
 ('v let (drop v ok)) 'cd-succeed let
 ('m let (drop ": " m cat no)) 'cd-fail let
@@ -205,7 +207,7 @@
   'bool (ce-bool)
   'null (drop ce-null)
   'list ((ce-value) each ce-list)
-  'map (('e let {} e 'key at 'name into e 'value at ce-value 'value into) each ce-map)} case) 'ce-value let
+  'map (('e let e 'value at ce-value 'ev let {'name e 'key at 'value ev}) each ce-map)} case) 'ce-value let
 
 -- ========== Tests ==========
 -- RFC 8949 Appendix A: each row in scope is two assertions, decode the hex and encode the value.
@@ -225,7 +227,7 @@
 -- _fail: (hex msg --).  The decoder refuses the hex with msg.
 ('m let _hx (ok) cd-run cerr m eq assert) '_fail let
 ('n let n 'int tag) '_i let
-('v let 'k let {} k 'key into v 'value into) '_ent let
+('v let 'k let {'key k 'value v}) '_ent let
 
 "00" 0 _i _row
 "01" 1 _i _row
@@ -361,6 +363,7 @@
 "01" _hx "nope" cd-fail cd-run cerr "$: nope" eq assert
 "01" _hx cd-int (1 plus) cd-map cd-run 2 ok eq assert
 "a0" _hx "a" cd-int cd-field cd-maybe cd-run none ok eq assert
+"a161616161" _hx "a" cd-int cd-field cd-maybe cd-run cerr "$.a: expected int, got string" eq assert
 ([] cd-str (len) cd-map push cd-int push cd-one-of) 'cbor-len-or-int let
 "01" _hx cbor-len-or-int cd-run 1 ok eq assert
 "6161" _hx cbor-len-or-int cd-run 1 ok eq assert
@@ -381,7 +384,7 @@
 ce-null "f6" _hx eq assert
 -7 ce-int "26" _hx eq assert
 [] 1 ce-int push 2 ce-int push ce-list "820102" _hx eq assert
-[] {} "a" 'name into 1 ce-int 'value into push ce-map "a1616101" _hx eq assert
+[] {'name "a" 'value 1 ce-int} push ce-map "a1616101" _hx eq assert
 [] ce-map "a0" _hx eq assert
 
 -- A value written reads back: strings of every byte, a map in a list

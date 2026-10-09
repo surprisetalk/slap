@@ -28,6 +28,6 @@
   if
 ) 'step-month let
 
-{} 0 'cnt into 1 'dow into 1900 'y into 0 'm into
+{'cnt 0 'dow 1 'y 1900 'm 0}
 1212 (step-month) repeat
 'cnt at print

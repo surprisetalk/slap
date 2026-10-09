@@ -68,7 +68,7 @@ BAR-H 4 plus 'PAD-Y let
 16 'PAD-X let
 
 -- State: gap buffer and canvas size as record on stack
-{} [] 'before into [] 'after into 0 'w into 0 'h into
+{'before [] 'after [] 'w 0 'h 0}
 
 -- on resize: keep the canvas size
 ('rh let 'rw let rw 'w into rh 'h into) 'resize on
@@ -238,7 +238,7 @@ argv len 0 gt (
     'full let
     -- Walk text computing positions, find closest index
     -- Walk state record: hx, hy, best, bestd
-    {} PAD-X 'hx into PAD-Y 2 plus 'hy into 0 'best into 1000000 'bestd into
+    {'hx PAD-X 'hy PAD-Y 2 plus 'best 0 'bestd 1000000}
     0
     (dup full len lt) (
       dup 'hi let

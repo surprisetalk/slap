@@ -27,27 +27,20 @@
   ) if) if) if) if
 ) 'key-dir let
 
--- New game: three cells ending at the board's center, food anywhere on the board
+-- New game: three cells ending at the board's center, food anywhere on the board.
+-- The canvas width, the board size and the frame count carry over.
 (
-  dup 'cols at 'cs let  dup 'rows at 'rs let
+  dup 'cols at 'cs let  dup 'rows at 'rs let  dup 'w at 'wd let  'frame at 'fr let
   cs 2 div 2 max cs 1 sub min 'hx let
   rs 2 div cs mul hx plus 'head let
   [] hx 2 ge (head 2 sub push) () if
      hx 1 ge (head 1 sub push) () if
      head push 'snk let
-  0 'state into
-  0 'death-at into
-  snk 'snake into
-  1 'dir into
-  cs rs mul random 'food into
+  {'w wd 'cols cs 'rows rs 'frame fr 'state 0 'death-at 0 'snake snk 'dir 1 'food cs rs mul random}
 ) 'reset let
 
 -- State record on stack: the board is the canvas in 20px cells
-{}
-  0 'w into
-  32 'cols into  24 'rows into
-  0 'frame into
-  reset
+{'w 0 'cols 32 'rows 24 'frame 0} reset
 
 -- on resize: keep the canvas size and restart on the new board.
 -- show runs this once before the first frame.
