@@ -1,46 +1,7 @@
-- [ ] You tag a value with any payload, and `'ok`/`'no` are ordinary tags: a
-      tagged type lists each tag with its payload, as a record type lists each
-      key with its value. Today every tag but 'ok/'no has one payload type in
-      the whole program (ty_tag_payload), and results have their own kind,
-      K_RES, so case refuses a result clause beside another tag. Decided: the
-      payload lives in the row, as in OCaml's polymorphic variants. A type may
-      be cyclic only through a tag payload, as OCaml allows.
-      `{'ok int 'no str} either` is a closed tag set. Gains:
-      `{'ok (…) 'no (…) 'retry (…)} case` works, and a program's 'int no
-      longer collides with json.slap's. Tradeoff: the checker gains cyclic
-      types, and the runtime trusts it. The signature task follows this one.
-  1. Tests first; check each fails against the old binary. expect.slap: the
-     three-clause case above; `5 'n tag` and `"x" 'n tag` in two words that
-     never meet. errors.slap: a mismatch on a recursive type prints it with
-     `as`. errors.slap cases that pin a payload conflict ("conflicts with its
-     payload elsewhere", "unlike its payload elsewhere") and "a result is
-     tagged only 'ok or 'no" become expect.slap passes.
-  2. Tag sets reuse K_REXT, K_RNIL and K_RVAR, with the payload as the field.
-     Delete K_TEXT, K_TNIL, K_TVAR, K_RES, ty_tagpay, ty_tag_payload and
-     ty_tag_take. `'t tag` makes `{'t p | 'r}`. In ty_case, a clause's
-     payload is its tag's field in the value's row, and '_ gets the value
-     with its whole row. TYPES' results (`must`, `pthen`, `get`, the I/O
-     words) and nth's output become closed `{'ok 'a 'no 'b} either`.
-     ty_copy_parts: a tag set is copyable when each payload is.
-  3. Cycles: the occurs check reports an occurrence only on a path that
-     crosses no tag payload, and still lowers levels everywhere.
-     ty_unify_chain remembers each K_TAG pair it is inside and treats a pair
-     met again as unified. ty_copy and ty_subst_at record a term's copy in
-     ty_to before they recurse into its parts. ty_show prints a term met again
-     on one path as `'j`, and its first visit as `(… 'j as)`.
-  4. json.slap's and xml.slap's self-tests and tests/scale.slap cover
-     recursive data. Then run breaker and fuzz rounds on the ASan build: a
-     checker hole shows up as memory damage, not as a message.
-  5. readme: tagged unions and the type table lose "one payload type in the
-     whole program" and the result row; recursive data gets one example.
-     claude.md's Checker paragraph (kinds, ty_tag_payload, K_RES) follows.
-
 - [ ] You write a signature as ordinary data: two lists of type values, ins
       then outs, as in `(2 mul) [int] [int] effect 'double let` and `'triple
       [int] [int] effect`. Prelude words build types as tagged values, so
-      `[int str] 'sig let sig len print` prints 2. Do this after the
-      tag-payload task (under one payload per tag, json's 'int holds an int
-      and the type 'int holds `()`). Decided:
+      `[int str] 'sig let sig len print` prints 2. Decided:
       - Base types are words: int, float, sym, str and socket.
       - Constructors are their tags: `int 'list tag`, `'a var 'dict tag`,
         `'a var 'box tag`. dict and box already name value words.
@@ -94,6 +55,24 @@
   6. readme: a "types are values" section replaces effect annotations and
      protocol constraints; the "tuples" section becomes "bodies", the word
      claude.md uses. claude.md's Checker paragraph (TYPES notation) follows.
+
+- [ ] You pass a value whose cases closed a tag absent to `must`, `pthen` or
+      a signature that names that tag. Today `5 ok 'r let r {'ok (drop 1)}
+      case drop r must` is refused ("this value is never tagged 'no"): an
+      `either` in an input slot makes its tags K_PRESENT, as an output must.
+      OCaml types such an input `[< ...]`. Do it with or after the signature
+      task, which rewrites the parser.
+  1. Tests first; check each fails against the old binary. expect.slap: the
+     program above. errors.slap's case "x can never carry 'a after its second
+     case" becomes an expect.slap pass.
+  2. The type parser gives each tag of an `either` in an `in` slot a fresh
+     presence variable instead of K_PRESENT. It generalizes with the scheme
+     and is rigid while the body is checked, so a body case that drops the
+     tag is still refused. Outputs stay K_PRESENT. TYPES' inputs (`must`,
+     `pthen`) follow.
+  3. One variable shared by an in slot and an out slot takes the out slot's
+     K_PRESENT. Tradeoff: a body that passes such an input to a K_PRESENT
+     input of another word is refused, as a rigid variable meets a constant.
 
 - [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,
       `let` and `dip` each cost at most twice `swap` (zoom.slap

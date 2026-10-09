@@ -576,19 +576,23 @@ static void syms_init(void) {
 /* ---- TYPE CHECKER ---- */
 /* ==== TYPES: inference by unification ====
    A type is a term in one pool: a value, a stack (its top and the rest), a record row, a label or a
-   tag set. A variable is a term that union-find binds to another. A body's type is its stack effect:
+   tagged type. A variable is a term that union-find binds to another. A body's type is its stack effect:
    a function from the stack it takes to the stack it leaves, whose untouched rest is a variable, so a
    word works on any stack below what it touches. Levels decide what a word's type generalizes. */
-enum { K_VAR, K_INT, K_FLOAT, K_SYM, K_LIST, K_DICT, K_BOX, K_SOCK, K_FN, K_REC, K_RES, K_TAG,
-       K_SVAR, K_SNIL, K_SCONS, K_RVAR, K_RNIL, K_REXT, K_LSYM, K_TVAR, K_TNIL, K_TEXT };
+enum { K_VAR, K_INT, K_FLOAT, K_SYM, K_LIST, K_DICT, K_BOX, K_SOCK, K_FN, K_REC, K_TAG,
+       K_SVAR, K_SNIL, K_SCONS, K_RVAR, K_RNIL, K_REXT, K_LSYM, K_PRESENT, K_ABSENT };
 /* Every symbol has the one type K_SYM, and two of them always unify. A K_SYM that a symbol literal made
    keeps the literal's name plus one in `sym`; `{...}` keys and `on` read it, and `nth` reads its name from
    the token before it. Record keys are K_LSYM. */
 /* A row field is the type of its key's value. A closed row (K_RNIL) has no other key. A record has the
-   keys its literal names: `into` replaces the value of a key the record has, and never adds one. */
+   keys its literal names: `into` replaces the value of a key the record has, and never adds one. A tagged
+   type (K_TAG) is a row too: each tag the value may carry, with its payload's type as the field. */
+/* A tag's label holds its presence in a: K_PRESENT when a value may carry the tag (`tag`, a signature, a
+   primitive's result), or a variable when only a case names it. A closed row makes a variable K_ABSENT
+   instead of refusing it, so a case does not force its clause tags on the value it takes. */
 /* What a value variable must be: protocols a word asks of its inputs. */
-/* copy: the value may be copied, dropped, bound or stored. A box is not, nor a result or tag that
-   holds one; the stack carries it from the word that makes it to the word that frees it. */
+/* copy: the value may be copied, dropped, bound or stored. A box is not, nor a tagged value that
+   may hold one; the stack carries it from the word that makes it to the word that frees it. */
 /* P_NOFN: holds no body (ty_no_body). */
 enum { P_COPY = 1, P_NOFN = 2 };
 /* rigid: a signature's variable while a body is checked against it. sealed: the stack below a body
@@ -599,16 +603,19 @@ static Ty *ty; static int ty_n = 1, ty_cap, ty_level;
 /* Walks over a type visit each term once, since types share parts: ty_mark holds the walk that last
    saw a term, ty_to what a copying walk made of it. */
 static int *ty_mark, *ty_to, ty_stamp;
+/* ty_reaches's own marks: it runs inside a copying walk. */
+static int *ty_seen, ty_seen_stamp;
 static int ty_new(int kind, int a, int b, int c) {
     if (ty_n >= ty_cap) { int old = ty_cap; ty_cap = ty_cap ? 2*ty_cap : 65536;
-        ty = realloc(ty, (size_t)ty_cap * sizeof(Ty)); ty_mark = realloc(ty_mark, (size_t)ty_cap * sizeof(int)); ty_to = realloc(ty_to, (size_t)ty_cap * sizeof(int));
-        if (!ty || !ty_mark || !ty_to) die("type checker: out of memory for %d types", ty_cap);
-        memset(ty + old, 0, (size_t)(ty_cap - old) * sizeof(Ty)); memset(ty_mark + old, 0, (size_t)(ty_cap - old) * sizeof(int)); }
+        ty = realloc(ty, (size_t)ty_cap * sizeof(Ty)); ty_mark = realloc(ty_mark, (size_t)ty_cap * sizeof(int)); ty_to = realloc(ty_to, (size_t)ty_cap * sizeof(int)); ty_seen = realloc(ty_seen, (size_t)ty_cap * sizeof(int));
+        if (!ty || !ty_mark || !ty_to || !ty_seen) die("type checker: out of memory for %d types", ty_cap);
+        memset(ty + old, 0, (size_t)(ty_cap - old) * sizeof(Ty)); memset(ty_mark + old, 0, (size_t)(ty_cap - old) * sizeof(int)); memset(ty_seen + old, 0, (size_t)(ty_cap - old) * sizeof(int)); }
     ty[ty_n] = (Ty){(uint8_t)kind, 0, 0, 0, ty_level, a, b, c, 0, 0};
     return ty_n++;
 }
 static int ty_sym(int kind, uint32_t s) { int t = ty_new(kind, 0, 0, 0); ty[t].sym = s; return t; }
-static int ty_isvar(int k) { return k == K_VAR || k == K_SVAR || k == K_RVAR || k == K_TVAR; }
+static int ty_tag_label(uint32_t tag, int presence) { int t = ty_new(K_LSYM, presence, 0, 0); ty[t].sym = tag; return t; }
+static int ty_isvar(int k) { return k == K_VAR || k == K_SVAR || k == K_RVAR; }
 /* The name a symbol literal wrote into a K_SYM, or -1. */
 static int ty_find(int t);
 static int ty_sym_name(int t) { t = ty_find(t); return ty[t].kind == K_SYM ? (int)ty[t].sym - 1 : -1; }
@@ -620,7 +627,10 @@ static int ty_find(int t) {
     }
     return t;
 }
-/* The next term along a stack (b) or a row or tag set (c); a chain longer than the pool is a cycle. */
+/* A row field's presence, or 0 for a record's field. */
+static int ty_presence(int field) { int p = ty[ty[field].a].a; return p ? ty_find(p) : 0; }
+static int ty_absent(int field) { int p = ty_presence(field); return p && ty[p].kind == K_ABSENT; }
+/* The next term along a stack (b) or a row (c); a chain longer than the pool is a cycle. */
 /* hops starts at -ty_n, the pool's size when the walk begins, so a walk that makes terms stays bounded. */
 static int ty_rest(int x, int *hops) {
     if (++*hops > 0) die("type checker bug: a stack or row links in a cycle");
@@ -674,6 +684,8 @@ static void ty_show_top(char *out, size_t cap, int s, int n) {
     if (k < n && k < 32) ty_put(out, cap, &len, k ? "only %d value%s:" : "nothing", k, k == 1 ? "" : "s");
     for (int j = k - 1; j >= 0; j--) { char e[256]; ty_show(e, sizeof e, items[j], 1); ty_put(out, cap, &len, "%s%s", len ? " " : "", e); }
 }
+/* The tagged types ty_show is inside, outermost first, and whether each was met again inside itself. */
+static int ty_show_path[16], ty_show_again[16], ty_show_n;
 static void ty_show(char *out, size_t cap, int t, int depth) {
     if (depth == 0) ty_show_calls = 0;
     if (depth > 8 || ++ty_show_calls > 2000) { snprintf(out, cap, "..."); return; }
@@ -688,21 +700,21 @@ static void ty_show(char *out, size_t cap, int t, int depth) {
     case K_DICT: ty_show(a, sizeof a, ty[t].a, depth + 1); snprintf(out, cap, "%s dict", a); return;
     case K_BOX: ty_show(a, sizeof a, ty[t].a, depth + 1); snprintf(out, cap, "%s box", a); return;
     case K_SOCK: snprintf(out, cap, "socket"); return;
-    case K_TVAR: { char v[16]; ty_print_var(v, sizeof v, t, '.'); snprintf(out, cap, "tagged | .%s", v); return; }
     case K_RVAR: { char v[16]; ty_print_var(v, sizeof v, t, '.'); snprintf(out, cap, "{| .%s}", v); return; }
     case K_FN: ty_show_stack(a, sizeof a, ty[t].a, depth); ty_show_stack(b, sizeof b, ty[t].b, depth); snprintf(out, cap, "( %s%s->%s%s )", a, *a ? " " : "", *b ? " " : "", b); return;
-    case K_RES: ty_show(a, sizeof a, ty[t].a, depth + 1); ty_show(b, sizeof b, ty[t].b, depth + 1); snprintf(out, cap, "{'ok %s 'no %s} either", a, b); return;
-    case K_TAG: case K_TEXT: case K_TNIL: {
-        size_t len = 0; int r = ty[t].kind == K_TAG ? ty_find(ty[t].a) : t; ty_put(out, cap, &len, "tagged");
-        for (int hops = 0; ty[r].kind == K_TEXT; r = ty_find(ty[r].c), hops++) { if (hops == ty_n) die("type checker bug: a tag set links in a cycle"); ty_put(out, cap, &len, " '%s", sym_name(ty[r].sym)); }
-        if (ty[r].kind == K_TVAR) { char v[16]; ty_print_var(v, sizeof v, r, '.'); ty_put(out, cap, &len, " | .%s", v); }
+    case K_TAG: {
+        /* A recursive type: met again on its own path, it prints as a name, and its first visit binds the name with as. */
+        for (int k = 0; k < ty_show_n; k++) if (ty_show_path[k] == t) { ty_show_again[k] = 1; ty_print_var(out, cap, t, '\''); return; }
+        int k = ty_show_n++; ty_show_path[k] = t; ty_show_again[k] = 0;
+        ty_show(a, sizeof a, ty[t].a, depth + 1); ty_show_n--;
+        if (ty_show_again[k]) { char v[16]; ty_print_var(v, sizeof v, t, '\''); snprintf(out, cap, "(%s either %s as)", a, v); }
+        else snprintf(out, cap, "%s either", a);
         return; }
     case K_REC: case K_REXT: case K_RNIL: {
         size_t len = 0; int r = ty[t].kind == K_REC ? ty_find(ty[t].a) : t, n = 0; ty_put(out, cap, &len, "{");
         for (int hops = 0; ty[r].kind == K_REXT; hops++) {
             if (hops == ty_n) die("type checker bug: a row links in a cycle");
-            ty_show(a, sizeof a, ty[r].b, depth + 1);
-            ty_put(out, cap, &len, "%s'%s %s", n ? " " : "", sym_name(ty[ty[r].a].sym), a); n++;
+            if (!ty_absent(r)) { ty_show(a, sizeof a, ty[r].b, depth + 1); ty_put(out, cap, &len, "%s'%s %s", n ? " " : "", sym_name(ty[ty[r].a].sym), a); n++; }
             r = ty_find(ty[r].c);
         }
         if (ty[r].kind == K_RVAR) { char v[16]; ty_print_var(v, sizeof v, r, '.'); ty_put(out, cap, &len, "%s| .%s", n ? " " : "", v); }
@@ -715,19 +727,29 @@ static void ty_show(char *out, size_t cap, int t, int depth) {
 
 /* ---- unification ----
    ty_why says what failed, for the caller's message. The occurs check walks the term being bound and
-   lowers the levels of its variables to v's. */
+   lowers the levels of its variables to v's. A type may contain itself only through a tag payload that
+   holds no body, so a path to v that crosses a tagged type and no body type is no occurrence: 1 is an
+   occurrence, 3 one through a tag payload that holds a body, 2 a rigid variable from outside. */
 static char ty_why[512];
+enum { OCC_TAG = 1, OCC_FN = 2 };
 static int ty_occurs(int v, int t, int level) {
-    int n = 0, stamp = ++ty_stamp; ty_work_push(&n, t);
+    /* A work item is a term and the OCC_ kinds its path crossed. A rank says what a walk on from a term
+       can still find. Rank 1, a path through a tag only: an occurrence through a body. Rank 2, a path
+       through nothing: that and any occurrence that crosses no tag. Rank 3, a path through a body: any
+       occurrence. A term is walked again only at a higher rank. This walk's marks are stamp + rank, so
+       ty_stamp moves by 3 and no other walk's stamp meets them. */
+    static const int rank[4] = {2, 1, 3, 3};
+    int n = 0, stamp = ty_stamp; ty_stamp += 3; ty_work_push(&n, t << 2);
     while (n) {
-        int x = ty_find(ty_work[--n]);
-        if (x == v) return 1;
-        if (ty_mark[x] == stamp) continue;
-        ty_mark[x] = stamp;
+        int w = ty_work[--n], path = w & 3, x = ty_find(w >> 2);
+        if (x == v) { if (path == OCC_TAG) continue; return path & OCC_TAG ? 3 : 1; }
+        if (ty_mark[x] > stamp && ty_mark[x] - stamp >= rank[path]) continue;
+        ty_mark[x] = stamp + rank[path];
         if (ty_isvar(ty[x].kind)) { if (ty[x].level > level && ty[x].level != GENERIC) { if (ty[x].rigid) return 2; ty[x].level = level; } continue; }
-        if (ty[x].a) ty_work_push(&n, ty[x].a);
-        if (ty[x].b) ty_work_push(&n, ty[x].b);
-        if (ty[x].c) ty_work_push(&n, ty[x].c);
+        path |= ty[x].kind == K_TAG ? OCC_TAG : ty[x].kind == K_FN ? OCC_FN : 0;
+        if (ty[x].a) ty_work_push(&n, ty[x].a << 2 | path);
+        if (ty[x].b) ty_work_push(&n, ty[x].b << 2 | path);
+        if (ty[x].c) ty_work_push(&n, ty[x].c << 2 | path);
     }
     return 0;
 }
@@ -735,26 +757,26 @@ static int ty_unify(int a, int b);
 static int ty_unify_at(int a, int b, int depth);
 static int ty_copy_parts(int t);
 static int ty_no_body(int t);
-static int ty_tag_payload(uint32_t tag);
 static int ty_fixed(int v) { return ty[v].rigid || ty[v].sealed; }
 /* A compound kind by name, for a message where the full type would read as another type (`int list`
    prints as str). */
 static const char *ty_kind_noun(int k) {
     switch (k) { case K_LIST: return "a list"; case K_DICT: return "a dict"; case K_BOX: return "a box"; case K_REC: return "a record";
-    case K_FN: return "a body"; case K_TAG: return "a tagged value"; case K_RES: return "a result"; default: return 0; }
+    case K_FN: return "a body"; case K_TAG: return "a tagged value"; default: return 0; }
 }
 static int ty_rigid_rest;
 /* The last failed unify met two stacks of different depths. */
 static int ty_depth_why;
+/* The rows being unified are a tagged type's, not a record's: messages name tags. ty_why_tag: ty_why
+   already names the tag whose payloads clash. */
+static int ty_row_tag, ty_why_tag;
 static int ty_bind(int v, int t) {
     if (ty[v].sealed && ty[t].kind == K_SVAR && ty[t].sealed && !ty[v].rigid && !ty[t].rigid) { ty[v].link = t; return 0; }
     if (ty_fixed(v) && !(ty_isvar(ty[t].kind) && !ty_fixed(t))) {
         if (ty[v].sealed || (ty_isvar(ty[t].kind) && ty[t].sealed)) { snprintf(ty_why, sizeof ty_why, "this body must turn its inputs into one value and cannot reach the stack below them"); return 1; }
         if (ty[v].kind == K_SVAR && (ty[t].kind == K_SCONS || ty[t].kind == K_SNIL)) { snprintf(ty_why, sizeof ty_why, "the body takes or leaves a different number of values than the signature declares"); ty_rigid_rest = 1; return 1; }
         if (ty[v].kind == K_RVAR && (ty[t].kind == K_REXT || ty[t].kind == K_RNIL)) { char s[256]; ty_show(s, sizeof s, t, 0);
-            snprintf(ty_why, sizeof ty_why, "the signature's open record ends in keys the caller chooses, but here the body needs them to be %s", ty[t].kind == K_RNIL ? "none" : s); return 1; }
-        if (ty[v].kind == K_TVAR && (ty[t].kind == K_TEXT || ty[t].kind == K_TNIL)) { char s[256]; ty_show(s, sizeof s, t, 0);
-            snprintf(ty_why, sizeof ty_why, "the signature's open tag set ends in tags the caller chooses, but here the body needs them to be %s", ty[t].kind == K_TNIL ? "none" : s); return 1; }
+            snprintf(ty_why, sizeof ty_why, "the signature's open %s ends in %s the caller chooses, but here the body needs them to be %s", ty_row_tag ? "tag set" : "record", ty_row_tag ? "tags" : "keys", ty[t].kind == K_RNIL ? "none" : s); return 1; }
         char s[256]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a type the signature leaves open is %s here", s); return 1; }
     if (ty_fixed(v)) { int x = v; v = t; t = x; }
     int occ = ty_occurs(v, t, ty[v].level);
@@ -764,10 +786,12 @@ static int ty_bind(int v, int t) {
         /* The stack does not end in v, so v is inside a value on it: a body's type that names this stack. */
         if (ty[v].kind == K_SVAR && n && x != v) snprintf(ty_why, sizeof ty_why, "a copy of the body lies below it on the stack. dup, or a second lookup of a body bound with let, gives both copies one type, so one copy cannot run while the other lies below it");
         else if (ty[v].kind == K_SVAR && n) ty_depth_why = 1, snprintf(ty_why, sizeof ty_why, "one path leaves %d more value%s on the stack than the other, so a branch, clause, loop pass or recursive call changes the stack's depth", n, n == 1 ? "" : "s");
-        else if (ty[v].kind == K_RVAR) snprintf(ty_why, sizeof ty_why, "a record would have to contain itself: one path adds a field the other has not");
+        else if (occ == 3) { char s[256], w[64]; ty_show(w, sizeof w, v, 0); ty_show(s, sizeof s, t, 0);
+            snprintf(ty_why, sizeof ty_why, "%s would have to be %s, which holds it inside a body. A type contains itself only through a tag payload that holds no body", w, s); }
+        else if (ty[v].kind == K_RVAR) snprintf(ty_why, sizeof ty_why, ty_row_tag ? "a tagged type would have to contain itself: one path adds a tag the other has not" : "a record would have to contain itself: one path adds a field the other has not");
         else { char s[256]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a value would have to contain itself, as %s", s); }
         return 1; }
-    if ((ty[v].kind == K_VAR || ty[v].kind == K_TVAR || ty[v].kind == K_RVAR) && ty[v].prot) {
+    if ((ty[v].kind == K_VAR || ty[v].kind == K_RVAR) && ty[v].prot) {
         if (ty[t].kind == ty[v].kind && ty_fixed(t) && (ty[v].prot & ~ty[t].prot)) {
             snprintf(ty_why, sizeof ty_why, ty[v].prot & ~ty[t].prot & P_COPY ? "the body needs a copyable value where the signature allows any type"
                 : "a value bound with let after a body was made in its scope cannot hold a body, but the signature allows one here"); return 1; }
@@ -778,7 +802,7 @@ static int ty_bind(int v, int t) {
             if ((need & P_NOFN) && ty_no_body(t)) return 1;
             need &= ~P_NOFN;
             ty[v].link = t;
-            if ((need & P_COPY) && (ty[t].kind == K_RES || ty[t].kind == K_TAG || ty[t].kind == K_TEXT || ty[t].kind == K_TNIL)) {
+            if ((need & P_COPY) && (ty[t].kind == K_TAG || ty[t].kind == K_REXT || ty[t].kind == K_RNIL)) {
                 if (ty_copy_parts(t)) return 1;
                 need &= ~P_COPY; }
             if ((ty_prot_of(ty[t].kind) & need) != need) {
@@ -793,60 +817,58 @@ static int ty_bind(int v, int t) {
 }
 /* t must be copyable: unify it with a variable that asks so. */
 static int ty_need(int t, int prot) { int w = ty_new(K_VAR, 0, 0, 0); ty[w].prot = (uint8_t)prot; return ty_unify_at(t, w, 0); }
-/* A result or tag is copyable when every payload it may hold is; an open tag set asks it of the tags it
-   gains later. The term's own prot marks it checked, so a tag whose payload holds the same tag ends. */
+/* A tagged type, or a tag row, is copyable when every payload it may hold is; an open row asks it of the
+   tags it gains later. The term's own prot marks it checked, so a recursive type ends. */
 static int ty_copy_parts(int t) {
     c_stack_check("while checking what a value holds");
     t = ty_find(t);
     if (ty[t].prot & P_COPY) return 0;
     ty[t].prot |= P_COPY;
-    if (ty[t].kind == K_RES) return ty_need(ty[t].a, P_COPY) || ty_need(ty[t].b, P_COPY);
     int r = ty[t].kind == K_TAG ? ty_find(ty[t].a) : t;
-    for (int hops = 0; ty[r].kind == K_TEXT; r = ty_find(ty[r].c), hops++) {
-        if (hops == ty_n) die("type checker bug: a tag set links in a cycle");
-        if (ty_need(ty_tag_payload(ty[r].sym), P_COPY)) return 1;
-    }
-    if (ty[r].kind == K_TVAR) {
+    for (int hops = -ty_n; ty[r].kind == K_REXT; r = ty_rest(r, &hops))
+        if (!ty_absent(r) && ty_need(ty[r].b, P_COPY)) return 1;
+    if (ty[r].kind == K_RVAR) {
         if (ty_fixed(r) && !(ty[r].prot & P_COPY)) { snprintf(ty_why, sizeof ty_why, "the body needs a copyable value where the signature allows any tagged value"); return 1; }
         ty[r].prot |= P_COPY; }
     return 0;
 }
 /* t holds no body. A let binds such a value after its scope made a body (ty_taint): a body made in a
    scope keeps that scope's names alive, so a binding there that holds one could keep itself alive and
-   never be freed. Variables, open rows and open tag sets take P_NOFN, so a later binding cannot add a
-   body either. A term's own P_NOFN marks it checked, so a tag whose payload holds the same tag ends. */
+   never be freed. Variables and open rows take P_NOFN, so a later binding cannot add a body either. A
+   term's own P_NOFN marks it checked, so a recursive type ends. */
 static int ty_no_body(int t) {
     c_stack_check("while checking what a value holds");
     t = ty_find(t);
     if (ty[t].prot & P_NOFN) return 0;
     switch (ty[t].kind) {
     case K_FN: snprintf(ty_why, sizeof ty_why, "a value bound with let after a body was made in its scope cannot hold a body, since the binding could keep its own scope alive"); return 1;
-    case K_VAR: case K_TVAR: case K_RVAR:
+    case K_VAR: case K_RVAR:
         if (ty_fixed(t)) { snprintf(ty_why, sizeof ty_why, "a value bound with let after a body was made in its scope cannot hold a body, but the signature allows one here"); return 1; }
         ty[t].prot |= P_NOFN; return 0;
     case K_LIST: case K_DICT: case K_BOX: case K_REC: case K_TAG: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].a);
-    case K_RES: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].a) || ty_no_body(ty[t].b);
-    case K_REXT: ty[t].prot |= P_NOFN; return ty_no_body(ty[t].b) || ty_no_body(ty[t].c);
-    case K_TEXT: ty[t].prot |= P_NOFN; return ty_no_body(ty_tag_payload(ty[t].sym)) || ty_no_body(ty[t].c);
+    case K_REXT: ty[t].prot |= P_NOFN; return (!ty_absent(t) && ty_no_body(ty[t].b)) || ty_no_body(ty[t].c);
     default: return 0;
     }
 }
-static int ty_row_take(int r, uint32_t label, int *field, int *rest, int depth);
-static int ty_tag_take(int s, uint32_t tag, int *rest, int depth);
-/* The variable or end a row or tag set finishes in. */
+static int ty_row_take(int r, uint32_t label, int *field, int *rest, int *presence, int depth);
+/* The variable or end a row finishes in. */
 static int ty_tail(int r) {
     r = ty_find(r);
-    for (int hops = 0; ty[r].kind == K_REXT || ty[r].kind == K_TEXT; hops++) { if (hops == ty_n) die("type checker bug: a row links in a cycle"); r = ty_find(ty[r].c); }
+    for (int hops = 0; ty[r].kind == K_REXT; hops++) { if (hops == ty_n) die("type checker bug: a row links in a cycle"); r = ty_find(ty[r].c); }
     return r;
 }
 /* Recursion follows nesting; a stack or a row is a chain, which the loop walks. A structure found equal
    to another links to it only once the whole chain is unified: an occurs check during the chain must
    still see the parts of both. */
 static struct { int a, b; } *ty_links; static int ty_links_n, ty_links_cap;
+/* The tagged types being unified, outermost first: a recursive type meets a pair again inside it, and
+   that pair is unified once the outer one is. */
+static struct { int a, b; } *ty_tag_pairs; static int ty_tag_pairs_n, ty_tag_pairs_cap;
 static int ty_unify_chain(int a, int b, int depth);
 static int ty_unify_at(int a, int b, int depth) {
     int base = ty_links_n, r = ty_unify_chain(a, b, depth);
-    if (!r) for (int k = base; k < ty_links_n; k++) ty[ty_links[k].a].link = ty_links[k].b;
+    /* an inner unify links its structures when it returns, so a pair may already be one */
+    if (!r) for (int k = base; k < ty_links_n; k++) { int x = ty_find(ty_links[k].a), y = ty_find(ty_links[k].b); if (x != y) ty[x].link = y; }
     ty_links_n = base; return r;
 }
 static int ty_unify_chain(int a, int b, int depth) {
@@ -857,11 +879,14 @@ static int ty_unify_chain(int a, int b, int depth) {
     if (a == b) return 0;
     if (ty_isvar(ty[a].kind)) return ty_bind(a, b);
     if (ty_isvar(ty[b].kind)) return ty_bind(b, a);
+    /* a closed tag set meets what is left of a set with more tags: a tag a case named is absent */
+    if (ty_row_tag && ty[a].kind == K_RNIL && ty[b].kind == K_REXT) {
+        int p = ty_presence(b);
+        if (!p || ty[p].kind == K_PRESENT) { snprintf(ty_why, sizeof ty_why, "it may be tagged '%s, which is not one of the tags this takes", sym_name(ty[ty[b].a].sym)); return 1; }
+        if (ty_isvar(ty[p].kind) && ty_unify_at(p, ty_new(K_ABSENT, 0, 0, 0), depth + 1)) return 1;
+        b = ty[b].c; continue; }
     if (ty[a].kind == K_RNIL && ty[b].kind == K_REXT) { int x = a; a = b; b = x; }
     if (ty[a].kind == K_SYM && ty[b].kind == K_SYM) { if (ty[a].sym != ty[b].sym) ty[a].sym = ty[b].sym = 0; return 0; } /* two names met: the value may be either */
-    /* a closed tag set meets what is left of a set with more tags */
-    if (ty[a].kind == K_TNIL && ty[b].kind == K_TEXT) { snprintf(ty_why, sizeof ty_why, "it may be tagged '%s, which is not one of the tags this takes", sym_name(ty[b].sym)); return 1; }
-    if (ty[a].kind == K_TEXT && ty[b].kind == K_TNIL) { snprintf(ty_why, sizeof ty_why, "this value is never tagged '%s", sym_name(ty[a].sym)); return 1; }
     if (ty[a].kind != ty[b].kind && !(ty[a].kind == K_REXT && ty[b].kind == K_RNIL)) {
         char s1[256], s2[256];
         if (ty[a].kind == K_SNIL || ty[b].kind == K_SNIL) ty_depth_why = 1, snprintf(ty_why, sizeof ty_why, "the stack is shorter than this needs");
@@ -874,21 +899,41 @@ static int ty_unify_chain(int a, int b, int depth) {
         return 1;
     }
     switch (ty[a].kind) {
-    case K_REXT: case K_TEXT: {
+    case K_REXT: {
         /* Take a's first entry out of b, then meet the rests. If taking it binds a's own tail, the two
            rows differ only in order around one shared tail, and no finite row satisfies both. */
-        if (!row_tail) row_tail = ty_tail(a);
-        int f = 0, rest, tail = row_tail;
-        if (ty[a].kind == K_REXT) { if (ty_row_take(b, ty[ty[a].a].sym, &f, &rest, 0)) return 1; }
-        else if (ty_tag_take(b, ty[a].sym, &rest, 0)) return 1;
+        /* a nested unify of a recursive type may bind the tail first */
+        if (!row_tail || ty_find(row_tail) != row_tail) row_tail = ty_tail(a);
+        int f, rest, pb, tail = row_tail, pa = ty_presence(a), took = ty_row_take(b, ty[ty[a].a].sym, &f, &rest, &pb, 0);
+        if (took == 1 || (took == 2 && (!pa || ty[pa].kind == K_PRESENT))) return 1;
+        /* b is closed without a's tag, which a case named: absent */
+        if (took == 2) { if (ty_isvar(ty[pa].kind) && ty_unify_at(pa, ty_new(K_ABSENT, 0, 0, 0), depth + 1)) return 1; a = ty[a].c; continue; }
         if (ty_isvar(ty[tail].kind) && ty_find(tail) != tail) { snprintf(ty_why, sizeof ty_why, "these two rows would have to contain each other"); return 1; }
-        if (f && ty_unify_at(ty[a].b, f, depth + 1)) return 1;
+        if (pa && pb && pa != pb) {
+            if (ty_isvar(ty[pa].kind) || ty_isvar(ty[pb].kind)) { if (ty_unify_at(pa, pb, depth + 1)) return 1; }
+            else if (ty[pa].kind != ty[pb].kind) { snprintf(ty_why, sizeof ty_why, ty[pa].kind == K_PRESENT ? "this value is never tagged '%s" : "it may be tagged '%s, which is not one of the tags this takes", sym_name(ty[ty[a].a].sym)); return 1; } }
+        /* no value carries an absent tag, so its payload has no type to agree on */
+        if (pa && ty[ty_find(pa)].kind == K_ABSENT) { a = ty[a].c; b = rest; continue; }
+        if (ty_unify_at(ty[a].b, f, depth + 1)) {
+            /* the innermost tag names the clash */
+            if (ty_row_tag && !ty_why_tag) { char w[512]; snprintf(w, sizeof w, "'%s has two payload types: %s", sym_name(ty[ty[a].a].sym), ty_why); snprintf(ty_why, sizeof ty_why, "%s", w); ty_why_tag = 1; }
+            return 1; }
         a = ty[a].c; b = rest; continue;
     }
     default: {
         /* once equal, a stands for b: a pair two types share is unified once */
-        int na = ty[a].b, nb = ty[b].b;
-        if (ty[a].a && ty_unify_at(ty[a].a, ty[b].a, depth + 1)) return 1;
+        int na = ty[a].b, nb = ty[b].b, tag = ty_row_tag, pairs = ty_tag_pairs_n;
+        if (ty[a].kind == K_TAG) {
+            for (int k = 0; k < ty_tag_pairs_n; k++) {
+                int x = ty_find(ty_tag_pairs[k].a), y = ty_find(ty_tag_pairs[k].b);
+                if ((x == a && y == b) || (x == b && y == a)) return 0; }
+            if (ty_tag_pairs_n == ty_tag_pairs_cap) { ty_tag_pairs_cap = ty_tag_pairs_cap ? 2*ty_tag_pairs_cap : 64; ty_tag_pairs = realloc(ty_tag_pairs, (size_t)ty_tag_pairs_cap * sizeof *ty_tag_pairs);
+                if (!ty_tag_pairs) die("type checker: out of memory for %d tagged types being unified", ty_tag_pairs_cap); }
+            ty_tag_pairs[ty_tag_pairs_n].a = a; ty_tag_pairs[ty_tag_pairs_n++].b = b; }
+        if (ty[a].kind == K_TAG || ty[a].kind == K_REC) ty_row_tag = ty[a].kind == K_TAG;
+        int bad = ty[a].a && ty_unify_at(ty[a].a, ty[b].a, depth + 1);
+        ty_tag_pairs_n = pairs; ty_row_tag = tag;
+        if (bad) return 1;
         if (ty[a].c && ty_unify_at(ty[a].c, ty[b].c, depth + 1)) return 1;
         /* A str and an int list are one type; linking them would make one print as the other. */
         if (ty[a].kind == K_LIST && ty[a].sym != ty[b].sym) { if (!na) return 0; a = na; b = nb; continue; }
@@ -901,41 +946,26 @@ static int ty_unify_chain(int a, int b, int depth) {
     }
   }
 }
-static int ty_unify(int a, int b) { ty_why[0] = 0; ty_depth_why = 0; return ty_unify_at(a, b, 0); }
-/* Row r without its most recent field `label`: that field's type and the rest. An open row gains it. */
-static int ty_row_take(int r, uint32_t label, int *field, int *rest, int depth) {
+static int ty_unify(int a, int b) { ty_why[0] = 0; ty_depth_why = 0; ty_why_tag = 0; return ty_unify_at(a, b, 0); }
+/* Row r without its most recent field `label`: that field's type, its presence and the rest. An open row
+   gains it. 2: r is closed without it. */
+static int ty_row_take(int r, uint32_t label, int *field, int *rest, int *presence, int depth) {
     if (depth > 4096) die("type checker: a record has more than %d fields", depth);
     r = ty_find(r);
     if (ty[r].kind == K_REXT) {
-        if (ty[ty[r].a].sym == label) { *field = ty[r].b; *rest = ty[r].c; return 0; }
-        int f, rr; if (ty_row_take(ty[r].c, label, &f, &rr, depth + 1)) return 1;
-        *field = f; *rest = ty_new(K_REXT, ty[r].a, ty[r].b, rr); return 0;
+        if (ty[ty[r].a].sym == label) { *field = ty[r].b; *rest = ty[r].c; *presence = ty_presence(r); return 0; }
+        int f, rr, p, took = ty_row_take(ty[r].c, label, &f, &rr, &p, depth + 1); if (took) return took;
+        *field = f; *presence = p; *rest = ty_new(K_REXT, ty[r].a, ty[r].b, rr); return 0;
     }
     if (ty[r].kind == K_RVAR) {
-        int f = ty_new(K_VAR, 0, 0, 0), rr = ty_new(K_RVAR, 0, 0, 0), l = ty_sym(K_LSYM, label);
-        ty[f].level = ty[rr].level = ty[r].level;
+        int f = ty_new(K_VAR, 0, 0, 0), rr = ty_new(K_RVAR, 0, 0, 0), p = ty_row_tag ? ty_new(K_VAR, 0, 0, 0) : 0, l = ty_tag_label(label, p);
+        ty[f].level = ty[rr].level = ty[r].level; if (p) ty[p].level = ty[r].level;
         if (ty_bind(r, ty_new(K_REXT, l, f, rr))) return 1;
-        *field = f; *rest = rr; return 0;
+        *field = f; *rest = rr; *presence = p; return 0;
     }
-    if (ty[r].kind == K_RNIL) { snprintf(ty_why, sizeof ty_why, "one record has '%s and the other has not", sym_name(label)); return 1; }
+    if (ty[r].kind == K_RNIL) { if (ty_row_tag) snprintf(ty_why, sizeof ty_why, "this value is never tagged '%s", sym_name(label));
+        else snprintf(ty_why, sizeof ty_why, "one record has '%s and the other has not", sym_name(label)); return 2; }
     snprintf(ty_why, sizeof ty_why, "this is not a record row"); return 1;
-}
-
-/* Tag set s without `tag`: an open set gains it. */
-static int ty_tag_take(int s, uint32_t tag, int *rest, int depth) {
-    if (depth > 4096) die("type checker: a tag set has more than %d tags", depth);
-    s = ty_find(s);
-    if (ty[s].kind == K_TEXT) {
-        if (ty[s].sym == tag) { *rest = ty[s].c; return 0; }
-        int rr; if (ty_tag_take(ty[s].c, tag, &rr, depth + 1)) return 1;
-        *rest = ty_new(K_TEXT, 0, 0, rr); ty[*rest].sym = ty[s].sym; return 0;
-    }
-    if (ty[s].kind == K_TVAR) {
-        int rr = ty_new(K_TVAR, 0, 0, 0), n = ty_new(K_TEXT, 0, 0, rr); ty[n].sym = tag; ty[rr].level = ty[s].level; ty[rr].prot = ty[s].prot;
-        if (ty_bind(s, n)) return 1;
-        *rest = rr; return 0;
-    }
-    snprintf(ty_why, sizeof ty_why, "this value is never tagged '%s", sym_name(tag)); return 1;
 }
 
 /* ---- generalizing and instantiating ----
@@ -953,6 +983,22 @@ static void ty_generalize(int t) {
         if (ty[x].c) ty_work_push(&n, ty[x].c);
     }
 }
+/* t reaches v, or for v 0 a generic variable. A copy of a recursive type that reaches neither would
+   differ from it only by the copy itself, and a variable bound to that copy would unroll the type. */
+static int ty_reaches(int t, int v) {
+    int n = 0, stamp = ++ty_seen_stamp; ty_work_push(&n, t);
+    while (n) {
+        int x = ty_find(ty_work[--n]);
+        if (ty_seen[x] == stamp) continue;
+        ty_seen[x] = stamp;
+        if (v ? x == v : ty_isvar(ty[x].kind) && ty[x].level == GENERIC) return 1;
+        if (ty_isvar(ty[x].kind)) continue;
+        if (ty[x].a) ty_work_push(&n, ty[x].a);
+        if (ty[x].b) ty_work_push(&n, ty[x].b);
+        if (ty[x].c) ty_work_push(&n, ty[x].c);
+    }
+    return 0;
+}
 /* The variables the last instantiation made, for ty_rigid. */
 static int *ty_memo_to, ty_memo_n, ty_memo_cap, ty_copy_stamp;
 static int ty_copy(int t, int depth) {
@@ -967,6 +1013,9 @@ static int ty_copy(int t, int depth) {
                 if (!ty_memo_to) die("type checker: out of memory for %d type variables", ty_memo_cap); }
             ty_memo_to[ty_memo_n++] = r;
         }
+    } else if (ty[t].kind == K_TAG) {
+        /* A recursive type meets t again inside it: the copy is recorded first, so the cycle copies once. */
+        if (ty_reaches(t, 0)) { r = ty_new(K_TAG, 0, 0, 0); ty_mark[t] = ty_copy_stamp; ty_to[t] = r; int a = ty_copy(ty[t].a, depth + 1); ty[r].a = a; }
     } else if (ty[t].a || ty[t].b || ty[t].c) {
         int a = ty[t].a ? ty_copy(ty[t].a, depth + 1) : 0, b = ty[t].b ? ty_copy(ty[t].b, depth + 1) : 0, c = ty[t].c ? ty_copy(ty[t].c, depth + 1) : 0;
         if (a != ty[t].a || b != ty[t].b || c != ty[t].c) { r = ty_new(ty[t].kind, a, b, c); ty[r].sym = ty[t].sym; }
@@ -1016,10 +1065,11 @@ static const char *TYPES =
    One syntax for the builtin table and for program signatures. Names are per signature: the same 'a
    is one variable, `..s` names a stack's rest. */
 typedef struct { uint32_t name[64]; int term[64]; uint8_t kind[64]; int n; } TyNames;
+/* kind K_TAG names a tag set's row: a K_RVAR apart from the record rows of the same name. */
 static int ty_named(TyNames *nm, uint32_t name, int kind) {
     for (int k = 0; k < nm->n; k++) if (nm->name[k] == name && nm->kind[k] == kind) return nm->term[k];
     if (nm->n == 64) die("type annotation: more than 64 names in one signature");
-    int t = ty_new(kind, 0, 0, 0); ty[t].sealed = kind == K_SVAR && sym_name(name)[2] == '!'; nm->name[nm->n] = name; nm->term[nm->n] = t; nm->kind[nm->n++] = (uint8_t)kind; return t;
+    int t = ty_new(kind == K_TAG ? K_RVAR : kind, 0, 0, 0); ty[t].sealed = kind == K_SVAR && sym_name(name)[2] == '!'; nm->name[nm->n] = name; nm->term[nm->n] = t; nm->kind[nm->n++] = (uint8_t)kind; return t;
 }
 static int ty_word_is(Token *t, const char *w) { return t->tag == TOK_WORD && strcmp(sym_name(t->as.sym), w) == 0; }
 static int ty_prot_word(Token *t) {
@@ -1043,7 +1093,7 @@ static int ty_parse(Token *toks, int *i, int end, TyNames *nm) {
         else if (!strcmp(w, "float")) base = ty_new(K_FLOAT, 0, 0, 0);
         else if (!strcmp(w, "sym")) base = ty_new(K_SYM, 0, 0, 0);
         else if (!strcmp(w, "str")) { base = ty_new(K_LIST, ty_new(K_INT, 0, 0, 0), 0, 0); ty[base].sym = 1; }
-        else if (!strcmp(w, "tagged")) base = ty_new(K_TAG, ty_new(K_TVAR, 0, 0, 0), 0, 0);
+        else if (!strcmp(w, "tagged")) base = ty_new(K_TAG, ty_new(K_RVAR, 0, 0, 0), 0, 0);
         else if (!strcmp(w, "rec")) base = ty_new(K_REC, ty_new(K_RVAR, 0, 0, 0), 0, 0);
         else if (!strcmp(w, "tuple")) base = ty_new(K_FN, ty_new(K_SVAR, 0, 0, 0), ty_new(K_SVAR, 0, 0, 0), 0);
         else if (!strcmp(w, "list") || !strcmp(w, "seq")) base = ty_new(K_LIST, ty_new(K_VAR, 0, 0, 0), 0, 0);
@@ -1072,20 +1122,11 @@ static int ty_parse(Token *toks, int *i, int end, TyNames *nm) {
             keys[n] = toks[j].as.sym; j++; types[n++] = ty_parse(toks, &j, close, nm);
         }
         *i = close + 1;
-        if (*i < end && ty_word_is(&toks[*i], "either")) {
-            (*i)++; int okno = n > 0, ok = 0, no = 0;
-            for (int k = 0; k < n; k++) { if (keys[k] == S_OK) ok = types[k]; else if (keys[k] == S_NO) no = types[k]; else okno = 0; }
-            if (okno && rest_sym) TY_DIE(t, "type annotation: {'ok ... 'no ...} either is a result, which holds only 'ok and 'no: drop | '%s", sym_name(rest_sym));
-            if (okno) base = ty_new(K_RES, ok ? ok : ty_new(K_VAR, 0, 0, 0), no ? no : ty_new(K_VAR, 0, 0, 0), 0);
-            else { int row = rest_sym ? ty_named(nm, rest_sym, K_TVAR) : ty_new(K_TNIL, 0, 0, 0);
-                for (int k = n - 1; k >= 0; k--) { if (ty_unify(types[k], ty_tag_payload(keys[k]))) die("type annotation: tag '%s here conflicts with its payload elsewhere: %s", sym_name(keys[k]), ty_why);
-                    row = ty_new(K_TEXT, 0, 0, row); ty[row].sym = keys[k]; }
-                base = ty_new(K_TAG, row, 0, 0); }
-        } else {
-            int row = rest_sym ? ty_named(nm, rest_sym, K_RVAR) : ty_new(K_RNIL, 0, 0, 0);
-            for (int k = 0; k < n; k++) row = ty_new(K_REXT, ty_sym(K_LSYM, keys[k]), types[k], row);
-            base = ty_new(K_REC, row, 0, 0);
-        }
+        /* a record type, or with either a tagged type: each tag and its payload */
+        int either = *i < end && ty_word_is(&toks[*i], "either");
+        int row = rest_sym ? ty_named(nm, rest_sym, either ? K_TAG : K_RVAR) : ty_new(K_RNIL, 0, 0, 0);
+        for (int k = 0; k < n; k++) row = ty_new(K_REXT, either ? ty_tag_label(keys[k], ty_new(K_PRESENT, 0, 0, 0)) : ty_sym(K_LSYM, keys[k]), types[k], row);
+        base = ty_new(either ? K_TAG : K_REC, row, 0, 0); *i += either;
     } else TY_DIE(t, "type annotation: a type is expected");
     for (; *i < end && toks[*i].tag == TOK_WORD; (*i)++) {
         const char *w = sym_name(toks[*i].as.sym);
@@ -1142,13 +1183,12 @@ static void ty_held_copy(int t, Token *tok);
    of the tags it names. */
 static void ty_mark_copy(int t, Token *tok) {
     t = ty_find(t);
-    if (ty[t].kind == K_VAR || ty[t].kind == K_TVAR) { ty[t].prot |= P_COPY; return; }
-    if (ty[t].kind == K_RES) { ty_mark_copy(ty[t].a, tok); ty_mark_copy(ty[t].b, tok); return; }
+    if (ty[t].kind == K_VAR) { ty[t].prot |= P_COPY; return; }
     if (ty[t].kind != K_TAG) return;
     int r = ty_find(ty[t].a);
-    for (int hops = -ty_n; ty[r].kind == K_TEXT; r = ty_rest(r, &hops))
-        if (ty_need(ty_tag_payload(ty[r].sym), P_COPY)) TY_DIE(tok, "type annotation: this slot is copyable, but tag '%s holds %s", sym_name(ty[r].sym), ty_why);
-    if (ty[r].kind == K_TVAR) ty[r].prot |= P_COPY;
+    for (int hops = -ty_n; ty[r].kind == K_REXT; r = ty_rest(r, &hops))
+        if (ty_need(ty[r].b, P_COPY)) TY_DIE(tok, "type annotation: this slot is copyable, but tag '%s holds %s", sym_name(ty[ty[r].a].sym), ty_why);
+    if (ty[r].kind == K_RVAR) ty[r].prot |= P_COPY;
 }
 /* A scheme: a signature parsed at a deeper level and generalized. */
 static int ty_scheme_slots(Token *toks, int open, int close) {
@@ -1174,8 +1214,7 @@ static void ty_unrigid(int mark) { while (ty_rigid_n > mark) ty[ty_rigid_vars[--
    without its body yet. depth: how many bodies deep the name was bound (0: the top level). */
 typedef struct { uint32_t sym; int ty, word, line, declared, depth; } TyBind;
 static TyBind *tyb; static int tyb_n, tyb_cap, tyb_prelude;
-static int ty_builtin[SYM_MAX], ty_tagpay[SYM_MAX];
-static int ty_tag_payload(uint32_t tag) { if (!ty_tagpay[tag]) { int l = ty_level; ty_level = 0; ty_tagpay[tag] = ty_new(K_VAR, 0, 0, 0); ty_level = l; } return ty_tagpay[tag]; }
+static int ty_builtin[SYM_MAX];
 static int tyb_find(uint32_t sym) { for (int k = tyb_n - 1; k >= 0; k--) if (tyb[k].sym == sym) return k; return -1; }
 static int ty_body_depth;
 static void tyb_push(uint32_t sym, int t, int word, int line) {
@@ -1310,7 +1349,10 @@ static int ty_subst_at(int t, int v, int w, int stamp, int depth) {
     if (t == v) return w;
     if (ty_mark[t] == stamp) return ty_to[t];
     int r = t;
-    if (!ty_isvar(ty[t].kind) && (ty[t].a || ty[t].b || ty[t].c)) {
+    if (ty[t].kind == K_TAG) {
+        /* recorded first, as in ty_copy */
+        if (ty_reaches(t, v)) { r = ty_new(K_TAG, 0, 0, 0); ty_mark[t] = stamp; ty_to[t] = r; int a = ty_subst_at(ty[t].a, v, w, stamp, depth + 1); ty[r].a = a; }
+    } else if (!ty_isvar(ty[t].kind) && (ty[t].a || ty[t].b || ty[t].c)) {
         int a = ty[t].a ? ty_subst_at(ty[t].a, v, w, stamp, depth + 1) : 0, b = ty[t].b ? ty_subst_at(ty[t].b, v, w, stamp, depth + 1) : 0, c = ty[t].c ? ty_subst_at(ty[t].c, v, w, stamp, depth + 1) : 0;
         if (a != ty[t].a || b != ty[t].b || c != ty[t].c) { r = ty_new(ty[t].kind, a, b, c); ty[r].sym = ty[t].sym; }
     }
@@ -1387,12 +1429,14 @@ static void ty_define(Token *toks, int open, int close, int sig_open, int sig_cl
     tyb_push(name, scheme, 1, line);
 }
 /* `x {'tag (…) … '_ (…)} case`: each clause runs on its tag's payload, and a last '_ clause on x itself.
-   Without '_, every tag x may carry has a clause: an open tag set closes on the clause tags. */
+   The clause tags, each with its payload, are a row of x's type. Without '_ the row is closed, so every
+   tag x may carry has a clause; with '_ it is open. */
 static int ty_clause_mark[SYM_MAX], ty_clause_stamp;
 static void ty_case(Token *toks, int open, int close, int line) {
     ty_runs("case", line); ty_at_word = "case";
-    int s = ty_pop(), rest = ty_cur, out = ty_new(K_SVAR, 0, 0, 0), stamp = ++ty_clause_stamp, items = 0, tags = 0, wild = 0, res = 1, okc = 0, noc = 0, a = 0, b = 0;
-    uint32_t other = 0;
+    int s = ty_pop(), rest = ty_cur, out = ty_new(K_SVAR, 0, 0, 0), stamp = ++ty_clause_stamp, items = 0, tags = 0, wild = 0;
+    /* the clause tags in clause order, each with a fresh payload: the clauses below walk the row by c */
+    int row = 0, last = 0;
     ty_cur = out;
     for (int j = open + 1; j < close; j += toks[j].span + 1, items++) {
         if (items % 2) continue;
@@ -1402,41 +1446,30 @@ static void ty_case(Token *toks, int open, int close, int line) {
         if (tg == S_WILD) { wild = j; continue; }
         if (ty_clause_mark[tg] == stamp) { ty_err(toks[j].line, "this case has two clauses for '%s.", sym_name(tg)); return; }
         ty_clause_mark[tg] = stamp; tags++;
-        if (tg == S_OK) okc = 1; else if (tg == S_NO) noc = 1; else { res = 0; if (!other) other = tg; }
+        int x = ty_new(K_REXT, ty_tag_label(tg, ty_new(K_VAR, 0, 0, 0)), ty_new(K_VAR, 0, 0, 0), 0);
+        if (last) ty[last].c = x; else row = x;
+        last = x;
     }
     if (items % 2) { ty_err(line, "case clauses come in pairs, a key and a body, but this list has %d items.", items); return; }
     if (!tags) { ty_err(line, "case needs a clause for at least one tag."); return; }
-    if (other && (okc || noc)) { ty_err(line, "a result is tagged only 'ok or 'no, so this case cannot also name '%s. Match '%s in another case, or use '_.", sym_name(other), sym_name(other)); return; }
-    /* dead: a clause key whose clause never runs, as a token index */
-    uint32_t unnamed = 0; int dead = 0;
-    if (res) { a = ty_new(K_VAR, 0, 0, 0); b = ty_new(K_VAR, 0, 0, 0);
-        if (ty_unify(ty_new(K_RES, a, b, 0), s)) { ty_err(line, "case with 'ok/'no clauses takes a result, but this value is not one: %s.", ty_why); return; }
-        if (!wild && !(okc && noc)) unnamed = okc ? S_NO : S_OK;
-        if (wild && okc && noc) dead = wild; }
-    else if (!wild) {
-        int set = ty_new(K_TNIL, 0, 0, 0), tagged = ty[ty_find(s)].kind == K_TAG;
-        for (int j = open + 1; j < close; j += toks[j].span + 1, j += toks[j].span + 1) { set = ty_new(K_TEXT, 0, 0, set); ty[set].sym = toks[j].as.sym; }
-        if (ty_unify(ty_new(K_TAG, set, 0, 0), s)) { ty_err(line, "case cannot take this value: %s.%s", ty_why, tagged ? " A case without a last '_ clause names every tag the value may carry, and only those; a last '_ clause takes the rest." : ""); return; }
-    }
-    else {
-        /* A clause's payload type is its tag's everywhere, so with '_ the value may carry any tags. On a closed
-           set, a clause for a tag the set lacks never runs, and neither does '_ once every tag has a clause. */
-        int v = ty_find(s);
-        if (ty[v].kind == K_TAG && ty[ty_tail(ty[v].a)].kind == K_TNIL) {
-            int missing = 0, set_stamp = ++ty_clause_stamp;
-            for (int x = ty_find(ty[v].a), hops = -ty_n; ty[x].kind == K_TEXT; x = ty_rest(x, &hops)) { missing += ty_clause_mark[ty[x].sym] != stamp; ty_clause_mark[ty[x].sym] = set_stamp; }
-            for (int j = open + 1; !dead && j < close; j += toks[j].span + 1, j += toks[j].span + 1) if (j != wild && ty_clause_mark[toks[j].as.sym] != set_stamp) dead = j;
-            if (!dead && !missing) dead = wild; }
-        else if (ty_unify(ty_new(K_TAG, ty_new(K_TVAR, 0, 0, 0), 0, 0), s)) { ty_err(line, "case cannot take this value: %s.", ty_why); return; }
-    }
-    if (unnamed) { ty_err(line, "the value may be tagged '%s, which no clause names. Add a clause for '%s, or a last '_ clause.", sym_name(unnamed), sym_name(unnamed)); return; }
+    /* dead: a clause key whose clause never runs, as a token index. On a set closed here, a clause for a tag
+       the set lacks never runs, and neither does '_ once every tag has a clause. */
+    int dead = 0, v = ty_find(s);
+    if (ty[v].kind == K_TAG && ty[ty_tail(ty[v].a)].kind == K_RNIL) {
+        int missing = 0, set_stamp = ++ty_clause_stamp;
+        for (int x = ty_find(ty[v].a), hops = -ty_n; ty[x].kind == K_REXT; x = ty_rest(x, &hops)) if (!ty_absent(x)) { uint32_t l = ty[ty[x].a].sym; missing += ty_clause_mark[l] != stamp; ty_clause_mark[l] = set_stamp; }
+        for (int j = open + 1; !dead && j < close; j += toks[j].span + 1, j += toks[j].span + 1) if (j != wild && ty_clause_mark[toks[j].as.sym] != set_stamp) dead = j;
+        if (wild && !dead && !missing) dead = wild; }
     if (dead == wild && dead) { ty_err(toks[dead].line, "the clauses name every tag the value may carry, so the '_ clause never runs. Delete it."); return; }
     if (dead) { ty_err(toks[dead].line, "the value is never tagged '%s, so the clause for '%s never runs. Delete it.", sym_name(toks[dead].as.sym), sym_name(toks[dead].as.sym)); return; }
-    for (int j = open + 1; j < close; ) {
+    { int end = ty_new(wild ? K_RVAR : K_RNIL, 0, 0, 0); ty[last].c = end; }
+    if (ty_unify(ty_new(K_TAG, row, 0, 0), s)) { ty_err(line, "case cannot take this value: %s.%s", ty_why, ty[v].kind == K_TAG && !wild ? " A case without a last '_ clause names every tag the value may carry, and only those; a last '_ clause takes the rest." : ""); return; }
+    for (int j = open + 1, x = row; j < close; ) {
         int key = j; j += toks[j].span + 1;
         if (j >= close || toks[j].tag != TOK_LPAREN) { ty_err(toks[key].line, "each case clause is a key and a body in parentheses."); break; }
         int body = ty_find(ty_body(toks, j, j + toks[j].span, 0, 0)); j += toks[j].span + 1;
-        uint32_t tg = toks[key].as.sym; int p = tg == S_WILD ? s : res ? (tg == S_OK ? a : b) : ty_tag_payload(tg);
+        uint32_t tg = toks[key].as.sym; int p = s;
+        if (tg != S_WILD) { p = ty[x].b; x = ty[x].c; }
         ty_print_count = 0;
         if (ty_unify(ty[body].a, ty_new(K_SCONS, p, rest, 0))) { char ps[256]; ty_show(ps, sizeof ps, p, 0);
             if (tg == S_WILD) ty_err(toks[key].line, "the '_ clause gets the tagged value, %s, but its body cannot take it: %s.", ps, ty_why);
@@ -1546,11 +1579,8 @@ static void ty_range(Token *toks, int i, int end) {
             if (w == S_TAG) {
                 if (i == 0 || toks[i-1].tag != TOK_SYM) { ty_err(line, "tag needs its tag written before it, as in `5 'n tag`."); break; }
                 ty_pop(); int p = ty_pop(); uint32_t tg = toks[i-1].as.sym;
-                if (tg == S_OK) ty_push(ty_new(K_RES, p, ty_new(K_VAR, 0, 0, 0), 0));
-                else if (tg == S_NO) ty_push(ty_new(K_RES, ty_new(K_VAR, 0, 0, 0), p, 0));
-                else if (tg == S_WILD) { ty_err(line, "'_ is the key of case's catch-all clause, so it cannot be a tag."); ty_push(ty_new(K_VAR, 0, 0, 0)); }
-                else { if (ty_unify(ty_tag_payload(tg), p)) ty_err(line, "'%s is tagged onto a value unlike its payload elsewhere: %s.", sym_name(tg), ty_why);
-                    int row = ty_new(K_TEXT, 0, 0, ty_new(K_TVAR, 0, 0, 0)); ty[row].sym = tg; ty_push(ty_new(K_TAG, row, 0, 0)); }
+                if (tg == S_WILD) { ty_err(line, "'_ is the key of case's catch-all clause, so it cannot be a tag."); ty_push(ty_new(K_VAR, 0, 0, 0)); }
+                else ty_push(ty_new(K_TAG, ty_new(K_REXT, ty_tag_label(tg, ty_new(K_PRESENT, 0, 0, 0)), p, ty_new(K_RVAR, 0, 0, 0)), 0, 0));
                 break;
             }
             if (w == S_NTH) {
@@ -1561,7 +1591,8 @@ static void ty_range(Token *toks, int i, int end) {
                 int el = ty_new(K_VAR, 0, 0, 0), b = tyb_find(nm);
                 if (b < 0 || tyb[b].word) { ty_err(line, "nth reads a list bound to '%s, but '%s is not a bound list here.", sym_name(nm), sym_name(nm)); }
                 else if (ty_unify(ty_new(K_LIST, el, 0, 0), tyb[b].ty)) ty_err(line, "nth reads a list, but '%s is not one: %s.", sym_name(nm), ty_why);
-                { int r = ty_new(K_SVAR, 0, 0, 0); ty_push(ty_new(K_RES, el, ty_new(K_FN, r, r, 0), 0)); } break;
+                { int r = ty_new(K_SVAR, 0, 0, 0), none = ty_new(K_REXT, ty_tag_label(S_NO, ty_new(K_PRESENT, 0, 0, 0)), ty_new(K_FN, r, r, 0), ty_new(K_RNIL, 0, 0, 0));
+                  ty_push(ty_new(K_TAG, ty_new(K_REXT, ty_tag_label(S_OK, ty_new(K_PRESENT, 0, 0, 0)), el, none), 0, 0)); } break;
             }
             if (w == S_CASE) { ty_err(line, "case needs its clauses written right before it, as in `x {'ok (…) 'no (…)} case`."); ty_pop(); ty_pop(); ty_push(ty_new(K_VAR, 0, 0, 0)); break; }
             if (w == S_AT || w == S_INTO || w == S_EDIT) {
@@ -1636,7 +1667,8 @@ static void ty_range(Token *toks, int i, int end) {
             /* A field may hold a result for must to unwrap; anything else on top means must was written for at or edit. */
             if (w == S_MUST && i > 0 && toks[i-1].tag == TOK_WORD && (toks[i-1].as.sym == S_AT || toks[i-1].as.sym == S_EDIT)) {
                 int st = ty_find(ty_cur);
-                if (ty[st].kind == K_SCONS && ty_unify(ty_new(K_RES, ty_new(K_VAR, 0, 0, 0), ty_new(K_VAR, 0, 0, 0), 0), ty[st].a)) {
+                int no = ty_new(K_REXT, ty_tag_label(S_NO, ty_new(K_PRESENT, 0, 0, 0)), ty_new(K_VAR, 0, 0, 0), ty_new(K_RNIL, 0, 0, 0)), res = ty_new(K_TAG, ty_new(K_REXT, ty_tag_label(S_OK, ty_new(K_PRESENT, 0, 0, 0)), ty_new(K_VAR, 0, 0, 0), no), 0, 0);
+                if (ty[st].kind == K_SCONS && ty_unify(res, ty[st].a)) {
                     ty_err(line, "%s never fails: the checker proves the record has the key, so it gives %s, and %s. Drop must.", sym_name(toks[i-1].as.sym), toks[i-1].as.sym == S_AT ? "the value" : "the record", ty_why);
                     break; } }
             int b = tyb_find(w);
@@ -1672,17 +1704,20 @@ static void ty_table_copy(int fn, Token *tok) {
 /* The walk collects what the containers hold, then marks it: marking walks terms too (ty_need), with the
    same work stack and stamps. */
 static int *ty_held, ty_held_cap;
+static void ty_held_push(int *h, int t) {
+    if (*h == ty_held_cap) { ty_held_cap = ty_held_cap ? 2*ty_held_cap : 256; ty_held = realloc(ty_held, (size_t)ty_held_cap * sizeof(int)); if (!ty_held) die("type checker: out of memory for %d held types", ty_held_cap); }
+    ty_held[(*h)++] = t;
+}
 static void ty_held_copy(int t, Token *tok) {
     int n = 0, h = 0, stamp = ++ty_stamp; ty_work_push(&n, t);
     while (n) {
         int x = ty_find(ty_work[--n]);
         if (ty_mark[x] == stamp) continue;
         ty_mark[x] = stamp;
-        int held = ty[x].kind == K_LIST || ty[x].kind == K_DICT || ty[x].kind == K_BOX ? ty_find(ty[x].a)
-                 : ty[x].kind == K_REXT ? ty_find(ty[x].b) : 0;
-        if (held) {
-            if (h == ty_held_cap) { ty_held_cap = ty_held_cap ? 2*ty_held_cap : 256; ty_held = realloc(ty_held, (size_t)ty_held_cap * sizeof(int)); if (!ty_held) die("type checker: out of memory for %d held types", ty_held_cap); }
-            ty_held[h++] = held; }
+        if (ty[x].kind == K_LIST || ty[x].kind == K_DICT || ty[x].kind == K_BOX) ty_held_push(&h, ty_find(ty[x].a));
+        /* a record's fields are held; a tagged type's payloads are not, though both are rows */
+        else if (ty[x].kind == K_REC)
+            for (int r = ty_find(ty[x].a), hops = -ty_n; ty[r].kind == K_REXT; r = ty_rest(r, &hops)) ty_held_push(&h, ty_find(ty[r].b));
         if (!ty_isvar(ty[x].kind)) { if (ty[x].a) ty_work_push(&n, ty[x].a); if (ty[x].b) ty_work_push(&n, ty[x].b); if (ty[x].c) ty_work_push(&n, ty[x].c); }
     }
     for (int k = 0; k < h; k++) ty_mark_copy(ty_held[k], tok);
@@ -1703,7 +1738,7 @@ static int infer_program(Token *table, int table_n, Token *toks, int count, int 
     ty_n = 1; ty_level = 0; ty_links_n = 0; ty_memo_n = 0; ty_slot_rest = 0; ty_rigid_n = 0; ty_rec_n = 0;
     tyb_n = 0; tyb_prelude = 0; ty_body_depth = 0; ty_runs_floor = 0; ty_in_prelude = 0;
     ty_errors = 0; ty_on_n = 0; ty_shown = 0; ty_rigid_rest = 0; ty_depth_why = 0; ty_print_count = 0; ty_taint = 0; ty_taint_new = 0;
-    memset(ty_builtin, 0, sizeof ty_builtin); memset(ty_tagpay, 0, sizeof ty_tagpay);
+    memset(ty_builtin, 0, sizeof ty_builtin); ty_tag_pairs_n = 0; ty_row_tag = 0;
     if (ty_pending) memset(ty_pending, 0, (size_t)ty_pending_cap * sizeof *ty_pending);
     ty_read_table(table, table_n);
     ty_cur = ty_new(K_SNIL, 0, 0, 0);

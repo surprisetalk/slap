@@ -947,6 +947,40 @@ x (2 mul ok) then -1 default 84 eq assert
 nil {'nil (drop 0) 'cons ('hd at)} case 0 eq assert
 1 2 nil cons cons {'nil (drop 0) 'cons ('hd at)} case 1 eq assert
 
+-- a tagged type lists each tag with its payload, so one word's 'n holds an int and another's a str
+(5 'n tag {'n ()} case) 'n-int let
+("xy" 'n tag {'n (len)} case) 'n-str let
+n-int 5 eq assert n-str 2 eq assert
+
+-- 'ok and 'no are ordinary tags: a case names them beside other tags
+(dup 0 lt (drop "neg" no) (dup 0 eq (drop 'zero 'retry tag) (ok) if) if) 'classify let
+-5 classify {'ok (drop 1) 'no (drop 2) 'retry (drop 3)} case 2 eq assert
+0 classify {'ok (drop 1) 'no (drop 2) 'retry (drop 3)} case 3 eq assert
+7 classify {'ok (drop 1) 'no (drop 2) 'retry (drop 3)} case 1 eq assert
+5 ok {'ok (drop 1)} case 1 eq assert
+1 ok {'ok (drop 1) 'a (drop 2)} case 1 eq assert
+5 ok {'ok (drop 1) 'no (drop 2) '_ (drop 3)} case 1 eq assert
+
+-- a case adds its clause tags to a value's type only as tags it may carry, so a later case without '_ drops them
+5 'wb tag 'wx let
+wx {'wa (drop 1) '_ (drop 0)} case 0 eq assert
+wx {'wb (drop 1)} case 1 eq assert
+({'wc (drop 1) '_ (drop 0)} case) 'wide let
+5 'wd tag 'wy let wy wide 0 eq assert wy {'wd (drop 1)} case 1 eq assert
+5 'na tag 'nx let nx {'na (drop 1) 'nb (drop 2)} case 1 eq assert nx {'na (drop 1)} case 1 eq assert
+-- a tag no value can carry has no payload, so two cases' payload types for it need not agree
+5 'pb tag 'px let px {'pa (1 plus) '_ (drop 0)} case drop px {'pb (drop 1)} case drop
+5 'pb tag 'py let py {'pa (len) '_ (drop 0)} case drop py {'pb (drop 1)} case drop
+[px py] len 2 eq assert
+-- a word's case may name tags a caller never passes
+( {'mb (drop 2) 'ma (drop 1)} case ) 'more-tags let  ( 5 'ma tag ) [{'ma int} either move out] effect 'only-ma let
+only-ma more-tags 1 eq assert
+
+-- a recursive type: a list's cells hold the list's own type, whatever their 'hd holds
+({'cons ('tl at cell-len 1 plus) 'nil (drop 0)} case) 'cell-len let
+{'hd 3 'tl {'hd 2 'tl 0 'nil tag} 'cons tag} 'cons tag cell-len 2 eq assert
+{'hd "a" 'tl 0 'nil tag} 'cons tag cell-len 1 eq assert
+
 -- ===== Stack Combinators =====
 
 -- over: a b → a b a
@@ -1791,9 +1825,12 @@ sc-repeat 15 eq assert
 (apply) [( -> int ) own in  int move out] effect 'run-in2 let (3) run-in2 3 eq assert
 (apply plus) [int lent in  ( int -> int int ) own in  int move out] effect 'add-run2 let 1 (2) add-run2 3 eq assert
 
--- `{| 'r} either` is any tag set, not a result
-( {'a (drop 1) '_ (drop 0)} case ) [{| 'r} either lent in  int move out] effect 'any-tag let
+-- `{'a 'p | 'r} either` is 'a and any other tags, not a result
+( {'a (drop 1) '_ (drop 0)} case ) [{'a 'p | 'r} either lent in  int move out] effect 'any-tag let
 5 'a tag any-tag 1 eq assert
+-- a record's row and a tag set's row may share a name in one signature: they stay two rows
+( drop 1 'a tag ) [{'q int | 'r} lent in  {'a int | 'r} either move out] effect 'rows-apart let
+{'q 1 'z 2} rows-apart {'a ()} case 1 eq assert
 
 -- neq, like eq, compares two symbols without making them one type
 [1 2] 'nxs let  'nxs 'nk let  nk 'nys neq assert

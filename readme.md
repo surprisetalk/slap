@@ -301,7 +301,7 @@ Strings are lists of bytes. A literal holds its UTF-8 bytes, which is what `read
 
 ### tagged unions (sum types)
 
-Tag a value with a symbol to create a sum type. Use `ok`/`no` for result types, or `'sym tag` for custom tags.
+Tag a value with a symbol to create a sum type. `ok` and `no` are `'ok tag` and `'no tag`; a result is a value tagged `'ok` or `'no`.
 
 ```slap
 -- creating tagged values
@@ -322,7 +322,7 @@ Tag a value with a symbol to create a sum type. Use `ok`/`no` for result types, 
 10 0 safe-div (3 mul ok) then -1 default   -- -1
 ```
 
-A `case` has a clause for every tag its value may carry, and the checker proves it at the case. A clause runs on its tag's payload. A last `'_` clause runs on the tagged value itself, for every tag the other clauses do not name. Without `'_`, every tag the value may carry needs a clause, and a value that may carry another tag is refused. A value whose tags are still open takes the clauses' tags as its own. So a word whose case has no `'_` takes only those tags, and a caller that passes another tag is refused at the call. A result case has an `'ok` and a `'no` clause, or a `'_` clause. When the value's tags are closed, a clause that can never run is refused: one for a tag the value never carries, or a `'_` after a clause for every tag.
+A `case` has a clause for every tag its value may carry, and the checker proves it at the case. A clause runs on its tag's payload. A last `'_` clause runs on the tagged value itself, for every tag the other clauses do not name. Without `'_`, every tag the value may carry needs a clause, and a value that may carry another tag is refused. A value whose tags are still open takes the clauses' tags as tags it may carry. So a word whose case has no `'_` takes only those tags, and a caller that passes another tag is refused at the call. A later case without `'_` need not name a tag that only a case added: `5 'b tag 'x let  x {'a (drop 1) '_ (drop 0)} case drop  x {'b (drop 1)} case` checks. A case may name `'ok` and `'no` beside other tags. A clause for a tag an open set in a signature does not name is refused: the caller picks that tag's payload. When the value's tags are already closed at the case, a clause that can never run is refused: one for a tag the value never carries, or a `'_` after a clause for every tag. A word's case may name a tag that one caller never passes, since another caller may pass it.
 
 `then` runs its body on an `'ok` payload and passes anything else through; the body returns the next tagged value:
 
@@ -376,15 +376,16 @@ A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, an
 | string | `"hi"` | `str` (a list of bytes: `int list`) |
 | body | `(1 plus)` | `( int -> int )` |
 | record | `{'x 1}` | `{'x int}`, or `{'x int \| 'r}` for "at least `'x`" |
-| tagged | `5 'n tag` | `{'n int 'z ()} either` |
-| result | `5 ok`, `"e" no` | `{'ok int 'no str} either` |
+| tagged | `5 'n tag`, `5 ok`, `"e" no` | `{'n int 'z ()} either`, or `{'n int \| 'r} either` for "at least `'n`" |
 | dict | `dict` | `int dict` |
 | box | `5 box` | `int box` |
 | socket | `0 tcp-listen must` | `socket` |
 
 Type variables are symbols: `'a list`. A signature is a promise for every type it allows, so a bare `list` means "a list of whatever element type the caller picks": a body that leaves `int list` must say `int list`.
 
-Every tag but `'ok` and `'no` has one payload type in the whole program: once `5 'n tag` appears, `'n` always holds an int. Recursive data goes through tags, as in `{'hd 1 'tl nil} 'cons tag`. `ok` and `no` build results, which `then`, `pthen`, `default` and `must` take.
+A tagged type lists each tag with its payload's type, as a record type lists each key with its value's type. `5 'n tag` and `"x" 'n tag` may appear in one program: each value's type says what its `'n` holds. `then`, `pthen`, `default` and `must` take a result, `{'ok 'a 'no 'b} either`.
+
+A type may contain itself through a tag payload that holds no body. Recursive data needs no declaration: `({'cons ('tl at len-l 1 plus) 'nil (drop 0)} case) 'len-l let` takes `({'cons {'tl 'a | ..b} 'nil 'c copyable} either 'a as)`, where `'a as` names the whole type inside itself. A body that takes the tagged value holding it is refused.
 
 ### ownership
 
@@ -785,8 +786,9 @@ The checker runs on the prelude and the program before anything executes. It ref
 - A word given a value of the wrong type: `"a" 1 plus`.
 - `at` or `edit` on a key the record may lack. The checker follows records through `let`, stack words, calls, branches, loops, lists and tag payloads.
 - A list whose values differ in type, and `if` branches or `case` clauses that leave different types.
-- A tag used with two payload types.
-- A `case` that may meet a tag no clause names, unless a last `'_` clause takes it, and a clause that can never run. The checker infers which tags a value can carry from `ok`, `no`, `'x tag`, `then`, `pthen`, declared `either` types and the other cases on it.
+- Two payload types for one tag in one type, as in `[5 'n tag "x" 'n tag]`.
+- A type that contains itself through a body, as when a body takes the tagged value that holds it.
+- A `case` that may meet a tag no clause names, unless a last `'_` clause takes it, and a clause that can never run on a value whose tags are closed at the case. The checker infers which tags a value can carry from `ok`, `no`, `'x tag`, `then`, `pthen`, declared `either` types and the other cases on it.
 - A body that breaks its declared signature for some type the signature allows.
 - Code that takes more values than the stack holds.
 - A word used before its definition without `'name [sig] effect`, and a declared word never defined.
