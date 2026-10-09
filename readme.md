@@ -797,7 +797,7 @@ The checker runs on the prelude and the program before anything executes. It ref
 - A body given to `each`, `fold`, `edit`, `mutate` or `lend` that reaches below its input.
 
 **Literals**
-- A `[...]` or `{...}` literal is built once, when the program is read. Its code sees only what is written inside it and the prelude. Build such a value at runtime instead: `[] x push`, `{} x 'key into`.
+- A `[...]` or `{...}` literal is built each time the program reaches it: `3 'x let [x x plus]` is `[6]`, and `{'x x}` is `{'x 3}`. Its code starts on an empty stack, so it cannot take values from below the literal, and a name it binds is its own.
 - A `{...}` literal is a record: each value follows its `'key`, and `{}` is the empty record. For code that pushes values, write a body: `(1 2)`. Right before `case`, a `{...}` literal is a clause list of `'tag (body)` pairs: write `(drop 1)`, not `1`.
 
 **What it does *not* catch**

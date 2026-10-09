@@ -32,7 +32,8 @@ typedef void (*PrimFn)(Frame *env);
 typedef struct Value {
     ValTag tag;
     uint32_t flags; /* VF_BINDS on a tuple header: its body makes names, so each run gets its own frame.
-                       VF_DICT on a literal's header: it holds a dict, so each push copies it and a primitive that takes it frees it. */
+                       VF_LIST or VF_REC on a tuple header: it is a [...] or {...} literal's code, which runs where it
+                       is written and leaves its values in one list or record. It is never pushed as a body. */
     uint64_t loc;  // (fid<<56) | (line<<24) | col ; 0 = no location
     union {
         int64_t i; double f; uint32_t sym;
@@ -145,7 +146,8 @@ static Value speek(void) { if (sp <= 0) die("stack underflow: this word needs a 
     VCPY(&stack[sp],src,n);sp+=(n);}while(0)
 #define MKVAL(t) Value v={0};v.tag=t
 #define VF_BINDS 1u
-#define VF_DICT 2u
+#define VF_LIST 2u
+#define VF_REC 4u
 static Value val_int(int64_t i){MKVAL(VAL_INT);v.as.i=i;return v;}
 static Value val_float(double f){MKVAL(VAL_FLOAT);v.as.f=f;return v;}
 static Value val_sym(uint32_t s){MKVAL(VAL_SYM);v.as.sym=s;return v;}
@@ -323,9 +325,6 @@ static inline __attribute__((always_inline)) void binding_release(Frame *f, Bind
     }
     b->heap = 0; b->tuples = 0; b->slots = 0;
 }
-/* Dicts the program has made; with none, no binding can hold one and binds skip the scan. */
-static int dicts_made;
-static int vals_hold_dict(const Value *v, int n) { if (!dicts_made) return 0; for (int i = 0; i < n; i++) if (v[i].tag == VAL_DICT) return 1; return 0; }
 /* Drop bindings [n, bind_count). Newest first, so no probe chain is cut short. */
 static void frame_trim(Frame *f, int n) {
     for (int i = f->bind_count-1; i >= n; i--) {
@@ -498,7 +497,7 @@ static void val_print_node(Value *data, int slots, FILE *out) {
             if(shown<len) fprintf(out," ...%d more bytes",len-shown); break;}
         print_elems(data,slots,len,'[',']',out); break;
     }
-    case VAL_TUPLE: print_elems(data,slots,(int)top.as.compound.len,'(',')',out); break;
+    case VAL_TUPLE: { const char *br=top.flags&VF_LIST?"[]":top.flags&VF_REC?"{}":"()"; print_elems(data,slots,(int)top.as.compound.len,br[0],br[1],out); break; }
     case VAL_RECORD: print_elems(data,slots,2*(int)top.as.compound.len,'{','}',out); break;
     case VAL_BOX: fprintf(out, "<box>"); break;
     case VAL_DICT: { DictData *dd=(DictData*)top.as.box; fprintf(out,"<dict:%d>",dd?dd->len:0); break; }
@@ -549,6 +548,7 @@ static int val_equal(Value *a, int aslots, Value *b, int bslots) {
             p -= vs + 1; }
         return 1; }
     case VAL_TUPLE:
+        if ((atop.flags ^ btop.flags) & (VF_LIST|VF_REC)) return 0;
         if (atop.as.compound.env != btop.as.compound.env && (body_reads_names(a, aslots) || body_reads_names(b, bslots))) return 0;
         /* fall through */
     case VAL_LIST: case VAL_TAGGED:
@@ -1191,10 +1191,6 @@ static void tyb_push(uint32_t sym, int t, int word, int line) {
     if (tyb_n == tyb_cap) { tyb_cap = tyb_cap ? 2*tyb_cap : 1024; tyb = realloc(tyb, (size_t)tyb_cap * sizeof(TyBind)); if (!tyb) die("type checker: out of memory for %d names", tyb_cap); }
     tyb[tyb_n++] = (TyBind){sym, t, word, line, 0, ty_body_depth};
 }
-/* A body inside a [...] or {...} literal is built when the program is read, so the names it sees are
-   the top level's and its own: none bound in the bodies around the literal (ty_lit_depth deep). */
-static int ty_lit_depth = -1;
-static int tyb_visible(int b) { return ty_lit_depth < 0 || tyb[b].depth == 0 || tyb[b].depth > ty_lit_depth; }
 static int ty_in_prelude;
 /* The end of the program's tokens, for a look ahead past the range being checked. */
 static int ty_tok_end;
@@ -1212,14 +1208,14 @@ static void ty_pending_add(int depth, int d) {
         if (!ty_pending) die("type checker: out of memory for %d scopes", ty_pending_cap); memset(ty_pending + old, 0, (size_t)(ty_pending_cap - old) * sizeof(int)); }
     ty_pending[depth] += d;
 }
-static int ty_literal;
-/* Code about to run a user word, or a body: refused inside a literal's own code, which runs when the
-   program is read, and in a scope whose declared words have no body yet. */
+/* The outermost scope the code being checked runs in: a [...] or {...} literal's code runs where it is
+   written, so it runs in the scopes around it too. */
+static int ty_runs_floor;
+/* Code about to run a user word, or a body: refused in a scope whose declared words have no body yet. */
 static void ty_runs(const char *who, int line) {
-    if (ty_literal) ty_err(line, "'%s' runs code, but a [...] or {...} literal is built when the program is read, so it cannot run code that may use names bound later. Build the value outside the literal.", who);
-    if (ty_body_depth < ty_pending_cap && ty_pending[ty_body_depth] > 0)
-        for (int k = tyb_n - 1; k >= 0; k--) if (tyb[k].declared && tyb[k].depth == ty_body_depth) {
-            ty_err(line, "'%s' runs code here, but '%s' is declared on line %d and not defined yet, so that code may call it. Define '%s' first.", who, sym_name(tyb[k].sym), tyb[k].line, sym_name(tyb[k].sym)); break; }
+    for (int d = ty_runs_floor; d <= ty_body_depth; d++) if (d < ty_pending_cap && ty_pending[d] > 0)
+        for (int k = tyb_n - 1; k >= 0; k--) if (tyb[k].declared && tyb[k].depth == d) {
+            ty_err(line, "'%s' runs code here, but '%s' is declared on line %d and not defined yet, so that code may call it. Define '%s' first.", who, sym_name(tyb[k].sym), tyb[k].line, sym_name(tyb[k].sym)); return; }
 }
 /* User code never rebinds a name: a word or value already visible, a primitive, or a form. A declared
    word is defined by a body in the declaration's own scope. */
@@ -1292,7 +1288,8 @@ static void ty_apply(int scheme, const char *who, int line, int user) {
         for (int x = ty_find(ty_cur); ty[x].kind == K_SCONS && m < ty_n; x = ty_find(ty[x].b)) m++;
         if (tail == K_SNIL && m > n && !strncmp(ty_why, "the stack is shorter", 20)) { exact = 1;
             snprintf(ty_why, sizeof ty_why, "'%s' takes exactly %d value%s, but the stack holds %s%d", who, n, n == 1 ? "" : "s", ty[ty_stack_tail(ty_cur)].kind == K_SNIL ? "" : "at least ", m); }
-        if (ty_literal && !strncmp(ty_why, "the stack is shorter", 20)) snprintf(ty_why, sizeof ty_why, "the code in a [...] or {...} literal starts from an empty stack, so it cannot take values from below the literal");
+        int lit = ty_stack_tail(ty_cur);
+        if (ty[lit].kind == K_SNIL && ty[lit].sym && !strncmp(ty_why, "the stack is shorter", 20)) snprintf(ty_why, sizeof ty_why, "the code in a [...] or {...} literal starts from an empty stack, so it cannot take values from below the literal");
         if (n) ty_err(line, "'%s' takes %s\n    but the stack has %s\n    %s.%s", who, want, before, ty_why, hint);
         else if (exact) ty_err(line, "%s.%s", ty_why, hint);
         else ty_err(line, "'%s' takes nothing\n    %s.%s", who, ty_why, hint);
@@ -1334,14 +1331,16 @@ static int ty_subst(int t, int v, int w) { return ty_subst_at(t, v, w, ++ty_stam
    in-place body (if, while, dip, pthen, case clauses) is part of the body around it; any other body
    starts its own count (ty_taint_new). The top level's frame is never freed. */
 static int ty_taint, ty_taint_new;
-/* in: the stack a signature says the body takes, or 0 for any. */
-static int ty_body(Token *toks, int open, int close, int in) {
+/* in: the stack a signature says the body takes, or 0 for any. lit: a [...] or {...} literal's code, which
+   runs where it is written. */
+static int ty_body(Token *toks, int open, int close, int in, int lit) {
     int own = ty_taint_new, taint = ty_taint; ty_taint_new = 0; if (own) ty_taint = 0;
-    /* a body inside a literal runs later, so it may use names bound when the program runs: the top level's */
-    int saved = ty_cur, mark = tyb_n, lit = ty_literal, lit_depth = ty_lit_depth; ty_cur = in ? in : ty_new(K_SVAR, 0, 0, 0); in = ty_cur;
+    /* a literal's code starts on an empty stack; sym marks it for messages */
+    if (lit) { in = ty_new(K_SNIL, 0, 0, 0); ty[in].sym = 1; }
+    int saved = ty_cur, mark = tyb_n, floor = ty_runs_floor; ty_cur = in ? in : ty_new(K_SVAR, 0, 0, 0); in = ty_cur;
     c_stack_check("while checking nested bodies");
-    if (lit) ty_lit_depth = ty_body_depth;
-    ty_body_depth++; ty_literal = 0; ty_range(toks, open + 1, close); ty_literal = lit; ty_body_depth--; ty_lit_depth = lit_depth;
+    ty_body_depth++; if (!lit) ty_runs_floor = ty_body_depth;
+    ty_range(toks, open + 1, close); ty_body_depth--; ty_runs_floor = floor;
     ty_undefined(mark);
     int fn = ty_new(K_FN, in, ty_cur, 0); ty_cur = saved; tyb_n = mark;
     if (own) ty_taint = taint;
@@ -1351,7 +1350,6 @@ static int ty_body(Token *toks, int open, int close, int in) {
    one); after, the type generalizes. */
 static void ty_define(Token *toks, int open, int close, int sig_open, int sig_close, uint32_t name, int line) {
     ty_redefined(name, line, 1);
-    if (ty_literal) ty_err(line, "a [...] or {...} literal is built when the program is read, so it cannot bind names: '%s' would be bound for the whole program. Define it outside the literal.", sym_name(name));
     int fwd = tyb_find(name);
     if (fwd >= 0 && !tyb[fwd].declared) fwd = -1;
     if (fwd >= 0 && sig_open) { ty_err(line, "'%s' is declared on line %d with its signature, so its definition takes that one. Drop this second signature.", sym_name(name), tyb[fwd].line); sig_open = 0; }
@@ -1361,7 +1359,7 @@ static void ty_define(Token *toks, int open, int close, int sig_open, int sig_cl
     /* for word 2, ty holds the body's level, where its own calls are made */
     tyb_push(name, scheme ? scheme : ty_level, scheme ? 1 : 2, line);
     int rmark = ty_rigid_n, want = scheme ? ty_rigid(scheme, &rmark) : 0;
-    int bt = ty_body(toks, open, close, want ? ty[want].a : 0);
+    int bt = ty_body(toks, open, close, want ? ty[want].a : 0, 0);
     /* Each call of the word inside its own body uses the body's type with its own stack rest, since a
        call may sit above more values than the body started on. The rest is fresh only when it will
        generalize; every other part of the type is the same at every call. */
@@ -1446,7 +1444,7 @@ static void ty_case(Token *toks, int open, int close, int line) {
     for (int j = open + 1; j < close; ) {
         int key = j; j += toks[j].span + 1;
         if (j >= close || toks[j].tag != TOK_LPAREN) { ty_err(toks[key].line, "each case clause is a key and a body in parentheses."); break; }
-        int body = ty_find(ty_body(toks, j, j + toks[j].span, 0)); j += toks[j].span + 1;
+        int body = ty_find(ty_body(toks, j, j + toks[j].span, 0, 0)); j += toks[j].span + 1;
         uint32_t tg = toks[key].as.sym; int p = tg == S_WILD ? s : res ? (tg == S_OK ? a : b) : ty_tag_payload(tg);
         ty_print_count = 0;
         if (ty_unify(ty[body].a, ty_new(K_SCONS, p, rest, 0))) { char ps[256]; ty_show(ps, sizeof ps, p, 0);
@@ -1477,16 +1475,15 @@ static void ty_range(Token *toks, int i, int end) {
             int inplace = (close + 1 < end && (ty_word_is(&toks[close+1], "dip") || ty_word_is(&toks[close+1], "pthen")))
                 || (pair > 0 && pair < end && (ty_word_is(&toks[pair], "if") || ty_word_is(&toks[pair], "while")))
                 || (close + 1 < end && i > 0 && toks[i-1].tag == TOK_RPAREN && (ty_word_is(&toks[close+1], "if") || ty_word_is(&toks[close+1], "while")));
-            /* a literal's bodies are built when the program is read, in the global frame */
-            if (!inplace) { if (!ty_literal && !ty_taint) ty_taint = line; ty_taint_new = 1; }
+            if (!inplace) { if (!ty_taint) ty_taint = line; ty_taint_new = 1; }
             if (nm < end && toks[nm].tag == TOK_LBRACKET && nm + toks[nm].span + 1 < end && ty_word_is(&toks[nm + toks[nm].span + 1], "effect")) {
                 sig_open = nm; sig_close = nm + toks[nm].span; nm = sig_close + 2; }
             if (nm + 1 < end && toks[nm].tag == TOK_SYM && toks[nm+1].tag == TOK_WORD && toks[nm+1].as.sym == S_LET) {
                 ty_define(toks, i, close, sig_open, sig_close, toks[nm].as.sym, line); i = nm + 1; break; }
-            if (sig_open) { ty_level++; int rmark, want = ty_rigid(ty_scheme_slots(toks, sig_open, sig_close), &rmark), bt = ty_body(toks, i, close, ty[want].a);
+            if (sig_open) { ty_level++; int rmark, want = ty_rigid(ty_scheme_slots(toks, sig_open, sig_close), &rmark), bt = ty_body(toks, i, close, ty[want].a, 0);
                 if (ty_unify(want, bt)) ty_err(line, "this body does not have its declared type: %s.", ty_why);
                 ty_unrigid(rmark); ty_level--; ty_occurs(-1, bt, ty_level); ty_push(bt); i = sig_close + 1; break; }
-            ty_push(ty_body(toks, i, close, 0)); i = close; break;
+            ty_push(ty_body(toks, i, close, 0, 0)); i = close; break;
         }
         case TOK_LBRACKET: {
             int close = i + t->span;
@@ -1494,32 +1491,25 @@ static void ty_range(Token *toks, int i, int end) {
                 /* `'name [sig] effect`: the word is declared before its body is written */
                 if (i == 0 || toks[i-1].tag != TOK_SYM) { ty_err(line, "a signature [...] effect needs a body before it or a 'name before it."); i = close + 1; break; }
                 ty_pop(); ty_redefined(toks[i-1].as.sym, line, 0);
-                if (ty_literal) ty_err(line, "a [...] or {...} literal is built when the program is read, so it cannot declare words.");
                 tyb_push(toks[i-1].as.sym, ty_scheme_slots(toks, i, close), 1, line); tyb[tyb_n-1].declared = 1;
                 ty_pending_add(ty_body_depth, 1);
                 i = close + 1; break;
             }
-            /* a list literal, built when the program is read: its elements have one type */
-            int saved = ty_cur; ty_cur = ty_new(K_SNIL, 0, 0, 0); ty_literal++;
-            c_stack_check("while checking nested literals");
-            ty_range(toks, i + 1, close); ty_literal--;
+            /* a list literal: its elements have one type. ty_body may move the pool, so ty is read after it returns. */
+            int fn = ty_body(toks, i, close, 0, 1), out = ty[fn].b;
             int el = ty_new(K_VAR, 0, 0, 0); ty[el].prot = P_COPY;
-            for (int s = ty_find(ty_cur), k = 0, hops = -ty_n; ty[s].kind == K_SCONS; s = ty_rest(s, &hops), k++)
+            for (int s = ty_find(out), k = 0, hops = -ty_n; ty[s].kind == K_SCONS; s = ty_rest(s, &hops), k++)
                 if (ty_need(ty[s].a, P_COPY)) { ty_err(line, "a list literal holds only values that can be copied: %s.", ty_why); break; }
                 else if (ty_unify(el, ty[s].a)) { ty_err(line, "a list holds values of one type, but element %d from the end is not like the others: %s.", k + 1, ty_why); break; }
-            ty_cur = saved; ty_push(ty_new(K_LIST, el, 0, 0)); i = close; break;
+            ty_push(ty_new(K_LIST, el, 0, 0)); i = close; break;
         }
         case TOK_LBRACE: {
             int close = i + t->span;
             if (close + 1 < end && toks[close+1].tag == TOK_WORD && toks[close+1].as.sym == S_CASE) { ty_case(toks, i, close, line); i = close + 1; break; }
-            /* a {...} literal, built when the program is read: a record, each value written after its 'key */
-            int saved = ty_cur; ty_cur = ty_new(K_SNIL, 0, 0, 0); ty_literal++;
-            c_stack_check("while checking nested literals");
-            ty_range(toks, i + 1, close); ty_literal--;
-            int n = 0;
-            for (int s = ty_find(ty_cur), hops = -ty_n; ty[s].kind == K_SCONS; s = ty_rest(s, &hops)) ty_item(n++, ty[s].a);
-            ty_cur = saved;
-            for (int k = 0; k < n; k++) if (ty_need(ty_items[k], P_COPY)) { ty_err(line, "a {...} literal's values are copied each time it runs, so each is copyable: %s.", ty_why); break; }
+            /* a {...} literal: a record, each value written after its 'key */
+            int fn = ty_body(toks, i, close, 0, 1), out = ty[fn].b, n = 0;
+            for (int s = ty_find(out), hops = -ty_n; ty[s].kind == K_SCONS; s = ty_rest(s, &hops)) ty_item(n++, ty[s].a);
+            for (int k = 0; k < n; k++) if (ty_need(ty_items[k], P_COPY)) { ty_err(line, "a record holds only values that can be copied: %s.", ty_why); break; }
             int rec = n % 2 == 0;
             for (int k = 1; rec && k < n; k += 2) if (ty[ty_find(ty_items[k])].kind != K_SYM) rec = 0;
             /* odd, with a symbol in every key place and a value that is not one: a record missing its last value */
@@ -1544,7 +1534,6 @@ static void ty_range(Token *toks, int i, int end) {
             uint32_t w = t->as.sym; ty_at_word = sym_name(w);
             if (w == S_LET) {
                 if (i == 0 || toks[i-1].tag != TOK_SYM) { ty_err(line, "let needs its name written before it, as in `42 'x let`."); break; }
-                if (ty_literal) ty_err(line, "a [...] or {...} literal is built when the program is read, so it cannot bind names: a let inside it would bind '%s for the whole program. Bind it outside the literal.", sym_name(toks[i-1].as.sym));
                 ty_pop(); int v = ty_pop();
                 if (ty_need(v, P_COPY)) ty_err(line, "'%s' cannot be let-bound: %s. Keep it on the stack.", sym_name(toks[i-1].as.sym), ty_why);
                 else if (ty_taint && ty_body_depth > 0 && ty_no_body(v))
@@ -1567,8 +1556,7 @@ static void ty_range(Token *toks, int i, int end) {
                 if (ty_unify(ty_new(K_INT, 0, 0, 0), ix)) ty_err(line, "nth takes an int index: %s.", ty_why);
                 uint32_t nm = toks[i-1].as.sym;
                 int el = ty_new(K_VAR, 0, 0, 0), b = tyb_find(nm);
-                if (b >= 0 && ty_literal && b >= tyb_prelude) ty_err(line, "'%s' is bound when the program runs, but a [...] or {...} literal is built when it is read.", sym_name(nm));
-                if (b < 0 || tyb[b].word || !tyb_visible(b)) { ty_err(line, "nth reads a list bound to '%s, but '%s is not a bound list here.", sym_name(nm), sym_name(nm)); }
+                if (b < 0 || tyb[b].word) { ty_err(line, "nth reads a list bound to '%s, but '%s is not a bound list here.", sym_name(nm), sym_name(nm)); }
                 else if (ty_unify(ty_new(K_LIST, el, 0, 0), tyb[b].ty)) ty_err(line, "nth reads a list, but '%s is not one: %s.", sym_name(nm), ty_why);
                 { int r = ty_new(K_SVAR, 0, 0, 0); ty_push(ty_new(K_RES, el, ty_new(K_FN, r, r, 0), 0)); } break;
             }
@@ -1633,8 +1621,6 @@ static void ty_range(Token *toks, int i, int end) {
                     break; } }
             int b = tyb_find(w);
             if (b >= 0) {
-                if (!tyb_visible(b)) { ty_err(line, "'%s' is bound in the word around this literal, but a body inside a [...] or {...} literal is built when the program is read, so it sees only top-level names and its own.", sym_name(w)); ty_cur = ty_new(K_SVAR, 0, 0, 0); break; }
-                if (ty_literal && b >= tyb_prelude) ty_err(line, "'%s' is bound when the program runs, but a [...] or {...} literal is built when it is read.", sym_name(w));
                 if (tyb[b].word == 2) ty_apply(ty_self_fn(b, line), sym_name(w), line, 1);
                 else if (tyb[b].word) ty_apply(tyb[b].ty, sym_name(w), line, b >= tyb_prelude); else ty_push(tyb[b].ty);
                 break;
@@ -1695,7 +1681,7 @@ static int ty_shell;
 static int infer_program(Token *table, int table_n, Token *toks, int count, int user_start) {
     /* Each call starts clean: the shell checks every line again with the lines before it. */
     ty_n = 1; ty_level = 0; ty_links_n = 0; ty_memo_n = 0; ty_slot_rest = 0; ty_rigid_n = 0; ty_rec_n = 0;
-    tyb_n = 0; tyb_prelude = 0; ty_body_depth = 0; ty_lit_depth = -1; ty_in_prelude = 0; ty_literal = 0;
+    tyb_n = 0; tyb_prelude = 0; ty_body_depth = 0; ty_runs_floor = 0; ty_in_prelude = 0;
     ty_errors = 0; ty_on_n = 0; ty_shown = 0; ty_rigid_rest = 0; ty_depth_why = 0; ty_print_count = 0; ty_taint = 0; ty_taint_new = 0;
     memset(ty_builtin, 0, sizeof ty_builtin); memset(ty_tagpay, 0, sizeof ty_tagpay);
     if (ty_pending) memset(ty_pending, 0, (size_t)ty_pending_cap * sizeof *ty_pending);
@@ -2239,7 +2225,7 @@ static void push_c_string(const char *s) { push_byte_list((const unsigned char*)
 static void push_fail(const char *msg) { push_c_string(msg); push_no(); }
 static void prim_float_str(Frame *e){(void)e;char b[40];float_text(b,sizeof b,pop_float());push_c_string(b);}
 static Value dict_val(DictData *dd){Value v={0};v.tag=VAL_DICT;v.loc=0;v.as.box=dd;return v;}
-static void prim_dict(Frame *e){(void)e;DictData *dd=calloc(1,sizeof(DictData));dicts_made=1;spush(dict_val(dd));}
+static void prim_dict(Frame *e){(void)e;DictData *dd=calloc(1,sizeof(DictData));spush(dict_val(dd));}
 static void prim_insert(Frame *e) {
     (void)e; POP_VAL(val); int klen; char *key=(char*)pop_byte_list_buf("insert",&klen);
     Value dv=speek();
@@ -2343,6 +2329,14 @@ static void eval_body(Value *body, int slots, Frame *env) {
     Value hdr=body[slots-1];
     eval_in(body, slots, hdr.as.compound.env?hdr.as.compound.env:env);
 }
+/* A [...] or {...} literal's code runs in the running frame, and what it leaves becomes one list or record. */
+__attribute__((noinline)) static void lit_run(Value *code, int slots, Frame *ee) {
+    Value hdr=code[slots-1]; int base=sp,n=0,rec=!(hdr.flags&VF_LIST);
+    eval_in(code,slots,ee); current_loc=hdr.loc;
+    /* a record's key is one slot before its value */
+    for(int p=sp;p>base;n++) p-=val_slots(stack[p-1])+rec;
+    spush(val_compound(rec?VAL_RECORD:VAL_LIST,n,sp-base+1)); stack[sp-1].loc=hdr.loc;
+}
 static void eval_run(Value *body, int slots, Frame *ee) {
     if(++eval_depth > EVAL_DEPTH_MAX) die("recursion depth exceeded (%d levels)", EVAL_DEPTH_MAX);
     c_stack_check("in a nested call");
@@ -2369,14 +2363,12 @@ static void eval_run(Value *body, int slots, Frame *ee) {
             else if(__builtin_expect(prof_on,0)) prof_dispatch(ep->as.xt.sym,ee);
             else dispatch_word(ep->as.xt.sym,ee);
             /* the bodies the primitive took are used up */
-            while(staged_n>s0){ int at=staged[--staged_n]; Value *h=&aux[at];
-                if(h->flags&VF_DICT){ int hs=val_slots(*h); deep_free_values(&aux[at-hs+1],hs); }
-                else if(h->tag==VAL_TUPLE) frame_drop(h->as.compound.env); }
+            while(staged_n>s0){ Value *h=&aux[staged[--staged_n]]; if(h->tag==VAL_TUPLE) frame_drop(h->as.compound.env); }
             asp=a1;
         } else if(is_compound(ep->tag)){
             /* `{clauses} case`, `(body) pthen`, `(body) dip`, `(then) (else) if` and `(pred) (body) while`
                written in place run from this body rather than copy their bodies to the stack and then to the aux
-               stack. A literal's header holds the frame it was built in, so these run in ee. */
+               stack. A body's header holds the frame it was built in, so these run in ee. */
             if(k+1<len){
                 const Value *b1=&body[(st?st[k+2]:k+2)-1];
                 if(b1->tag==VAL_XT && ((ep->tag==VAL_RECORD && b1->as.xt.fn==prim_case) || (ep->tag==VAL_TUPLE && (b1->as.xt.fn==prim_pthen || b1->as.xt.fn==prim_dip)))){
@@ -2395,12 +2387,11 @@ static void eval_run(Value *body, int slots, Frame *ee) {
                     k+=2; continue;
                 }
             }
-            /* a literal is built once; a dict in it belongs to each copy the program pushes */
-            if(ep->flags&VF_DICT){ stack_room(es,"a literal"); deep_copy_values(&stack[sp],&body[eo],es); sp+=es; }
-            else SPUSH(&body[eo],es);
+            /* a literal's code is never one of the bodies above: the checker refuses `[x] dip` and `[x] (y) if` */
+            if(ep->flags&(VF_LIST|VF_REC)){ lit_run(&body[eo],es,ee); continue; }
+            SPUSH(&body[eo],es);
             if(ep->tag==VAL_TUPLE){ stack[sp-1].as.compound.env=ee; frame_ref(ee); }
-        } else if(ep->tag==VAL_DICT){ stack_room(1,"a literal"); deep_copy_values(&stack[sp],ep,1); sp++; }
-        else spush(*ep);
+        } else spush(*ep);
     }
     asp=a0; eval_depth--;
 }
@@ -2430,16 +2421,16 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
         case TOK_LBRACKET:{
             int bc=(j+toks[j].span);
             if(bc+1<tc&&toks[bc+1].tag==TOK_WORD&&toks[bc+1].as.sym==S_EFFECT){if(ec>0&&stack[sp-1].tag==VAL_SYM){sp--;ec--;}j=bc+1;break;}
-            int lb=sp; eval(toks+j+1,bc-j-1,env);
-            int n=0,p=sp; while(p>lb){p-=val_slots(stack[p-1]);n++;}
-            spush(with_tok(val_compound(VAL_LIST,n,sp-lb+1),tt)); if(vals_hold_dict(&stack[lb],sp-lb)) stack[sp-1].flags|=VF_DICT; ec++; j=bc; break;
+            build_tuple(toks,j+1,bc,tc,env); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_LIST; ec++; j=bc; break;
         }
         case TOK_LBRACE:{
             int bc=(j+toks[j].span);
+            if(!(bc+1<tc&&toks[bc+1].tag==TOK_WORD&&toks[bc+1].as.sym==S_CASE)){
+                build_tuple(toks,j+1,bc,tc,env); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_REC; ec++; j=bc; break; }
+            /* `{clauses} case` is built once, when the program is read, so case runs its clauses from this body */
             int lb=sp; eval(toks+j+1,bc-j-1,env); int ts=sp-lb,nf=0,p=sp;
             while(p>lb){p-=val_slots(stack[p-1])+1;nf++;}
             spush(with_tok(val_compound(VAL_RECORD,nf,ts+1),tt));
-            if(vals_hold_dict(&stack[lb],ts)) stack[sp-1].flags|=VF_DICT;
             ec++; j=bc; break;
         }
         default: break;
@@ -2447,7 +2438,6 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
     }
     Value hdr=val_compound(VAL_TUPLE,ec,sp-eb+1); if(ft) hdr.loc=LOC_PACK(ft->fid,ft->line,ft->col);
     if(binds) hdr.flags|=VF_BINDS;
-    if(vals_hold_dict(&stack[eb],sp-eb)) hdr.flags|=VF_DICT;
     spush(hdr); stack[sp-1].as.compound.env=env;
 }
 static void eval(Token *toks, int count, Frame *env) {

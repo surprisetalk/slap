@@ -1712,8 +1712,19 @@ dict "a" of {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq asse
 5 {'f (1 plus)} 'f at apply 6 eq assert
 {'name [72 105] 'inner {'b {'c 1}}} 'inner at 'b at 'c at 1 eq assert
 {} {} eq assert
--- a record literal runs its code when the program is read
+-- a record literal runs its code when the program reaches it
 {'k 1 2 plus} {'k 3} eq assert
+
+-- ===== A literal is built when the program reaches it, from the names bound then =====
+3 'lit-x let 4 'lit-y let
+{'x lit-x 'y lit-y} dup 'x at 3 eq assert 'y at 4 eq assert
+[0 1 2] dict ('li let li int-str [li li] insert) fold "2" of must [2 2] eq assert
+(10 plus) 'lit-mk let [1 lit-mk] [11] eq assert
+[5 6] 'lit-xs let [1 'lit-xs nth must] [6] eq assert
+-- a body in a literal closes over the frame that runs it
+('lit-n let [(lit-n)]) 'lit-mkb let 5 lit-mkb 0 get must apply 5 eq assert
+-- a name a literal binds is the literal's own
+[1 'lit-in let lit-in lit-in] [1 1] eq assert
 
 -- ===== at and edit never fail: the checker proves the key =====
 {'x 10 'y 20} 'x at 10 eq assert

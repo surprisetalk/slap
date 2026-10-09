@@ -272,6 +272,16 @@ def profile():
     return True, ""
 
 
+def big_literal():
+    """A literal whose checking grows the type pool is still checked: its type is read after the pool moves."""
+    src = "{'a 1 'b " + "1 drop 2 " * 10000 + "}"
+    r = subprocess.run(
+        ["./slap", "--check"], input=src, capture_output=True, text=True, timeout=TIMEOUT
+    )
+    ok = r.returncode == 1 and "each value follows its 'key" in r.stderr
+    return ok, f"exit {r.returncode}\n{r.stdout[-500:]}{r.stderr[-1500:]}"
+
+
 def timed_slap(src, limit, want='"no '):
     start = time.time()
     try:
@@ -530,6 +540,7 @@ def steps(slow):
             "write replaces a file whole": (write_replaces, None),
             "shell": (shell, None),
             "profile": (profile, None),
+            "a literal that grows the type pool": (big_literal, None),
             "deep closure chain": (
                 'echo "(0) 100000 (\'c let (c apply 1 plus)) repeat drop" | ./slap',
                 None,

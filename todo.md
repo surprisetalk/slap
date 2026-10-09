@@ -25,29 +25,24 @@
   4. rss.slap: required fields use xd-child without xd-maybe; an absent
      optional field stays `none`, and rss-to-xml skips it.
 
-- [ ] You build a literal from names bound at runtime: `{'x x 'y y}`,
-      `[i i] insert` and `[ 1 mk ]` work. Today a `[...]` or `{...}` literal
-      is built once, when the program is read. Decided: a literal is built
-      when it is reached, in the running frame; `{...} case` clauses stay
-      built once, or `case` loses its in-place path. Measured in a scratch
-      build: feed, sort.slap, the slow Euler problems and bench-uxn moved
-      under 1.5%; in hot loops only `[]` is rebuilt.
-  1. Tests first, each checked against the old binary: expect.slap gets the
-     three literals above; errors.slap cases that pin "built when it is read"
-     or "starts from an empty stack" become passes or go.
-  2. build_tuple: a literal becomes a body plus a marker that counts its
-     results into a list or record header; eval_run fuses the pair. Its loc
-     is the literal's open bracket, not the marker. If `{...} case` clauses
-     cannot stay built once, stop and time make status's feed with clauses
-     built on every `case` before going on.
-  3. Checker: a literal's code is ordinary code on an empty stack. Delete
-     ty_literal, ty_lit_depth, tyb_visible, the VF_DICT copy and their
-     messages. A body in a literal then closes over the running frame, so it
-     sets ty_taint as any other body does (today `!ty_literal` exempts it).
-  4. into becomes replace-only; delete K_PRE and K_ABS. Then the tag-payload
-     task below has one row shape.
-  5. Breaker and fuzz rounds on the ASan build. readme and claude.md (Records,
-     Evaluator, Invariants on VF_DICT) follow.
+- [ ] A record has the keys its literal names: `into` replaces the value of
+      a key the record has and never adds one, so a record type lists only
+      present keys and the tag-payload task below has one row shape. Measured
+      with a replace-only `into` in a scratch build: the checker refuses 107
+      sites (rss.slap 23, xml.slap 8, json.slap 7, cbor.slap 6, expect.slap
+      25, a dozen examples). rss.slap builds records one key at a time (`{}
+      "rss" 'kind into`, `('title into) xd-map2`); now that literals read
+      runtime names, each decoder builds its record in one literal after it
+      decodes the fields.
+  1. Tests first: errors.slap: `{} 5 'a into` says the record has no 'a and
+     shows `{'a 5}` as the way to build it. expect.slap's into-adds-a-key
+     cases become literals.
+  2. Checker: `into` takes `{'k 'p | 'r}` and leaves `{'k 't | 'r}`. Delete
+     K_PRE, K_ABS and every check on them.
+  3. Migrate each refused site to a literal: rss, xml, json, cbor, the
+     examples, expect.slap.
+  4. readme's records paragraph: `into` replaces; a literal builds a record.
+     claude.md's Records paragraph follows.
 
 - [ ] You tag a value with any payload, and `'ok`/`'no` are ordinary tags: a
       tagged type lists each tag with its payload, as a record type lists each
@@ -59,7 +54,7 @@
       `{'ok int 'no str} either` is a closed tag set. Gains:
       `{'ok (…) 'no (…) 'retry (…)} case` works, and a program's 'int no
       longer collides with json.slap's. Tradeoff: the checker gains cyclic
-      types, and the runtime trusts it. Do this after the runtime-literals
+      types, and the runtime trusts it. Do this after the replace-only `into`
       task; the signature task follows this one.
   1. Tests first; check each fails against the old binary. expect.slap: the
      three-clause case above; `5 'n tag` and `"x" 'n tag` in two words that

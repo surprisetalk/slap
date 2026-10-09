@@ -707,7 +707,7 @@ dict "a" 1 insert (drop 0) each drop
 -- list literal cannot contain box
 [42 box]
 
--- EXPECT: a {...} literal's values are copied each time it runs, so each is copyable
+-- EXPECT: a record holds only values that can be copied
 -- record literal cannot contain box
 {'k box}
 
@@ -1017,8 +1017,9 @@ dict [256] 1 insert drop
 -- EXPECT: case with 'ok/'no clauses takes a result, but this value is not one
 5 {'ok (drop 1)} case
 
--- EXPECT: 'x' is bound when the program runs, but a [...] or {...} literal is built when it is read.
-5 'x let {'a x}
+-- EXPECT: unknown word 'lq'
+-- a name a literal binds is gone after the literal
+[1 'lq let lq] drop lq
 
 -- EXPECT: 'drop' takes 'a copyable
 -- EXPECT: but the stack has nothing
@@ -1605,11 +1606,6 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- edit's body gets the field; the runtime keeps the record under it
 5 {'x 1} (over plus) 'x edit print print
 
--- EXPECT: top-level
--- a body inside a literal is built when the program is read, so it sees only top-level names
-( 'n let [ (n) ] ) 'mk let
-5 mk first apply 1 plus print
-
 -- EXPECT: declared
 -- a forward declaration is defined by a body in its own scope, not by a value
 'v [int move out] effect
@@ -1626,26 +1622,6 @@ g 1 plus print
 
 -- EXPECT: cannot reach the stack below them
 "ab" 5 box (swap "c" cat swap 1 plus) mutate free print
-
--- EXPECT: cannot bind
--- a literal is built when the program is read, so a let inside it would bind for the whole program
-( {5 'x let} drop x 1 plus ) 'f let
-"s" 'x let
-f print
-
--- EXPECT: cannot run
--- a literal's own code runs when the program is read, before any let
-5 'v let
-{ (v) apply } apply print
-
--- EXPECT: bound when the program runs
-( 'x let [ 0 'x nth ] ) 'mk let
-[5] mk print
-
--- EXPECT: top-level
--- a literal inside a body inside a literal is built when the program is read, too
-[ ( 'n let [ (n) ] ) ] first 'mk let
-5 mk apply first apply 1 plus print
 
 -- EXPECT: 'outer' calls itself
 -- a call of the outer word inside a nested word belongs to the outer word
@@ -1736,11 +1712,6 @@ d "k" of must 1 eq assert
 -- nth's 'no payload is (), as get's is
 [1 2] 'xs let
 7 'xs nth {'ok (print) 'no (1 plus print)} case
-
--- EXPECT: cannot bind
-( [ (5) 'five let 1 ] drop  five 1 plus print ) 'g let
-("str") 'five let
-g
 
 -- EXPECT: declared
 -- a declared word's definition takes the declared signature, not a second one
