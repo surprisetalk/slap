@@ -11,3 +11,6 @@ __pycache__/
 plasma.tga
 slap-asan
 slap-asan.dSYM/
+.env
+.env.*
+!.env.example

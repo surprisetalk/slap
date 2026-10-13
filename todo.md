@@ -141,7 +141,7 @@
       file name; and whether you publish your own ware registry.
       - Dir apps:
         - home: the launcher. A grid of app icons (or text) and widgets, and
-          search.
+          search. Or maybe timeline history with graphics?
         - stuff: a table of files with an action column (e.g. edit image). No
           file names: tags and thumbnails. It holds libraries too (books,
           albums).
