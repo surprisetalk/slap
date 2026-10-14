@@ -116,16 +116,14 @@ W H plus 'P let
 -- tween only enlarges it. Build b makes keyframe b 1 plus need.
 ('b let b STEPS mul depth  b 1 plus STEPS mul 1 sub depth  min STEPS div) 'need let
 
--- state t plot -> state: tick t. The state holds keyframe t STEPS div need,
--- then the rows of the next keyframe built so far, H / STEPS more each tick.
--- plot (x y level) draws a pixel; level is 0 to 3.
-('plot let 't let 'old let
-  t STEPS mod 'j let
-  t STEPS div need 'k let
-  t STEPS div 1 plus need 'n let
+-- The state at tick t holds keyframe t STEPS div need, then the rows of the
+-- next keyframe built so far, H / STEPS more each tick.
 
-  -- Draw keyframe k enlarged to the view's depth: pixel i of an axis shows
-  -- line round((i - mid) / grow + mid). 3 band drops a guess's GUESS.
+-- state t plot -> state: draw tick t's view. plot (x y level) draws a pixel;
+-- level is 0 to 3. Keyframe k shows enlarged to the view's depth: pixel i of
+-- an axis shows line round((i - mid) / grow + mid). 3 band drops a guess's GUESS.
+('plot let 't let 'old let
+  t STEPS div need 'k let
   F t depth itof STEPS itof fdiv k itof fsub fpow 'grow let
   ('count let count 1 sub itof 0.5 fmul 'mid let
     0 count range (itof mid fsub grow fdiv mid fplus fround ftoi) each) 'pull let
@@ -140,9 +138,13 @@ W H plus 'P let
       y swap plot apply 0
     ) each drop 0
   ) each drop
+  old) 'draw let
 
-  -- Build the next slice of rows of keyframe n. A build that turns makes the
-  -- same keyframe again, and keeps every line.
+-- state t -> state: build tick t's slice of rows of keyframe n. A build that
+-- turns makes the same keyframe again, and keeps every line.
+('t let 'old let
+  t STEPS mod 'j let
+  t STEPS div 1 plus need 'n let
   n scale 's let
   100 8 n mul plus 'lim let
   0 W range ('old nth must) each TX s lines 'xs let 'cols let
@@ -185,13 +187,16 @@ W H plus 'P let
   ) each flatten cat
   -- The last slice completes keyframe n, which replaces keyframe k.
   j STEPS 1 sub eq (P W H mul plus drop-n xs ys cat swap cat) () if
-) 'step let
+) 'build let
+
+-- state t plot -> state: tick t
+('plot let 't let t plot draw t build) 'step let
 
 -- -> state: keyframe 0, ready for tick 0. The build before tick 0 makes it
 -- from coordinates far from every view, 1000.0, so it keeps nothing.
 (0 STEPS range
  0 P W H mul plus range (drop 1000.0) each
- ('j let DEEP 2 mul 1 sub STEPS mul j plus (drop drop drop) step) fold) 'start let
+ ('j let DEEP 2 mul 1 sub STEPS mul j plus build) fold) 'start let
 
 isheadless (
   -- -0.5 lies in the cardioid, -1 in the bulb, and -2 stays bounded outside
@@ -245,7 +250,7 @@ isheadless (
   -- bounded: at most 1%. Guesses exist, only on new lines (at most 1 - 1/F^2
   -- of the pixels), and at most 5% of them are off by more than half a
   -- level. They lie on new columns and on new rows, on keyframe 1's grid.
-  start 0 (dup 4 lt) ('k let k (drop drop drop) step k 1 plus) while drop 'm let
+  start 0 (dup 4 lt) ('k let k build k 1 plus) while drop 'm let
   m len P W H mul plus eq assert
   m 108 errors 'gerr let 'cerr let
   cerr (0.0 fgt) filter len 100 mul  cerr len  le assert
@@ -265,14 +270,14 @@ isheadless (
       py 7 band 8 mul px 7 band plus 'BAYER nth must fplus ffloor ftoi 3 band
       lv eq assert)) 'drawn let
   -- Zooming in, ticks 4 and 6 draw keyframe 1 enlarged by F^0 and F^(1/2).
-  m 4 0 drawn step 5 (drop drop drop) step 6 2 drawn step drop
+  m 4 0 drawn step 5 build 6 2 drawn step drop
 
   -- Zooming out, build 2 DEEP mul 2 sub draws keyframe 1 enlarged by F^1,
   -- F^(3/4) and so on, and makes keyframe 0 from it. Its kept pixels ran 108
   -- steps, not 100: at most 1% of computed and kept pixels are off.
   DEEP 2 mul 2 sub STEPS mul 'b2 let
-  m b2 STEPS drawn step  b2 1 plus (drop drop drop) step
-  b2 2 plus 2 drawn step  b2 3 plus (drop drop drop) step 'o let
+  m b2 STEPS drawn step  b2 1 plus build
+  b2 2 plus 2 drawn step  b2 3 plus build 'o let
   o 100 errors 'ogerr let 'ocerr let
   ocerr (0.0 fgt) filter len 100 mul  ocerr len  le assert
   ogerr (0.5 fgt) filter len 100 mul  ogerr len 5 mul  le assert

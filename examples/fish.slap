@@ -9,28 +9,27 @@
 [] N (5 random 2 sub push) repeat 'bxs let
 [] N (5 random 2 sub push) repeat 'bys let
 
--- State record on stack
-{}
-  [] N (0 push) repeat 'xs into
-  [] N (0 push) repeat 'ys into
-  [] N (25 random 12 sub push) repeat 'vxs into
-  [] N (25 random 12 sub push) repeat 'vys into
-  [] NR (0 push) repeat 'rxs into
-  [] NR (0 push) repeat 'rys into
-  [] NR (-1 push) repeat 'rages into
-  0 'rnext into
-  -1 'mx into  -1 'my into  0 'frame into
-  1 'w into  1 'h into
-
--- on resize: keep the canvas size and scatter the fish over it.
+-- on resize: keep the canvas size and scatter the fish over it. Their speeds,
+-- the ripples, the mouse and the frame count carry over.
 -- w and h stay at least 1, since wrap and random refuse 0.
 (
   'rh let 'rw let
   rw 1 max 'cw let  rh 1 max 'ch let
-  cw 'w into ch 'h into
-  [] N (cw random push) repeat 'xs into
-  [] N (ch random push) repeat 'ys into
-) 'resize on
+  dup 'vxs at 'fvxs let  dup 'vys at 'fvys let
+  dup 'rxs at 'frxs let  dup 'rys at 'frys let  dup 'rages at 'frages let
+  dup 'rnext at 'frn let  dup 'mx at 'fmx let  dup 'my at 'fmy let  'frame at 'ffr let
+  {'w cw 'h ch 'xs [] N (cw random push) repeat 'ys [] N (ch random push) repeat
+   'vxs fvxs 'vys fvys 'rxs frxs 'rys frys 'rages frages 'rnext frn
+   'mx fmx 'my fmy 'frame ffr}
+) 'fit let
+
+-- State: record with the fish, the ripples, the mouse and the canvas size.
+-- A ripple slot with age -1 is free. The mouse is -1 -1 until it moves.
+{'vxs [] N (25 random 12 sub push) repeat 'vys [] N (25 random 12 sub push) repeat
+ 'rxs [] NR (0 push) repeat 'rys [] NR (0 push) repeat 'rages [] NR (-1 push) repeat
+ 'rnext 0 'mx -1 'my -1 'frame 0} 640 480 fit
+
+(fit) 'resize on
 
 (
   'mmy let 'mmx let

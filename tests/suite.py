@@ -92,7 +92,11 @@ def drive_demo(files, probe=""):
         )
     except subprocess.TimeoutExpired:
         return None, f"timed out after {TIMEOUT} s"
-    if r.returncode != 1 or "test-done" not in r.stderr:
+    # The driver's fail prints test-done alone under a runtime error's header. A type error quotes the
+    # driver's source line instead, so "test-done" anywhere in stderr does not prove the demo ran.
+    if r.returncode != 1 or not re.search(
+        r"^-- ERROR .*\n\n    test-done$", r.stderr, re.M
+    ):
         return None, r.stdout[-2000:] + r.stderr[-4000:]
     return r.stdout, None
 
@@ -168,6 +172,17 @@ LIFE_PROBE = (
     " test-frame 13 eq (7 peek must print) () if"
 )
 LIFE_OUT = "2 1 2 2 2 4 4 11 11 213 120 12 12".split()
+
+# flock: the mouse point is the canvas center until the mouse moves, then the mouse,
+# kept on the canvas: the 0x0 canvas of frame 5 holds only 0 0, and the 1920x1080
+# canvas of frame 10 clamps the mouse at 5000 300 to 1919 300.
+FLOCK_PROBE = (
+    "test-frame 0 eq (dup 'mx at print dup 'my at print) () if"
+    " test-frame 1 eq (5000 300 test-mousemove) () if"
+    " test-frame 6 eq (dup 'mx at print dup 'my at print) () if"
+    " test-frame 11 eq (dup 'mx at print dup 'my at print) () if"
+)
+FLOCK_OUT = "320 240 0 0 1919 300".split()
 
 
 # Drawing before show has no canvas to draw on, so it dies.
@@ -276,7 +291,11 @@ def big_literal():
     """A literal whose checking grows the type pool is still checked: its type is read after the pool moves."""
     src = "{'a 1 'b " + "1 drop 2 " * 10000 + "}"
     r = subprocess.run(
-        ["./slap", "--check"], input=src, capture_output=True, text=True, timeout=TIMEOUT
+        ["./slap", "--check"],
+        input=src,
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT,
     )
     ok = r.returncode == 1 and "each value follows its 'key" in r.stderr
     return ok, f"exit {r.returncode}\n{r.stdout[-500:]}{r.stderr[-1500:]}"
@@ -304,7 +323,13 @@ def write_replaces():
     d = os.path.realpath(tempfile.mkdtemp(prefix="slap-write-"))
     try:
         p = lambda *n: os.path.join(d, *n)
-        for name, text in [("t.txt", "old"), ("t2.txt", "old2"), ("h1", "old"), ("big.txt", "k" * 2000), ("deep.txt", "old")]:
+        for name, text in [
+            ("t.txt", "old"),
+            ("t2.txt", "old2"),
+            ("h1", "old"),
+            ("big.txt", "k" * 2000),
+            ("deep.txt", "old"),
+        ]:
             with open(p(name), "w") as f:
                 f.write(text)
         os.chmod(p("t.txt"), 0o600)
@@ -324,17 +349,31 @@ def write_replaces():
             f.write("old")
         os.chmod(p("ro"), 0o555)
         q = lambda path: '"' + path + '"'
-        prog = " ".join(
-            f'{q(path)} "{text}" write must drop'
-            for path, text in [
-                (p("chain"), "new"), (p("abs"), "abs"), (p("sub", "rel"), "rel"), (p("dangling"), "made"),
-                ("/dev/null", "x"), (p("h1"), "hard"), (long, "long"), (p("ro", "f"), "ro"),
-                # 1021-1022 bytes: the temp name, 3 bytes longer, passes macOS's PATH_MAX of 1024
-                (d + "/" + "./" * ((1013 - len(d)) // 2) + "deep.txt", "deep"),
-            ]
-        ) + f' {q(p("loop"))} "x" write {{\'ok (drop "wrote" print) \'no (print)}} case'
+        prog = (
+            " ".join(
+                f'{q(path)} "{text}" write must drop'
+                for path, text in [
+                    (p("chain"), "new"),
+                    (p("abs"), "abs"),
+                    (p("sub", "rel"), "rel"),
+                    (p("dangling"), "made"),
+                    ("/dev/null", "x"),
+                    (p("h1"), "hard"),
+                    (long, "long"),
+                    (p("ro", "f"), "ro"),
+                    # 1021-1022 bytes: the temp name, 3 bytes longer, passes macOS's PATH_MAX of 1024
+                    (d + "/" + "./" * ((1013 - len(d)) // 2) + "deep.txt", "deep"),
+                ]
+            )
+            + f' {q(p("loop"))} "x" write {{\'ok (drop "wrote" print) \'no (print)}} case'
+        )
         r = subprocess.run(
-            ["./slap"], input=prog, capture_output=True, text=True, timeout=10, preexec_fn=lambda: os.umask(0o022)
+            ["./slap"],
+            input=prog,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            preexec_fn=lambda: os.umask(0o022),
         )
         os.chmod(p("ro"), 0o755)
         if r.returncode:
@@ -342,33 +381,70 @@ def write_replaces():
         fails = []
         if r.stdout != f'"{p("loop")}: Too many levels of symbolic links"\n':
             fails.append(f"a symlink loop must be refused, got {r.stdout!r}")
-        for path, want in [("t.txt", "new"), ("t2.txt", "rel"), ("made.txt", "made"), ("h1", "hard"), ("h2", "hard"), ("deep.txt", "deep"), ("a" * 250, "long"), (os.path.join("ro", "f"), "ro")]:
+        for path, want in [
+            ("t.txt", "new"),
+            ("t2.txt", "rel"),
+            ("made.txt", "made"),
+            ("h1", "hard"),
+            ("h2", "hard"),
+            ("deep.txt", "deep"),
+            ("a" * 250, "long"),
+            (os.path.join("ro", "f"), "ro"),
+        ]:
             if open(p(path)).read() != want:
-                fails.append(f"{path} holds {open(p(path)).read()!r}, expected {want!r}")
-        if not all(os.path.islink(p(n)) for n in ("link", "chain", "abs", "dangling", os.path.join("sub", "rel"))):
+                fails.append(
+                    f"{path} holds {open(p(path)).read()!r}, expected {want!r}"
+                )
+        if not all(
+            os.path.islink(p(n))
+            for n in ("link", "chain", "abs", "dangling", os.path.join("sub", "rel"))
+        ):
             fails.append("a write through a symlink must keep the link")
         for path, mode in [("t.txt", 0o600), ("made.txt", 0o644)]:
             if os.stat(p(path)).st_mode & 0o777 != mode:
-                fails.append(f"{path} has mode {oct(os.stat(p(path)).st_mode & 0o777)}, expected {oct(mode)}")
+                fails.append(
+                    f"{path} has mode {oct(os.stat(p(path)).st_mode & 0o777)}, expected {oct(mode)}"
+                )
         r = subprocess.run(
             ["./slap"],
-            input=q(p("big.txt")) + """ 0 3000 range (drop 107) each write {'ok (drop "wrote" print) 'no (print)} case""",
+            input=q(p("big.txt"))
+            + """ 0 3000 range (drop 107) each write {'ok (drop "wrote" print) 'no (print)} case""",
             capture_output=True,
             text=True,
             timeout=10,
             preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024)),
         )
         if r.stdout != f'"{p("big.txt")}: File too large"\n':
-            fails.append(f"a write past the size limit must give File too large, got {r.stdout!r} {r.stderr[-300:]!r} (exit {r.returncode})")
+            fails.append(
+                f"a write past the size limit must give File too large, got {r.stdout!r} {r.stderr[-300:]!r} (exit {r.returncode})"
+            )
         if open(p("big.txt")).read() != "k" * 2000:
-            fails.append(f"a failed write must keep the old bytes; big.txt holds {os.path.getsize(p('big.txt'))} bytes")
+            fails.append(
+                f"a failed write must keep the old bytes; big.txt holds {os.path.getsize(p('big.txt'))} bytes"
+            )
         if os.geteuid() != 0:
             os.chmod(p("t2.txt"), 0o444)
-            r = subprocess.run(["./slap"], input=q(p("t2.txt")) + """ "x" write {'ok (drop "wrote" print) 'no (print)} case""", capture_output=True, text=True, timeout=10)
+            r = subprocess.run(
+                ["./slap"],
+                input=q(p("t2.txt"))
+                + """ "x" write {'ok (drop "wrote" print) 'no (print)} case""",
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
             os.chmod(p("t2.txt"), 0o644)
-            if r.stdout != f'"{p("t2.txt")}: Permission denied"\n' or open(p("t2.txt")).read() != "rel":
-                fails.append(f"a read-only file must be refused and kept, got {r.stdout!r}")
-        left = [n for n in os.listdir(d) + os.listdir(p("ro")) + os.listdir(p("sub")) if n.startswith(".slap")]
+            if (
+                r.stdout != f'"{p("t2.txt")}: Permission denied"\n'
+                or open(p("t2.txt")).read() != "rel"
+            ):
+                fails.append(
+                    f"a read-only file must be refused and kept, got {r.stdout!r}"
+                )
+        left = [
+            n
+            for n in os.listdir(d) + os.listdir(p("ro")) + os.listdir(p("sub"))
+            if n.startswith(".slap")
+        ]
         if left:
             fails.append(f"temp files left behind: {left}")
         return not fails, "\n".join(fails)
@@ -405,7 +481,9 @@ def shell():
         ("1 2", "1 2"),
     ]
     master, slave = pty.openpty()
-    p = subprocess.Popen(["./slap"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p = subprocess.Popen(
+        ["./slap"], stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
     os.close(slave)
     # the last line ends without a newline: ^D sends it, and a second ^D ends the input
     os.write(master, ("\n".join(line for line, _ in steps)).encode() + b"\x04\x04")
@@ -421,7 +499,9 @@ def shell():
     got = [x.rstrip("\n") for x in shown[1:-1]]
     fails = []
     if p.returncode != 0 or shown[0] != "" or shown[-1] != "\n":
-        fails.append(f"exit {p.returncode}, expected 0 (the last line worked) with a prompt per line and a newline at the end")
+        fails.append(
+            f"exit {p.returncode}, expected 0 (the last line worked) with a prompt per line and a newline at the end"
+        )
     sock = got[14] if len(got) > 14 else ""
     for i, (line, w) in enumerate(steps):
         g = got[i] if i < len(got) else "(nothing)"
@@ -429,12 +509,22 @@ def shell():
         if g != want or (w == "SOCKET" and not g.isdigit()):
             fails.append(f"after {line!r} the stack is {g!r}, expected {want!r}")
     # each error names the line as typed, counting discarded lines
-    for msg in ["<stdin>:5 ", "'plus' takes int int", "<stdin>:6:3", "division by zero", "unknown word 'y'", "<stdin>:10:", "<stdin>:16:"]:
+    for msg in [
+        "<stdin>:5 ",
+        "'plus' takes int int",
+        "<stdin>:6:3",
+        "division by zero",
+        "unknown word 'y'",
+        "<stdin>:10:",
+        "<stdin>:16:",
+    ]:
         if msg not in err:
             fails.append(f"stderr lacks {msg!r}")
     if "Bad file descriptor" in err:
         fails.append("a socket closed by a discarded line must stay open")
-    return not fails, "\n".join(fails) + "\nstdout: " + out[-600:] + "\nstderr: " + err[-1500:]
+    return not fails, "\n".join(fails) + "\nstdout: " + out[-600:] + "\nstderr: " + err[
+        -1500:
+    ]
 
 
 def recv_silent_peer():
@@ -682,10 +772,18 @@ def steps(slow):
         ("strings", "parse", "xml", "rss"),
     ]:
         out["lib/" + "+".join(combo)] = (f"cat {lib(*combo)} | ./slap", None)
-    out["scale"] = (
-        f"cat {lib('strings', 'parse', 'json', 'xml', 'rss', 'http', 'cbor')} tests/scale.slap | ./slap",
-        None,
-    )
+    # Each section of scale.slap, up to a blank line, is its own step, so the sections run in parallel.
+    line = 1
+    for sec in open("tests/scale.slap").read().split("\n\n"):
+        if any(s and not s.startswith("--") for s in sec.splitlines()):
+            path = os.path.join(SCRATCH, f"scale-{line}.slap")
+            with open(path, "w") as f:
+                f.write(sec + "\n")
+            out[f"tests/scale.slap:{line}"] = (
+                f"cat {lib('strings', 'parse', 'json', 'xml', 'rss', 'http', 'cbor')} {path} | ./slap",
+                None,
+            )
+        line += sec.count("\n") + 2
     # A demo fills the window, so it reads the canvas size from 'resize. A core file runs its
     # self-test headless before its window shell.
     demos = {
@@ -707,7 +805,10 @@ def steps(slow):
             [f"examples/{n}.slap", f"examples/{n}-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
-    probes = {"life": (LIFE_PROBE, lambda o: o.split() == LIFE_OUT)}
+    probes = {
+        "life": (LIFE_PROBE, lambda o: o.split() == LIFE_OUT),
+        "flock": (FLOCK_PROBE, lambda o: o.split() == FLOCK_OUT),
+    }
     for name, (files, ok) in demos.items():
         if not HAS_SDL:
             out[name] = (
@@ -722,7 +823,15 @@ def steps(slow):
             out[name] = (headless_demo(files, pok, probe), None)
         else:
             out[name] = (headless_demo(files, ok), None)
-    return out
+    # The pool starts steps in this order. The demos and the run_*.py scripts take seconds each, so they go
+    # first, and the suite takes about as long as its longest step. The demos with a self-test come last
+    # in demos and take longest, so the demos go in reverse.
+    first = {name: out[name] for name in reversed(demos)} | {
+        name: step
+        for name, step in out.items()
+        if isinstance(step[0], str) and step[0].startswith("python3 tests/run_")
+    }
+    return first | out
 
 
 def run(name, cmd, ok):
@@ -823,12 +932,14 @@ def status():
         "".join(open(lib(n)).read() for n in ("strings", "parse", "xml", "rss"))
         + open("examples/feed.slap").read()
     )
-    t = time.time()
+    cpu = harness.child_cpu()
     r = subprocess.run(
         ["./slap", feed], input=src, capture_output=True, text=True, timeout=60
     )
-    score["A 600 KB feed renders in under a second."] = (
-        1 / (time.time() - t) if r.stdout.rstrip().endswith("4100 items") else 0.0
+    score["A 600 KB feed renders in under a second of CPU."] = (
+        1 / (harness.child_cpu() - cpu)
+        if r.stdout.rstrip().endswith("4100 items")
+        else 0.0
     )
     rng = random.Random(1)
     vocab = [
@@ -855,13 +966,13 @@ def status():
         open(lib("strings"), "rb").read()
         + open("examples/utils/sort.slap", "rb").read()
     )
-    t = time.time()
+    cpu = harness.child_cpu()
     r = subprocess.run(["./slap", lines], input=src, capture_output=True, timeout=60)
     ok = r.returncode == 0 and r.stdout == b"".join(
         sorted(text.splitlines(keepends=True))
     )
-    score["sort.slap sorts 20,000 lines in under a second."] = (
-        1 / (time.time() - t) if ok else 0.0
+    score["sort.slap sorts 20,000 lines in under a second of CPU."] = (
+        1 / (harness.child_cpu() - cpu) if ok else 0.0
     )
     shutil.rmtree(SCRATCH)
     print(json.dumps({k: {"0": round(v, 2)} for k, v in score.items()}, indent=1))

@@ -22,8 +22,8 @@ start {'w 0 'h 0}
   0 W range ('i let i 1 plus tw mul W div i tw mul W div sub 1 max) each 'XW let
   0 H range ('i let i th mul H div oy plus) each 'Y0 let
   0 H range ('i let i 1 plus th mul H div i th mul H div sub 1 max) each 'YW let
-  -- a canvas with no area shows nothing, so step runs without the draw calls
-  tw 1 lt th 1 lt or (t (drop drop drop) step) (t (
+  -- a canvas with no area shows nothing, so the tick only builds
+  tw 1 lt th 1 lt or (t build) (t (
     'lv let 'y let
     dup 'X0 nth must swap 'XW nth must
     y 'Y0 nth must swap y 'YW nth must

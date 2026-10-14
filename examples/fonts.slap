@@ -113,10 +113,9 @@ fnames len 'nf let
 "fonts/chicago12.uf2" read must 'lf let
 ('s let "fonts/" s 'fnames nth must cat read must) 'load-font let
 
--- State: record on stack, modified by keydown, read must by show.
--- w and h are the canvas size.
-{} 0 'sel into "The quick brown fox jumps over the lazy dog" 'txt into
-0 'w into 0 'h into 0 load-font 'raw into
+-- State: record on stack, modified by keydown, read by show.
+-- w and h are the canvas size, 640x480 until show's first resize.
+{'sel 0 'txt "The quick brown fox jumps over the lazy dog" 'w 640 'h 480 'raw 0 load-font}
 
 -- on resize: keep the canvas size
 ('rh let 'rw let rw 'w into rh 'h into) 'resize on

@@ -1,5 +1,6 @@
 -- Library inputs past the interpreter's recursion limit. Too slow to run on
--- every load of a library, so they live here; tests/suite.py runs this file once.
+-- every load of a library, so they live here. tests/suite.py runs each section,
+-- up to a blank line, as its own step, so a section must stand alone.
 
 -- json.slap: a string and an array of 30000
 [] 34 push 30000 (120 push) repeat 34 push jd-str jd-run {'ok (len) 'no (drop -1)} case 30000 eq assert

@@ -19,6 +19,13 @@ def make_check(prefix, tail=lambda: ""):
     return check, count
 
 
+def child_cpu():
+    # RUSAGE_CHILDREN counts a child only after it is reaped, so a caller reads it
+    # before it starts a child and again after the wait.
+    r = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return r.ru_utime + r.ru_stime
+
+
 def boot(prefix, argv, src, port, preexec_fn=None):
     """Popen ./slap with argv, feed it src on stdin, wait until it accepts
     connections on port. Dies if it exits early or never starts listening."""
@@ -32,15 +39,18 @@ def boot(prefix, argv, src, port, preexec_fn=None):
     )
     p.stdin.write(src)
     p.stdin.close()
-    for _ in range(50):
+    for _ in range(500):
         if p.poll() is not None:
             die(prefix, f"server exited early:\n{p.stderr.read()}")
         try:
             socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
             return p
         except OSError:
-            time.sleep(0.1)
-    die(prefix, "server never started listening")
+            time.sleep(0.01)
+    die(
+        prefix,
+        f"server still not listening on port {port} after 500 tries 0.01 s apart",
+    )
 
 
 def kill(p):
@@ -49,6 +59,8 @@ def kill(p):
         p.wait(5)
     except subprocess.TimeoutExpired:
         p.kill()
+        # reaped, so child_cpu counts what it used
+        p.wait(5)
 
 
 def raw(port, payload, timeout=5, half_close=False, decode=True):
@@ -133,7 +145,8 @@ def accept_failures(check, name, argv, src, port):
     check(
         "accept-failures-bounded",
         p.returncode not in (0, -15, -9)
-        and f"{name}: accept failed 100 times in a row; the last: Too many open files" in err,
+        and f"{name}: accept failed 100 times in a row; the last: Too many open files"
+        in err,
         f"(code {p.returncode}) {err[-300:]!r}",
     )
 

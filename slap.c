@@ -742,14 +742,22 @@ static int ty_occurs(int v, int t, int level) {
     int n = 0, stamp = ty_stamp; ty_stamp += 3; ty_work_push(&n, t << 2);
     while (n) {
         int w = ty_work[--n], path = w & 3, x = ty_find(w >> 2);
-        if (x == v) { if (path == OCC_TAG) continue; return path & OCC_TAG ? 3 : 1; }
-        if (ty_mark[x] > stamp && ty_mark[x] - stamp >= rank[path]) continue;
-        ty_mark[x] = stamp + rank[path];
-        if (ty_isvar(ty[x].kind)) { if (ty[x].level > level && ty[x].level != GENERIC) { if (ty[x].rigid) return 2; ty[x].level = level; } continue; }
-        path |= ty[x].kind == K_TAG ? OCC_TAG : ty[x].kind == K_FN ? OCC_FN : 0;
-        if (ty[x].a) ty_work_push(&n, ty[x].a << 2 | path);
-        if (ty[x].b) ty_work_push(&n, ty[x].b << 2 | path);
-        if (ty[x].c) ty_work_push(&n, ty[x].c << 2 | path);
+        /* The last part pushed is the next popped, so the walk goes on with it in place: the order stays a stack's. */
+        for (;;) {
+            if (x == v) { if (path == OCC_TAG) break; return path & OCC_TAG ? 3 : 1; }
+            if (ty_mark[x] > stamp && ty_mark[x] - stamp >= rank[path]) break;
+            ty_mark[x] = stamp + rank[path];
+            if (ty_isvar(ty[x].kind)) { if (ty[x].level > level && ty[x].level != GENERIC) { if (ty[x].rigid) return 2; ty[x].level = level; } break; }
+            path |= ty[x].kind == K_TAG ? OCC_TAG : ty[x].kind == K_FN ? OCC_FN : 0;
+            int a = ty[x].a;
+            /* A row field's label holds only a tag's presence: a constant has no parts, so only a variable is walked. */
+            if (ty[x].kind == K_REXT) { int p = ty_presence(x); a = p && ty_isvar(ty[p].kind) ? p : 0; }
+            int parts[3] = {a, ty[x].b, ty[x].c}, k = 3;
+            while (k && !parts[k - 1]) k--;
+            if (!k) break;
+            for (int j = 0; j < k - 1; j++) if (parts[j]) ty_work_push(&n, parts[j] << 2 | path);
+            x = ty_find(parts[k - 1]);
+        }
     }
     return 0;
 }

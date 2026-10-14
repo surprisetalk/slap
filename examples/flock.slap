@@ -6,49 +6,37 @@
 
 [] N (3 random 1 plus push) repeat 'szs let
 
--- State record
-{}
-  [] N (0 push) repeat 'xs into
-  [] N (0 push) repeat 'ys into
-  [] N (25 random 12 sub push) repeat 'vxs into
-  [] N (25 random 12 sub push) repeat 'vys into
-  [] N (0 push) repeat 'p1xs into
-  [] N (0 push) repeat 'p1ys into
-  [] N (0 push) repeat 'p2xs into
-  [] N (0 push) repeat 'p2ys into
-  [] N (0 push) repeat 'p3xs into
-  [] N (0 push) repeat 'p3ys into
-  -100 'px into  -100 'py into
-  0 'pvx into  0 'pvy into
-  0 'ptimer into
-  -100 'ppx into  -100 'ppy into
-  0 'mx into  0 'my into  0 'moved into  0 'frame into
-  1 'w into  1 'h into
-
 -- on resize: keep the canvas size, scatter the boids over it and drop the
--- predator. The mouse point stays at the canvas center until the mouse moves.
--- w and h stay at least 1, since wrap and random refuse 0.
+-- predator (at -100 -100 with no time left). The boids keep their speeds.
+-- The mouse point mx my is the mouse, kept on the canvas, or the canvas
+-- center until the mouse moves. w and h stay at least 1, since wrap and
+-- random refuse 0.
 (
   'rh let 'rw let
   rw 1 max 'cw let  rh 1 max 'ch let
-  cw 'w into ch 'h into
-  [] N (cw random push) repeat 'xs into
-  [] N (ch random push) repeat 'ys into
-  [] N (cw random push) repeat 'p1xs into
-  [] N (ch random push) repeat 'p1ys into
-  [] N (cw random push) repeat 'p2xs into
-  [] N (ch random push) repeat 'p2ys into
-  [] N (cw random push) repeat 'p3xs into
-  [] N (ch random push) repeat 'p3ys into
-  dup 'moved at 0 eq (cw 2 div 'mx into ch 2 div 'my into) () if
-  (0 cw 1 sub clamp) 'mx edit (0 ch 1 sub clamp) 'my edit
-  -100 'px into  -100 'py into  0 'ptimer into
-  -100 'ppx into  -100 'ppy into
-) 'resize on
+  dup 'vxs at 'fvxs let  dup 'vys at 'fvys let  dup 'frame at 'ffr let
+  'mouse at 'fmouse let
+  fmouse {'at (dup 'x at 0 cw 1 sub clamp swap 'y at 0 ch 1 sub clamp) 'none (drop cw 2 div ch 2 div)} case
+  'fmy let 'fmx let
+  {'w cw 'h ch
+   'xs [] N (cw random push) repeat 'ys [] N (ch random push) repeat
+   'p1xs [] N (cw random push) repeat 'p1ys [] N (ch random push) repeat
+   'p2xs [] N (cw random push) repeat 'p2ys [] N (ch random push) repeat
+   'p3xs [] N (cw random push) repeat 'p3ys [] N (ch random push) repeat
+   'vxs fvxs 'vys fvys
+   'px -100 'py -100 'ptimer 0 'ppx -100 'ppy -100
+   'mx fmx 'my fmy 'mouse fmouse 'frame ffr}
+) 'fit let
+
+-- State: record with the boids, the predator, the mouse and the canvas size
+{'vxs [] N (25 random 12 sub push) repeat 'vys [] N (25 random 12 sub push) repeat
+ 'mouse {} 'none tag 'frame 0} 640 480 fit
+
+(fit) 'resize on
 
 (
   'mmy let 'mmx let
-  (drop mmx) 'mx edit (drop mmy) 'my edit 1 'moved into
+  (drop mmx) 'mx edit (drop mmy) 'my edit {'x mmx 'y mmy} 'at tag 'mouse into
 ) 'mousemove on
 
 -- Separation inner loop
@@ -152,7 +140,6 @@
     st
     (drop cpx) 'ppx edit (drop cpy) 'ppy edit
     (1 sub) 'ptimer edit
-    (drop npvx) 'pvx edit (drop npvy) 'pvy edit
     (drop cpx npvx plus) 'px edit (drop cpy npvy plus) 'py edit
   ) (
     frame 500 mod 0 eq frame 0 gt and (
@@ -267,14 +254,11 @@
   0 clear
 
   -- Mouse attractor
-  st 'mx at 'mxv let
-  mxv -1 neq (
-    st 'my at 'myv let
-    frame 3 div 6 mod 3 plus 'r1 let
-    frame 2 div 8 mod 5 plus 'r2 let
-    mxv myv r1 1 draw-diamond
-    mxv myv r2 1 draw-diamond
-  ) () if
+  st 'mx at 'mxv let  st 'my at 'myv let
+  frame 3 div 6 mod 3 plus 'r1 let
+  frame 2 div 8 mod 5 plus 'r2 let
+  mxv myv r1 1 draw-diamond
+  mxv myv r2 1 draw-diamond
 
   -- Predator
   st 'ptimer at 0 gt (

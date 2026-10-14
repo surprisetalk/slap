@@ -310,7 +310,7 @@ def main():
                     pairs.append(("zfill", "f" * (fill - 7)))
                 with open(snap, "w") as f:
                     f.write("".join(f"{k}\t{v}\n" for k, v in pairs))
-                t0 = time.monotonic()
+                cpu = harness.child_cpu()
                 proc = harness.boot("kv", [str(port), snap], server_src, port)
                 check(f"{label}-save", raw(b"SAVE\n") == "OK\n")
                 keys = raw(b"KEYS\n")
@@ -352,11 +352,8 @@ def main():
                 proc = harness.boot("kv", [str(port), snap], server_src, port)
                 check(f"{label}-reloaded", raw(b"GET zy\n") == f"VALUE {'w' * 96}\n")
                 harness.kill(proc)
-                check(
-                    f"{label}-fast",
-                    time.monotonic() - t0 < 5,
-                    f"{time.monotonic() - t0:.1f} s",
-                )
+                cpu = harness.child_cpu() - cpu
+                check(f"{label}-fast", cpu < 5, f"{cpu:.1f} s of CPU")
             # a snapshot file past the bound, or with a line longer than any SET writes, is refused, untouched
             text = "".join(f"k{i:03d}\t{'v' * 3990}\n" for i in range(251))
             with open(snap, "w") as f:
@@ -419,16 +416,16 @@ def main():
             ]:
                 with open(big, "w") as f:
                     f.write("".join(lines))
-                t0 = time.monotonic()
+                cpu = harness.child_cpu()
                 proc = harness.boot("kv", [str(port), big], server_src, port)
-                took = time.monotonic() - t0
-                check(f"{label}-boots-fast", took < 3, f"{took:.1f} s")
                 key, value = lines[-1].rstrip("\n").split("\t")
                 check(
                     f"{label}-loaded",
                     raw(f"GET {key}\n".encode()) == f"VALUE {value}\n",
                 )
                 harness.kill(proc)
+                cpu = harness.child_cpu() - cpu
+                check(f"{label}-boots-fast", cpu < 3, f"{cpu:.1f} s of CPU")
 
             # The server stops after 100 accept failures in a row.
             harness.accept_failures(

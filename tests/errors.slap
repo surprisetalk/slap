@@ -1,5 +1,6 @@
 -- Error cases. Each case is `-- EXPECT: <text>` followed by code up to the next
--- EXPECT. It passes when ./slap exits 1 within 5 s and stderr contains <text>.
+-- EXPECT. It passes when ./slap exits 1 within 5 s of CPU and the error message
+-- contains <text>. A quoted source line does not count: it holds the case's code.
 -- `-- EXPECT-LINE: N` and `-- EXPECT-COL: N` pin the reported location.
 -- Code that mentions a parse-* word gets examples/lib/parse.slap prepended.
 -- Run: python3 tests/run_errors.py
