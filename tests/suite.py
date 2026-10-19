@@ -823,14 +823,14 @@ def steps(slow):
             out[name] = (headless_demo(files, pok, probe), None)
         else:
             out[name] = (headless_demo(files, ok), None)
-    # The pool starts steps in this order. The demos and the run_*.py scripts take seconds each, so they go
-    # first, and the suite takes about as long as its longest step. The demos with a self-test come last
-    # in demos and take longest, so the demos go in reverse.
-    first = {name: out[name] for name in reversed(demos)} | {
+    # The pool starts steps in this order. The run_*.py scripts and the demos take seconds each, so they go
+    # first, and the suite takes about as long as its longest step. run_kv.py takes longest. The demos with
+    # a self-test come last in demos and take longest of the demos, so the demos go in reverse.
+    first = {
         name: step
         for name, step in out.items()
         if isinstance(step[0], str) and step[0].startswith("python3 tests/run_")
-    }
+    } | {name: out[name] for name in reversed(demos)}
     return first | out
 
 
@@ -975,7 +975,11 @@ def status():
         1 / (harness.child_cpu() - cpu) if ok else 0.0
     )
     shutil.rmtree(SCRATCH)
-    print(json.dumps({k: {"0": round(v, 2)} for k, v in score.items()}, indent=1))
+    # round alone would print a failing 0.996 as 1.0.
+    shown = {
+        k: round(v, 2) if v >= 1.0 else min(round(v, 2), 0.99) for k, v in score.items()
+    }
+    print(json.dumps({k: {"0": v} for k, v in shown.items()}, indent=1))
     if min(score.values()) < 1.0:
         sys.exit(1)
 

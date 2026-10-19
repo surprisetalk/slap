@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Integration test for examples/kv-server.slap + kv-client.slap: start the
 server, drive it through the Slap client, verify persistence survives a
-restart, and confirm hostile input fails safely rather than crashing the loop."""
+restart, and confirm hostile input fails safely rather than crashing the loop.
+The protocol half and the snapshot half run at the same time."""
 
-import os, random, resource, shutil, socket, subprocess, sys, tempfile, time
+import multiprocessing, os, random, resource, shutil, socket, subprocess, sys, tempfile, time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -13,11 +14,9 @@ SERVER = "examples/kv-server.slap"
 CLIENT = "examples/kv-client.slap"
 
 
-def main():
+def protocol(port):
     server_src = "".join(open(f).read() for f in LIBS + [SERVER])
     client_src = "".join(open(f).read() for f in LIBS + [CLIENT])
-
-    port = random.randint(20000, 40000)
 
     with tempfile.TemporaryDirectory() as d:
         snap = os.path.join(d, "kv.snap")
@@ -224,6 +223,48 @@ def main():
                 )
                 check("survives-failed-shutdown", client("ping") == "PONG\n")
                 os.chmod(snap, 0o644)
+        finally:
+            harness.kill(proc)
+
+    print(f"kv: {count[0]} protocol checks passed")
+
+
+def snapshots(port):
+    server_src = "".join(open(f).read() for f in LIBS + [SERVER])
+
+    with tempfile.TemporaryDirectory() as d:
+        snap = os.path.join(d, "kv.snap")
+
+        def raw(payload):
+            return harness.raw(port, payload)
+
+        # a SAVE past a file size limit keeps the old snapshot whole
+        with open(snap, "w") as f:
+            f.write("a\tb\n")
+        proc = harness.boot(
+            "kv",
+            [str(port), snap],
+            server_src,
+            port,
+            lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024)),
+        )
+        check, count = harness.server_check("kv", lambda: proc)
+
+        try:
+            check("cap-set", raw(f"SET big {'v' * 2000}\n".encode()) == "OK\n")
+            saved = raw(b"SAVE\n")
+            check(
+                "size-limit-save-refused",
+                saved == f"ERR save failed: {snap}: File too large\n",
+                repr(saved),
+            )
+            check("size-limit-save-untouched", open(snap).read() == "a\tb\n")
+            check(
+                "size-limit-no-temp",
+                sorted(os.listdir(d)) == ["kv.snap"],
+                repr(os.listdir(d)),
+            )
+            check("size-limit-survives", raw(b"PING\n") == "PONG\n")
             harness.kill(proc)
 
             # a corrupt snapshot (a line with no TAB, e.g. a torn prior write) must
@@ -269,32 +310,6 @@ def main():
                 )
                 if text is not None:
                     check(f"{label}-untouched", open(snap, newline="").read() == text)
-
-            # a SAVE past a file size limit keeps the old snapshot whole
-            with open(snap, "w") as f:
-                f.write("a\tb\n")
-            proc = harness.boot(
-                "kv",
-                [str(port), snap],
-                server_src,
-                port,
-                lambda: resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024)),
-            )
-            check("cap-set", raw(f"SET big {'v' * 2000}\n".encode()) == "OK\n")
-            saved = raw(b"SAVE\n")
-            check(
-                "size-limit-save-refused",
-                saved == f"ERR save failed: {snap}: File too large\n",
-                repr(saved),
-            )
-            check("size-limit-save-untouched", open(snap).read() == "a\tb\n")
-            check(
-                "size-limit-no-temp",
-                sorted(os.listdir(d)) == ["kv.snap"],
-                repr(os.listdir(d)),
-            )
-            check("size-limit-survives", raw(b"PING\n") == "PONG\n")
-            harness.kill(proc)
 
             # The store holds at most 1000000 bytes of snapshot. Large values,
             # many small pairs and 64-byte keys, 100 under the bound, SAVE and
@@ -434,7 +449,33 @@ def main():
         finally:
             harness.kill(proc)
 
-    print(f"kv: {count[0]} checks passed")
+    print(f"kv: {count[0]} snapshot checks passed")
+
+
+def main():
+    # The halves share no state: each has its own port, directory and server. They run as
+    # processes, not threads, since boot's preexec_fn is not safe in a process with threads.
+    port = random.randint(20000, 40000)
+    halves = [
+        multiprocessing.Process(target=half, args=(p,), name=half.__name__)
+        for half, p in [(protocol, port), (snapshots, port + 1)]
+    ]
+    for h in halves:
+        h.start()
+    for h in halves:
+        h.join()
+    failed = [
+        f"the {h.name} half "
+        + (
+            f"died of signal {-h.exitcode}"
+            if h.exitcode < 0
+            else f"exited {h.exitcode}"
+        )
+        for h in halves
+        if h.exitcode
+    ]
+    if failed:
+        sys.exit(f"kv: {', '.join(failed)}; expected exit 0. Its error is above.")
 
 
 if __name__ == "__main__":

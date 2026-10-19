@@ -1,20 +1,3 @@
-- [ ] `make test` passes within 10 s.
-  1. Cause: the zoom self-test is the slowest check. It runs 5.2 s alone and
-     11.9 s inside the parallel suite. All checks run in parallel, so zoom sets
-     the suite time.
-     Commit 82e1389 (2026-10-06) added the self-test to examples/zoom.slap.
-     `make test` took 16.4 s with 108 checks on one run; status scored it at
-     about 12.5 s. The next slowest check is uxn at 3.8 s alone; every other
-     demo takes under 1 s.
-  2. Cut the zoom self-test work first: lower the self-test W, H, STEPS or
-     DEEP so it runs under 2 s. Keep every assert that the test makes.
-     Check that each assert still fails on a broken build.
-  3. If the cost stays above 3 s, move the long part to `make test-slow`
-     (the SLOW_EULER route in tests/suite.py), and keep a short zoom check
-     in `make test`. Tradeoff: the slow part runs less often.
-  4. Check: `make test` prints "slowest" under 5 s and a total under 8 s,
-     so the status score has margin on a loaded machine.
-
 - [ ] You write a signature as ordinary data: two lists of type values, ins
       then outs, as in `(2 mul) [int] [int] effect 'double let` and `'triple
       [int] [int] effect`. Prelude words build types as tagged values, so

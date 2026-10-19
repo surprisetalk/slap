@@ -1,6 +1,8 @@
 -- Mandelbrot fractal zoom into Seahorse Valley: the zoom and a self-test.
 -- Run with:  cat examples/zoom.slap examples/zoom-sdl.slap | ./slap-sdl
 -- Self-test: ./slap --headless < examples/zoom.slap
+-- Headless, the view is 320x240, so the self-test and the suite's frames
+-- take a quarter of the work.
 --
 -- Keyframe n is the view at zoom F^n. As in XaoS, a keyframe keeps each row
 -- and column of the last keyframe that lands within a pixel of a free place.
@@ -10,8 +12,8 @@
 -- keyframe enlarged, so the view moves on every tick. The view zooms in to
 -- keyframe DEEP, turns, and zooms back out to 1x, over and over.
 
-640 'W let
-480 'H let
+isheadless (320) (640) if 'W let
+W 3 mul 4 div 'H let
 1.1 'F let
 -- F^120 is about 1e5. There the zoom reaches a minibrot and turns.
 120 'DEEP let
@@ -212,7 +214,7 @@ isheadless (
   0 800 range (GUESS 1.0 fplus GUESS 1.2 fplus rot 3 5 agree) each sum 0 eq assert
 
   -- Columns of keyframes 0 to 59, then back out to 40: once the zoom in has
-  -- settled, each keyframe makes at most 80 new ones. The least is
+  -- settled, each keyframe makes at most W/8 new ones. The least is
   -- W (1 - 1/F), in or out; a bug that loses kept lines makes several times
   -- that. Each kept one stays within a pixel, measured as lines measures it.
   0 60 range  40 59 range reverse cat 'path let
@@ -220,7 +222,7 @@ isheadless (
   0 (dup path len lt) ('i let 'prev let
     i 'path nth must scale 's let
     prev TX s lines 'xs let 'cols let
-    i 20 gt (cols (0 lt) filter len 80 le assert) () if
+    i 20 gt (cols (0 lt) filter len W 8 div le assert) () if
     0 W range ('c let c 'xs nth must TX fsub s fdiv W 1 sub itof 0.5 fmul fplus  c itof fsub fabs 1.0 flt) each
     1 (and) fold assert
     xs i 1 plus) while drop drop

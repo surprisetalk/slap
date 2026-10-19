@@ -503,15 +503,18 @@
 -- Every case is a ROM: `[bytes] run` resets the machine, loads the bytes at
 -- 0x0100 and executes to BRK, so the DEO/DEI paths are exercised for real rather
 -- than through a back door. `reset` rather than a fresh `blank` because building
--- 220191 cells costs ~35ms and 120 of those would dominate `make test`.
+-- 220191 cells costs ~35ms and 120 of those would dominate `make test`. The two
+-- screen layers are the machine's last cells, so reset clears them with one
+-- take-n and one cat.
 
+0 SCR-N 2 mul range (drop 0) each 'LAYERS0 let
 (0 (dup 256 lt) ('i let
    WST-B i plus 0 cell!  RST-B i plus 0 cell!  DEV-B i plus 0 cell!
    256 i plus 0 cell!  8192 i plus 0 cell!
    i 1 plus) while drop
  WSP-I 0 cell!  RSP-I 0 cell!  HALT-I 0 cell!  KSP-I 0 cell!  CON-N-I 0 cell!
  DX0-I SCR-W cell!  DY0-I SCR-H cell!  DX1-I -1 cell!  DY1-I -1 cell!
- 0 (dup SCR-N lt) ('i let BG-B i plus 0 cell!  FG-B i plus 0 cell!  i 1 plus) while drop
+ BG-B take-n LAYERS0 cat
  0 (dup 4 lt) ('i let SHADE-I i plus 0 cell! i 1 plus) while drop) 'reset let
 
 ('bs let reset bs load-rom 256 20000 run-at) 'run let
