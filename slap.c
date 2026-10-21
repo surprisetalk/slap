@@ -733,6 +733,9 @@ static void ty_show(char *out, size_t cap, int t, int depth) {
    holds no body, so a path to v that crosses a tagged type and no body type is no occurrence: 1 is an
    occurrence, 3 one through a tag payload that holds a body, 2 a rigid variable from outside. */
 static char ty_why[512];
+/* The word whose body is being checked against its signature, plus one; 0 for none. A presence its body
+   makes present records it, so a caller's refusal can say why. */
+static uint32_t ty_defining;
 enum { OCC_TAG = 1, OCC_FN = 2 };
 static int ty_occurs(int v, int t, int level) {
     /* A work item is a term and the OCC_ kinds its path crossed. A rank says what a walk on from a term
@@ -755,7 +758,7 @@ static int ty_occurs(int v, int t, int level) {
             /* A row field's label holds only a tag's presence: a constant has no parts, so only a variable is walked. */
             if (ty[x].kind == K_REXT) { int p = ty_presence(x);
                 /* a signature input's tag that a value from outside the body would carry: present, as in ty_presence_meet */
-                if (p && ty_isvar(ty[p].kind) && ty[p].rigid && ty[p].level > level && ty[p].level != GENERIC) { ty[p].link = ty_new(K_PRESENT, 0, 0, 0); p = 0; }
+                if (p && ty_isvar(ty[p].kind) && ty[p].rigid && ty[p].level > level && ty[p].level != GENERIC) { int pr = ty_new(K_PRESENT, 0, 0, 0); ty[pr].sym = ty_defining; ty[p].link = pr; p = 0; }
                 a = p && ty_isvar(ty[p].kind) ? p : 0; }
             int parts[3] = {a, ty[x].b, ty[x].c}, k = 3;
             while (k && !parts[k - 1]) k--;
@@ -884,6 +887,13 @@ static int ty_unify_at(int a, int b, int depth) {
     if (!r) for (int k = base; k < ty_links_n; k++) { int x = ty_find(ty_links[k].a), y = ty_find(ty_links[k].b); if (x != y) ty[x].link = y; }
     ty_links_n = base; return r;
 }
+static void ty_present_hint(int p, uint32_t tag) {
+    if (!p) return;
+    p = ty_find(p);
+    if (ty[p].kind != K_PRESENT || !ty[p].sym) return;
+    size_t n = strlen(ty_why);
+    snprintf(ty_why + n, sizeof ty_why - n, ". '%s' takes '%s present, because its body uses this input where '%s may be present", sym_name(ty[p].sym - 1), sym_name(tag), sym_name(tag));
+}
 /* Two presences of one tag meet. A rigid one is a signature input's: its caller decides it, so the body
    may never make it absent. Meeting present, another rigid one, or a variable from outside the body,
    which it cannot bind, it becomes present: the body must treat the tag as present, and the signature
@@ -896,12 +906,12 @@ static int ty_presence_meet(int pa, int pb, uint32_t tag, int depth) {
     if (ra) {
         if (ty[pb].kind == K_ABSENT) { snprintf(ty_why, sizeof ty_why, "one side may be tagged '%s, as a signature declares for what it takes, and the other never is", sym_name(tag)); return 1; }
         if (rb || ty[pb].kind == K_PRESENT || ty[pb].level < ty[pa].level) {
-            int pr = ty_new(K_PRESENT, 0, 0, 0); ty[pa].link = pr;
+            int pr = ty_new(K_PRESENT, 0, 0, 0); ty[pr].sym = ty_defining; ty[pa].link = pr;
             if (ty_isvar(ty[pb].kind)) ty[pb].link = pr;
             return 0; }
         ty[pb].link = pa; return 0; }
     if (ty_isvar(ty[pa].kind) || ty_isvar(ty[pb].kind)) return ty_unify_at(pa, pb, depth + 1);
-    if (ty[pa].kind != ty[pb].kind) { snprintf(ty_why, sizeof ty_why, ty[pa].kind == K_PRESENT ? "this value is never tagged '%s" : "it may be tagged '%s, which is not one of the tags this takes", sym_name(tag)); return 1; }
+    if (ty[pa].kind != ty[pb].kind) { snprintf(ty_why, sizeof ty_why, ty[pa].kind == K_PRESENT ? "this value is never tagged '%s" : "it may be tagged '%s, which is not one of the tags this takes", sym_name(tag)); ty_present_hint(pa, tag); ty_present_hint(pb, tag); return 1; }
     return 0;
 }
 static int ty_unify_chain(int a, int b, int depth) {
@@ -915,7 +925,7 @@ static int ty_unify_chain(int a, int b, int depth) {
     /* a closed tag set meets what is left of a set with more tags: a tag a case named is absent */
     if (ty_row_tag && ty[a].kind == K_RNIL && ty[b].kind == K_REXT) {
         int p = ty_presence(b);
-        if (!p || ty[p].kind == K_PRESENT) { snprintf(ty_why, sizeof ty_why, "it may be tagged '%s, which is not one of the tags this takes", sym_name(ty[ty[b].a].sym)); return 1; }
+        if (!p || ty[p].kind == K_PRESENT) { snprintf(ty_why, sizeof ty_why, "it may be tagged '%s, which is not one of the tags this takes", sym_name(ty[ty[b].a].sym)); ty_present_hint(p, ty[ty[b].a].sym); return 1; }
         if (ty_presence_meet(p, ty_new(K_ABSENT, 0, 0, 0), ty[ty[b].a].sym, depth)) return 1;
         b = ty[b].c; continue; }
     if (ty[a].kind == K_RNIL && ty[b].kind == K_REXT) { int x = a; a = b; b = x; }
@@ -938,7 +948,7 @@ static int ty_unify_chain(int a, int b, int depth) {
         /* a nested unify of a recursive type may bind the tail first */
         if (!row_tail || ty_find(row_tail) != row_tail) row_tail = ty_tail(a);
         int f, rest, pb, tail = row_tail, pa = ty_presence(a), took = ty_row_take(b, ty[ty[a].a].sym, &f, &rest, &pb, 0);
-        if (took == 1 || (took == 2 && (!pa || ty[pa].kind == K_PRESENT))) return 1;
+        if (took == 1 || (took == 2 && (!pa || ty[pa].kind == K_PRESENT))) { if (took == 2) ty_present_hint(pa, ty[ty[a].a].sym); return 1; }
         /* b is closed without a's tag, which a case named: absent */
         if (took == 2) { if (ty_presence_meet(pa, ty_new(K_ABSENT, 0, 0, 0), ty[ty[a].a].sym, depth)) return 1; a = ty[a].c; continue; }
         if (ty_isvar(ty[tail].kind) && ty_find(tail) != tail) { snprintf(ty_why, sizeof ty_why, "these two rows would have to contain each other"); return 1; }
@@ -1457,6 +1467,7 @@ static void ty_define(Token *toks, int open, int close, int sig_ins, int sig_out
     /* for word 2, ty holds the body's level, where its own calls are made */
     tyb_push(name, scheme ? scheme : ty_level, scheme ? 1 : 2, line);
     int rmark = ty_rigid_n, want = scheme ? ty_rigid(scheme, &rmark) : 0;
+    uint32_t defining = ty_defining; ty_defining = name + 1;
     int bt = ty_body(toks, open, close, want ? ty[want].a : 0, 0);
     /* Each call of the word inside its own body uses the body's type with its own stack rest, since a
        call may sit above more values than the body started on. The rest is fresh only when it will
@@ -1487,6 +1498,7 @@ static void ty_define(Token *toks, int open, int close, int sig_ins, int sig_out
         ty_print_count = 0; ty_show(a, sizeof a, want, 0); ty_show(b, sizeof b, bt, 0);
         if (ty_unify(want, bt)) {
             ty_err(line, "'%s' declares %s, but its body is %s: %s.", sym_name(name), a, b, ty_why); want = 0; } }
+    ty_defining = defining;
     ty_level--; tyb_n = mark;
     ty_unrigid(rmark);
     if (want) { ty_generalize(want); scheme = want; }
@@ -1808,7 +1820,7 @@ static void ty_read_table(Token *toks, int n) {
 static int ty_shell;
 static int infer_program(Token *table, int table_n, Token *toks, int count, int user_start) {
     /* Each call starts clean: the shell checks every line again with the lines before it. */
-    ty_n = 1; ty_level = 0; ty_links_n = 0; ty_memo_n = 0; ty_rigid_n = 0; tyi_n = 0; ty_rec_n = 0;
+    ty_n = 1; ty_level = 0; ty_links_n = 0; ty_memo_n = 0; ty_rigid_n = 0; tyi_n = 0; ty_defining = 0; ty_rec_n = 0;
     tyb_n = 0; tyb_prelude = 0; ty_body_depth = 0; ty_runs_floor = 0; ty_in_prelude = 0;
     ty_errors = 0; ty_on_n = 0; ty_shown = 0; ty_rigid_rest = 0; ty_depth_why = 0; ty_print_count = 0; ty_taint = 0; ty_taint_new = 0;
     memset(ty_builtin, 0, sizeof ty_builtin); ty_tag_pairs_n = 0; ty_row_tag = 0;

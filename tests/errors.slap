@@ -2093,3 +2093,8 @@ list
 -- a word that closes 'no absent cannot take a signature's input that may carry it
 (dup {'ok (drop 1) 'no (drop 1) '_ (drop 0)} case drop {'ok (drop 1)} case) 'h let
 (h) [dict "ok" int insert "no" str insert either] [int] effect 'f let
+
+-- EXPECT: this value is never tagged 'no. 'id' takes 'no present, because its body uses this input where 'no may be present
+-- a word that hands its input back takes every tag its outputs name
+() [dict "ok" int insert "no" str insert either] [dict "ok" int insert "no" str insert either] effect 'id let
+5 ok 'r let  r {'ok (drop 1)} case drop  r id drop
