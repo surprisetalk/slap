@@ -2,11 +2,7 @@
       `let` and `dip` each cost at most twice `swap` (zoom.slap
       microbenchmarks). Where the time goes: run callgrind on zoom's tick on
       pc (`nix-shell -p valgrind --run "valgrind --tool=callgrind ./slap <
-      prog"`, then `callgrind_annotate --auto=yes`). The big remaining costs:
-      `elem_starts` and the element offsets it feeds, since every run of a
-      body that holds a nested body walks its elements twice; the
-      per-primitive aux and staged bookkeeping in eval_run; frame scans for
-      lookups, and `nth`'s scan for its list. clang lays out eval_run's hot
+      prog"`, then `callgrind_annotate --auto=yes`). clang lays out eval_run's hot
       loop differently when it grows, so a fast path inlined there can make
       zoom slower: keep new paths in noinline helpers. Tradeoff: each fast
       path is more C to keep correct.
@@ -17,9 +13,23 @@
      tick without SDL (zoom.slap, `start`, and zoom-sdl's tick body with
      `fill-rect` as five `drop`s, run 4 times); the 600 KB feed; and
      uxn.slap on `tests/.uxn-refs/drool.rom` for 60 frames.
-  2. Element offsets once per body, not per run, without making a Value
-     larger: every compound copy moves Values.
+  2. Design the next cut and get it approved; callgrind on zoom's tick (pc,
+     after body_starts): per-primitive staged/aux bookkeeping in eval_run
+     ~12%, frame scans for lookups ~9%, nth_must's scan ~7%.
   3. Keep a change only if every benchmark in step 1 gets no slower.
+
+- [ ] You copy a type from a type error into a signature and it checks:
+      messages print types in the signature notation. Today ty_show prints
+      `( ..a int -> ..a int )` and `{'ok int 'no str} either`, which a
+      signature cannot use. Tradeoff: messages grow, as a result prints
+      `dict "ok" 'a var insert "no" 'b var insert either`.
+  1. Tests first: change the EXPECT lines in errors.slap that quote a type
+     to the new notation; check they fail.
+  2. ty_show prints `'a var` (`'a copy` when copyable), `T 'list tag`,
+     `[ins] [outs] fn` with `'s rest` heads, dicts of types with rec or
+     either, `"_" 'r var insert` for an open rest, and `T 'a as`.
+  3. readme's type table drops the "In a message" column; claude.md's
+     Checker paragraph drops the shorter-notation sentence.
 
 - [ ] You run a pico8 cart headless for N frames and its screen matches a
       reference render. Decided up front: pico8 first; tic80 reuses the

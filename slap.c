@@ -33,7 +33,8 @@ typedef struct Value {
     ValTag tag;
     uint32_t flags; /* VF_BINDS on a tuple header: its body makes names, so each run gets its own frame.
                        VF_LIST or VF_REC on a tuple header: it is a [...] or {...} literal's code, which runs where it
-                       is written and leaves its values in one list or record. It is never pushed as a body. */
+                       is written and leaves its values in one list or record. It is never pushed as a body.
+                       Bits 8 and up on a tuple header: its index in body_starts, kept by every copy. */
     uint64_t loc;  // (fid<<56) | (line<<24) | col ; 0 = no location
     union {
         int64_t i; double f; uint32_t sym;
@@ -1839,10 +1840,13 @@ static Value *aux_take(int n) {
     Value *p = aux_reserve(n); VCPY(p, &stack[sp-n], n); sp -= n; return p;
 }
 /* Element starts of a compound, staged on aux; NULL when every element is one slot. */
+static void fill_starts(int *st, const Value *data, int slots, int len) {
+    st[len] = slots-1; for (int i = len-1; i >= 0; i--) st[i] = st[i+1] - val_slots(data[st[i+1]-1]);
+}
 static int *elem_starts(Value *data, int slots, int len) {
     if (slots == len + 1) return NULL;
     int *st = (int*)aux_reserve((int)(((size_t)(len+1)*sizeof(int)+sizeof(Value)-1)/sizeof(Value)));
-    st[len] = slots-1; for (int i = len-1; i >= 0; i--) st[i] = st[i+1] - val_slots(data[st[i+1]-1]);
+    fill_starts(st, data, slots, len);
     return st;
 }
 #define POP_VAL(name) \
@@ -2459,11 +2463,15 @@ __attribute__((noinline)) static void lit_run(Value *code, int slots, Frame *ee)
     for(int p=sp;p>base;n++) p-=val_slots(stack[p-1])+rec;
     spush(val_compound(rec?VAL_RECORD:VAL_LIST,n,sp-base+1)); stack[sp-1].loc=hdr.loc;
 }
+/* Each body's element starts, made once by build_tuple. A body never changes once built, and its header's
+   flags carry its index from bit 8 up, so every copy finds them; 0 means every element is one slot.
+   main allocates it, with slot 0 NULL. */
+static int **body_starts, body_starts_n = 1, body_starts_cap;
 static void eval_run(Value *body, int slots, Frame *ee) {
     if(++eval_depth > EVAL_DEPTH_MAX) die("recursion depth exceeded (%d levels)", EVAL_DEPTH_MAX);
     c_stack_check("in a nested call");
     int len=(int)body[slots-1].as.compound.len;
-    int a0=asp,*st=elem_starts(body,slots,len);
+    int a0=asp,*st=body_starts[body[slots-1].flags>>8];
     for(int k=0;k<len;k++){
         int eo=k,es=1; if(st){eo=st[k];es=st[k+1]-st[k];}
         const Value *ep=&body[eo+es-1];
@@ -2562,6 +2570,15 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
     }
     Value hdr=val_compound(VAL_TUPLE,ec,sp-eb+1); if(ft) hdr.loc=LOC_PACK(ft->fid,ft->line,ft->col);
     if(binds) hdr.flags|=VF_BINDS;
+    if(sp-eb!=ec){
+        if(body_starts_n>0xFFFFFF) die("build: this process has built %d bodies, the most a tuple header's 24-bit index can name. Restart the shell, which keeps every line's bodies, or split the program.", 0xFFFFFF);
+        if(body_starts_n==body_starts_cap){ int **g=realloc(body_starts,(size_t)body_starts_cap*2*sizeof *body_starts);
+            if(!g) die("build: out of memory growing the body table to %d entries (%zu bytes)", body_starts_cap*2, (size_t)body_starts_cap*2*sizeof *g);
+            body_starts=g; body_starts_cap*=2; }
+        int *st=malloc((size_t)(ec+1)*sizeof *st); if(!st) die("build: out of memory for the element starts of a %d-element body (%zu bytes)", ec, (size_t)(ec+1)*sizeof *st);
+        fill_starts(st,&stack[eb],sp-eb+1,ec);
+        body_starts[body_starts_n]=st; hdr.flags|=(uint32_t)body_starts_n++<<8;
+    }
     spush(hdr); stack[sp-1].as.compound.env=env;
 }
 static void eval(Token *toks, int count, Frame *env) {
@@ -3155,6 +3172,7 @@ static int shell(Token *table, int table_count, Token *combined, int prelude_n) 
 #endif
 int main(int argc, char **argv) {
     char stack_anchor; c_stack_base = &stack_anchor;
+    body_starts_cap=1024; body_starts=calloc((size_t)body_starts_cap,sizeof *body_starts); if(!body_starts) die("out of memory for the body table");
 #ifdef __EMSCRIPTEN__
     long stack_lim=4L<<20; /* -sSTACK_SIZE in the Makefile */
 #else
