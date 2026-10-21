@@ -38,12 +38,12 @@
 
 -- Draw a string (no wrapping)
 (
-  'dc let 'sy let 'sx let 'str let 'n let 'raw let
+  'dc let 'sy let 'sx let 'chars let 'n let 'raw let
   sx 0
-  (dup str len lt) (
+  (dup chars len lt) (
     dup 'si let
     swap 'cx-cur let
-    str si get must 'ch let
+    chars si get must 'ch let
     raw ch get must 'w let
     w 0 gt (
       raw n ch cx-cur sy dc draw-char

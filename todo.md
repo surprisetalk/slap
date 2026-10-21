@@ -1,76 +1,17 @@
-- [ ] You write a signature as ordinary data: two lists of type values, ins
-      then outs, as in `(2 mul) [int] [int] effect 'double let` and `'triple
-      [int] [int] effect`. Prelude words build types as tagged values, so
-      `[int str] 'sig let sig len print` prints 2. Decided:
-      - Base types are words: int, float, sym, str and socket.
-      - Constructors are their tags: `int 'list tag`, `'a var 'dict tag`,
-        `'a var 'box tag`. dict and box already name value words.
-      - A list holds one type, so a type variable is `'a var`, or `'a copy`
-        when the body may copy or drop it.
-      - A body type is `[ins] [outs] fn`; `[] [] fn` is today's `()`. A named
-        stack rest is `'s rest` at the head of a list, and a sealed one
-        `'s sealed`. A body type with no rest runs on the word's rest, as a
-        body type in a slot does today.
-      - A record type and a tag set are dicts of types, keyed by name:
-        `dict "x" int insert rec` and `dict "ok" int insert "no" str insert
-        either`. Key "_" holds an open rest: `dict "x" int insert "_" 'r var
-        insert rec`. rec is `('rec tag)` and either `('either tag)`, both
-        prelude words: a dict holds one type, so no new primitive is needed.
-        The parser refuses a key given twice, where insert would replace it.
-      - A recursive type is `T 'l as`.
-      - TYPES uses the same notation, as `'name [ins] [outs]`, and the same
-        parser. Nothing evaluates TYPES.
-      The checker reads the two literals before effect as types, as at reads
-      its key, and checks them as ordinary literals too; the runtime skips
-      them there, as it skips `[...] effect` today. Every type variable has a
-      name by construction, so today's `[tagged own in  tagged move out]`,
-      which names two tag sets and says "'h' declares ( ..a tagged .. -> ..a
-      tagged .. ), but its body is ( ..a tagged .. -> ..a tagged .. )",
-      cannot be written. Tradeoffs: the slot modes go; signatures and forward
-      declarations stay. Signatures grow: `'each ['s rest 'a var 'list tag
-      ['r sealed 'a var] ['r sealed 'b var] fn] ['s rest 'b var 'list tag]`,
-      and each result in TYPES is `dict "ok" 'a var insert "no" 'b var insert
-      either`. Programs bind str 3 times and rest once as local names; those
-      sites get new names.
-  1. Tests first; check each fails against the old binary. expect.slap:
-     `(2 mul) [int] [int] effect 'double let 5 double 10 eq assert`;
-     `'triple [int] [int] effect (3 mul) 'triple let`; `(dup) ['a copy]
-     ['a var 'a var] effect`; `[int str] len 2 eq assert`; a list-length
-     word declared `[dict "cons" dict "hd" int insert "tl" 'l var insert rec
-     insert "nil" [] [] fn insert either 'l as] [int] effect`.
-     errors.slap: `(dup) ['a var] ['a var 'a var] effect` says the body
-     needs a copyable value; `[int own in] effect` says a signature is two
-     lists of types; `['a] [] effect` says a type variable is `'a var`;
-     `[dict "x" int insert "x" str insert rec] [] effect` says "x" is given
-     twice.
-  2. Prelude: the type words, each a `tag` over its payload.
-  3. Checker: one parser for type literals replaces ty_parse, ty_parse_fn and
-     ty_parse_slots. It accepts only the forms above and names the form it
-     expected. Rewrite TYPES in the new notation. Delete own, lent, move,
-     auto, in, out, `->`, `|`, the type words seq, tuple and tagged, and the
-     `{...}` record and either forms; rec and either are now prelude words.
-  4. Runtime: skip `[...] [...] effect` where it skips `[...] effect` today.
-  5. Migrate every test signature with a one-off script in the scratchpad,
-     and rename the str and rest locals.
-  6. readme: a "types are values" section replaces effect annotations and
-     protocol constraints; the "tuples" section becomes "bodies", the word
-     claude.md uses. claude.md's Checker paragraph (TYPES notation) follows.
-
 - [ ] You pass a value whose cases closed a tag absent to `must`, `pthen` or
       a signature that names that tag. Today `5 ok 'r let r {'ok (drop 1)}
       case drop r must` is refused ("this value is never tagged 'no"): an
-      `either` in an input slot makes its tags K_PRESENT, as an output must.
-      OCaml types such an input `[< ...]`. Do it with or after the signature
-      task, which rewrites the parser.
+      `either` in a signature's ins list makes its tags K_PRESENT, as an
+      output must. OCaml types such an input `[< ...]`.
   1. Tests first; check each fails against the old binary. expect.slap: the
      program above. errors.slap's case "x can never carry 'a after its second
      case" becomes an expect.slap pass.
-  2. The type parser gives each tag of an `either` in an `in` slot a fresh
-     presence variable instead of K_PRESENT. It generalizes with the scheme
+  2. ty_list gives each tag of an `either` in the ins list a fresh presence
+     variable instead of K_PRESENT. It generalizes with the scheme
      and is rigid while the body is checked, so a body case that drops the
      tag is still refused. Outputs stay K_PRESENT. TYPES' inputs (`must`,
      `pthen`) follow.
-  3. One variable shared by an in slot and an out slot takes the out slot's
+  3. One variable shared by the ins and the outs takes the outs'
      K_PRESENT. Tradeoff: a body that passes such an input to a K_PRESENT
      input of another word is refused, as a rigid variable meets a constant.
 
@@ -136,9 +77,10 @@
       "slap 0". The apps store everything in CBOR (examples/lib/cbor.slap) and
       share a charmbracelet-like UI. A dir app opens a general thing. A file
       app opens one specific thing, and it is always a viewer and an editor.
-      Decide: the first app; what a file app opens with no subject (the last
-      file, or an empty one); whether a file app saves by tags only, with no
-      file name; and whether you publish your own ware registry.
+      With no subject, a file app opens the last file. A file app saves by
+      tags only, with no file name. Decide: the first app (prose, home, stuff
+      and shell were too few options); whether you publish your own ware
+      registry.
       - Dir apps:
         - home: the launcher. A grid of app icons (or text) and widgets, and
           search. Or maybe timeline history with graphics?

@@ -98,12 +98,12 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
 
 -- handle-cmd: (store size line -- store size reply continue?).  Each branch leaves
 -- its reply and the store's new size.
-('cl let 'sz let cl split-first 'rest let upper 'cmd let
+('cl let 'sz let cl split-first 'line-rest let upper 'cmd let
  cmd "PING" eq ("PONG" sz) (
  cmd "GET" eq (
-   rest valid-key (rest of {'ok ('gv let "VALUE " gv cat) 'no (drop "NIL")} case) (bad-key) if sz) (
+   line-rest valid-key (line-rest of {'ok ('gv let "VALUE " gv cat) 'no (drop "NIL")} case) (bad-key) if sz) (
  cmd "SET" eq (
-   rest split-first 'sval let 'skey let
+   line-rest split-first 'sval let 'skey let
    skey valid-key (
      sval (32 lt) filter len 0 gt (
        "ERR value must not contain control bytes (TAB, CR, etc.)" sz
@@ -112,7 +112,7 @@ args len 1 gt (args 1 get must) ("kv.snap") if 'SNAP let
        nsz STORE-CAP gt ("ERR store full: " nsz full-text cat sz)
                         (skey sval insert "OK" nsz) if) if) (bad-key sz) if) (
  cmd "DEL" eq (
-   rest valid-key (rest pair-size sz swap sub 'nsz let rest remove "OK" nsz) (bad-key sz) if) (
+   line-rest valid-key (line-rest pair-size sz swap sub 'nsz let line-rest remove "OK" nsz) (bad-key sz) if) (
  cmd "KEYS" eq (dict-keys "KEYS" (" " swap cat cat) fold sz) (
  cmd "SAVE" eq (save-snapshot {'ok (drop "OK") 'no ('se let "ERR save failed: " se cat)} case sz) (
  cmd "SHUTDOWN" eq (save-snapshot {'ok (drop "BYE") 'no ('se let "ERR save failed: " se cat "; still running" cat)} case sz) (

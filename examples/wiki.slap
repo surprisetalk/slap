@@ -119,11 +119,11 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
  } case) 'view-page let
 
 -- edit-form: (name text -- code type body).
-('etext let 'fn let 200 ctype
- "<form method=POST action='/edit/" fn cat "'><textarea name=content rows=20>" cat
+('etext let 'fname let 200 ctype
+ "<form method=POST action='/edit/" fname cat "'><textarea name=content rows=20>" cat
  etext esc cat
  "</textarea><p><button>save</button></p></form>" cat
- "edit " fn cat swap layout) 'edit-form let
+ "edit " fname cat swap layout) 'edit-form let
 
 -- A missing page edits as empty; a page it cannot read gets no form, since saving
 -- an empty form would replace it.

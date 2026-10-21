@@ -96,7 +96,7 @@ Stack manipulation:
 4 1 drop             -- 4     (drop 1 item)
 6 5 swap             -- 5 6
 7 8 (1 plus) dip     -- 8 8   (apply under top)
-(2 3 plus) apply     -- 5     (execute a tuple literal)
+(2 3 plus) apply     -- 5     (run a body)
 ```
 
 ### floats
@@ -253,9 +253,9 @@ A body passed as an input is a value: `apply` runs it, and the name passes it on
 [[1 2] [3 4]] flatten        -- [1 2 3 4]
 ```
 
-### tuples
+### bodies
 
-Parenthesized code blocks. `apply` runs one.
+Parenthesized code. `apply` runs one.
 
 ```slap
 (10 20 30) apply             -- pushes 10 20 30
@@ -369,19 +369,20 @@ A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, an
 
 ### types
 
-| Type | Value | In a signature |
-|------|-------|----------------|
-| int, float, symbol | `1` `1.5` `'a` | `int` `float` `sym` |
-| list | `[1 2]` | `int list` |
-| string | `"hi"` | `str` (a list of bytes: `int list`) |
-| body | `(1 plus)` | `( int -> int )` |
-| record | `{'x 1}` | `{'x int}`, or `{'x int \| 'r}` for "at least `'x`" |
-| tagged | `5 'n tag`, `5 ok`, `"e" no` | `{'n int 'z ()} either`, or `{'n int \| 'r} either` for "at least `'n`" |
-| dict | `dict` | `int dict` |
-| box | `5 box` | `int box` |
-| socket | `0 tcp-listen must` | `socket` |
+| Type | Value | In a signature | In a message |
+|------|-------|----------------|--------------|
+| int, float, symbol | `1` `1.5` `'a` | `int` `float` `sym` | `int` `float` `sym` |
+| list | `[1 2]` | `int 'list tag` | `int list` |
+| string | `"hi"` | `str` (a list of bytes) | `str` |
+| body | `(1 plus)` | `[int] [int] fn` | `( int -> int )` |
+| record | `{'x 1}` | `dict "x" int insert rec` | `{'x int}` |
+| tagged | `5 'n tag`, `5 ok`, `"e" no` | `dict "n" int insert "z" [] [] fn insert either` | `{'n int 'z ()} either` |
+| dict | `dict` | `int 'dict tag` | `int dict` |
+| box | `5 box` | `int 'box tag` | `int box` |
+| socket | `0 tcp-listen must` | `socket` | `socket` |
+| variable | | `'a var`, or `'a copy` when copyable | `'a`, `'a copyable` |
 
-Type variables are symbols: `'a list`. A signature is a promise for every type it allows, so a bare `list` means "a list of whatever element type the caller picks": a body that leaves `int list` must say `int list`.
+A signature is a promise for every type it allows, so `'a var 'list tag` means "a list of whatever element type the caller picks": a body that leaves an int list must say `int 'list tag`.
 
 A tagged type lists each tag with its payload's type, as a record type lists each key with its value's type. `5 'n tag` and `"x" 'n tag` may appear in one program: each value's type says what its `'n` holds. `then`, `pthen`, `default` and `must` take a result, `{'ok 'a 'no 'b} either`.
 
@@ -391,23 +392,32 @@ A type may contain itself through a tag payload that holds no body. Recursive da
 
 A value is copyable unless it holds a box or a socket. Only a copyable value may be bound with `let`, duplicated, dropped, put in a list, record or dict, or left on the stack when the program ends. A body given to `each`, `fold`, `edit`, `mutate` or `lend` sees only its input, not the stack below it. A type variable carries one bit: copyable or linear.
 
-### effect annotations
+### types are values
 
-Optional type annotations declare stack effects:
+A signature is two lists of types, the inputs then the outputs, bottom first. It is optional:
 
 ```slap
-(2 mul) [int lent in  int move out] effect 'double let
-(dup mul) [int lent in  int move out] effect 'square let
+(2 mul) [int] [int] effect 'double let
+(dup mul) [int] [int] effect 'square let
 ```
 
-A signature can also come first, as `'name [sig] effect`; the body later bound to that name is checked against it. A word used before its definition, as in mutual recursion, needs one:
+A signature can also come first, as `'name [ins] [outs] effect`; the body later bound to that name is checked against it. A word used before its definition, as in mutual recursion, needs one:
 
 ```slap
-'triple [int lent in  int move out] effect
+'triple [int] [int] effect
 (3 mul) 'triple let
 ```
 
-The checker holds the body to the signature for every type the signature allows: `(2 mul) ['a lent in  'a move out] effect` is an error, because `2` makes the body int-only. A `lent` or `copy` slot takes a copyable value; `own`, `move` and `auto` slots may hold a box. A body type in a slot runs on the word's own stack below its declared inputs, so `(apply) [( -> int ) own in  int move out] effect` checks; a body type that names its own rest, as in `( ..x int -> ..x int )`, has a stack of its own.
+A type is an ordinary value, built by prelude words, so `[int str] len` is 2. The checker reads the two lists before `effect` as types, as `at` reads its key, and the program skips them when it runs. The type words:
+
+- `int`, `float`, `sym`, `str` and `socket`.
+- `'a var` is a type variable, and `'a copy` one that the body may copy or drop. One name is one variable in the whole signature.
+- `T 'list tag`, `T 'dict tag` and `T 'box tag`.
+- `[ins] [outs] fn` is a body type; `[] [] fn` takes and leaves nothing. A list that starts with `'s rest` names its stack's rest, and `'s sealed` names a rest the body may not reach; a body type names its rest in both lists or in neither. A body type without a named rest runs on the word's own stack below its declared inputs, so `(apply) [[] [int] fn] [int] effect` checks.
+- A record type and a tag set are dicts of types: `dict "x" int insert rec` and `dict "ok" int insert "no" str insert either`. The key `"_"` holds an open rest: `dict "x" int insert "_" 'r var insert rec` is any record with `'x`. A key given twice is refused.
+- `T 'l as` is a recursive type: `'l var` inside `T` is `T` itself. `dict "cons" dict "hd" int insert "tl" 'l var insert rec insert "nil" [] [] fn insert either 'l as` is a list of ints.
+
+The checker holds the body to the signature for every type the signature allows: `(2 mul) ['a var] ['a var] effect` is an error, because `2` makes the body int-only, and `(dup) ['a var] ['a var 'a var] effect` is an error, because `dup` needs a copyable value.
 
 ## prelude
 
@@ -791,7 +801,7 @@ The checker runs on the prelude and the program before anything executes. It ref
 - A `case` that may meet a tag no clause names, unless a last `'_` clause takes it, and a clause that can never run on a value whose tags are closed at the case. The checker infers which tags a value can carry from `ok`, `no`, `'x tag`, `then`, `pthen`, declared `either` types and the other cases on it.
 - A body that breaks its declared signature for some type the signature allows.
 - Code that takes more values than the stack holds.
-- A word used before its definition without `'name [sig] effect`, and a declared word never defined.
+- A word used before its definition without `'name [ins] [outs] effect`, and a declared word never defined.
 - A name used where it is not bound. Names are lexical: a body sees the names bound where it is written, and never a caller's.
 
 **Ownership**

@@ -273,7 +273,7 @@ def profile():
     if code != 1 or not any(re.match(r"^boom;div [0-9]+$", l) for l in lines):
         return False, f"dying run: exit {code}\n" + "\n".join(lines[-20:])
     code, lines = run(
-        "'odd? [int lent in  int move out] effect\n"
+        "'odd? [int] [int] effect\n"
         "(dup 0 eq (drop 1) (1 sub odd?) if) 'even? let\n"
         "(dup 0 eq (drop 0) (1 sub even?) if) 'odd? let\n"
         "2000 even? drop\n"
@@ -692,7 +692,7 @@ def steps(slow):
                 None,
             ),
             "a program past the token limit says so briefly": (
-                "out=$(python3 -c \"print('1 ' * 70000)\" | ./slap 2>&1); test $? -eq 1 && grep -q 'the program has more than 65[0-9]* tokens; the limit is 65[0-9]* (TOK_MAX minus [0-9]* for the prelude)' <<<\"$out\" && grep -q 'ERROR <stdin> -' <<<\"$out\" && ! grep -q 'source unavailable' <<<\"$out\" && test ${#out} -lt 1000",
+                "out=$(python3 -c \"print('1 ' * 70000)\" | ./slap 2>&1); test $? -eq 1 && [[ \"$out\" =~ 'the program has more than '([0-9]+)' tokens; the limit is '([0-9]+)' (TOK_MAX minus '([0-9]+)' for the prelude)' ]] && test ${BASH_REMATCH[1]} -eq ${BASH_REMATCH[2]} && test $((BASH_REMATCH[2] + BASH_REMATCH[3])) -eq 65536 && grep -q 'ERROR <stdin> -' <<<\"$out\" && ! grep -q 'source unavailable' <<<\"$out\" && test ${#out} -lt 1000",
                 None,
             ),
             "a plain underflow through a let-bound body gets no let hint": (

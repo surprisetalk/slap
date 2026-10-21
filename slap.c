@@ -1032,159 +1032,187 @@ static int ty_copy(int t, int depth) {
 }
 static int ty_instantiate(int t) { ty_memo_n = 0; ty_copy_stamp = ++ty_stamp; return ty_copy(t, 0); }
 
-/* The type of every primitive: 'name ( ins -> outs ), bottom first. A body's stack rest is `..s`;
-   where a body runs on the stack below a word's inputs, the two rests are the same variable. `..!r` is
-   a rest the body may not reach: the runtime keeps other values there. `at`, `into` and `edit` take
-   their key from the program's text, so ty_range types them. */
+/* The type of every primitive: 'name [ins] [outs], bottom first, in a signature's notation. A body's
+   stack rest is 's rest; where a body runs on the stack below a word's inputs, the two rests are the same
+   name. 'r sealed is a rest the body may not reach: the runtime keeps other values there. `at`, `into`
+   and `edit` take their key from the program's text, so ty_range types them. */
 static const char *TYPES =
-    "'dup ( 'a -> 'a 'a ) 'drop ( 'a -> ) 'swap ( 'a 'b -> 'b 'a ) 'over ( 'a 'b -> 'a 'b 'a ) 'rot ( 'a 'b 'c -> 'b 'c 'a )\n"
-    "'plus ( int int -> int ) 'sub ( int int -> int ) 'mul ( int int -> int ) 'div ( int int -> int )\n"
-    "'fplus ( float float -> float ) 'fsub ( float float -> float ) 'fmul ( float float -> float ) 'fdiv ( float float -> float )\n"
-    "'mod ( int int -> int ) 'band ( int int -> int ) 'bor ( int int -> int ) 'bxor ( int int -> int )\n"
-    "'shl ( int int -> int ) 'shr ( int int -> int ) 'and ( int int -> int ) 'or ( int int -> int )\n"
-    "'eq ( 'a 'a -> int ) 'lt ( int int -> int ) 'flt ( float float -> int )\n"
-    "'itof ( int -> float ) 'ftoi ( float -> int ) 'float-str ( float -> str ) 'float-bits ( float -> int ) 'bits-float ( int -> float ) 'fsqrt ( float -> float ) 'ffloor ( float -> float ) 'fround ( float -> float )\n"
-    "'fexp ( float -> float ) 'flog ( float -> float ) 'fpow ( float float -> float ) 'fatan2 ( float float -> float )\n"
-    "'print ( 'a -> ) 'assert ( int -> ) 'millis ( -> int ) 'datetime ( -> int list ) 'random ( int -> int ) 'isheadless ( -> int )\n"
-    "'apply ( ..s ( ..s -> ..t ) -> ..t ) 'dip ( ..s 'x ( ..s -> ..t ) -> ..t 'x )\n"
-    "'if ( ..s int ( ..s -> ..t ) ( ..s -> ..t ) -> ..t ) 'while ( ..a ( ..a -> ..b int ) ( ..b -> ..a ) -> ..b )\n"
-    "'each ( ..s 'a list ( ..!r 'a -> ..!r 'b ) -> ..s 'b list ) 'fold ( ..s 'a list 'b ( ..!r 'b 'a -> ..!r 'b ) -> ..s 'b )\n"
-    "'filter ( ..s 'a list ( ..!r 'a -> ..!r int ) -> ..s 'a list )\n"
-    "'len ( 'a list -> int ) 'push ( 'a list 'a -> 'a list ) 'pop ( 'a list -> 'a list {'ok 'a 'no ()} either )\n"
-    "'get ( 'a list int -> {'ok 'a 'no ()} either ) 'peek ( 'a list int -> 'a list {'ok 'a 'no ()} either )\n"
-    "'set ( 'a list int 'a -> {'ok 'a list 'no ()} either ) 'cat ( 'a list 'a list -> 'a list ) 'reverse ( 'a list -> 'a list )\n"
-    "'take-n ( 'a list int -> 'a list ) 'drop-n ( 'a list int -> 'a list ) 'range ( int int -> int list ) 'sort ( int list -> int list )\n"
-    "'index-of ( 'a list 'a -> {'ok int 'no ()} either ) 'zip ( 'a list 'a list -> 'a list list )\n"
-    "'str-find ( str str -> {'ok int 'no ()} either ) 'str-split ( str str -> str list )\n"
-    "'must ( {'ok 'a 'no 'b} either -> 'a ) 'fail ( ..a str -> ..b )\n"
-    "'pthen ( ..s {'ok 'a 'no 'b} either 'd copy ( ..s 'a -> ..s 'd {'ok 'c 'no 'b} either ) -> ..s 'd {'ok 'c 'no 'b} either )\n"
-    "'box ( 'a -> 'a box ) 'free ( 'a box -> ) 'mutate ( ..s 'a box ( ..!r 'a -> ..!r 'b ) -> ..s 'b box ) 'lend ( ..s 'a box ( ..!r 'a -> ..!r 'b ) -> ..s 'a box 'b )\n"
-    "'dict ( -> 'a dict ) 'insert ( 'a dict str 'a -> 'a dict ) 'of ( 'a dict str -> 'a dict {'ok 'a 'no str} either )\n"
-    "'remove ( 'a dict str -> 'a dict ) 'dict-entries ( 'a dict -> 'a dict {'key str 'value 'a} list )\n"
-    "'read ( str -> {'ok str 'no str} either ) 'write ( str str -> {'ok int 'no str} either ) 'ls ( str -> {'ok str list 'no str} either )\n"
-    "'args ( -> str list )\n"
+    "'dup ['a var] ['a var 'a var] 'drop ['a var] [] 'swap ['a var 'b var] ['b var 'a var] 'over ['a var 'b var] ['a var 'b var 'a var] 'rot ['a var 'b var 'c var] ['b var 'c var 'a var]\n"
+    "'plus [int int] [int] 'sub [int int] [int] 'mul [int int] [int] 'div [int int] [int]\n"
+    "'fplus [float float] [float] 'fsub [float float] [float] 'fmul [float float] [float] 'fdiv [float float] [float]\n"
+    "'mod [int int] [int] 'band [int int] [int] 'bor [int int] [int] 'bxor [int int] [int]\n"
+    "'shl [int int] [int] 'shr [int int] [int] 'and [int int] [int] 'or [int int] [int]\n"
+    "'eq ['a var 'a var] [int] 'lt [int int] [int] 'flt [float float] [int]\n"
+    "'itof [int] [float] 'ftoi [float] [int] 'float-str [float] [str] 'float-bits [float] [int] 'bits-float [int] [float] 'fsqrt [float] [float] 'ffloor [float] [float] 'fround [float] [float]\n"
+    "'fexp [float] [float] 'flog [float] [float] 'fpow [float float] [float] 'fatan2 [float float] [float]\n"
+    "'print ['a var] [] 'assert [int] [] 'millis [] [int] 'datetime [] [int 'list tag] 'random [int] [int] 'isheadless [] [int]\n"
+    "'apply ['s rest ['s rest] ['t rest] fn] ['t rest] 'dip ['s rest 'x var ['s rest] ['t rest] fn] ['t rest 'x var]\n"
+    "'if ['s rest int ['s rest] ['t rest] fn ['s rest] ['t rest] fn] ['t rest] 'while ['a rest ['a rest] ['b rest int] fn ['b rest] ['a rest] fn] ['b rest]\n"
+    "'each ['s rest 'a var 'list tag ['r sealed 'a var] ['r sealed 'b var] fn] ['s rest 'b var 'list tag] 'fold ['s rest 'a var 'list tag 'b var ['r sealed 'b var 'a var] ['r sealed 'b var] fn] ['s rest 'b var]\n"
+    "'filter ['s rest 'a var 'list tag ['r sealed 'a var] ['r sealed int] fn] ['s rest 'a var 'list tag]\n"
+    "'len ['a var 'list tag] [int] 'push ['a var 'list tag 'a var] ['a var 'list tag] 'pop ['a var 'list tag] ['a var 'list tag dict \"ok\" 'a var insert \"no\" [] [] fn insert either]\n"
+    "'get ['a var 'list tag int] [dict \"ok\" 'a var insert \"no\" [] [] fn insert either] 'peek ['a var 'list tag int] ['a var 'list tag dict \"ok\" 'a var insert \"no\" [] [] fn insert either]\n"
+    "'set ['a var 'list tag int 'a var] [dict \"ok\" 'a var 'list tag insert \"no\" [] [] fn insert either] 'cat ['a var 'list tag 'a var 'list tag] ['a var 'list tag] 'reverse ['a var 'list tag] ['a var 'list tag]\n"
+    "'take-n ['a var 'list tag int] ['a var 'list tag] 'drop-n ['a var 'list tag int] ['a var 'list tag] 'range [int int] [int 'list tag] 'sort [int 'list tag] [int 'list tag]\n"
+    "'index-of ['a var 'list tag 'a var] [dict \"ok\" int insert \"no\" [] [] fn insert either] 'zip ['a var 'list tag 'a var 'list tag] ['a var 'list tag 'list tag]\n"
+    "'str-find [str str] [dict \"ok\" int insert \"no\" [] [] fn insert either] 'str-split [str str] [str 'list tag]\n"
+    "'must [dict \"ok\" 'a var insert \"no\" 'b var insert either] ['a var] 'fail ['a rest str] ['b rest]\n"
+    "'pthen ['s rest dict \"ok\" 'a var insert \"no\" 'b var insert either 'd copy ['s rest 'a var] ['s rest 'd copy dict \"ok\" 'c var insert \"no\" 'b var insert either] fn] ['s rest 'd copy dict \"ok\" 'c var insert \"no\" 'b var insert either]\n"
+    "'box ['a var] ['a var 'box tag] 'free ['a var 'box tag] [] 'mutate ['s rest 'a var 'box tag ['r sealed 'a var] ['r sealed 'b var] fn] ['s rest 'b var 'box tag] 'lend ['s rest 'a var 'box tag ['r sealed 'a var] ['r sealed 'b var] fn] ['s rest 'a var 'box tag 'b var]\n"
+    "'dict [] ['a var 'dict tag] 'insert ['a var 'dict tag str 'a var] ['a var 'dict tag] 'of ['a var 'dict tag str] ['a var 'dict tag dict \"ok\" 'a var insert \"no\" str insert either]\n"
+    "'remove ['a var 'dict tag str] ['a var 'dict tag] 'dict-entries ['a var 'dict tag] ['a var 'dict tag dict \"key\" str insert \"value\" 'a var insert rec 'list tag]\n"
+    "'read [str] [dict \"ok\" str insert \"no\" str insert either] 'write [str str] [dict \"ok\" int insert \"no\" str insert either] 'ls [str] [dict \"ok\" str 'list tag insert \"no\" str insert either]\n"
+    "'args [] [str 'list tag]\n"
     /* a socket is its own type: the runtime keeps it as a plain int fd, but free, lend and mutate must not reach it */
-    "'tcp-connect ( str int -> {'ok socket 'no str} either ) 'tcp-send ( socket str -> socket {'ok int 'no str} either )\n"
-    "'tcp-recv ( socket int -> socket {'ok str 'no str} either ) 'tcp-close ( socket -> ) 'tcp-listen ( int -> {'ok socket 'no str} either )\n"
-    "'tcp-accept ( socket -> socket {'ok socket 'no str} either )\n"
-    "'clear ( int -> ) 'pixel ( int int int -> ) 'fill-rect ( int int int int int -> )\n";
+    "'tcp-connect [str int] [dict \"ok\" socket insert \"no\" str insert either] 'tcp-send [socket str] [socket dict \"ok\" int insert \"no\" str insert either]\n"
+    "'tcp-recv [socket int] [socket dict \"ok\" str insert \"no\" str insert either] 'tcp-close [socket] [] 'tcp-listen [int] [dict \"ok\" socket insert \"no\" str insert either]\n"
+    "'tcp-accept [socket] [socket dict \"ok\" socket insert \"no\" str insert either]\n"
+    "'clear [int] [] 'pixel [int int int] [] 'fill-rect [int int int int int] []\n";
 
 /* ---- signatures ----
-   One syntax for the builtin table and for program signatures. Names are per signature: the same 'a
-   is one variable, `..s` names a stack's rest. */
+   A signature is two lists of types, ins then outs, bottom first: `[int] [int] effect`. A type is postfix
+   code over the prelude's type words, and the checker reads it here without running it. Names are per
+   signature: the same 'a is one variable, and 's rest names a stack's rest. TYPES uses the same notation. */
 typedef struct { uint32_t name[64]; int term[64]; uint8_t kind[64]; int n; } TyNames;
+#define TY_DIE(t, ...) do { current_loc = LOC_PACK((t)->fid, (t)->line, (t)->col); die(__VA_ARGS__); } while (0)
 /* kind K_TAG names a tag set's row: a K_RVAR apart from the record rows of the same name. */
-static int ty_named(TyNames *nm, uint32_t name, int kind) {
+static int ty_named(TyNames *nm, uint32_t name, int kind, Token *tok) {
     for (int k = 0; k < nm->n; k++) if (nm->name[k] == name && nm->kind[k] == kind) return nm->term[k];
-    if (nm->n == 64) die("type annotation: more than 64 names in one signature");
-    int t = ty_new(kind == K_TAG ? K_RVAR : kind, 0, 0, 0); ty[t].sealed = kind == K_SVAR && sym_name(name)[2] == '!'; nm->name[nm->n] = name; nm->term[nm->n] = t; nm->kind[nm->n++] = (uint8_t)kind; return t;
+    if (nm->n == 64) TY_DIE(tok, "type annotation: '%s is the 65th name in this signature, and a signature holds at most 64. Split the word into smaller words.", sym_name(name));
+    int t = ty_new(kind == K_TAG ? K_RVAR : kind, 0, 0, 0); nm->name[nm->n] = name; nm->term[nm->n] = t; nm->kind[nm->n++] = (uint8_t)kind; return t;
 }
 static int ty_word_is(Token *t, const char *w) { return t->tag == TOK_WORD && strcmp(sym_name(t->as.sym), w) == 0; }
-static int ty_prot_word(Token *t) {
-    if (t->tag != TOK_WORD) return 0;
-    const char *w = sym_name(t->as.sym);
-    return !strcmp(w, "copy") ? P_COPY : 0;
+/* What a type literal's code leaves, item by item. A type keeps the name var or copy gave it plus one,
+   for a "_" key. A dict is a chain of fields in tyf, newest first; -1 is empty. A list is its [ token. */
+enum { TI_TYPE, TI_SYM, TI_KEY, TI_DICT, TI_LIST, TI_REST };
+/* A TyNames kind: a name that `as` gave its type, which no later var or copy may take. */
+enum { TN_AS = 255 };
+typedef struct { int kind, t, tok; uint32_t sym; } TyItem;
+static TyItem *tyi; static int tyi_n, tyi_cap;
+static struct { uint32_t key; int t, next; } *tyf; static int tyf_n, tyf_cap;
+static void tyi_push(int kind, int t, uint32_t sym, int tok) {
+    if (tyi_n == tyi_cap) { tyi_cap = tyi_cap ? 2*tyi_cap : 64; tyi = realloc(tyi, (size_t)tyi_cap * sizeof *tyi); if (!tyi) die("type checker: out of memory for %d type items", tyi_cap); }
+    tyi[tyi_n++] = (TyItem){kind, t, tok, sym};
 }
-static int ty_parse_fn(Token *toks, int open, int close, TyNames *nm, int rest);
-/* While a slot signature parses, the word's own stack rest: a body type in a slot that names no rest of
-   its own runs on it, and a body type inside that one runs on its enclosing body's. 0 elsewhere. */
-static int ty_slot_rest;
-static void ty_mark_copy(int t, Token *tok);
-#define TY_DIE(t, ...) do { current_loc = LOC_PACK((t)->fid, (t)->line, (t)->col); die(__VA_ARGS__); } while (0)
-static int ty_parse(Token *toks, int *i, int end, TyNames *nm) {
+static const char *ty_item_noun(int kind) {
+    static const char *n[] = {"a type", "a 'name", "a \"key\"", "a dict of types", "a [...] list", "a stack rest"};
+    return n[kind];
+}
+/* The top item, which must be kind: word's message says what it takes. */
+static TyItem ty_take(int base, int kind, Token *t, const char *takes) {
+    if (tyi_n == base) TY_DIE(t, "type annotation: %s, but nothing is before it.", takes);
+    if (tyi[tyi_n-1].kind != kind) TY_DIE(t, "type annotation: %s, but %s is before it.", takes, ty_item_noun(tyi[tyi_n-1].kind));
+    return tyi[--tyi_n];
+}
+static int ty_list(Token *toks, int open, TyNames *nm, int rest, int inherit);
+/* `[ins] [outs]` as a body type. A side without a named rest runs on rest, or for 0 on one fresh rest.
+   inherit: a body type inside runs on its side's rest, as in a program's signature; TYPES' are fresh. */
+static int ty_names_rest(Token *toks, int open) {
+    return toks[open].span > 2 && toks[open+1].tag == TOK_SYM && (ty_word_is(&toks[open+2], "rest") || ty_word_is(&toks[open+2], "sealed"));
+}
+static int ty_fn_lists(Token *toks, int ins, int outs, TyNames *nm, int rest, int inherit) {
+    if (ty_names_rest(toks, ins) != ty_names_rest(toks, outs))
+        TY_DIE(&toks[ty_names_rest(toks, ins) ? outs : ins], "type annotation: one list names its stack rest and the other does not, so they would run on two stacks. Name it in both, as in ['s rest int] ['s rest int], or in neither.");
+    if (!rest) rest = ty_new(K_SVAR, 0, 0, 0);
+    int in = ty_list(toks, ins, nm, rest, inherit), out = ty_list(toks, outs, nm, rest, inherit);
+    return ty_new(K_FN, in, out, 0);
+}
+/* A "_" key's name is a row's, apart from value variables, so a whole signature uses it only there:
+   'r var in "_" makes a value variable that nothing else may reach. */
+static void ty_rows_apart(int fn, TyNames *nm, Token *tok) {
+    for (int k = 0; k < nm->n; k++) if (nm->kind[k] == K_RVAR || nm->kind[k] == K_TAG)
+        for (int v = 0; v < nm->n; v++) if (nm->kind[v] == K_VAR && nm->name[v] == nm->name[k] && ty_reaches(fn, ty_find(nm->term[v])))
+            TY_DIE(tok, "type annotation: '%s names the open rest of a record or tag set, and a value elsewhere in this signature. Give each its own name.", sym_name(nm->name[k]));
+}
+/* One list of types as a stack: its rest, then each type pushed on it. */
+static int ty_list(Token *toks, int open, TyNames *nm, int rest, int inherit) {
     c_stack_check("while reading a type annotation");
-    if (*i >= end) TY_DIE(&toks[end-1], "type annotation: a type is missing");
-    Token *t = &toks[*i]; int base = 0;
-    if (t->tag == TOK_WORD) {
-        const char *w = sym_name(t->as.sym); int p = ty_prot_word(t);
-        if (!strcmp(w, "int")) base = ty_new(K_INT, 0, 0, 0);
-        else if (!strcmp(w, "float")) base = ty_new(K_FLOAT, 0, 0, 0);
-        else if (!strcmp(w, "sym")) base = ty_new(K_SYM, 0, 0, 0);
-        else if (!strcmp(w, "str")) { base = ty_new(K_LIST, ty_new(K_INT, 0, 0, 0), 0, 0); ty[base].sym = 1; }
-        else if (!strcmp(w, "tagged")) base = ty_new(K_TAG, ty_new(K_RVAR, 0, 0, 0), 0, 0);
-        else if (!strcmp(w, "rec")) base = ty_new(K_REC, ty_new(K_RVAR, 0, 0, 0), 0, 0);
-        else if (!strcmp(w, "tuple")) base = ty_new(K_FN, ty_new(K_SVAR, 0, 0, 0), ty_new(K_SVAR, 0, 0, 0), 0);
-        else if (!strcmp(w, "list") || !strcmp(w, "seq")) base = ty_new(K_LIST, ty_new(K_VAR, 0, 0, 0), 0, 0);
-        else if (!strcmp(w, "dict")) base = ty_new(K_DICT, ty_new(K_VAR, 0, 0, 0), 0, 0);
-        else if (!strcmp(w, "box")) base = ty_new(K_BOX, ty_new(K_VAR, 0, 0, 0), 0, 0);
-        else if (!strcmp(w, "socket")) base = ty_new(K_SOCK, 0, 0, 0);
-        else if (p) { base = ty_new(K_VAR, 0, 0, 0); ty[base].prot = (uint8_t)p; }
-        else if (ty_word_is(t, "|")) TY_DIE(t, "type annotation: a type is missing before '|'. Write a type after each field name, as in {'a int | 'r}.");
-        else TY_DIE(t, "type annotation: unknown type word '%s'. A type is int, float, sym, str, tagged, rec, tuple, list, dict, box, socket, a 'name, or a ( ) or { } form.", w);
-        (*i)++;
-    } else if (t->tag == TOK_SYM) {
-        if (*i + 1 < end && ty_word_is(&toks[*i + 1], "sym")) TY_DIE(t, "type annotation: a symbol's type is sym; write sym, not '%s sym", sym_name(t->as.sym));
-        { base = ty_named(nm, t->as.sym, K_VAR); (*i)++;
-            for (int p; *i < end && (p = ty_prot_word(&toks[*i])); (*i)++) ty[base].prot |= (uint8_t)p; }
-    } else if (t->tag == TOK_LPAREN) {
-        base = ty_parse_fn(toks, *i, *i + t->span, nm, ty_slot_rest); *i += t->span + 1;
-    } else if (t->tag == TOK_LBRACE) {
-        int close = *i + t->span, j = *i + 1; uint32_t keys[64], rest_sym = 0; int types[64], n = 0;
-        while (j < close) {
-            if (ty_word_is(&toks[j], "|")) { if (rest_sym) { TY_DIE(&toks[j], "type annotation: a record or either type takes one '|' row name, but a second '|' follows '%s. Drop one.", sym_name(rest_sym)); }
-                if (j + 1 >= close || toks[j+1].tag != TOK_SYM) TY_DIE(&toks[j + (j + 1 < close)], "type annotation: '|' needs a 'row name after it");
-                rest_sym = toks[j+1].as.sym; j += 2; continue; }
-            if (toks[j].tag != TOK_SYM) TY_DIE(&toks[j], "type annotation: a record or either type takes 'name type pairs");
-            if (n == 64) TY_DIE(&toks[j], "type annotation: more than 64 fields");
-            for (int m = 0; m < n; m++) if (keys[m] == toks[j].as.sym) TY_DIE(&toks[j], "type annotation: '%s appears twice in one record or either type", sym_name(toks[j].as.sym));
-            keys[n] = toks[j].as.sym; j++; types[n++] = ty_parse(toks, &j, close, nm);
+    /* a dict's fields live only while its list is read: a dict left over is an error */
+    int close = open + toks[open].span, base = tyi_n, fields = tyf_n;
+    for (int j = open + 1; j < close; j++) {
+        Token *t = &toks[j];
+        if (t->tag == TOK_SYM) { tyi_push(TI_SYM, 0, t->as.sym, j); continue; }
+        if (t->tag == TOK_LBRACKET) { tyi_push(TI_LIST, 0, 0, j); j += t->span; continue; }
+        if (t->tag == TOK_STRING) {
+            char *k = malloc((size_t)t->as.str.len + 1); if (!k) die("type checker: out of memory for a %d-byte key", t->as.str.len);
+            for (int c = 0; c < t->as.str.len; c++) { if (!t->as.str.codes[c]) TY_DIE(t, "type annotation: this key holds a NUL byte at offset %d, but a key names a field or a tag, as in \"x\". Drop the \\0.", c); k[c] = (char)t->as.str.codes[c]; }
+            k[t->as.str.len] = 0; current_loc = LOC_PACK(t->fid, t->line, t->col); tyi_push(TI_KEY, 0, sym_intern(k), j); free(k); continue; }
+        if (t->tag != TOK_WORD) TY_DIE(t, "type annotation: a type is written with type words, as in int, 'a var, int 'list tag or [int] [int] fn, not a literal.");
+        const char *w = sym_name(t->as.sym);
+        int k = !strcmp(w, "int") ? K_INT : !strcmp(w, "float") ? K_FLOAT : !strcmp(w, "sym") ? K_SYM : !strcmp(w, "socket") ? K_SOCK : !strcmp(w, "str") ? K_LIST : -1;
+        if (k >= 0) { int b = k == K_LIST ? ty_new(K_LIST, ty_new(K_INT, 0, 0, 0), 0, 0) : ty_new(k, 0, 0, 0); if (k == K_LIST) ty[b].sym = 1; tyi_push(TI_TYPE, b, 0, j); }
+        else if (!strcmp(w, "var") || !strcmp(w, "copy")) {
+            int copy = !strcmp(w, "copy");
+            TyItem s = ty_take(base, TI_SYM, t, copy ? "copy takes a 'name, as in 'a copy" : "var takes a 'name, as in 'a var");
+            for (int n = 0; n < nm->n; n++) if (nm->name[n] == s.sym && nm->kind[n] == TN_AS)
+                TY_DIE(t, "type annotation: '%s already names a recursive type here, through as. Give this variable another name.", sym_name(s.sym));
+            int v = ty_named(nm, s.sym, K_VAR, t); if (copy) ty[v].prot |= P_COPY;
+            tyi_push(TI_TYPE, v, s.sym + 1, j); }
+        else if (!strcmp(w, "rest") || !strcmp(w, "sealed")) {
+            int sealed = !strcmp(w, "sealed");
+            TyItem s = ty_take(base, TI_SYM, t, sealed ? "sealed takes a 'name, as in 'r sealed" : "rest takes a 'name, as in 's rest");
+            if (tyi_n != base) TY_DIE(t, "type annotation: a stack rest comes first in its list, as in ['s rest int].");
+            int fresh = nm->n, v = ty_named(nm, s.sym, K_SVAR, t);
+            if (nm->n > fresh) ty[v].sealed = (uint8_t)sealed;
+            else if (ty[v].sealed != sealed) TY_DIE(t, "type annotation: '%s is %s here but %s elsewhere in this signature. Give each its own name.", sym_name(s.sym), w, sealed ? "rest" : "sealed");
+            tyi_push(TI_REST, v, 0, j); }
+        else if (!strcmp(w, "tag")) {
+            TyItem c = ty_take(base, TI_SYM, t, "a type's tag is 'list, 'dict or 'box, as in int 'list tag");
+            const char *cn = sym_name(c.sym);
+            int ck = !strcmp(cn, "list") ? K_LIST : !strcmp(cn, "dict") ? K_DICT : !strcmp(cn, "box") ? K_BOX : -1;
+            if (ck < 0) TY_DIE(t, "type annotation: a type's tag is 'list, 'dict or 'box, not '%s. A tag set is a dict of types, as in dict \"%s\" int insert either.", cn, cn);
+            TyItem e = ty_take(base, TI_TYPE, t, "'list, 'dict and 'box tag a type, as in int 'list tag");
+            tyi_push(TI_TYPE, ty_new(ck, e.t, 0, 0), 0, j); }
+        else if (!strcmp(w, "fn")) {
+            const char *takes = "fn takes two lists of types, ins then outs, as in [int] [int] fn";
+            TyItem outs = ty_take(base, TI_LIST, t, takes), ins = ty_take(base, TI_LIST, t, takes);
+            int side = tyi_n > base && tyi[base].kind == TI_REST ? tyi[base].t : rest;
+            tyi_push(TI_TYPE, ty_fn_lists(toks, ins.tok, outs.tok, nm, inherit ? side : 0, inherit), 0, j); }
+        else if (!strcmp(w, "dict")) tyi_push(TI_DICT, -1, 0, j);
+        else if (!strcmp(w, "insert")) {
+            const char *takes = "insert takes a dict of types, a \"key\" and a type, as in dict \"x\" int insert";
+            TyItem v = ty_take(base, TI_TYPE, t, takes), key = ty_take(base, TI_KEY, t, takes), d = ty_take(base, TI_DICT, t, takes);
+            for (int f = d.t; f >= 0; f = tyf[f].next) if (tyf[f].key == key.sym) TY_DIE(t, "type annotation: \"%s\" is given twice in one dict of types. Each key names one field or tag.", sym_name(key.sym));
+            if (key.sym == S_WILD && !v.sym) TY_DIE(t, "type annotation: the \"_\" key holds the open rest of a record or tag set, so its value is a name, as in \"_\" 'r var insert.");
+            if (tyf_n == tyf_cap) { tyf_cap = tyf_cap ? 2*tyf_cap : 64; tyf = realloc(tyf, (size_t)tyf_cap * sizeof *tyf); if (!tyf) die("type checker: out of memory for %d fields", tyf_cap); }
+            tyf[tyf_n].key = key.sym; tyf[tyf_n].t = key.sym == S_WILD ? (int)v.sym - 1 : v.t; tyf[tyf_n].next = d.t;
+            tyi_push(TI_DICT, tyf_n++, 0, d.tok); }
+        else if (!strcmp(w, "rec") || !strcmp(w, "either")) {
+            int either = !strcmp(w, "either");
+            TyItem d = ty_take(base, TI_DICT, t, either ? "either takes a dict of types, one per tag, as in dict \"ok\" int insert either" : "rec takes a dict of types, one per field, as in dict \"x\" int insert rec");
+            /* "_" names the open rest; the fields go on it in the order they were inserted */
+            int row = ty_new(K_RNIL, 0, 0, 0);
+            for (int f = d.t; f >= 0; f = tyf[f].next) if (tyf[f].key == S_WILD) {
+                int v = ty_named(nm, (uint32_t)tyf[f].t, K_VAR, t); row = ty_named(nm, (uint32_t)tyf[f].t, either ? K_TAG : K_RVAR, t); ty[row].prot |= ty[v].prot & P_COPY; }
+            for (int f = d.t; f >= 0; f = tyf[f].next) if (tyf[f].key != S_WILD)
+                row = ty_new(K_REXT, either ? ty_tag_label(tyf[f].key, ty_new(K_PRESENT, 0, 0, 0)) : ty_sym(K_LSYM, tyf[f].key), tyf[f].t, row);
+            tyi_push(TI_TYPE, ty_new(either ? K_TAG : K_REC, row, 0, 0), 0, j); }
+        else if (!strcmp(w, "as")) {
+            const char *takes = "as takes a type and the 'name it uses for itself, as in T 'l as";
+            TyItem l = ty_take(base, TI_SYM, t, takes), e = ty_take(base, TI_TYPE, t, takes);
+            int n = 0;
+            while (n < nm->n && !(nm->name[n] == l.sym && (nm->kind[n] == K_VAR || nm->kind[n] == TN_AS))) n++;
+            if (n < nm->n && nm->kind[n] == TN_AS) TY_DIE(t, "type annotation: '%s already names a recursive type here. Give each recursive type its own name.", sym_name(l.sym));
+            int v = n < nm->n ? ty_find(nm->term[n]) : -1;
+            if (v < 0 || !ty_reaches(e.t, v)) TY_DIE(t, "type annotation: '%s as names a type that never uses '%s var. Drop as, or use '%s var inside the type.", sym_name(l.sym), sym_name(l.sym), sym_name(l.sym));
+            if (v == ty_find(e.t)) TY_DIE(t, "type annotation: '%s as names '%s var itself. as names a type that holds '%s var inside a tag, as in dict \"nil\" int insert \"next\" '%s var insert either '%s as.", sym_name(l.sym), sym_name(l.sym), sym_name(l.sym), sym_name(l.sym), sym_name(l.sym));
+            if (ty_unify(v, e.t)) TY_DIE(t, "type annotation: '%s cannot name this type: %s.", sym_name(l.sym), ty_why);
+            nm->kind[n] = TN_AS; tyi_push(TI_TYPE, e.t, 0, j); }
+        else TY_DIE(t, "type annotation: unknown type word '%s'. A type is int, float, sym, str, socket, 'a var, 'a copy, T 'list tag, T 'dict tag, T 'box tag, [ins] [outs] fn, a dict of types with rec or either, or T 'l as.", w);
+    }
+    int s = rest, k = base;
+    if (k < tyi_n && tyi[k].kind == TI_REST) s = tyi[k++].t;
+    for (; k < tyi_n; k++) {
+        Token *t = &toks[tyi[k].tok];
+        switch (tyi[k].kind) {
+        case TI_TYPE: s = ty_new(K_SCONS, tyi[k].t, s, 0); break;
+        case TI_SYM: TY_DIE(t, "type annotation: '%s alone is a symbol. A type variable is '%s var, or '%s copy when the body may copy or drop it.", sym_name(tyi[k].sym), sym_name(tyi[k].sym), sym_name(tyi[k].sym));
+        case TI_KEY: TY_DIE(t, "type annotation: a \"key\" goes into a dict of types with insert, as in dict \"x\" int insert rec.");
+        case TI_DICT: TY_DIE(t, "type annotation: a dict of types is a type once rec or either follows it.");
+        default: TY_DIE(t, "type annotation: a [...] list inside a type is a body's ins or outs, as in [int] [int] fn.");
         }
-        *i = close + 1;
-        /* a record type, or with either a tagged type: each tag and its payload */
-        int either = *i < end && ty_word_is(&toks[*i], "either");
-        int row = rest_sym ? ty_named(nm, rest_sym, either ? K_TAG : K_RVAR) : ty_new(K_RNIL, 0, 0, 0);
-        for (int k = 0; k < n; k++) row = ty_new(K_REXT, either ? ty_tag_label(keys[k], ty_new(K_PRESENT, 0, 0, 0)) : ty_sym(K_LSYM, keys[k]), types[k], row);
-        base = ty_new(either ? K_TAG : K_REC, row, 0, 0); *i += either;
-    } else TY_DIE(t, "type annotation: a type is expected");
-    for (; *i < end && toks[*i].tag == TOK_WORD; (*i)++) {
-        const char *w = sym_name(toks[*i].as.sym);
-        if (!strcmp(w, "list") || !strcmp(w, "seq")) base = ty_new(K_LIST, base, 0, 0);
-        else if (!strcmp(w, "dict")) base = ty_new(K_DICT, base, 0, 0);
-        else if (!strcmp(w, "box")) base = ty_new(K_BOX, base, 0, 0);
-        else break;
     }
-    return base;
-}
-/* ( ins -> outs ): the rest is `..name` when written, else one fresh rest for both sides (or `rest`). */
-static int ty_parse_fn(Token *toks, int open, int close, TyNames *nm, int rest) {
-    int j = open + 1, in, out, dash = -1;
-    for (int k = open + 1; k < close; k += toks[k].span + 1) if (ty_word_is(&toks[k], "->")) { dash = k; break; }
-    if (dash < 0) { if (close == open + 1) { int r = rest ? rest : ty_new(K_SVAR, 0, 0, 0); return ty_new(K_FN, r, r, 0); }
-        TY_DIE(&toks[open], "type annotation: a body type needs ->, as in ( int -> int )"); }
-    int r = rest ? rest : 0;
-    for (int side = 0; side < 2; side++) {
-        int end = side ? close : dash, s;
-        if (j < end && toks[j].tag == TOK_WORD && sym_name(toks[j].as.sym)[0] == '.' && sym_name(toks[j].as.sym)[1] == '.') { s = ty_named(nm, toks[j].as.sym, K_SVAR); j++; }
-        else { if (!r) r = ty_new(K_SVAR, 0, 0, 0); s = r; }
-        int slot = ty_slot_rest; if (slot) ty_slot_rest = s;
-        while (j < end) s = ty_new(K_SCONS, ty_parse(toks, &j, end, nm), s, 0);
-        ty_slot_rest = slot;
-        if (side) out = s; else in = s;
-        j = dash + 1;
-    }
-    return ty_new(K_FN, in, out, 0);
-}
-/* A program signature: `[ type own in  type move out ... ]`, one slot per value, bottom first. */
-static int ty_parse_slots(Token *toks, int open, int close, TyNames *nm) {
-    int rest = ty_new(K_SVAR, 0, 0, 0), in = rest, out = rest, slot = ty_slot_rest;
-    ty_slot_rest = rest;
-    for (int j = open + 1; j < close; ) {
-        int k = j;
-        while (k < close && !(toks[k].tag == TOK_WORD && (ty_word_is(&toks[k], "own") || ty_word_is(&toks[k], "lent") || ty_word_is(&toks[k], "copy") || ty_word_is(&toks[k], "move") || ty_word_is(&toks[k], "auto")))) k += toks[k].span + 1;
-        if (k + 1 > close) TY_DIE(&toks[j], "type annotation: each slot ends with own/lent/copy/move/auto and in/out");
-        int t = j < k ? ty_parse(toks, &j, k, nm) : ty_new(K_VAR, 0, 0, 0);
-        /* a lent or copy slot is copyable; an own, move or auto one may hold a box */
-        if (ty_word_is(&toks[k], "lent") || ty_word_is(&toks[k], "copy")) ty_mark_copy(t, &toks[k]);
-        /* A word after the type: reading it as a type names it when it is no type word. */
-        if (j < k && toks[j].tag == TOK_WORD && !ty_word_is(&toks[j], "|")) { int q = j; ty_parse(toks, &q, k, nm); }
-        if (j < k) TY_DIE(&toks[j], "type annotation: a slot holds one type, then own/lent/copy/move/auto and in/out, but %s%s follows the type", toks[j].tag == TOK_SYM ? "'" : "", toks[j].tag == TOK_WORD || toks[j].tag == TOK_SYM ? sym_name(toks[j].as.sym) : "a value");
-        if (ty_word_is(&toks[k+1], "in")) in = ty_new(K_SCONS, t, in, 0);
-        else if (ty_word_is(&toks[k+1], "out")) out = ty_new(K_SCONS, t, out, 0);
-        else TY_DIE(&toks[k+1], "type annotation: a slot ends with in or out");
-        j = k + 2;
-    }
-    ty_slot_rest = slot;
-    return ty_new(K_FN, in, out, 0);
+    tyi_n = base; tyf_n = fields; return s;
 }
 static void ty_held_copy(int t, Token *tok);
 /* A signature says this type is copyable: its variables and open tag sets are, and so are the payloads
@@ -1195,13 +1223,13 @@ static void ty_mark_copy(int t, Token *tok) {
     if (ty[t].kind != K_TAG) return;
     int r = ty_find(ty[t].a);
     for (int hops = -ty_n; ty[r].kind == K_REXT; r = ty_rest(r, &hops))
-        if (ty_need(ty[r].b, P_COPY)) TY_DIE(tok, "type annotation: this slot is copyable, but tag '%s holds %s", sym_name(ty[ty[r].a].sym), ty_why);
+        if (ty_need(ty[r].b, P_COPY)) TY_DIE(tok, "type annotation: this type is copyable, but tag '%s holds %s", sym_name(ty[ty[r].a].sym), ty_why);
     if (ty[r].kind == K_RVAR) ty[r].prot |= P_COPY;
 }
 /* A scheme: a signature parsed at a deeper level and generalized. */
-static int ty_scheme_slots(Token *toks, int open, int close) {
+static int ty_scheme(Token *toks, int ins, int outs) {
     TyNames nm = {0}; ty_level++;
-    int t = ty_parse_slots(toks, open, close, &nm); ty_level--; ty_held_copy(t, &toks[open]); ty_generalize(t); return t;
+    int t = ty_fn_lists(toks, ins, outs, &nm, 0, 1); ty_level--; ty_rows_apart(t, &nm, &toks[ins]); ty_held_copy(t, &toks[ins]); ty_generalize(t); return t;
 }
 /* A signature instance whose variables only stand for themselves: a body must work for all of them,
    including every stack a body type in it names. ty_unrigid frees them once the check is done. */
@@ -1218,7 +1246,7 @@ static int ty_rigid(int scheme, int *mark) {
 static void ty_unrigid(int mark) { while (ty_rigid_n > mark) ty[ty_rigid_vars[--ty_rigid_n]].rigid = 0; }
 
 /* ---- names ---- */
-/* word: 0 a value, 1 a word, 2 the word whose body is being checked. declared: `'name [sig] effect`
+/* word: 0 a value, 1 a word, 2 the word whose body is being checked. declared: `'name [ins] [outs] effect`
    without its body yet. depth: how many bodies deep the name was bound (0: the top level). */
 typedef struct { uint32_t sym; int ty, word, line, declared, depth; } TyBind;
 static TyBind *tyb; static int tyb_n, tyb_cap, tyb_prelude;
@@ -1387,14 +1415,14 @@ static int ty_body(Token *toks, int open, int close, int in, int lit) {
     if (own) ty_taint = taint;
     return fn;
 }
-/* `(body) [sig] effect 'name let`: a word. Inside its body the word has one type (or its declared
+/* `(body) [ins] [outs] effect 'name let`: a word. Inside its body the word has one type (or its declared
    one); after, the type generalizes. */
-static void ty_define(Token *toks, int open, int close, int sig_open, int sig_close, uint32_t name, int line) {
+static void ty_define(Token *toks, int open, int close, int sig_ins, int sig_outs, uint32_t name, int line) {
     ty_redefined(name, line, 1);
     int fwd = tyb_find(name);
     if (fwd >= 0 && !tyb[fwd].declared) fwd = -1;
-    if (fwd >= 0 && sig_open) { ty_err(line, "'%s' is declared on line %d with its signature, so its definition takes that one. Drop this second signature.", sym_name(name), tyb[fwd].line); sig_open = 0; }
-    int scheme = sig_open ? ty_scheme_slots(toks, sig_open, sig_close) : fwd >= 0 ? tyb[fwd].ty : 0, mark = tyb_n;
+    if (fwd >= 0 && sig_ins) { ty_err(line, "'%s' is declared on line %d with its signature, so its definition takes that one. Drop this second signature.", sym_name(name), tyb[fwd].line); sig_ins = 0; }
+    int scheme = sig_ins ? ty_scheme(toks, sig_ins, sig_outs) : fwd >= 0 ? tyb[fwd].ty : 0, mark = tyb_n;
     if (fwd >= 0) { tyb[fwd].declared = 0; ty_pending_add(tyb[fwd].depth, -1); }
     ty_level++;
     /* for word 2, ty holds the body's level, where its own calls are made */
@@ -1502,6 +1530,12 @@ static int ty_lit_open(int out, int line) {
     ty_err(line, "the checker cannot count what this literal holds: its code ends in a call whose effect is not known yet (a recursive call or a body passed in), or in fail, which leaves any stack. Run the call before the literal and bind its result, as in `x f 'r let [r]`; write fail outside the literal.");
     return 1;
 }
+/* `[ins] [outs] effect` starts at token i. */
+static int ty_sig_at(Token *toks, int i, int end) {
+    if (i >= end || toks[i].tag != TOK_LBRACKET) return 0;
+    int outs = i + toks[i].span + 1;
+    return outs < end && toks[outs].tag == TOK_LBRACKET && outs + toks[outs].span + 1 < end && ty_word_is(&toks[outs + toks[outs].span + 1], "effect");
+}
 static void ty_range(Token *toks, int i, int end) {
     for (; i < end; i++) {
         Token *t = &toks[i]; int line = t->line; current_loc = LOC_PACK(t->fid, t->line, t->col);
@@ -1511,32 +1545,33 @@ static void ty_range(Token *toks, int i, int end) {
         case TOK_STRING: { int t = ty_new(K_LIST, ty_new(K_INT, 0, 0, 0), 0, 0); ty[t].sym = 1; ty_push(t); break; }
         case TOK_SYM: { int y = ty_new(K_SYM, 0, 0, 0); ty[y].sym = t->as.sym + 1; ty_push(y); break; }
         case TOK_LPAREN: {
-            int close = i + t->span, nm = close + 1, sig_open = 0, sig_close = 0;
+            int close = i + t->span, nm = close + 1, sig_ins = 0, sig_outs = 0;
             /* runs in place, as eval_run decides: `(b) dip`, `(b) pthen`, `(t) (e) if`, `(p) (b) while` */
             int pair = close + 1 < end && toks[close+1].tag == TOK_LPAREN ? close + 1 + toks[close+1].span + 1 : -1;
             int inplace = (close + 1 < end && (ty_word_is(&toks[close+1], "dip") || ty_word_is(&toks[close+1], "pthen")))
                 || (pair > 0 && pair < end && (ty_word_is(&toks[pair], "if") || ty_word_is(&toks[pair], "while")))
                 || (close + 1 < end && i > 0 && toks[i-1].tag == TOK_RPAREN && (ty_word_is(&toks[close+1], "if") || ty_word_is(&toks[close+1], "while")));
             if (!inplace) { if (!ty_taint) ty_taint = line; ty_taint_new = 1; }
-            if (nm < end && toks[nm].tag == TOK_LBRACKET && nm + toks[nm].span + 1 < end && ty_word_is(&toks[nm + toks[nm].span + 1], "effect")) {
-                sig_open = nm; sig_close = nm + toks[nm].span; nm = sig_close + 2; }
+            if (ty_sig_at(toks, nm, end)) { sig_ins = nm; sig_outs = nm + toks[nm].span + 1; nm = sig_outs + toks[sig_outs].span + 2; }
             if (nm + 1 < end && toks[nm].tag == TOK_SYM && toks[nm+1].tag == TOK_WORD && toks[nm+1].as.sym == S_LET) {
-                ty_define(toks, i, close, sig_open, sig_close, toks[nm].as.sym, line); i = nm + 1; break; }
-            if (sig_open) { ty_level++; int rmark, want = ty_rigid(ty_scheme_slots(toks, sig_open, sig_close), &rmark), bt = ty_body(toks, i, close, ty[want].a, 0);
+                ty_define(toks, i, close, sig_ins, sig_outs, toks[nm].as.sym, line); i = nm + 1; break; }
+            if (sig_ins) { ty_level++; int rmark, want = ty_rigid(ty_scheme(toks, sig_ins, sig_outs), &rmark), bt = ty_body(toks, i, close, ty[want].a, 0);
                 if (ty_unify(want, bt)) ty_err(line, "this body does not have its declared type: %s.", ty_why);
-                ty_unrigid(rmark); ty_level--; ty_occurs(-1, bt, ty_level); ty_push(bt); i = sig_close + 1; break; }
+                ty_unrigid(rmark); ty_level--; ty_occurs(-1, bt, ty_level); ty_push(bt); i = nm - 1; break; }
             ty_push(ty_body(toks, i, close, 0, 0)); i = close; break;
         }
         case TOK_LBRACKET: {
             int close = i + t->span;
-            if (close + 1 < end && ty_word_is(&toks[close+1], "effect")) {
-                /* `'name [sig] effect`: the word is declared before its body is written */
-                if (i == 0 || toks[i-1].tag != TOK_SYM) { ty_err(line, "a signature [...] effect needs a body before it or a 'name before it."); i = close + 1; break; }
+            if (ty_sig_at(toks, i, end)) {
+                /* `'name [ins] [outs] effect`: the word is declared before its body is written */
+                int outs = close + 1, after = outs + toks[outs].span + 1;
+                if (i == 0 || toks[i-1].tag != TOK_SYM) { ty_err(line, "a signature [ins] [outs] effect needs a body or a 'name right before its two lists."); i = after; break; }
                 ty_pop(); ty_redefined(toks[i-1].as.sym, line, 0);
-                tyb_push(toks[i-1].as.sym, ty_scheme_slots(toks, i, close), 1, line); tyb[tyb_n-1].declared = 1;
+                tyb_push(toks[i-1].as.sym, ty_scheme(toks, i, outs), 1, line); tyb[tyb_n-1].declared = 1;
                 ty_pending_add(ty_body_depth, 1);
-                i = close + 1; break;
+                i = after; break;
             }
+            if (close + 1 < end && ty_word_is(&toks[close+1], "effect")) { ty_err(line, "a signature is two lists of types, ins then outs, as in `(2 mul) [int] [int] effect`."); i = close + 1; break; }
             /* a list literal: its elements have one type. ty_body may move the pool, so ty is read after it returns. */
             int e0 = ty_errors, fn = ty_body(toks, i, close, 0, 1), out = ty[fn].b;
             if (ty_errors == e0 && ty_lit_open(out, line)) { ty_push(ty_new(K_VAR, 0, 0, 0)); i = close; break; }
@@ -1688,7 +1723,7 @@ static void ty_range(Token *toks, int i, int end) {
             if (ty_builtin[w]) { ty_apply(ty_builtin[w], sym_name(w), line, 0); break; }
             { int later = 0;
               for (int j = i + 1; j + 1 < ty_tok_end && !later; j++) if (toks[j].tag == TOK_SYM && toks[j].as.sym == w && toks[j+1].tag == TOK_WORD && toks[j+1].as.sym == S_LET) later = toks[j].line;
-              if (later) ty_err(line, "unknown word '%s': it is defined later, on line %d. A word used before its definition needs `'%s [sig] effect` before its first use.", sym_name(w), later, sym_name(w));
+              if (later) ty_err(line, "unknown word '%s': it is defined later, on line %d. A word used before its definition needs `'%s [ins] [outs] effect` before its first use.", sym_name(w), later, sym_name(w));
               else ty_err(line, "unknown word '%s'.", sym_name(w)); }
             break;
         }
@@ -1730,20 +1765,21 @@ static void ty_held_copy(int t, Token *tok) {
     }
     for (int k = 0; k < h; k++) ty_mark_copy(ty_held[k], tok);
 }
-/* The builtin table: 'name ( ins -> outs ) pairs. */
+/* The builtin table: 'name [ins] [outs]. */
 static void ty_read_table(Token *toks, int n) {
     for (int i = 0; i + 1 < n; ) {
-        if (toks[i].tag != TOK_SYM || toks[i+1].tag != TOK_LPAREN) die("type table: expected 'name ( ... -> ... ) at line %d", toks[i].line);
-        TyNames nm = {0}; int close = i + 1 + toks[i+1].span;
-        ty_level++; int t = ty_parse_fn(toks, i + 1, close, &nm, 0); ty_level--;
-        ty_table_copy(t, &toks[i]); ty_generalize(t); ty_builtin[toks[i].as.sym] = t; i = close + 1;
+        int outs = i + 1 < n && toks[i+1].tag == TOK_LBRACKET ? i + 2 + toks[i+1].span : n;
+        if (toks[i].tag != TOK_SYM || outs >= n || toks[outs].tag != TOK_LBRACKET) die("type table: expected 'name [ins] [outs] at line %d", toks[i].line);
+        TyNames nm = {0};
+        ty_level++; int t = ty_fn_lists(toks, i + 1, outs, &nm, 0, 0); ty_level--; ty_rows_apart(t, &nm, &toks[i]);
+        ty_table_copy(t, &toks[i]); ty_generalize(t); ty_builtin[toks[i].as.sym] = t; i = outs + toks[outs].span + 1;
     }
 }
 /* The shell keeps values on the stack between lines, so its program may end on a box. */
 static int ty_shell;
 static int infer_program(Token *table, int table_n, Token *toks, int count, int user_start) {
     /* Each call starts clean: the shell checks every line again with the lines before it. */
-    ty_n = 1; ty_level = 0; ty_links_n = 0; ty_memo_n = 0; ty_slot_rest = 0; ty_rigid_n = 0; ty_rec_n = 0;
+    ty_n = 1; ty_level = 0; ty_links_n = 0; ty_memo_n = 0; ty_rigid_n = 0; tyi_n = 0; ty_rec_n = 0;
     tyb_n = 0; tyb_prelude = 0; ty_body_depth = 0; ty_runs_floor = 0; ty_in_prelude = 0;
     ty_errors = 0; ty_on_n = 0; ty_shown = 0; ty_rigid_rest = 0; ty_depth_why = 0; ty_print_count = 0; ty_taint = 0; ty_taint_new = 0;
     memset(ty_builtin, 0, sizeof ty_builtin); ty_tag_pairs_n = 0; ty_row_tag = 0;
@@ -2478,7 +2514,9 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
         case TOK_LPAREN:{int nc=(j+toks[j].span);build_tuple(toks,j+1,nc,tc,env);stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col);ec++;j=nc;break;}
         case TOK_LBRACKET:{
             int bc=(j+toks[j].span);
-            if(bc+1<tc&&toks[bc+1].tag==TOK_WORD&&toks[bc+1].as.sym==S_EFFECT){if(ec>0&&stack[sp-1].tag==VAL_SYM){sp--;ec--;}j=bc+1;break;}
+            /* `[ins] [outs] effect` is a signature, which only the checker reads; so is a 'name before it */
+            if(bc+1<tc&&toks[bc+1].tag==TOK_LBRACKET){int oc=bc+1+toks[bc+1].span;
+                if(oc+1<tc&&toks[oc+1].tag==TOK_WORD&&toks[oc+1].as.sym==S_EFFECT){if(ec>0&&stack[sp-1].tag==VAL_SYM){sp--;ec--;}j=oc+1;break;}}
             build_tuple(toks,j+1,bc,tc,env); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_LIST; ec++; j=bc; break;
         }
         case TOK_LBRACE:{
@@ -2554,6 +2592,20 @@ static const char *PRELUDE =
     "([] ('dd-x let dup dd-x member (dd-x drop) (dd-x push) if) fold) 'dedup let\n"
     "3.14159265358979323846 'pi let\n"
     "6.28318530717958647692 'tau let\n"
+    /* types are values: a signature's two lists hold them, and the checker reads those without running them */
+    "(0 'int tag) 'int let\n"
+    "(0 'float tag) 'float let\n"
+    "(0 'sym tag) 'sym let\n"
+    "(0 'str tag) 'str let\n"
+    "(0 'socket tag) 'socket let\n"
+    "('var tag) 'var let\n"
+    "('copy tag) 'copy let\n"
+    "('rest tag) 'rest let\n"
+    "('sealed tag) 'sealed let\n"
+    "(couple 'fn tag) 'fn let\n"
+    "('rec tag) 'rec let\n"
+    "('either tag) 'either let\n"
+    "('as-name let 'as-type let {'name as-name 'type as-type} 'as tag) 'as let\n"
     "(255 band) 'byte-mask let\n"
     "('b let 0 8 range (7 swap sub b swap shr 1 band) each) 'byte-bits let\n"
     "(0 (swap 1 shl bor) fold) 'bits-byte let\n"

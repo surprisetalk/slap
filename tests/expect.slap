@@ -394,7 +394,7 @@ outer 15 eq assert
 [1 2 3] [10 20 30] zip (dup 0 get must swap 1 get must plus) each [11 22 33] eq assert
 
 -- ===== Typed user function with body check =====
-(dup mul) [int lent in  int move out] effect 'square let
+(dup mul) [int] [int] effect 'square let
 7 square 49 eq assert
 
 -- ===== Closures =====
@@ -419,7 +419,7 @@ outer 15 eq assert
 0 iota [] eq assert
 
 -- ===== Adversarial: mutual-style via def =====
-'odd? [int lent in  int move out] effect
+'odd? [int] [int] effect
 (dup 0 eq (drop 1) (1 sub odd?) if) 'even? let
 (dup 0 eq (drop 0) (1 sub even?) if) 'odd? let
 4 even? assert
@@ -973,7 +973,7 @@ wx {'wb (drop 1)} case 1 eq assert
 5 'pb tag 'py let py {'pa (len) '_ (drop 0)} case drop py {'pb (drop 1)} case drop
 [px py] len 2 eq assert
 -- a word's case may name tags a caller never passes
-( {'mb (drop 2) 'ma (drop 1)} case ) 'more-tags let  ( 5 'ma tag ) [{'ma int} either move out] effect 'only-ma let
+( {'mb (drop 2) 'ma (drop 1)} case ) 'more-tags let  ( 5 'ma tag ) [] [dict "ma" int insert either] effect 'only-ma let
 only-ma more-tags 1 eq assert
 
 -- a recursive type: a list's cells hold the list's own type, whatever their 'hd holds
@@ -1655,45 +1655,57 @@ fs-path read must "é" eq assert
 dict "a" of {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq assert drop
 
 -- ===== A declared signature is checked against the body itself =====
-(42) 'sig-foo let (sig-foo) [int move out] effect 'sig-bar let sig-bar 42 eq assert
-((1 plus) dip) [int lent in  int lent in  int move out  int move out] effect 'bump-under let 1 2 bump-under 2 eq assert 2 eq assert
-([1 2] (1 plus) each) [int list move out] effect 'sig-each let sig-each [2 3] eq assert
-'sig-fwd2 [int lent in  int move out] effect (1 plus) 'sig-fwd2 let 1 sig-fwd2 2 eq assert
+(42) 'sig-foo let (sig-foo) [] [int] effect 'sig-bar let sig-bar 42 eq assert
+((1 plus) dip) [int int] [int int] effect 'bump-under let 1 2 bump-under 2 eq assert 2 eq assert
+([1 2] (1 plus) each) [] [int 'list tag] effect 'sig-each let sig-each [2 3] eq assert
+'sig-fwd2 [int] [int] effect (1 plus) 'sig-fwd2 let 1 sig-fwd2 2 eq assert
 -- a body may leave a declared input untouched: drop under (int int -- int)
-(drop) [int lent in  int lent in  int move out] effect 'keep-first let 1 2 keep-first 1 eq assert
+(drop) [int int] [int] effect 'keep-first let 1 2 keep-first 1 eq assert
 -- a body input's effect decides what running it leaves
 (apply) 'run-in let (3) run-in 3 eq assert
 ('f let 1 f apply) 'run-bound let (1 plus) run-bound 2 eq assert
 (apply plus) 'add-run let 1 (2) add-run 3 eq assert
 (if) 'if-in let 1 () () if-in
 -- a branch that never returns agrees with any branch, in either position
-(dup 0 ge (1 plus) ("neg" fail) if) [int lent in  int move out] effect 'inc-b let 1 inc-b 2 eq assert
+(dup 0 ge (1 plus) ("neg" fail) if) [int] [int] effect 'inc-b let 1 inc-b 2 eq assert
 1 0 lt ("unreachable" fail) () if
 -- a case clause may consume values below the scrutinee; its effect is the case's
 ('lit let dup lit str-find {'ok ('p let p lit len plus drop-n) 'no (drop "skip-to: not found" fail)} case) 'skip-to let
-("abc>def" ">" skip-to) [str move out] effect 'skip-caller let skip-caller "def" eq assert
+("abc>def" ">" skip-to) [] [str] effect 'skip-caller let skip-caller "def" eq assert
 -- the checker infers the tags a word emits, so a case covering them never reaches its default
 (dup 0 lt (drop "neg" no) (ok) if) 'sgn-chk let
-(5 swap sgn-chk {'ok (plus) 'no (drop drop -1)} case) [int lent in  int move out] effect 'add5 let 3 add5 8 eq assert -3 add5 -1 eq assert
-(10 swap ok parse-int {'ok (drop plus) 'no (drop drop drop -1)} case) [str lent in  int move out] effect 'p10 let "5" p10 15 eq assert "x" p10 -1 eq assert
+(5 swap sgn-chk {'ok (plus) 'no (drop drop -1)} case) [int] [int] effect 'add5 let 3 add5 8 eq assert -3 add5 -1 eq assert
+(10 swap ok parse-int {'ok (drop plus) 'no (drop drop drop -1)} case) [str] [int] effect 'p10 let "5" p10 15 eq assert "x" p10 -1 eq assert
 -- a declared either input tells the body which tags reach its case
-(5 swap {'ok (plus) 'no (drop drop -1)} case) [{'ok int 'no list} either lent in  int move out] effect 'add5-in let 3 ok add5-in 8 eq assert
+(5 swap {'ok (plus) 'no (drop drop -1)} case) [dict "ok" int insert "no" 'x1 var 'list tag insert either] [int] effect 'add5-in let 3 ok add5-in 8 eq assert
 -- an undeclared recursive word takes its effect from the branch that does not recurse
 ('close let 'acc let dup len 0 eq (acc swap) (1 drop-n acc 1 push close rec-loop) if) 'rec-loop let
-([1 2 3] [] 0 rec-loop drop) [int list move out] effect 'rec-caller let rec-caller [1 1 1] eq assert
+([1 2 3] [] 0 rec-loop drop) [] [int 'list tag] effect 'rec-caller let rec-caller [1 1 1] eq assert
+
+-- ===== Types are values =====
+-- a signature is two lists of types, ins then outs
+-- a named rest: the body type runs on the word's own stack
+(apply) ['s rest ['s rest] ['s rest int] fn] ['s rest int] effect 'run-s let 1 (5) run-s plus 6 eq assert
+(dup) ['a copy] ['a var 'a var] effect 'dup-sig let 7 dup-sig eq assert
+-- a type is an ordinary value
+[int str] len 2 eq assert
+-- a recursive type names itself with as
+'llen [dict "cons" dict "hd" int insert "tl" 'l var insert rec insert "nil" [] [] fn insert either 'l as] [int] effect
+({'cons ('tl at llen 1 plus) 'nil (drop 0)} case) 'llen let
+() 'nil tag 'ln0 let {'hd 1 'tl ln0} 'cons tag 'ln1 let {'hd 2 'tl ln1} 'cons tag llen 2 eq assert
 
 -- ===== Type annotations =====
 -- A forward declaration, then the body under the same signature.
-'twice [int lent in  int move out] effect
+'twice [int] [int] effect
 (2 mul) 'twice let
 5 twice 10 eq assert
-(1 plus) [int lent in  int move out] effect 'my-inc let
+(1 plus) [int] [int] effect 'my-inc let
 5 my-inc my-inc 7 eq assert
-(dup plus) [int lent in  int move out] effect 'my-double let
+(dup plus) [int] [int] effect 'my-double let
 3 my-double 6 eq assert
-(len) ['a seq lent in  int move out] effect 'list-len let
+(len) ['a copy 'list tag] [int] effect 'list-len let
 [1 2 3] list-len 3 eq assert
-(sort) [int seq own in  int seq move out] effect 'my-sort let
+(sort) [int 'list tag] [int 'list tag] effect 'my-sort let
 [3 1 2] my-sort [1 2 3] eq assert
 
 -- ===== Clean runs: programs the checker and runtime must accept =====
@@ -1737,7 +1749,7 @@ dict "a" of {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq asse
 -- a body that reads below its inputs never sees the caller's values
 1.5 2.5 (0 (drop drop) apply push) drop drop drop
 -- a forward declaration leaves nothing on the stack, inside a body too
-[1 2] ('g [int lent in  int move out] effect (1 plus) 'g let g) each [2 3] eq assert
+[1 2] ('g [int] [int] effect (1 plus) 'g let g) each [2 3] eq assert
 -- a brace literal is a record when its keys are symbols, whatever its values are
 {'a 1 'b "s"} drop
 5 {'f (1 plus)} 'f at apply 6 eq assert
@@ -1815,21 +1827,21 @@ sc-repeat 15 eq assert
 7 sc-mkl 0 get must apply 7 eq assert
 
 -- a tag set in one signature slot leaves the other slots' copyable marks in place
-( 0 get must dup drop drop [] ) ['a list own in  {'q int} either list move out] effect 'held-f let
+( 0 get must dup drop drop [] ) ['a var 'list tag] [dict "q" int insert either 'list tag] effect 'held-f let
 [1 2] held-f len 0 eq assert
 
 -- a body bound with let runs at any stack depth
 ('n let (n plus)) 'mk-adder let
 5 mk-adder 'plus5 let 3 plus5 apply 8 eq assert 7 plus5 apply 12 eq assert
 -- a body type in a slot runs on the word's own stack below its declared inputs
-(apply) [( -> int ) own in  int move out] effect 'run-in2 let (3) run-in2 3 eq assert
-(apply plus) [int lent in  ( int -> int int ) own in  int move out] effect 'add-run2 let 1 (2) add-run2 3 eq assert
+(apply) [[] [int] fn] [int] effect 'run-in2 let (3) run-in2 3 eq assert
+(apply plus) [int [int] [int int] fn] [int] effect 'add-run2 let 1 (2) add-run2 3 eq assert
 
 -- `{'a 'p | 'r} either` is 'a and any other tags, not a result
-( {'a (drop 1) '_ (drop 0)} case ) [{'a 'p | 'r} either lent in  int move out] effect 'any-tag let
+( {'a (drop 1) '_ (drop 0)} case ) [dict "a" 'p copy insert "_" 'r copy insert either] [int] effect 'any-tag let
 5 'a tag any-tag 1 eq assert
 -- a record's row and a tag set's row may share a name in one signature: they stay two rows
-( drop 1 'a tag ) [{'q int | 'r} lent in  {'a int | 'r} either move out] effect 'rows-apart let
+( drop 1 'a tag ) [dict "q" int insert "_" 'r copy insert rec] [dict "a" int insert "_" 'r var insert either] effect 'rows-apart let
 {'q 1 'z 2} rows-apart {'a ()} case 1 eq assert
 
 -- neq, like eq, compares two symbols without making them one type
@@ -1838,7 +1850,7 @@ sc-repeat 15 eq assert
 -- a tag set that only leaves the word is the word's own: its case covers it
 ( 5 'oa tag dup {'oa (drop 1)} case ) 'own-set let
 own-set 1 eq assert drop
-( 5 'oa tag dup {'oa (drop 1)} case ) [{'oa int} either move out  int move out] effect 'own-set2 let
+( 5 'oa tag dup {'oa (drop 1)} case ) [] [dict "oa" int insert either int] effect 'own-set2 let
 own-set2 1 eq assert drop
 
 -- equality is structural: a record's field order and a dict's making do not matter
