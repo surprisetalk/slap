@@ -587,8 +587,9 @@ enum { K_VAR, K_INT, K_FLOAT, K_SYM, K_LIST, K_DICT, K_BOX, K_SOCK, K_FN, K_REC,
 /* A row field is the type of its key's value. A closed row (K_RNIL) has no other key. A record has the
    keys its literal names: `into` replaces the value of a key the record has, and never adds one. A tagged
    type (K_TAG) is a row too: each tag the value may carry, with its payload's type as the field. */
-/* A tag's label holds its presence in a: K_PRESENT when a value may carry the tag (`tag`, a signature, a
-   primitive's result), or a variable when only a case names it. A closed row makes a variable K_ABSENT
+/* A tag's label holds its presence in a: K_PRESENT when a value may carry the tag (`tag`, the outputs of a
+   signature or a primitive), or a variable: a case names it, or an input takes it (ty_list's in), and a
+   signature's input is rigid while its body is checked (ty_presence_meet). A closed row makes a variable K_ABSENT
    instead of refusing it, so a case does not force its clause tags on the value it takes. */
 /* What a value variable must be: protocols a word asks of its inputs. */
 /* copy: the value may be copied, dropped, bound or stored. A box is not, nor a tagged value that
@@ -751,7 +752,10 @@ static int ty_occurs(int v, int t, int level) {
             path |= ty[x].kind == K_TAG ? OCC_TAG : ty[x].kind == K_FN ? OCC_FN : 0;
             int a = ty[x].a;
             /* A row field's label holds only a tag's presence: a constant has no parts, so only a variable is walked. */
-            if (ty[x].kind == K_REXT) { int p = ty_presence(x); a = p && ty_isvar(ty[p].kind) ? p : 0; }
+            if (ty[x].kind == K_REXT) { int p = ty_presence(x);
+                /* a signature input's tag that a value from outside the body would carry: present, as in ty_presence_meet */
+                if (p && ty_isvar(ty[p].kind) && ty[p].rigid && ty[p].level > level && ty[p].level != GENERIC) { ty[p].link = ty_new(K_PRESENT, 0, 0, 0); p = 0; }
+                a = p && ty_isvar(ty[p].kind) ? p : 0; }
             int parts[3] = {a, ty[x].b, ty[x].c}, k = 3;
             while (k && !parts[k - 1]) k--;
             if (!k) break;
@@ -879,6 +883,26 @@ static int ty_unify_at(int a, int b, int depth) {
     if (!r) for (int k = base; k < ty_links_n; k++) { int x = ty_find(ty_links[k].a), y = ty_find(ty_links[k].b); if (x != y) ty[x].link = y; }
     ty_links_n = base; return r;
 }
+/* Two presences of one tag meet. A rigid one is a signature input's: its caller decides it, so the body
+   may never make it absent. Meeting present, another rigid one, or a variable from outside the body,
+   which it cannot bind, it becomes present: the body must treat the tag as present, and the signature
+   then takes it present. */
+static int ty_presence_meet(int pa, int pb, uint32_t tag, int depth) {
+    pa = ty_find(pa); pb = ty_find(pb);
+    if (pa == pb) return 0;
+    int ra = ty_isvar(ty[pa].kind) && ty[pa].rigid, rb = ty_isvar(ty[pb].kind) && ty[pb].rigid;
+    if (rb && !ra) { int x = pa; pa = pb; pb = x; ra = 1; rb = 0; }
+    if (ra) {
+        if (ty[pb].kind == K_ABSENT) { snprintf(ty_why, sizeof ty_why, "one side may be tagged '%s, as a signature declares for what it takes, and the other never is", sym_name(tag)); return 1; }
+        if (rb || ty[pb].kind == K_PRESENT || ty[pb].level < ty[pa].level) {
+            int pr = ty_new(K_PRESENT, 0, 0, 0); ty[pa].link = pr;
+            if (ty_isvar(ty[pb].kind)) ty[pb].link = pr;
+            return 0; }
+        ty[pb].link = pa; return 0; }
+    if (ty_isvar(ty[pa].kind) || ty_isvar(ty[pb].kind)) return ty_unify_at(pa, pb, depth + 1);
+    if (ty[pa].kind != ty[pb].kind) { snprintf(ty_why, sizeof ty_why, ty[pa].kind == K_PRESENT ? "this value is never tagged '%s" : "it may be tagged '%s, which is not one of the tags this takes", sym_name(tag)); return 1; }
+    return 0;
+}
 static int ty_unify_chain(int a, int b, int depth) {
   int row_tail = 0; /* the tail of the row this call walks: the same for every entry of it */
   for (;;) {
@@ -891,7 +915,7 @@ static int ty_unify_chain(int a, int b, int depth) {
     if (ty_row_tag && ty[a].kind == K_RNIL && ty[b].kind == K_REXT) {
         int p = ty_presence(b);
         if (!p || ty[p].kind == K_PRESENT) { snprintf(ty_why, sizeof ty_why, "it may be tagged '%s, which is not one of the tags this takes", sym_name(ty[ty[b].a].sym)); return 1; }
-        if (ty_isvar(ty[p].kind) && ty_unify_at(p, ty_new(K_ABSENT, 0, 0, 0), depth + 1)) return 1;
+        if (ty_presence_meet(p, ty_new(K_ABSENT, 0, 0, 0), ty[ty[b].a].sym, depth)) return 1;
         b = ty[b].c; continue; }
     if (ty[a].kind == K_RNIL && ty[b].kind == K_REXT) { int x = a; a = b; b = x; }
     if (ty[a].kind == K_SYM && ty[b].kind == K_SYM) { if (ty[a].sym != ty[b].sym) ty[a].sym = ty[b].sym = 0; return 0; } /* two names met: the value may be either */
@@ -915,11 +939,9 @@ static int ty_unify_chain(int a, int b, int depth) {
         int f, rest, pb, tail = row_tail, pa = ty_presence(a), took = ty_row_take(b, ty[ty[a].a].sym, &f, &rest, &pb, 0);
         if (took == 1 || (took == 2 && (!pa || ty[pa].kind == K_PRESENT))) return 1;
         /* b is closed without a's tag, which a case named: absent */
-        if (took == 2) { if (ty_isvar(ty[pa].kind) && ty_unify_at(pa, ty_new(K_ABSENT, 0, 0, 0), depth + 1)) return 1; a = ty[a].c; continue; }
+        if (took == 2) { if (ty_presence_meet(pa, ty_new(K_ABSENT, 0, 0, 0), ty[ty[a].a].sym, depth)) return 1; a = ty[a].c; continue; }
         if (ty_isvar(ty[tail].kind) && ty_find(tail) != tail) { snprintf(ty_why, sizeof ty_why, "these two rows would have to contain each other"); return 1; }
-        if (pa && pb && pa != pb) {
-            if (ty_isvar(ty[pa].kind) || ty_isvar(ty[pb].kind)) { if (ty_unify_at(pa, pb, depth + 1)) return 1; }
-            else if (ty[pa].kind != ty[pb].kind) { snprintf(ty_why, sizeof ty_why, ty[pa].kind == K_PRESENT ? "this value is never tagged '%s" : "it may be tagged '%s, which is not one of the tags this takes", sym_name(ty[ty[a].a].sym)); return 1; } }
+        if (pa && pb && ty_presence_meet(pa, pb, ty[ty[a].a].sym, depth)) return 1;
         /* no value carries an absent tag, so its payload has no type to agree on */
         if (pa && ty[ty_find(pa)].kind == K_ABSENT) { a = ty[a].c; b = rest; continue; }
         if (ty_unify_at(ty[a].b, f, depth + 1)) {
@@ -1104,18 +1126,20 @@ static TyItem ty_take(int base, int kind, Token *t, const char *takes) {
     if (tyi[tyi_n-1].kind != kind) TY_DIE(t, "type annotation: %s, but %s is before it.", takes, ty_item_noun(tyi[tyi_n-1].kind));
     return tyi[--tyi_n];
 }
-static int ty_list(Token *toks, int open, TyNames *nm, int rest, int inherit);
+static int ty_list(Token *toks, int open, TyNames *nm, int rest, int inherit, int in);
 /* `[ins] [outs]` as a body type. A side without a named rest runs on rest, or for 0 on one fresh rest.
-   inherit: a body type inside runs on its side's rest, as in a program's signature; TYPES' are fresh. */
+   inherit: a body type inside runs on its side's rest, as in a program's signature; TYPES' are fresh.
+   in: the list holding this body type is one the word takes, so the body's outs are what the word
+   takes and its ins what the word gives. A signature's own lists sit in neither (in 0). */
 static int ty_names_rest(Token *toks, int open) {
     return toks[open].span > 2 && toks[open+1].tag == TOK_SYM && (ty_word_is(&toks[open+2], "rest") || ty_word_is(&toks[open+2], "sealed"));
 }
-static int ty_fn_lists(Token *toks, int ins, int outs, TyNames *nm, int rest, int inherit) {
+static int ty_fn_lists(Token *toks, int ins, int outs, TyNames *nm, int rest, int inherit, int in) {
     if (ty_names_rest(toks, ins) != ty_names_rest(toks, outs))
         TY_DIE(&toks[ty_names_rest(toks, ins) ? outs : ins], "type annotation: one list names its stack rest and the other does not, so they would run on two stacks. Name it in both, as in ['s rest int] ['s rest int], or in neither.");
     if (!rest) rest = ty_new(K_SVAR, 0, 0, 0);
-    int in = ty_list(toks, ins, nm, rest, inherit), out = ty_list(toks, outs, nm, rest, inherit);
-    return ty_new(K_FN, in, out, 0);
+    int a = ty_list(toks, ins, nm, rest, inherit, !in), b = ty_list(toks, outs, nm, rest, inherit, in);
+    return ty_new(K_FN, a, b, 0);
 }
 /* A "_" key's name is a row's, apart from value variables, so a whole signature uses it only there:
    'r var in "_" makes a value variable that nothing else may reach. */
@@ -1124,8 +1148,10 @@ static void ty_rows_apart(int fn, TyNames *nm, Token *tok) {
         for (int v = 0; v < nm->n; v++) if (nm->kind[v] == K_VAR && nm->name[v] == nm->name[k] && ty_reaches(fn, ty_find(nm->term[v])))
             TY_DIE(tok, "type annotation: '%s names the open rest of a record or tag set, and a value elsewhere in this signature. Give each its own name.", sym_name(nm->name[k]));
 }
-/* One list of types as a stack: its rest, then each type pushed on it. */
-static int ty_list(Token *toks, int open, TyNames *nm, int rest, int inherit) {
+/* One list of types as a stack: its rest, then each type pushed on it. in: the word takes these
+   values, so a tag set's tags may be absent, as the caller's value decides (OCaml's [< ...]); a tag
+   set the word gives may carry each of its tags. */
+static int ty_list(Token *toks, int open, TyNames *nm, int rest, int inherit, int in) {
     c_stack_check("while reading a type annotation");
     /* a dict's fields live only while its list is read: a dict left over is an error */
     int close = open + toks[open].span, base = tyi_n, fields = tyf_n;
@@ -1167,7 +1193,7 @@ static int ty_list(Token *toks, int open, TyNames *nm, int rest, int inherit) {
             const char *takes = "fn takes two lists of types, ins then outs, as in [int] [int] fn";
             TyItem outs = ty_take(base, TI_LIST, t, takes), ins = ty_take(base, TI_LIST, t, takes);
             int side = tyi_n > base && tyi[base].kind == TI_REST ? tyi[base].t : rest;
-            tyi_push(TI_TYPE, ty_fn_lists(toks, ins.tok, outs.tok, nm, inherit ? side : 0, inherit), 0, j); }
+            tyi_push(TI_TYPE, ty_fn_lists(toks, ins.tok, outs.tok, nm, inherit ? side : 0, inherit, in), 0, j); }
         else if (!strcmp(w, "dict")) tyi_push(TI_DICT, -1, 0, j);
         else if (!strcmp(w, "insert")) {
             const char *takes = "insert takes a dict of types, a \"key\" and a type, as in dict \"x\" int insert";
@@ -1185,7 +1211,7 @@ static int ty_list(Token *toks, int open, TyNames *nm, int rest, int inherit) {
             for (int f = d.t; f >= 0; f = tyf[f].next) if (tyf[f].key == S_WILD) {
                 int v = ty_named(nm, (uint32_t)tyf[f].t, K_VAR, t); row = ty_named(nm, (uint32_t)tyf[f].t, either ? K_TAG : K_RVAR, t); ty[row].prot |= ty[v].prot & P_COPY; }
             for (int f = d.t; f >= 0; f = tyf[f].next) if (tyf[f].key != S_WILD)
-                row = ty_new(K_REXT, either ? ty_tag_label(tyf[f].key, ty_new(K_PRESENT, 0, 0, 0)) : ty_sym(K_LSYM, tyf[f].key), tyf[f].t, row);
+                row = ty_new(K_REXT, either ? ty_tag_label(tyf[f].key, ty_new(in ? K_VAR : K_PRESENT, 0, 0, 0)) : ty_sym(K_LSYM, tyf[f].key), tyf[f].t, row);
             tyi_push(TI_TYPE, ty_new(either ? K_TAG : K_REC, row, 0, 0), 0, j); }
         else if (!strcmp(w, "as")) {
             const char *takes = "as takes a type and the 'name it uses for itself, as in T 'l as";
@@ -1229,7 +1255,9 @@ static void ty_mark_copy(int t, Token *tok) {
 /* A scheme: a signature parsed at a deeper level and generalized. */
 static int ty_scheme(Token *toks, int ins, int outs) {
     TyNames nm = {0}; ty_level++;
-    int t = ty_fn_lists(toks, ins, outs, &nm, 0, 1); ty_level--; ty_rows_apart(t, &nm, &toks[ins]); ty_held_copy(t, &toks[ins]); ty_generalize(t); return t;
+    /* held_copy's unify makes variables at this level, so it runs before the level drops: a variable
+       made outside would pull the signature's own variables out of the generalization */
+    int t = ty_fn_lists(toks, ins, outs, &nm, 0, 1, 0); ty_held_copy(t, &toks[ins]); ty_level--; ty_rows_apart(t, &nm, &toks[ins]); ty_generalize(t); return t;
 }
 /* A signature instance whose variables only stand for themselves: a body must work for all of them,
    including every stack a body type in it names. ty_unrigid frees them once the check is done. */
@@ -1771,8 +1799,8 @@ static void ty_read_table(Token *toks, int n) {
         int outs = i + 1 < n && toks[i+1].tag == TOK_LBRACKET ? i + 2 + toks[i+1].span : n;
         if (toks[i].tag != TOK_SYM || outs >= n || toks[outs].tag != TOK_LBRACKET) die("type table: expected 'name [ins] [outs] at line %d", toks[i].line);
         TyNames nm = {0};
-        ty_level++; int t = ty_fn_lists(toks, i + 1, outs, &nm, 0, 0); ty_level--; ty_rows_apart(t, &nm, &toks[i]);
-        ty_table_copy(t, &toks[i]); ty_generalize(t); ty_builtin[toks[i].as.sym] = t; i = outs + toks[outs].span + 1;
+        ty_level++; int t = ty_fn_lists(toks, i + 1, outs, &nm, 0, 0, 0); ty_table_copy(t, &toks[i]); ty_level--; ty_rows_apart(t, &nm, &toks[i]);
+        ty_generalize(t); ty_builtin[toks[i].as.sym] = t; i = outs + toks[outs].span + 1;
     }
 }
 /* The shell keeps values on the stack between lines, so its program may end on a box. */

@@ -1689,6 +1689,16 @@ dict "a" of {'ok (drop "") 'no ("missing: " swap cat)} case "missing: a" eq asse
 (dup) ['a copy] ['a var 'a var] effect 'dup-sig let 7 dup-sig eq assert
 -- a type is an ordinary value
 [int str] len 2 eq assert
+-- a value whose cases closed a tag absent still passes where an input names that tag
+5 ok 'pr-r let pr-r {'ok (drop 1)} case drop pr-r must 5 eq assert
+5 'b tag 'pr-x let  pr-x {'a (drop 1) '_ (drop 0)} case drop  pr-x {'b (drop 1)} case drop
+( {'a (drop 1) 'b (drop 2)} case ) [dict "a" int insert "b" int insert either] [int] effect 'pr-f let  pr-x pr-f 2 eq assert
+-- a signature's tag set inside a list stays generic: each call picks its payload
+(0 get must {'ok ()} case) [dict "ok" 'a var insert either 'list tag] ['a var] effect 'pr-g let [5 ok] pr-g 5 eq assert ["s" ok] pr-g "s" eq assert
+-- an input meets an outer value whose tags are still open
+5 ok 'pr-o let ('pr-ox let [pr-o pr-ox] drop 1) [dict "ok" int insert "no" str insert either] [int] effect 'pr-o2 let "s" no pr-o2 1 eq assert
+-- a body that gives its input back takes it with every tag present, as its output says
+() [dict "ok" int insert either] [dict "ok" int insert either] effect 'pr-id let 5 ok pr-id must 5 eq assert
 -- a recursive type names itself with as
 'llen [dict "cons" dict "hd" int insert "tl" 'l var insert rec insert "nil" [] [] fn insert either 'l as] [int] effect
 ({'cons ('tl at llen 1 plus) 'nil (drop 0)} case) 'llen let

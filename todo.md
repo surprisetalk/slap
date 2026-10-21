@@ -1,20 +1,3 @@
-- [ ] You pass a value whose cases closed a tag absent to `must`, `pthen` or
-      a signature that names that tag. Today `5 ok 'r let r {'ok (drop 1)}
-      case drop r must` is refused ("this value is never tagged 'no"): an
-      `either` in a signature's ins list makes its tags K_PRESENT, as an
-      output must. OCaml types such an input `[< ...]`.
-  1. Tests first; check each fails against the old binary. expect.slap: the
-     program above. errors.slap's case "x can never carry 'a after its second
-     case" becomes an expect.slap pass.
-  2. ty_list gives each tag of an `either` in the ins list a fresh presence
-     variable instead of K_PRESENT. It generalizes with the scheme
-     and is rigid while the body is checked, so a body case that drops the
-     tag is still refused. Outputs stay K_PRESENT. TYPES' inputs (`must`,
-     `pthen`) follow.
-  3. One variable shared by the ins and the outs takes the outs'
-     K_PRESENT. Tradeoff: a body that passes such an input to a K_PRESENT
-     input of another word is refused, as a rigid variable meets a constant.
-
 - [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,
       `let` and `dip` each cost at most twice `swap` (zoom.slap
       microbenchmarks). Where the time goes: run callgrind on zoom's tick on
