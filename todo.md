@@ -1,3 +1,5 @@
+## Blocked on you
+
 - [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,
       `let` and `dip` each cost at most twice `swap` (zoom.slap
       microbenchmarks). Where the time goes: run callgrind on zoom's tick on
@@ -6,6 +8,7 @@
       loop differently when it grows, so a fast path inlined there can make
       zoom slower: keep new paths in noinline helpers. Tradeoff: each fast
       path is more C to keep correct.
+      Blocked: approve the design for the next cut (step 2).
   1. Benchmark first, interleaved, minimum of 3 runs: the microbenchmark
      `2000000 'N let ('label let 'body let millis 't0 let 0 (dup N lt) (body apply 1 plus) while drop millis t0 sub 'dt let label print dt print) 'bench let`
      with `() "empty" bench`, `(1 (2) (3) if drop) "if" bench`,
@@ -23,6 +26,7 @@
       `( ..a int -> ..a int )` and `{'ok int 'no str} either`, which a
       signature cannot use. Tradeoff: messages grow, as a result prints
       `dict "ok" 'a var insert "no" 'b var insert either`.
+      Blocked: approve the design (step 2) before building.
   1. Tests first: change the EXPECT lines in errors.slap that quote a type
      to the new notation; check they fail.
   2. ty_show prints `'a var` (`'a copy` when copyable), `T 'list tag`,
@@ -38,6 +42,7 @@
       instructions/s, so carts run far below 30 fps; correctness first. Lua
       tables cannot be slap values (a lookup of a bound dict copies it, and so
       does dup), so all Lua state lives in one heap threaded on the stack.
+      Blocked: approve a design with data shapes and failure modes before building.
   1. examples/lua.slap lexer: read the source by index with `nth`, as json.slap
      does. No per-character recursion.
   2. The parser emits a flat int bytecode list. A `while` + step loop runs it,
@@ -55,8 +60,6 @@
      pixel dump against a committed reference made with pico8's export (or
      zepto8).
   9. Then tic80 on the same lua.slap; duskos and decker after.
-
-## Blocked on you
 
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps
