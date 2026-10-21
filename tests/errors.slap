@@ -7,11 +7,11 @@
 
 -- ===== Runtime panics =====
 
--- EXPECT: 'drop' takes 'a copyable
+-- EXPECT: 'drop' takes 'a copy
 -- EXPECT: but the stack has nothing
 drop
 
--- EXPECT: 'swap' takes 'a 'b
+-- EXPECT: 'swap' takes 'a var 'b var
 -- EXPECT: but the stack has nothing
 swap
 
@@ -48,11 +48,11 @@ plus
 -- EXPECT: assertion failed
 false assert
 
--- EXPECT: 'apply' takes ( ..a -> ..b )
+-- EXPECT: 'apply' takes ['a rest] ['b rest] fn
 -- EXPECT: int is not a body.
 1 apply
 
--- EXPECT: 'if' takes int ( ..a -> ..b ) ( ..a -> ..b )
+-- EXPECT: 'if' takes int ['a rest] ['b rest] fn ['a rest] ['b rest] fn
 -- EXPECT: int is not a body.
 1 2 3 if
 
@@ -69,16 +69,16 @@ false assert
 -- EXPECT: peek: index 5 out of bounds
 [1 2 3] 5 peek must
 
--- EXPECT: 'len' takes 'a copyable list
+-- EXPECT: 'len' takes 'a copy 'list tag
 -- EXPECT: int is not a list.
 1 len
 
--- EXPECT: 'push' takes 'a copyable list 'a copyable
+-- EXPECT: 'push' takes 'a copy 'list tag 'a copy
 -- EXPECT: but the stack has int int
 -- EXPECT: int is not a list.
 1 2 push
 
--- EXPECT: 'free' takes 'a copyable box
+-- EXPECT: 'free' takes 'a copy 'box tag
 -- EXPECT: int is not a box.
 1 free
 
@@ -91,7 +91,7 @@ nonexistent_word_xyz
 -- EXPECT: index 5 out of bounds
 [1 2 3] 5 99 set must
 
--- EXPECT: 'mutate' takes 'a copyable box
+-- EXPECT: 'mutate' takes 'a copy 'box tag ['b sealed 'a copy] ['b sealed 'c copy] fn
 -- EXPECT: but the stack has only 1 value: int
 -- EXPECT: 1 type error(s)
 1 mutate
@@ -100,28 +100,28 @@ nonexistent_word_xyz
 -- EXPECT: 1 type error(s)
 1 lend
 
--- EXPECT: 'pop' takes 'b copyable list
--- EXPECT: ( ..a -> ..a ) is not a list.
+-- EXPECT: 'pop' takes 'b copy 'list tag
+-- EXPECT: ['a rest] ['a rest] fn is not a list.
 () pop
 
--- EXPECT: 'each' takes 'a copyable list
--- EXPECT: but the stack has int ( ..b int -> ..b int )
+-- EXPECT: 'each' takes 'a copy 'list tag ['b sealed 'a copy] ['b sealed 'c copy] fn
+-- EXPECT: but the stack has int ['b sealed int] ['b sealed int] fn
 42 (1 plus) each
 
--- EXPECT: 'filter' takes 'a copyable list
--- EXPECT: but the stack has int (
+-- EXPECT: 'filter' takes 'a copy 'list tag ['b sealed 'a copy] ['b sealed int] fn
+-- EXPECT: but the stack has int ['b sealed int] ['b sealed int] fn
 42 (1 eq) filter
 
--- EXPECT: 'sort' takes int list
--- EXPECT: int list is not int.
+-- EXPECT: 'sort' takes int 'list tag
+-- EXPECT: int 'list tag is not int.
 [[1 2] [3 4]] sort
 
 -- EXPECT: 'if' takes int
 -- EXPECT: sym is not int.
 'x (1 plus) (2 plus) if
 
--- EXPECT: 'at' takes {'x 'a copyable | ..b} sym
--- EXPECT: int list is not a record.
+-- EXPECT: 'at' takes dict "x" 'a copy insert "_" 'b var insert rec sym
+-- EXPECT: int 'list tag is not a record.
 [1 2 3] 'x at
 
 -- EXPECT: must: expected 'ok tagged
@@ -140,43 +140,43 @@ nonexistent_word_xyz
 -- EXPECT: must: expected 'ok tagged
 "_nonexistent_dir_abc123" ls must
 
--- EXPECT: 'then' takes {'ok 'a 'no 'b} either
+-- EXPECT: 'then' takes dict "ok" 'a var insert "no" 'b var insert either ['c rest 'a var] ['c rest dict "no" 'b var insert "_" 'd var insert either] fn
 -- EXPECT: int is not a tagged value.
 123 (1 plus) then
 
--- EXPECT: 'default' takes {'ok 'a copyable 'no 'b copyable} either 'a copyable
+-- EXPECT: 'default' takes dict "ok" 'a copy insert "no" 'b copy insert either 'a copy
 -- EXPECT: int is not a tagged value.
 123 -1 default
 
--- EXPECT: 'over' takes 'a copyable 'b
+-- EXPECT: 'over' takes 'a copy 'b var
 -- EXPECT: but the stack has only 1 value: int
 1 over
 
--- EXPECT: 'over' takes 'a copyable 'b
+-- EXPECT: 'over' takes 'a copy 'b var
 -- EXPECT: but the stack has nothing
 over
 
--- EXPECT: 'rot' takes 'a 'b 'c
+-- EXPECT: 'rot' takes 'a var 'b var 'c var
 -- EXPECT: but the stack has only 2 values: int int
 1 2 rot
 
--- EXPECT: 'rot' takes 'a 'b 'c
+-- EXPECT: 'rot' takes 'a var 'b var 'c var
 -- EXPECT: but the stack has nothing
 rot
 
--- EXPECT: 'nip' takes 'a copyable 'b
+-- EXPECT: 'nip' takes 'a copy 'b var
 -- EXPECT: but the stack has only 1 value: int
 1 nip
 
--- EXPECT: 'nip' takes 'a copyable 'b
+-- EXPECT: 'nip' takes 'a copy 'b var
 -- EXPECT: but the stack has nothing
 nip
 
--- EXPECT: 'edit' takes {'x int | ..a} ( ..b int -> ..b int ) sym
+-- EXPECT: 'edit' takes dict "x" int insert "_" 'a var insert rec ['b sealed int] ['b sealed int] fn sym
 -- EXPECT: int is not a record.
 1 (1 plus) 'x edit
 
--- EXPECT: 'edit' takes {'b int | ..a} ( ..b int -> ..b int ) sym
+-- EXPECT: 'edit' takes dict "b" int insert "_" 'a var insert rec ['b sealed int] ['b sealed int] fn sym
 -- EXPECT: one record has 'b and the other has not.
 {'a 1} (1 plus) 'b edit
 
@@ -202,53 +202,53 @@ nip
 'x 1 sub
 
 -- EXPECT: 'mul' takes int int
--- EXPECT: int list is not int.
+-- EXPECT: int 'list tag is not int.
 [1 2] 3 mul
 
 -- EXPECT: 'if' takes int
 -- EXPECT: sym is not int.
 'x (1) (2) if
 
--- EXPECT: 'into' takes {'x 'a | ..b} int sym
+-- EXPECT: 'into' takes dict "x" 'a var insert "_" 'b var insert rec int sym
 -- EXPECT: int is not a record.
 42 1 'x into
 
--- EXPECT: into replaces the value of a key the record has, but this record, {}, has no 'a.
+-- EXPECT: into replaces the value of a key the record has, but this record, dict rec, has no 'a.
 -- EXPECT: A record has the keys its literal names: build it with 'a, as in {'a 5}.
 {} 5 'a into drop
 
--- EXPECT: 'edit' takes {'x int | ..a} ( ..b int -> ..b int ) sym
--- EXPECT: int list is not a record.
+-- EXPECT: 'edit' takes dict "x" int insert "_" 'a var insert rec ['b sealed int] ['b sealed int] fn sym
+-- EXPECT: int 'list tag is not a record.
 [1 2 3] (1 plus) 'x edit
 
--- EXPECT: 'free' takes 'a copyable box
+-- EXPECT: 'free' takes 'a copy 'box tag
 -- EXPECT: int is not a box.
 42 free
 
 -- EXPECT: int is not a box.
 42 () lend
 
--- EXPECT: 'mutate' takes 'a copyable box
+-- EXPECT: 'mutate' takes 'a copy 'box tag ['b sealed 'a copy] ['b sealed 'c copy] fn
 -- EXPECT: int is not a box.
 42 () mutate
 
--- EXPECT: 'then' takes {'ok 'a 'no 'b} either
+-- EXPECT: 'then' takes dict "ok" 'a var insert "no" 'b var insert either ['c rest 'a var] ['c rest dict "no" 'b var insert "_" 'd var insert either] fn
 -- EXPECT: int is not a tagged value.
 42 () then
 
--- EXPECT: 'default' takes {'ok 'a copyable 'no 'b copyable} either
+-- EXPECT: 'default' takes dict "ok" 'a copy insert "no" 'b copy insert either 'a copy
 -- EXPECT: int is not a tagged value.
 42 0 default
 
--- EXPECT: 'sort' takes int list
+-- EXPECT: 'sort' takes int 'list tag
 -- EXPECT: int is not a list.
 42 sort
 
--- EXPECT: 'dedup' takes 'a copyable list
+-- EXPECT: 'dedup' takes 'a copy 'list tag
 -- EXPECT: int is not a list.
 42 dedup
 
--- EXPECT: 'while' takes ( ..a -> ..b int ) ( ..b -> ..a )
+-- EXPECT: 'while' takes ['a rest] ['b rest int] fn ['b rest] ['a rest] fn
 -- EXPECT: int is not a body.
 1 42 while
 
@@ -265,7 +265,7 @@ nip
 -- EXPECT: out of bounds
 [] last
 
--- EXPECT: 'dip' takes 'a ( ..b -> ..c )
+-- EXPECT: 'dip' takes 'a var ['b rest] ['c rest] fn
 -- EXPECT: but the stack has only 1 value: int
 1 dip
 
@@ -286,11 +286,11 @@ nip
 -- a result from get may be tagged 'ok or 'no, so its case names both, or ends in '_
 [1] 0 get {'ok (drop 1)} case drop
 
--- EXPECT: the signature's open tag set ends in tags the caller chooses, but here the body needs them to be {'a
+-- EXPECT: case cannot take this value: the signature's open tag set ends in tags the caller chooses, but here the body needs them to be dict "a" 'a var insert "_" 'b var insert.
 -- a caller picks the payload of a tag its open set does not name, so a clause cannot name it
 ( {'a (drop 1) '_ (drop 0)} case ) [dict "_" 'r copy insert either] [int] effect 'any-tag let
 
--- EXPECT: 'a copyable would have to be {'f ( ..b 'a copyable -> ..b int )} either, which holds it inside a body. A type contains itself only through a tag payload that holds no body.
+-- EXPECT: the clause for 'f gets its payload, ['b rest 'a copy] ['b rest int] fn, but its body cannot take it: 'a copy would have to be dict "f" ['b rest 'a copy] ['b rest int] fn insert either, which holds it inside a body. A type contains itself only through a tag payload that holds no body.
 -- a body that takes the tagged value holding it would need a type that loops through a body
 (drop 1) 'f tag dup {'f (apply)} case print
 
@@ -302,8 +302,8 @@ nip
 -- a case without '_ dropped 'a from x's tags, so x and a value tagged 'a are not one type
 5 'b tag 'x let x {'a (drop 1) '_ (drop 0)} case drop x {'b (drop 1)} case drop [x 5 'a tag] drop
 
--- EXPECT: 'cell-len' takes ({
--- EXPECT: either 'a as)
+-- EXPECT: 'cell-len' takes dict "cons" dict "tl" 'a var insert "_" 'b var insert rec insert "nil" 'c copy insert either 'a as
+-- EXPECT: 'cell-len' takes dict "cons" dict "tl" 'a var insert "_" 'b var insert rec insert "nil" 'c copy insert either 'a as
 -- EXPECT: but the stack has int
 -- a recursive type prints with as: 'a stands for the whole type inside it
 ({'cons ('tl at cell-len 1 plus) 'nil (drop 0)} case) 'cell-len let 5 cell-len drop
@@ -339,11 +339,11 @@ nip
 -- a result from get carries only 'ok and 'no
 [1] 0 get {'ok (drop 1) 'no (drop 2) '_ (drop 3)} case drop
 
--- EXPECT: the '_ clause gets the tagged value, {'b int box
+-- EXPECT: the '_ clause gets the tagged value, dict "b" int 'box tag insert "a" 'a copy insert "_" 'b var insert either, but its body cannot take it: int 'box tag is a box: it cannot be copied, dropped, bound or stored. Free it, or pass it to a word that takes it.
 -- '_ takes the value whole, so a box payload cannot be dropped there
 5 box 'b tag {'a (drop 1) '_ (drop 0)} case drop
 
--- EXPECT: 'at' takes {'b 'a copyable | ..b} sym
+-- EXPECT: 'at' takes dict "b" 'a copy insert "_" 'b var insert rec sym
 -- EXPECT: one record has 'b and the other has not.
 {'a 1} 'b at
 
@@ -391,8 +391,8 @@ nip
 
 -- ===== Type errors =====
 
--- EXPECT: 'dup' takes 'a copyable
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'dup' takes 'a copy
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- dup on box (not copyable)
 42 box dup
 
@@ -431,8 +431,8 @@ nip
 -- plus needs 2 args, stack has 1
 42 plus
 
--- EXPECT: 'drop' takes 'a copyable
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'drop' takes 'a copy
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- can't drop a box (not copyable, must free)
 42 box drop
 
@@ -446,7 +446,7 @@ nip
 -- sub with mismatched types
 3 1.0 sub
 
--- EXPECT: 'push' takes 'a copyable list 'a copyable
+-- EXPECT: 'push' takes 'a copy 'list tag 'a copy
 -- EXPECT: but the stack has int int
 -- push to non-list
 42 99 push
@@ -456,22 +456,22 @@ nip
 -- range with float args
 1.0 5.0 range
 
--- EXPECT: 'get' takes 'a copyable list int
+-- EXPECT: 'get' takes 'a copy 'list tag int
 -- EXPECT: int is not a list.
 -- get on int (not a list)
 42 0 get
 
--- EXPECT: 'dup' takes 'a copyable
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'dup' takes 'a copy
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- dup a box (linear)
 42 box dup free free
 
--- EXPECT: 'drop' takes 'a copyable
+-- EXPECT: 'drop' takes 'a copy
 -- EXPECT: the body takes or leaves a different number of values than the signature declares.
 -- body consumes wrong number of inputs
 (drop drop) [int] [int] effect 'bad let
 
--- EXPECT: 'bad2' declares ( ..a int -> ..a int ), but its body is ( ..a int -> ..a int int )
+-- EXPECT: 'bad2' declares ['a rest int] ['a rest int] fn, but its body is ['a rest int] ['a rest int int] fn
 -- EXPECT: the body takes or leaves a different number of values than the signature declares.
 -- body produces wrong number of outputs
 (dup) [int] [int] effect 'bad2 let
@@ -482,7 +482,7 @@ nip
 1 2 eq 3.0 plus
 
 -- EXPECT: 'plus' takes int int
--- EXPECT: int box is not int.
+-- EXPECT: int 'box tag is not int.
 -- plus on box
 42 box 1 plus
 
@@ -496,8 +496,8 @@ nip
 -- or on float (int-only)
 1.0 2.0 or
 
--- EXPECT: 'swap' takes 'a 'b
--- EXPECT: but the stack has only 1 value: int box
+-- EXPECT: 'swap' takes 'a var 'b var
+-- EXPECT: but the stack has only 1 value: int 'box tag
 -- EXPECT: 1 type error(s)
 -- swap with only 1 value (box)
 42 box swap
@@ -550,12 +550,12 @@ nip
 {'a 1} 'r let (r 'a at) 'h let (0 (r) {'b 1} if) 'r let h
 
 -- EXPECT: 'plus' takes int int
--- EXPECT: int list is not int.
+-- EXPECT: int 'list tag is not int.
 -- plus on list inside non-simple tuple (soundness: nested structure)
 (1 [2 3] plus) 'bad3 let
 
 -- EXPECT: 'plus' takes int int
--- EXPECT: ( ..a -> ..a int int ) is not int.
+-- EXPECT: ['a rest] ['a rest int int] fn is not int.
 -- plus on tuple inside non-simple tuple
 (1 (2 3) plus) 'bad4 let
 
@@ -565,7 +565,7 @@ nip
 (1.0 [1 2] drop and) 'bad5 let
 
 -- EXPECT: 'plus' takes int int
--- EXPECT: int list is not int.
+-- EXPECT: int 'list tag is not int.
 -- plus on list inside recursive non-simple tuple
 (dup 0 eq (drop 1) (1 sub [2 3] plus) if) 'bad6 let
 
@@ -588,13 +588,13 @@ nip
 -- tag needs value and symbol, not just symbol
 'foo tag
 
--- EXPECT: 'default' takes {'ok 'a copyable 'no 'b copyable} either
+-- EXPECT: 'default' takes dict "ok" 'a copy insert "no" 'b copy insert either 'a copy
 -- EXPECT: int is not a tagged value.
 -- default on plain int
 42 -1 default
 
--- EXPECT: 'default' takes {'ok 'a copyable 'no 'b copyable} either
--- EXPECT: int list is not a tagged value.
+-- EXPECT: 'default' takes dict "ok" 'a copy insert "no" 'b copy insert either 'a copy
+-- EXPECT: int 'list tag is not a tagged value.
 -- default on list
 [1 2 3] -1 default
 
@@ -602,74 +602,74 @@ nip
 -- case clause bodies disagree (int vs list)
 42 ok {'ok (1 plus) 'no ([])} case
 
--- EXPECT: 'push' takes 'b copyable list 'b copyable
--- EXPECT: but the stack has {'x int | ..a} either int
+-- EXPECT: 'push' takes 'b copy 'list tag 'b copy
+-- EXPECT: but the stack has dict "x" int insert "_" 'a var insert either int
 -- push onto tagged
 1 'x tag 99 push
 
--- EXPECT: 'pop' takes 'b copyable list
--- EXPECT: {'x int | ..a} either is not a list.
+-- EXPECT: 'pop' takes 'b copy 'list tag
+-- EXPECT: dict "x" int insert "_" 'a var insert either is not a list.
 -- pop from tagged
 1 'x tag pop
 
--- EXPECT: 'get' takes 'b copyable list int
--- EXPECT: {'x int | ..a} either is not a list.
+-- EXPECT: 'get' takes 'b copy 'list tag int
+-- EXPECT: dict "x" int insert "_" 'a var insert either is not a list.
 -- get on tagged
 1 'x tag 0 get
 
--- EXPECT: 'peek' takes 'b copyable list int
--- EXPECT: {'x int | ..a} either is not a list.
+-- EXPECT: 'peek' takes 'b copy 'list tag int
+-- EXPECT: dict "x" int insert "_" 'a var insert either is not a list.
 -- peek on tagged
 1 'x tag 0 peek
 
--- EXPECT: 'peek' takes 'b copyable list int
--- EXPECT: ( ..a -> ..a int int int ) is not a list.
+-- EXPECT: 'peek' takes 'b copy 'list tag int
+-- EXPECT: ['a rest] ['a rest int int int] fn is not a list.
 -- peek on tuple (seq is list-only)
 (1 2 3) 0 peek
 
--- EXPECT: 'default' takes {'ok 'a copyable 'no 'b copyable} either
+-- EXPECT: 'default' takes dict "ok" 'a copy insert "no" 'b copy insert either 'a copy
 -- EXPECT: int is not sym.
 -- peek's either output binds the payload tvar, so default must match
 [1 2 3] 0 peek 'sym default
 
 -- EXPECT: 'plus' takes int int
--- EXPECT: {'ok int | ..a} either is not int.
+-- EXPECT: dict "ok" int insert "_" 'a var insert either is not int.
 -- arithmetic on tagged
 42 ok 1 plus
 
 -- EXPECT: 'mul' takes int int
--- EXPECT: {'ok int | ..a} either is not int.
+-- EXPECT: dict "ok" int insert "_" 'a var insert either is not int.
 -- tagged value in mul
 42 ok 2 mul
 
--- EXPECT: 'reverse' takes 'a copyable list
+-- EXPECT: 'reverse' takes 'a copy 'list tag
 -- EXPECT: int is not a list.
 -- reverse of non-list
 42 reverse
 
 -- ===== Protocol constraint errors =====
--- EXPECT: 'push' takes 'b copyable list 'b copyable
--- EXPECT: but the stack has ( ..a -> ..a int int int ) int
+-- EXPECT: 'push' takes 'b copy 'list tag 'b copy
+-- EXPECT: but the stack has ['a rest] ['a rest int int int] fn int
 -- push onto tuple (seq is list-only)
 (1 2 3) 4 push
 
--- EXPECT: 'pop' takes 'b copyable list
--- EXPECT: ( ..a -> ..a int int int ) is not a list.
+-- EXPECT: 'pop' takes 'b copy 'list tag
+-- EXPECT: ['a rest] ['a rest int int int] fn is not a list.
 -- pop from tuple
 (1 2 3) pop
 
--- EXPECT: 'get' takes 'b copyable list int
--- EXPECT: ( ..a -> ..a int int int ) is not a list.
+-- EXPECT: 'get' takes 'b copy 'list tag int
+-- EXPECT: ['a rest] ['a rest int int int] fn is not a list.
 -- get on tuple (seq is list-only)
 (1 2 3) 0 get
 
--- EXPECT: 'set' takes 'b copyable list int 'b copyable
--- EXPECT: but the stack has ( ..a -> ..a int int int ) int int
+-- EXPECT: 'set' takes 'b copy 'list tag int 'b copy
+-- EXPECT: but the stack has ['a rest] ['a rest int int int] fn int int
 -- set on tuple
 (1 2 3) 0 99 set
 
--- EXPECT: 'sort' takes int list
--- EXPECT: int list is not int.
+-- EXPECT: 'sort' takes int 'list tag
+-- EXPECT: int 'list tag is not int.
 -- sort list of lists (sort takes ints)
 [[1] [2]] sort
 
@@ -683,37 +683,37 @@ nip
 -- lt on mismatched int/float
 1 2.0 lt
 
--- EXPECT: 'sort' takes int list
+-- EXPECT: 'sort' takes int 'list tag
 -- EXPECT: sym is not int.
 -- sort list of symbols (sort takes ints)
 ['foo 'bar 'baz] sort
 
--- EXPECT: 'insert' takes 'a copyable dict str 'a copyable
+-- EXPECT: 'insert' takes 'a copy 'dict tag str 'a copy
 -- EXPECT: int is not a list.
 -- heterogeneous dict values (no need for free now that dicts are stackable)
 dict "k" 1 insert "j" "two" insert
 
--- EXPECT: 'insert' takes 'a copyable dict str 'a copyable
+-- EXPECT: 'insert' takes 'a copy 'dict tag str 'a copy
 -- EXPECT: int is not a dict.
 -- insert expects dict
 42 "k" 1 insert
 
 -- EXPECT: 'each' takes
--- EXPECT: int dict is not a list. Iterate a dict with dict-entries
+-- EXPECT: int 'dict tag is not a list. Iterate a dict with dict-entries
 -- each takes only lists
 dict "a" 1 insert (drop 0) each drop
 
 -- EXPECT: 'cnt' takes
--- EXPECT: int dict is not a list. Iterate a dict with dict-entries
+-- EXPECT: int 'dict tag is not a list. Iterate a dict with dict-entries
 -- a word that folds its input takes only lists
 (0 (drop 1 plus) fold) 'cnt let  dict "a" 1 insert cnt drop
 
--- EXPECT: the clause for 'ok gets its payload, int box, but its body cannot take it
+-- EXPECT: the clause for 'ok gets its payload, int 'box tag, but its body cannot take it: int 'box tag is a box: it cannot be copied, dropped, bound or stored. Free it, or pass it to a word that takes it.
 -- case on tagged box (branches can leak)
 42 box ok {'ok (drop) 'no (drop)} case
 
 -- EXPECT: never freed
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- tagging a box without consuming the tagged
 42 box ok
 
@@ -722,7 +722,7 @@ dict "a" 1 insert (drop 0) each drop
 -- if branches produce different arity
 1 1 lt (99 99) (0) if drop drop
 
--- EXPECT: a list literal holds only values that can be copied: int box is a box: it cannot be copied
+-- EXPECT: a list literal holds only values that can be copied: int 'box tag is a box: it cannot be copied
 -- list literal cannot contain box
 [42 box]
 
@@ -730,23 +730,23 @@ dict "a" 1 insert (drop 0) each drop
 -- record literal cannot contain box
 {'k box}
 
--- EXPECT: 'each' takes 'a copyable list
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'each' takes 'a copy 'list tag ['b sealed 'a copy] ['b sealed 'c copy] fn
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- an each body that leaves a box: the result list would hold it
 [1] (drop 42 box) each
 
--- EXPECT: 'push' takes 'a copyable list 'a copyable
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'push' takes 'a copy 'list tag 'a copy
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- push a box into a list (would be cloned by deep_copy_values on dup)
 [] 42 box push drop
 
 -- EXPECT: 'into' takes
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- into record would smuggle box past linearity
 {'b 0} 42 box 'b into drop
 
--- EXPECT: 'set' takes 'a copyable list int 'a copyable
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'set' takes 'a copy 'list tag int 'a copy
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- set would place box into list slot
 [1 2 3] 0 42 box set drop
 
@@ -761,17 +761,17 @@ dict "a" 1 insert (drop 0) each drop
 ('a let 'b let 'c let 'd let 'e let 'f let 'g let 'h let 'i let
   a undefined-word-xyz) 'wide-tup let
 
--- EXPECT: 'default' takes {'ok 'a copyable 'no 'b copyable} either
+-- EXPECT: 'default' takes dict "ok" 'a copy insert "no" 'b copy insert either 'a copy
 -- EXPECT: int is not a body.
 -- default's tuple fallback does not match the int 'ok payload
 [1 2 3] pop () default
 
--- EXPECT: 'default' takes {'ok 'a copyable 'no 'b copyable} either
+-- EXPECT: 'default' takes dict "ok" 'a copy insert "no" 'b copy insert either 'a copy
 -- EXPECT: int is not a list.
 -- default's string fallback does not match the int 'ok payload
 [1 2 3] pop "str" default drop
 
--- EXPECT: 'default' takes {'ok 'a copyable 'no 'b copyable} either
+-- EXPECT: 'default' takes dict "ok" 'a copy insert "no" 'b copy insert either 'a copy
 -- EXPECT: int is not sym.
 -- an either input slot binds its payload tvar even through `get`
 [1 2 3] 0 get 'sym default drop
@@ -779,12 +779,12 @@ dict "a" 1 insert (drop 0) each drop
 -- ===== Adversarial probes =====
 
 -- EXPECT: the program ends with a value left on the stack that is never freed
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- box is linear: must be consumed, not abandoned
 42 box
 
--- EXPECT: 'free' takes 'b copyable box
--- EXPECT: dict is not a box.
+-- EXPECT: 'free' takes 'b copy 'box tag
+-- EXPECT: 'a copy 'dict tag is not a box.
 -- free rejects dicts at type time
 dict free
 
@@ -794,7 +794,7 @@ dict free
 -- mod is Integral: floats are not
 1.0 2.0 mod
 
--- EXPECT: 'default' takes {'ok 'a copyable 'no 'b copyable} either
+-- EXPECT: 'default' takes dict "ok" 'a copy insert "no" 'b copy insert either 'a copy
 -- EXPECT: int is not a list.
 -- ...and a string fallback cannot stand in for an int payload either
 [1 2 3] pop "str" default len drop
@@ -821,23 +821,23 @@ none must drop
 [1 2 3] 99 peek must drop drop
 
 -- ===== aliasing and linearity =====
--- EXPECT: 'insert' takes 'a copyable dict str 'a copyable
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'insert' takes 'a copy 'dict tag str 'a copy
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- a tagged box stays linear, so insert's guard still sees it
 dict "k" 42 box 'x tag insert drop
 
--- EXPECT: 'drop' takes 'a copyable
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'drop' takes 'a copy
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- the same laundering, one step earlier: dropping a tagged box leaked it
 42 box 'x tag drop
 
--- EXPECT: 'dup' takes 'a copyable
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'dup' takes 'a copy
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- and `dup` on one produced two references to a single BoxData
 42 box 'x tag dup drop drop
 
--- EXPECT: 'push' takes 'a copyable list 'a copyable
--- EXPECT: int box is a box: it cannot be copied
+-- EXPECT: 'push' takes 'a copy 'list tag 'a copy
+-- EXPECT: int 'box tag is a box: it cannot be copied
 -- a list is as stackable as a dict; push has to reject it for the same reason
 [] 42 box 'x tag push drop
 
@@ -918,7 +918,7 @@ dict [256] 1 insert drop
 -- let with no name
 1 2 let
 
--- EXPECT: 'then' takes {'ok 'a 'no 'b} either
+-- EXPECT: 'then' takes dict "ok" 'a var insert "no" 'b var insert either ['c rest 'a var] ['c rest dict "no" 'b var insert "_" 'd var insert either] fn
 -- EXPECT: int is not a tagged value.
 -- then's body must return ok or no
 42 ok (3 mul) then drop
@@ -929,11 +929,11 @@ dict [256] 1 insert drop
 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 "x" 1 plus
 
 -- EXPECT: 'plus' takes int int
--- EXPECT: int list is not int.
+-- EXPECT: int 'list tag is not int.
 -- a scheme with more than 64 type variables keeps its output type
 (drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop "a" drop [9]) 'f let 0 f 1 plus
 
--- EXPECT: 'drop' takes 'a copyable
+-- EXPECT: 'drop' takes 'a copy
 -- EXPECT: but the stack has nothing
 -- on takes an event name and a handler
 () 'tick on drop
@@ -958,7 +958,7 @@ dict [256] 1 insert drop
 ('f let 42 box (f) mutate free) 'mu let 7 (drop drop 1) mu
 
 -- EXPECT: 'tcp-close' takes socket
--- EXPECT: int box is not socket.
+-- EXPECT: int 'box tag is not socket.
 -- a boxed int that is not a socket
 1 box tcp-close 42 print
 
@@ -969,7 +969,7 @@ dict [256] 1 insert drop
 -- EXPECT: drop-n: count -3 is negative
 [1 2 3 4 5] -3 drop-n drop
 
--- EXPECT: 'sig-bad' declares ( ..a -> ..a int ), but its body is ( ..a -> ..a )
+-- EXPECT: 'sig-bad' declares ['a rest] ['a rest int] fn, but its body is ['a rest] ['a rest] fn
 -- a body that calls a user word and leaves nothing
 (drop) 'sig-drop let (1 sig-drop) [] [int] effect 'sig-bad let
 
@@ -978,21 +978,21 @@ dict [256] 1 insert drop
 -- a body that consumes more than it declares
 (plus) [int] [int] effect 'sig-under let
 
--- EXPECT: 'sig-str' declares ( ..a -> ..a int ), but its body is ( ..a -> ..a str ): str is not int.
+-- EXPECT: 'sig-str' declares ['a rest] ['a rest int] fn, but its body is ['a rest] ['a rest str] fn: str is not int.
 -- a body whose output has the wrong type
 ("x") [] [int] effect 'sig-str let
 
--- EXPECT: 'drop' takes 'a copyable
+-- EXPECT: 'drop' takes 'a copy
 -- EXPECT: the body takes or leaves a different number of values than the signature declares.
 -- the same check through a forward declaration
 'sig-fwd [int] [int] effect (drop drop 1) 'sig-fwd let
 
--- EXPECT: 'drop' takes 'a copyable
+-- EXPECT: 'drop' takes 'a copy
 -- EXPECT: but the stack has nothing
 -- a declared word inside an applied body: its real effect reaches the caller
 ((drop) [int] [] effect 'f let 1 f) apply drop
 
--- EXPECT: 'outer' declares ( ..a -> ..a int ), but its body is ( ..a -> ..a int int int )
+-- EXPECT: 'outer' declares ['a rest] ['a rest int] fn, but its body is ['a rest] ['a rest int int int] fn
 -- a declared word defined inside a body does not hide the body's own count
 ((1 plus) [int] [int] effect 'inner let 4 inner 1 2) [] [int] effect 'outer let
 
@@ -1024,11 +1024,11 @@ dict [256] 1 insert drop
 -- a name a literal binds is gone after the literal
 [1 'lq let lq] drop lq
 
--- EXPECT: 'drop' takes 'a copyable
+-- EXPECT: 'drop' takes 'a copy
 -- EXPECT: but the stack has nothing
 1 [drop]
 
--- EXPECT: 'push' takes 'a copyable list 'a copyable
+-- EXPECT: 'push' takes 'a copy 'list tag 'a copy
 -- EXPECT: a type the signature leaves open is int here.
 (1 push) ['a var 'list tag] ['a var 'list tag] effect 'f let
 
@@ -1042,18 +1042,18 @@ dict [256] 1 insert drop
 1.5 inc
 
 -- EXPECT: 'gt' takes int int
--- EXPECT: int list is not int.
+-- EXPECT: int 'list tag is not int.
 [1] [2] gt
 
--- EXPECT: 'apply' takes ( ..a -> ..b )
+-- EXPECT: 'apply' takes ['a rest] ['b rest] fn
 -- EXPECT: str is not int.
 "a" (1 plus) apply
 
--- EXPECT: 'dip' takes 'a ( ..b -> ..c )
+-- EXPECT: 'dip' takes 'a var ['b rest] ['c rest] fn
 -- EXPECT: str is not int.
 "a" 5 (1 plus) dip
 
--- EXPECT: 'at' takes {'z 'a copyable | ..b} sym
+-- EXPECT: 'at' takes dict "z" 'a copy insert "_" 'b var insert rec sym
 -- EXPECT: one record has 'z and the other has not.
 {'x 10 'y 20} 'z at
 
@@ -1063,7 +1063,7 @@ dict [256] 1 insert drop
 -- EXPECT: dup: stack overflow: this needs 1100001 more value slots, but only
 0 1100000 range dup
 
--- EXPECT: 'sxy' takes {'x int 'y int | ..a}
+-- EXPECT: 'sxy' takes dict "x" int insert "y" int insert "_" 'a var insert rec
 -- EXPECT: one record has 'y and the other has not.
 ('r let r 'x at r 'y at plus) 'sxy let {'x 1} sxy
 
@@ -1079,7 +1079,7 @@ dict [256] 1 insert drop
 -- either branch of an if may make the record
 1 ({'a 1}) ({'b 1}) if 'b at
 
--- EXPECT: 'xs-of' takes {'x 'a copyable | ..b} list
+-- EXPECT: 'xs-of' takes dict "x" 'a copy insert "_" 'b var insert rec 'list tag
 -- EXPECT: one record has 'x and the other has not.
 (('x at) each) 'xs-of let [{'y 1}] xs-of
 
@@ -1378,7 +1378,7 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- the checker frees the effects of old bodies: a body that a type still names is not reused
 {'b 1} (drop {'c 1}) ok () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop () drop must apply 'b at
 
--- EXPECT: 'f' takes 'a copyable
+-- EXPECT: 'f' takes 'a copy
 -- EXPECT: but the stack has nothing
 -- a word that takes more than the top of the program has
 (drop) 'f let f
@@ -1390,12 +1390,12 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- EXPECT: 'g' is declared here but never defined
 'g [] [int] effect g drop
 
--- EXPECT: 'apply' takes ( ..a -> ..b )
+-- EXPECT: 'apply' takes ['a rest] ['b rest] fn
 -- EXPECT: int is not a body.
 5 apply
 
--- EXPECT: 'each' takes 'a copyable list
--- EXPECT: {'b int} is not a body.
+-- EXPECT: 'each' takes 'a copy 'list tag ['b sealed 'a copy] ['b sealed 'c copy] fn
+-- EXPECT: dict "b" int insert rec is not a body.
 [1] {'b 1} each
 
 -- EXPECT: TYPE ERROR
@@ -1494,27 +1494,27 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- a body taken out of a box by lend keeps the key it reads
 {'b 1} ('a at) box () lend swap free apply
 
--- EXPECT: 'then' takes {'ok 'a 'no 'b} either
+-- EXPECT: 'then' takes dict "ok" 'a var insert "no" 'b var insert either ['c rest 'a var] ['c rest dict "no" 'b var insert "_" 'd var insert either] fn
 -- EXPECT: it may be tagged 'x, which is not one of the tags this takes.
 -- then leaves () for any other tag
 5 'x tag (ok) then must
 
--- EXPECT: 'f' takes {'ok 'a 'no 'b} either
+-- EXPECT: 'f' takes dict "ok" 'a var insert "no" 'b var insert either
 -- EXPECT: it may be tagged 'x, which is not one of the tags this takes.
 -- a word that thens its input: its callers must pass 'ok or 'no
 ((ok) then) 'f let 5 'x tag f must
 
--- EXPECT: 'if' takes int ( ..a -> ..b ) ( ..a -> ..b )
+-- EXPECT: 'if' takes int ['a rest] ['b rest] fn ['a rest] ['b rest] fn
 -- EXPECT: int is not a body.
 -- a value as the else branch
 1 (5) 7 if
 
--- EXPECT: 'repeat' takes int ( ..a -> ..a )
+-- EXPECT: 'repeat' takes int ['a rest] ['a rest] fn
 -- EXPECT: one path leaves 1 more value on the stack than the other
 -- a loop body that changes the stack's depth
 1 2 3 4 (drop) repeat
 
--- EXPECT: 'while' takes ( ..a -> ..b int ) ( ..b -> ..a )
+-- EXPECT: 'while' takes ['a rest] ['b rest int] fn ['b rest] ['a rest] fn
 -- EXPECT: one path leaves 1 more value on the stack than the other
 0 (dup 3 lt) (1 plus 7) while
 
@@ -1526,17 +1526,17 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- the closure's frame has the outer frame as its parent, and the outer frame holds it in c
 (5 ('q let (q)) apply 'c let 0) 'outer let outer drop
 
--- EXPECT: 'keep' takes 'a copyable no-body
+-- EXPECT: 'keep' takes 'a copy
 -- EXPECT: a value bound with let after a body was made in its scope cannot hold a body
 -- a generic word's binding cannot later be given a body
 ((1) drop 'x let x) 'keep let (2) keep drop
 
--- EXPECT: copyable no-body
+-- EXPECT: copy
 -- EXPECT: cannot hold a body
 -- a body bound after a literal, then run, is refused where it would become a body
 ( 'f let 0 3 (0 plus) repeat drop f 'g let g apply ) 'go let 0
 
--- EXPECT: 'apply' takes ( ..a -> ..b )
+-- EXPECT: 'apply' takes ['a rest] ['b rest] fn
 -- EXPECT: a copy of the body lies below it on the stack
 -- dup gives both copies one type, so one cannot run above the other
 (5) dup apply print drop
@@ -1606,7 +1606,7 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- the example value is the token before the key only when it is a value, not a call
 {} 1 2 plus 'b into drop
 
--- EXPECT: 'with-w' takes {'w 'a | ..b}
+-- EXPECT: 'with-w' takes dict "w" 'a var insert "_" 'b var insert rec
 -- a word that replaces 'w takes only records that have 'w
 ('wr let wr 5 'w into) 'with-w let {'a 1} with-w drop
 
@@ -1651,7 +1651,7 @@ g 1 plus print
 ( 1 plus  dup 5 lt ( ( "s" outer ) 'inner let inner ) () if ) 'outer let
 0 outer print
 
--- EXPECT: but its body is ( ..a 'b -> ..a {'r 'b | ..d} either ): 'r has two payload types: a type the signature leaves open is 'b here.
+-- EXPECT: 'f' declares ['a rest 'b var] ['a rest dict "r" 'c var insert either] fn, but its body is ['a rest 'b var] ['a rest dict "r" 'b var insert "_" 'd var insert either] fn: 'r has two payload types: a type the signature leaves open is 'b var here.
 -- a signature's output payload 'b is not its input 'a
 'f ['a var] [dict "r" 'b var insert either] effect
 ( "s" f ) 'g let
@@ -1820,7 +1820,7 @@ g
 -- no word ends the program early: a word that holds a box aside cannot see a caller's halt
 5 box halt
 
--- EXPECT: show ends the program when its window closes, so a value it leaves on the stack is never freed: int box is a box
+-- EXPECT: show ends the program when its window closes, so a value it leaves on the stack is never freed: int 'box tag is a box
 5 box 0 (drop) show
 
 -- EXPECT: this handler must take the event's w and h
@@ -1831,11 +1831,11 @@ g
 'f [] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [[] [] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] fn] effect
 
 -- EXPECT: '
--- EXPECT: {'b 'a copyable | ..
+-- EXPECT: 'at' takes dict "b" 'a copy insert "_" 'b var insert rec sym
 -- a row variable does not share its printed name with a key
 'b at 1 plus
 
--- EXPECT: 'f' declares ( ..a 'b copyable -> ..a 'b copyable ), but its body is ( ..a 'b copyable -> ..a int ): a type the signature leaves open is int here.
+-- EXPECT: 'f' declares ['a rest 'b copy] ['a rest 'b copy] fn, but its body is ['a rest 'b copy] ['a rest int] fn: a type the signature leaves open is int here.
 -- a word nested in a signed body keeps the outer signature's variables rigid
 'f ['a copy] ['a var] effect
 ( f len ) 'g let
@@ -1875,10 +1875,10 @@ g
 -- EXPECT: 0: [104 0 105]
 [104 0 105] fail
 
--- EXPECT: the signature's open record ends in keys the caller chooses, but here the body needs them to be {'m int}.
+-- EXPECT: 'g' declares ['a rest] ['a rest dict "k" int insert "_" 'b var insert rec] fn, but its body is ['a rest] ['a rest dict "m" int insert "k" int insert rec] fn: the signature's open record ends in keys the caller chooses, but here the body needs them to be dict "m" int insert.
 ( {'k 1 'm 2} ) [] [dict "k" int insert "_" 'r var insert rec] effect 'g let
 
--- EXPECT: the signature's open record ends in keys the caller chooses, but here the body needs them to be {'b
+-- EXPECT: the signature's open record ends in keys the caller chooses, but here the body needs them to be dict "b" 'a var insert "_" 'b var insert.
 ( 5 'b into ) [dict "a" int insert "_" 'r var insert rec] [dict "a" int insert "b" int insert "_" 'r var insert rec] effect 'f let
 
 -- EXPECT: 'f' calls itself here
@@ -1916,16 +1916,16 @@ g
 -- EXPECT: 'g' calls itself here with a stack its body does not take: each call leaves a different number of values than the body leaves
 (g 7) 'g let g
 
--- EXPECT: 'cat' takes 'b copyable list 'b copyable list
+-- EXPECT: 'cat' takes 'b copy 'list tag 'b copy 'list tag
 (1) (2) cat
 
--- EXPECT: 'cat' takes 'a copyable list 'a copyable list
+-- EXPECT: 'cat' takes 'a copy 'list tag 'a copy 'list tag
 {'a 1} {'b 2} cat
 
--- EXPECT: 'len' takes 'a copyable list
+-- EXPECT: 'len' takes 'a copy 'list tag
 {'a 1} len
 
--- EXPECT: 'len' takes 'b copyable list
+-- EXPECT: 'len' takes 'b copy 'list tag
 dict len
 
 -- EXPECT: unknown word 'quote'
@@ -2000,10 +2000,10 @@ list
 5 'xs let 1 'xs nth must print
 
 -- EXPECT: a [...] or {...} literal starts from an empty stack
--- EXPECT: 'drop' takes 'a copyable
+-- EXPECT: 'drop' takes 'a copy
 1 [drop]
 
--- EXPECT: but the stack has {| ..a} either int
+-- EXPECT: but the stack has dict "_" 'a var insert either int
 (1 plus) [dict "_" 't1 var insert either] [dict "_" 't2 var insert either] effect
 
 -- EXPECT: unknown type word 'strng'
@@ -2016,24 +2016,24 @@ list
 -- EXPECT-COL: 12
 (dup) [int strng] [] effect
 
--- EXPECT: this type is copyable, but tag 't holds int box
+-- EXPECT: this type is copyable, but tag 't holds int 'box tag
 -- EXPECT-LINE: 2
 -- EXPECT-COL: 8
 1 drop
 (drop) [dict "t" int 'box tag insert either 'list tag] [] effect 'f let
 
 
--- EXPECT: 'push' takes 'b copyable list 'b copyable
--- EXPECT: but the stack has 'a copyable list 'a copyable list
--- EXPECT: as 'a copyable list.
+-- EXPECT: 'push' takes 'b copy 'list tag 'b copy
+-- EXPECT: but the stack has 'a copy 'list tag 'a copy 'list tag
+-- EXPECT: as 'a copy 'list tag.
 -- the takes line, the stack line and the why line use one name per variable
 (dup len drop dup push) drop
 
--- EXPECT: but the stack has int list sym
+-- EXPECT: but the stack has int 'list tag sym
 -- an int list from a literal prints as int list
 [3 1] sort 'x at
 
--- EXPECT: but the stack has int list
+-- EXPECT: but the stack has int 'list tag ['d rest int int] ['d rest int] fn
 5 [1 2] (plus) ('f let (f apply) each) 'm let m
 
 -- EXPECT: 'plus' takes int int
@@ -2048,7 +2048,7 @@ list
 -- EXPECT: bytes cut]
 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" 1 0 div
 
--- EXPECT: but the stack has int list int
+-- EXPECT: but the stack has int 'list tag int
 -- a str unified with an int list still prints as the int list the program wrote
 "hi" [104 105] eq drop [104 105] 1 plus
 
@@ -2098,3 +2098,23 @@ list
 -- a word that hands its input back takes every tag its outputs name
 () [dict "ok" int insert "no" str insert either] [dict "ok" int insert "no" str insert either] effect 'id let
 5 ok 'r let  r {'ok (drop 1)} case drop  r id drop
+
+-- EXPECT: 'gx' takes dict "x" 'a copy insert "_" 'b copy insert rec
+-- a copyable open rest prints as copy, so the type pastes back with the same meaning
+('x at) [dict "x" 'a copy insert "_" 'b copy insert rec] ['a copy] effect 'gx let 5 gx
+
+-- EXPECT: 'e var insert rec insert "nil" int insert either 'e as] fn
+-- each printed recursive type binds its own name with as: a signature refuses one name bound twice
+(dup) [dict "cons" dict "hd" int insert "tl" 'l var insert rec insert "nil" int insert either 'l as] [] effect 'f let
+
+-- EXPECT: dict "c\\d" int insert "a\"b" int insert rec
+-- a key prints as a string literal, escaped
+({'a"b 1 'c\d 2}) [] [] effect 'f let
+
+-- EXPECT: '39 copy insert "...
+-- a type cut at its buffer ends in ..., even when the buffer fills exactly before the cut
+(dup 'kkkkk00 at drop dup 'kkkkk01 at drop dup 'kkkkk02 at drop dup 'kkkkk03 at drop dup 'kkkkk04 at drop dup 'kkkkk05 at drop dup 'kkkkk06 at drop dup 'kkkkk07 at drop dup 'kkkkk08 at drop dup 'kkkkk09 at drop dup 'kkkkk10 at drop dup 'kkkkk11 at drop dup 'kkkkk12 at drop dup 'kkkkk13 at drop dup 'kkkkk14 at drop dup 'kkkkk15 at drop dup 'kkkkk16 at drop dup 'kkkkk17 at drop dup 'kkkkk18 at drop dup 'kkkkk19 at drop dup 'kkkkk20 at drop dup 'kkkkk21 at drop dup 'kkkkk22 at drop dup 'kkkkk23 at drop dup 'kkkkk24 at drop dup 'kkkkk25 at drop dup 'kkkkk26 at drop dup 'kkkkk27 at drop dup 'kkkkk28 at drop dup 'kkkkk29 at drop dup 'kkkkk30 at drop dup 'kkkkk31 at drop dup 'kkkkk32 at drop dup 'kkkkk33 at drop dup 'kkkkk34 at drop dup 'kkkkk35 at drop dup 'kkkkk36 at drop dup 'kkkkk37 at drop dup 'kkkkk38 at drop dup 'kkkkk39 at drop dup 'kkkkk40 at drop dup 'kkkkk41 at drop dup 'kkkkk42 at drop dup 'kkkkk43 at drop dup 'kkkkk44 at drop dup 'kkkkk45 at drop dup 'kkkkk46 at drop dup 'kkkkk47 at drop dup 'kkkkk48 at drop dup 'kkkkk49 at drop dup 'kkkkk50 at drop dup 'kkkkk51 at drop dup 'kkkkk52 at drop dup 'kkkkk53 at drop dup 'kkkkk54 at drop dup 'kkkkk55 at drop dup 'kkkkk56 at drop dup 'kkkkk57 at drop dup 'kkkkk58 at drop dup 'kkkkk59 at drop) 'big let 5 big
+
+-- EXPECT: "éééééééééééé22" 'w copy insert "é...
+-- a cut never splits a UTF-8 character
+(dup 'éééééééééééé00 at drop dup 'éééééééééééé01 at drop dup 'éééééééééééé02 at drop dup 'éééééééééééé03 at drop dup 'éééééééééééé04 at drop dup 'éééééééééééé05 at drop dup 'éééééééééééé06 at drop dup 'éééééééééééé07 at drop dup 'éééééééééééé08 at drop dup 'éééééééééééé09 at drop dup 'éééééééééééé10 at drop dup 'éééééééééééé11 at drop dup 'éééééééééééé12 at drop dup 'éééééééééééé13 at drop dup 'éééééééééééé14 at drop dup 'éééééééééééé15 at drop dup 'éééééééééééé16 at drop dup 'éééééééééééé17 at drop dup 'éééééééééééé18 at drop dup 'éééééééééééé19 at drop dup 'éééééééééééé20 at drop dup 'éééééééééééé21 at drop dup 'éééééééééééé22 at drop dup 'éééééééééééé23 at drop dup 'éééééééééééé24 at drop dup 'éééééééééééé25 at drop dup 'éééééééééééé26 at drop dup 'éééééééééééé27 at drop dup 'éééééééééééé28 at drop dup 'éééééééééééé29 at drop dup 'éééééééééééé30 at drop dup 'éééééééééééé31 at drop dup 'éééééééééééé32 at drop dup 'éééééééééééé33 at drop dup 'éééééééééééé34 at drop dup 'éééééééééééé35 at drop dup 'éééééééééééé36 at drop dup 'éééééééééééé37 at drop dup 'éééééééééééé38 at drop dup 'éééééééééééé39 at drop dup 'éééééééééééé40 at drop dup 'éééééééééééé41 at drop dup 'éééééééééééé42 at drop dup 'éééééééééééé43 at drop dup 'éééééééééééé44 at drop dup 'éééééééééééé45 at drop dup 'éééééééééééé46 at drop dup 'éééééééééééé47 at drop dup 'éééééééééééé48 at drop dup 'éééééééééééé49 at drop dup 'éééééééééééé50 at drop dup 'éééééééééééé51 at drop dup 'éééééééééééé52 at drop dup 'éééééééééééé53 at drop dup 'éééééééééééé54 at drop dup 'éééééééééééé55 at drop dup 'éééééééééééé56 at drop dup 'éééééééééééé57 at drop dup 'éééééééééééé58 at drop dup 'éééééééééééé59 at drop) 'big let 5 big

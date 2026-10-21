@@ -1902,4 +1902,9 @@ dict "k" 1 insert dict "k" 2 insert eq not assert
 -2.5 fabs 2.5 eq assert
 [3 1 2] sort [1 2 3] eq assert
 
+-- a type copied from a type error's message checks as a signature
+('x at) [dict "x" 'a copy insert "_" 'b var insert rec] ['a copy] effect 'gx let {'x 1 'y 2} gx 1 eq assert
+({'cons ('tl at len-l 1 plus) 'nil (drop 0)} case) [dict "cons" dict "tl" 'a var insert "_" 'b var insert rec insert "nil" 'c copy insert either 'a as] [int] effect 'len-l let
+{'tl 0 'nil tag} 'cons tag len-l 1 eq assert
+
 "All tests passed!" print

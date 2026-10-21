@@ -273,7 +273,7 @@ Key-value maps keyed by symbols.
 5 'n let {'x n 'y n 1 plus}  -- {'x 5 'y 6}
 ```
 
-`at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. A record's type names its keys and the type of each value, `{'x int 'y int}`. A record has the keys its literal names: the literal runs its code where the program reaches it, so a value can come from a name or a computation. `into` replaces the value of a key the record has, and the new value may have another type; it never adds a key, so `{} 10 'x into` is refused. A word that reads `'k` from its input takes any record that has `'k`, so every caller must pass one. Records in one list, or left by the two branches of an `if`, have the same keys. The key is written as a literal right before `at`, `into` or `edit`; for keys that are data, use a dict.
+`at` and `edit` never fail: the checker proves the record has the key, and refuses the program otherwise. A record's type names its keys and the type of each value, `dict "x" int insert "y" int insert rec`. A record has the keys its literal names: the literal runs its code where the program reaches it, so a value can come from a name or a computation. `into` replaces the value of a key the record has, and the new value may have another type; it never adds a key, so `{} 10 'x into` is refused. A word that reads `'k` from its input takes any record that has `'k`, so every caller must pass one. Records in one list, or left by the two branches of an `if`, have the same keys. The key is written as a literal right before `at`, `into` or `edit`; for keys that are data, use a dict.
 
 ### dicts
 
@@ -369,24 +369,24 @@ A body's type is its stack effect: `(1 plus)` takes an int and leaves an int, an
 
 ### types
 
-| Type | Value | In a signature | In a message |
-|------|-------|----------------|--------------|
-| int, float, symbol | `1` `1.5` `'a` | `int` `float` `sym` | `int` `float` `sym` |
-| list | `[1 2]` | `int 'list tag` | `int list` |
-| string | `"hi"` | `str` (a list of bytes) | `str` |
-| body | `(1 plus)` | `[int] [int] fn` | `( int -> int )` |
-| record | `{'x 1}` | `dict "x" int insert rec` | `{'x int}` |
-| tagged | `5 'n tag`, `5 ok`, `"e" no` | `dict "n" int insert "z" [] [] fn insert either` | `{'n int 'z ()} either` |
-| dict | `dict` | `int 'dict tag` | `int dict` |
-| box | `5 box` | `int 'box tag` | `int box` |
-| socket | `0 tcp-listen must` | `socket` | `socket` |
-| variable | | `'a var`, or `'a copy` when copyable | `'a`, `'a copyable` |
+| Type | Value | In a signature |
+|------|-------|----------------|
+| int, float, symbol | `1` `1.5` `'a` | `int` `float` `sym` |
+| list | `[1 2]` | `int 'list tag` |
+| string | `"hi"` | `str` (a list of bytes) |
+| body | `(1 plus)` | `[int] [int] fn` |
+| record | `{'x 1}` | `dict "x" int insert rec` |
+| tagged | `5 'n tag`, `5 ok`, `"e" no` | `dict "n" int insert "z" [] [] fn insert either` |
+| dict | `dict` | `int 'dict tag` |
+| box | `5 box` | `int 'box tag` |
+| socket | `0 tcp-listen must` | `socket` |
+| variable | | `'a var`, or `'a copy` when copyable |
 
 A signature is a promise for every type it allows, so `'a var 'list tag` means "a list of whatever element type the caller picks": a body that leaves an int list must say `int 'list tag`.
 
-A tagged type lists each tag with its payload's type, as a record type lists each key with its value's type. `5 'n tag` and `"x" 'n tag` may appear in one program: each value's type says what its `'n` holds. `then`, `pthen`, `default` and `must` take a result, `{'ok 'a 'no 'b} either`.
+A tagged type lists each tag with its payload's type, as a record type lists each key with its value's type. `5 'n tag` and `"x" 'n tag` may appear in one program: each value's type says what its `'n` holds. `then`, `pthen`, `default` and `must` take a result, `dict "ok" 'a var insert "no" 'b var insert either`.
 
-A type may contain itself through a tag payload that holds no body. Recursive data needs no declaration: `({'cons ('tl at len-l 1 plus) 'nil (drop 0)} case) 'len-l let` takes `({'cons {'tl 'a | ..b} 'nil 'c copyable} either 'a as)`, where `'a as` names the whole type inside itself. A body that takes the tagged value holding it is refused.
+A type may contain itself through a tag payload that holds no body. Recursive data needs no declaration: `({'cons ('tl at len-l 1 plus) 'nil (drop 0)} case) 'len-l let` takes `dict "cons" dict "tl" 'a var insert "_" 'b var insert rec insert "nil" 'c copy insert either 'a as`, where `'a as` names the whole type inside itself. A body that takes the tagged value holding it is refused.
 
 ### ownership
 
@@ -408,7 +408,7 @@ A signature can also come first, as `'name [ins] [outs] effect`; the body later 
 (3 mul) 'triple let
 ```
 
-A type is an ordinary value, built by prelude words, so `[int str] len` is 2. The checker reads the two lists before `effect` as types, as `at` reads its key, and the program skips them when it runs. The type words:
+A type error prints each type in this notation, so a type copied from a message pastes into a signature. A type is an ordinary value, built by prelude words, so `[int str] len` is 2. The checker reads the two lists before `effect` as types, as `at` reads its key, and the program skips them when it runs. The type words:
 
 - `int`, `float`, `sym`, `str` and `socket`.
 - `'a var` is a type variable, and `'a copy` one that the body may copy or drop. One name is one variable in the whole signature.

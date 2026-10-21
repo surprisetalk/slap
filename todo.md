@@ -8,32 +8,37 @@
       loop differently when it grows, so a fast path inlined there can make
       zoom slower: keep new paths in noinline helpers. Tradeoff: each fast
       path is more C to keep correct.
-      Blocked: approve the design for the next cut (step 2).
-  1. Benchmark first, interleaved, minimum of 3 runs: the microbenchmark
+      Blocked: approve a design for the next cut (step 3).
+  1. Benchmark first, by CPU time, minimum of 10 rounds, order alternated
+     each round (ABBA): without it the first binary in a pair wins by ~5%.
+     The microbenchmark
      `2000000 'N let ('label let 'body let millis 't0 let 0 (dup N lt) (body apply 1 plus) while drop millis t0 sub 'dt let label print dt print) 'bench let`
      with `() "empty" bench`, `(1 (2) (3) if drop) "if" bench`,
-     `(5 'v let) "let" bench`, `(1 2 (drop) dip drop) "dip" bench`; zoom's
-     tick without SDL (zoom.slap, `start`, and zoom-sdl's tick body with
-     `fill-rect` as five `drop`s, run 4 times); the 600 KB feed; and
-     uxn.slap on `tests/.uxn-refs/drool.rom` for 60 frames.
-  2. Design the next cut and get it approved; callgrind on zoom's tick (pc,
-     after body_starts): per-primitive staged/aux bookkeeping in eval_run
-     ~12%, frame scans for lookups ~9%, nth_must's scan ~7%.
-  3. Keep a change only if every benchmark in step 1 gets no slower.
+     `(5 'v let) "let" bench`, `(1 2 (drop) dip drop) "dip" bench`,
+     `(1 2 swap drop drop) "swap" bench`; zoom's tick without SDL
+     (zoom.slap, X0/XW/Y0/YW at 640x480, `start`, then `0 (plot) step` to
+     `3 (plot) step`, plot ending in five `drop`s); the 600 KB feed; and
+     uxn.slap (patch_geometry 320x240) on drool.rom for 60 frames.
+  2. Callgrind on zoom's tick (pc, after body_starts): per-primitive
+     staged/aux bookkeeping in eval_run ~12%, frame scans for lookups ~9%,
+     nth_must's scan ~7%.
+  3. Tried and refused: a `VF_PLAIN` flag that let ~25 stack and arithmetic
+     primitives skip the staged/aux bookkeeping. ABBA: swap +11%, dip +10%,
+     zoom +6%. The branch in eval_run's loop costs more than the
+     bookkeeping. Next: design a cut for frame scans or nth_must.
+  4. Keep a change only if every benchmark in step 1 gets no slower.
 
-- [ ] You copy a type from a type error into a signature and it checks:
-      messages print types in the signature notation. Today ty_show prints
-      `( ..a int -> ..a int )` and `{'ok int 'no str} either`, which a
-      signature cannot use. Tradeoff: messages grow, as a result prints
-      `dict "ok" 'a var insert "no" 'b var insert either`.
-      Blocked: approve the design (step 2) before building.
-  1. Tests first: change the EXPECT lines in errors.slap that quote a type
-     to the new notation; check they fail.
-  2. ty_show prints `'a var` (`'a copy` when copyable), `T 'list tag`,
-     `[ins] [outs] fn` with `'s rest` heads, dicts of types with rec or
-     either, `"_" 'r var insert` for an open rest, and `T 'a as`.
-  3. readme's type table drops the "In a message" column; claude.md's
-     Checker paragraph drops the shorter-notation sentence.
+- [ ] You paste the type of a word built on `each`, `fold`, `lend`,
+      `mutate`, `dip` or `repeat` from a message into its signature, and it
+      checks. Today `(each) ['a copy 'list tag ['b sealed 'a copy] ['b sealed
+      'c copy] fn] ['c copy 'list tag] effect 'ee let` is refused: "this body
+      must turn its inputs into one value". HEAD refuses it too.
+      Blocked: approve a design.
+  1. Find why a signature's `'b sealed` does not unify with each's sealed
+     rest (ty_unify, the `sealed` branch near "cannot reach the stack").
+  2. For dip and repeat, `takes` omits the word's own rest, so the pasted
+     body's `['c rest]` is unrelated to it. Decide: print the word's rest
+     in `takes`, or say that such a type does not paste.
 
 - [ ] You run a pico8 cart headless for N frames and its screen matches a
       reference render. Decided up front: pico8 first; tic80 reuses the
@@ -57,8 +62,8 @@
   7. API subset: cls pset pget rectfill circfill line spr map btn print rnd flr
      sin cos; _init/_update/_draw.
   8. tests/run_pico8.py runs a small cart headless and diffs a palette-index
-     pixel dump against a committed reference made with pico8's export (or
-     zepto8).
+     pixel dump against a committed reference. Decided: zepto8 makes the
+     references, built on pc; real pico8 needs a license.
   9. Then tic80 on the same lua.slap; duskos and decker after.
 
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
@@ -74,9 +79,9 @@
       share a charmbracelet-like UI. A dir app opens a general thing. A file
       app opens one specific thing, and it is always a viewer and an editor.
       With no subject, a file app opens the last file. A file app saves by
-      tags only, with no file name. Decide: the first app (prose, home, stuff
-      and shell were too few options); whether you publish your own ware
-      registry.
+      tags only, with no file name. Decide: the first app from the shortlist
+      clock, feed, book, sheet, music, chat/claude; whether you publish your
+      own ware registry.
       - Dir apps:
         - home: the launcher. A grid of app icons (or text) and widgets, and
           search. Or maybe timeline history with graphics?

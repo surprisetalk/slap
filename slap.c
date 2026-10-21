@@ -654,29 +654,36 @@ static int ty_prot_of(int k) {
 
 /* ---- printing, for messages ---- */
 static int ty_print_names[64], ty_print_count;
+/* One printed type's buffer: signature notation spells a record as `dict "k" T insert ... rec`. */
+#define TY_SHOW_MAX 1024
 /* ty_show's calls for one message: a message about a large shared type stops at a budget. */
 static int ty_show_calls;
-static void ty_print_var(char *out, size_t cap, int t, char prefix) {
+static void ty_print_var(char *out, size_t cap, int t) {
     int k = 0; while (k < ty_print_count && ty_print_names[k] != t) k++;
-    if (k == 64) { snprintf(out, cap, "%c_", prefix); return; }
+    if (k == 64) { snprintf(out, cap, "'_"); return; }
     if (k == ty_print_count) ty_print_names[ty_print_count++] = t;
-    if (k < 26) snprintf(out, cap, "%c%c", prefix, 'a' + k); else snprintf(out, cap, "%c%d", prefix, k);
+    if (k < 26) snprintf(out, cap, "'%c", 'a' + k); else snprintf(out, cap, "'%d", k);
 }
 static void ty_show(char *out, size_t cap, int t, int depth);
-/* Append to out, cutting at its end: a message may be long, but never longer than its buffer. */
+/* Append to out. A message may be long, but never longer than its buffer: a cut ends in "...", so a
+   type that lost its last word (rec, either, fn) says so. The mark backs up to a UTF-8 lead byte, so it
+   never splits a character. Every buffer here holds at least 64 bytes. */
 static void ty_put(char *out, size_t cap, size_t *len, const char *fmt, ...) {
-    if (*len + 1 >= cap) return;
-    va_list ap; va_start(ap, fmt); int n = vsnprintf(out + *len, cap - *len, fmt, ap); va_end(ap);
-    *len = n < 0 || *len + (size_t)n >= cap ? cap - 1 : *len + (size_t)n;
+    if (*len + 1 < cap) {
+        va_list ap; va_start(ap, fmt); int n = vsnprintf(out + *len, cap - *len, fmt, ap); va_end(ap);
+        if (n >= 0 && *len + (size_t)n < cap) { *len += (size_t)n; return; }
+    }
+    size_t p = cap - 4; while (p > 0 && ((unsigned char)out[p] & 0xC0) == 0x80) p--;
+    memcpy(out + p, "...", 4); *len = cap - 1;
 }
+/* A body type always names its rest, since a signature's body type without one runs on its list's rest. */
 static void ty_show_stack(char *out, size_t cap, int s, int depth) {
-    /* bottom first, as a signature reads: the rest, then each value up to the top */
     int items[32], n = 0; s = ty_find(s);
     while (ty[s].kind == K_SCONS && n < 32) { items[n++] = ty[s].a; s = ty_find(ty[s].b); }
     size_t len = 0; out[0] = 0;
-    if (ty[s].kind == K_SVAR) { char v[16]; ty_print_var(v, sizeof v, s, '.'); ty_put(out, cap, &len, ".%s", v); }
+    if (ty[s].kind == K_SVAR) { char v[16]; ty_print_var(v, sizeof v, s); ty_put(out, cap, &len, "%s %s", v, ty[s].sealed ? "sealed" : "rest"); }
     else if (ty[s].kind == K_SCONS) ty_put(out, cap, &len, "...");
-    for (int k = n - 1; k >= 0; k--) { char e[256]; ty_show(e, sizeof e, items[k], depth + 1); ty_put(out, cap, &len, "%s%s", len ? " " : "", e); }
+    for (int k = n - 1; k >= 0; k--) { char e[TY_SHOW_MAX]; ty_show(e, sizeof e, items[k], depth + 1); ty_put(out, cap, &len, "%s%s", len ? " " : "", e); }
 }
 /* The top n values of a stack, bottom first. */
 static void ty_show_top(char *out, size_t cap, int s, int n) {
@@ -684,46 +691,55 @@ static void ty_show_top(char *out, size_t cap, int s, int n) {
     while (ty[s].kind == K_SCONS && k < n && k < 32) { items[k++] = ty[s].a; s = ty_find(ty[s].b); }
     size_t len = 0; out[0] = 0;
     if (k < n && k < 32) ty_put(out, cap, &len, k ? "only %d value%s:" : "nothing", k, k == 1 ? "" : "s");
-    for (int j = k - 1; j >= 0; j--) { char e[256]; ty_show(e, sizeof e, items[j], 1); ty_put(out, cap, &len, "%s%s", len ? " " : "", e); }
+    for (int j = k - 1; j >= 0; j--) { char e[TY_SHOW_MAX]; ty_show(e, sizeof e, items[j], 1); ty_put(out, cap, &len, "%s%s", len ? " " : "", e); }
 }
-/* The tagged types ty_show is inside, outermost first, and whether each was met again inside itself. */
-static int ty_show_path[16], ty_show_again[16], ty_show_n;
+/* The tagged types ty_show is inside, outermost first, and the ty_print_var key of the name each binds
+   with as once it is met again inside itself; 0 until then. */
+static int ty_show_path[16], ty_show_key[16], ty_show_n;
 static void ty_show(char *out, size_t cap, int t, int depth) {
     if (depth == 0) ty_show_calls = 0;
     if (depth > 8 || ++ty_show_calls > 2000) { snprintf(out, cap, "..."); return; }
-    t = ty_find(t); char a[256], b[256];
+    t = ty_find(t); char a[TY_SHOW_MAX], b[TY_SHOW_MAX]; size_t len = 0;
     switch (ty[t].kind) {
-    case K_VAR: { ty_print_var(out, cap, t, '\''); size_t l = strlen(out);
-        snprintf(out + l, cap - l, "%s%s", ty[t].prot & P_COPY ? " copyable" : "", ty[t].prot & P_NOFN ? " no-body" : ""); return; }
-    case K_INT: snprintf(out, cap, "int"); return;
-    case K_FLOAT: snprintf(out, cap, "float"); return;
-    case K_SYM: snprintf(out, cap, "sym"); return;
-    case K_LIST: { int e = ty_find(ty[t].a); if (ty[t].sym && ty[e].kind == K_INT) { snprintf(out, cap, "str"); return; } ty_show(a, sizeof a, e, depth + 1); snprintf(out, cap, "%s list", a); return; }
-    case K_DICT: ty_show(a, sizeof a, ty[t].a, depth + 1); snprintf(out, cap, "%s dict", a); return;
-    case K_BOX: ty_show(a, sizeof a, ty[t].a, depth + 1); snprintf(out, cap, "%s box", a); return;
-    case K_SOCK: snprintf(out, cap, "socket"); return;
-    case K_RVAR: { char v[16]; ty_print_var(v, sizeof v, t, '.'); snprintf(out, cap, "{| .%s}", v); return; }
-    case K_FN: ty_show_stack(a, sizeof a, ty[t].a, depth); ty_show_stack(b, sizeof b, ty[t].b, depth); snprintf(out, cap, "( %s%s->%s%s )", a, *a ? " " : "", *b ? " " : "", b); return;
+    /* P_NOFN has no signature spelling; the message that needs it says so. */
+    case K_VAR: ty_print_var(a, sizeof a, t); ty_put(out, cap, &len, "%s %s", a, ty[t].prot & P_COPY ? "copy" : "var"); return;
+    case K_INT: ty_put(out, cap, &len, "int"); return;
+    case K_FLOAT: ty_put(out, cap, &len, "float"); return;
+    case K_SYM: ty_put(out, cap, &len, "sym"); return;
+    case K_LIST: { int e = ty_find(ty[t].a); if (ty[t].sym && ty[e].kind == K_INT) { ty_put(out, cap, &len, "str"); return; } ty_show(a, sizeof a, e, depth + 1); ty_put(out, cap, &len, "%s 'list tag", a); return; }
+    case K_DICT: ty_show(a, sizeof a, ty[t].a, depth + 1); ty_put(out, cap, &len, "%s 'dict tag", a); return;
+    case K_BOX: ty_show(a, sizeof a, ty[t].a, depth + 1); ty_put(out, cap, &len, "%s 'box tag", a); return;
+    case K_SOCK: ty_put(out, cap, &len, "socket"); return;
+    case K_FN: ty_show_stack(a, sizeof a, ty[t].a, depth); ty_show_stack(b, sizeof b, ty[t].b, depth); ty_put(out, cap, &len, "[%s] [%s] fn", a, b); return;
     case K_TAG: {
-        /* A recursive type: met again on its own path, it prints as a name, and its first visit binds the name with as. */
-        for (int k = 0; k < ty_show_n; k++) if (ty_show_path[k] == t) { ty_show_again[k] = 1; ty_print_var(out, cap, t, '\''); return; }
-        int k = ty_show_n++; ty_show_path[k] = t; ty_show_again[k] = 0;
+        /* A recursive type: met again on its own path, it prints as a variable that this visit binds with as.
+           Each visit takes a fresh name, since a signature refuses one name bound twice. A fresh name's key
+           is negative, so it is never a term's. */
+        for (int k = 0; k < ty_show_n; k++) if (ty_show_path[k] == t) {
+            if (!ty_show_key[k]) ty_show_key[k] = -1 - ty_print_count;
+            ty_print_var(b, sizeof b, ty_show_key[k]); ty_put(out, cap, &len, "%s var", b); return; }
+        int k = ty_show_n++; ty_show_path[k] = t; ty_show_key[k] = 0;
         ty_show(a, sizeof a, ty[t].a, depth + 1); ty_show_n--;
-        if (ty_show_again[k]) { char v[16]; ty_print_var(v, sizeof v, t, '\''); snprintf(out, cap, "(%s either %s as)", a, v); }
-        else snprintf(out, cap, "%s either", a);
+        if (ty_show_key[k]) { ty_print_var(b, sizeof b, ty_show_key[k]); ty_put(out, cap, &len, "%s either %s as", a, b); }
+        else ty_put(out, cap, &len, "%s either", a);
         return; }
-    case K_REC: case K_REXT: case K_RNIL: {
-        size_t len = 0; int r = ty[t].kind == K_REC ? ty_find(ty[t].a) : t, n = 0; ty_put(out, cap, &len, "{");
+    /* A row is a dict of types; the key "_" holds an open rest. */
+    case K_REC: case K_REXT: case K_RNIL: case K_RVAR: {
+        int r = ty[t].kind == K_REC ? ty_find(ty[t].a) : t; ty_put(out, cap, &len, "dict");
         for (int hops = 0; ty[r].kind == K_REXT; hops++) {
             if (hops == ty_n) die("type checker bug: a row links in a cycle");
-            if (!ty_absent(r)) { ty_show(a, sizeof a, ty[r].b, depth + 1); ty_put(out, cap, &len, "%s'%s %s", n ? " " : "", sym_name(ty[ty[r].a].sym), a); n++; }
+            if (!ty_absent(r)) {
+                ty_show(a, sizeof a, ty[r].b, depth + 1); ty_put(out, cap, &len, " \"");
+                for (const char *c = sym_name(ty[ty[r].a].sym); *c; c++) ty_put(out, cap, &len, *c == '"' || *c == '\\' ? "\\%c" : "%c", *c);
+                ty_put(out, cap, &len, "\" %s insert", a); }
             r = ty_find(ty[r].c);
         }
-        if (ty[r].kind == K_RVAR) { char v[16]; ty_print_var(v, sizeof v, r, '.'); ty_put(out, cap, &len, "%s| .%s", n ? " " : "", v); }
-        ty_put(out, cap, &len, "}"); return;
+        if (ty[r].kind == K_RVAR) { ty_print_var(a, sizeof a, r); ty_put(out, cap, &len, " \"_\" %s %s insert", a, ty[r].prot & P_COPY ? "copy" : "var"); }
+        if (ty[t].kind == K_REC) ty_put(out, cap, &len, " rec");
+        return;
     }
     case K_SVAR: case K_SNIL: case K_SCONS: ty_show_stack(out, cap, t, depth); return;
-    default: snprintf(out, cap, "?"); return;
+    default: die("type checker bug: ty_show met a term of kind %d", ty[t].kind);
     }
 }
 
@@ -732,7 +748,7 @@ static void ty_show(char *out, size_t cap, int t, int depth) {
    lowers the levels of its variables to v's. A type may contain itself only through a tag payload that
    holds no body, so a path to v that crosses a tagged type and no body type is no occurrence: 1 is an
    occurrence, 3 one through a tag payload that holds a body, 2 a rigid variable from outside. */
-static char ty_why[512];
+static char ty_why[2*TY_SHOW_MAX];
 /* The word whose body is being checked against its signature, plus one; 0 for none. A presence its body
    makes present records it, so a caller's refusal can say why. */
 static uint32_t ty_defining;
@@ -791,9 +807,9 @@ static int ty_bind(int v, int t) {
     if (ty_fixed(v) && !(ty_isvar(ty[t].kind) && !ty_fixed(t))) {
         if (ty[v].sealed || (ty_isvar(ty[t].kind) && ty[t].sealed)) { snprintf(ty_why, sizeof ty_why, "this body must turn its inputs into one value and cannot reach the stack below them"); return 1; }
         if (ty[v].kind == K_SVAR && (ty[t].kind == K_SCONS || ty[t].kind == K_SNIL)) { snprintf(ty_why, sizeof ty_why, "the body takes or leaves a different number of values than the signature declares"); ty_rigid_rest = 1; return 1; }
-        if (ty[v].kind == K_RVAR && (ty[t].kind == K_REXT || ty[t].kind == K_RNIL)) { char s[256]; ty_show(s, sizeof s, t, 0);
+        if (ty[v].kind == K_RVAR && (ty[t].kind == K_REXT || ty[t].kind == K_RNIL)) { char s[TY_SHOW_MAX]; ty_show(s, sizeof s, t, 0);
             snprintf(ty_why, sizeof ty_why, "the signature's open %s ends in %s the caller chooses, but here the body needs them to be %s", ty_row_tag ? "tag set" : "record", ty_row_tag ? "tags" : "keys", ty[t].kind == K_RNIL ? "none" : s); return 1; }
-        char s[256]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a type the signature leaves open is %s here", s); return 1; }
+        char s[TY_SHOW_MAX]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a type the signature leaves open is %s here", s); return 1; }
     if (ty_fixed(v)) { int x = v; v = t; t = x; }
     int occ = ty_occurs(v, t, ty[v].level);
     if (occ == 2) { snprintf(ty_why, sizeof ty_why, "a type the signature leaves open would have to be a type from outside the body"); return 1; }
@@ -802,10 +818,10 @@ static int ty_bind(int v, int t) {
         /* The stack does not end in v, so v is inside a value on it: a body's type that names this stack. */
         if (ty[v].kind == K_SVAR && n && x != v) snprintf(ty_why, sizeof ty_why, "a copy of the body lies below it on the stack. dup, or a second lookup of a body bound with let, gives both copies one type, so one copy cannot run while the other lies below it");
         else if (ty[v].kind == K_SVAR && n) ty_depth_why = 1, snprintf(ty_why, sizeof ty_why, "one path leaves %d more value%s on the stack than the other, so a branch, clause, loop pass or recursive call changes the stack's depth", n, n == 1 ? "" : "s");
-        else if (occ == 3) { char s[256], w[64]; ty_show(w, sizeof w, v, 0); ty_show(s, sizeof s, t, 0);
+        else if (occ == 3) { char s[TY_SHOW_MAX], w[64]; ty_show(w, sizeof w, v, 0); ty_show(s, sizeof s, t, 0);
             snprintf(ty_why, sizeof ty_why, "%s would have to be %s, which holds it inside a body. A type contains itself only through a tag payload that holds no body", w, s); }
         else if (ty[v].kind == K_RVAR) snprintf(ty_why, sizeof ty_why, ty_row_tag ? "a tagged type would have to contain itself: one path adds a tag the other has not" : "a record would have to contain itself: one path adds a field the other has not");
-        else { char s[256]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a value would have to contain itself, as %s", s); }
+        else { char s[TY_SHOW_MAX]; ty_show(s, sizeof s, t, 0); snprintf(ty_why, sizeof ty_why, "a value would have to contain itself, as %s", s); }
         return 1; }
     if ((ty[v].kind == K_VAR || ty[v].kind == K_RVAR) && ty[v].prot) {
         if (ty[t].kind == ty[v].kind && ty_fixed(t) && (ty[v].prot & ~ty[t].prot)) {
@@ -822,7 +838,7 @@ static int ty_bind(int v, int t) {
                 if (ty_copy_parts(t)) return 1;
                 need &= ~P_COPY; }
             if ((ty_prot_of(ty[t].kind) & need) != need) {
-                char s[256]; ty_show(s, sizeof s, t, 0);
+                char s[TY_SHOW_MAX]; ty_show(s, sizeof s, t, 0);
                 if (ty[t].kind == K_BOX) snprintf(ty_why, sizeof ty_why, "%s is a box: it cannot be copied, dropped, bound or stored. Free it, or pass it to a word that takes it", s);
                 else snprintf(ty_why, sizeof ty_why, "%s is not copyable", s);
                 return 1; }
@@ -931,7 +947,7 @@ static int ty_unify_chain(int a, int b, int depth) {
     if (ty[a].kind == K_RNIL && ty[b].kind == K_REXT) { int x = a; a = b; b = x; }
     if (ty[a].kind == K_SYM && ty[b].kind == K_SYM) { if (ty[a].sym != ty[b].sym) ty[a].sym = ty[b].sym = 0; return 0; } /* two names met: the value may be either */
     if (ty[a].kind != ty[b].kind && !(ty[a].kind == K_REXT && ty[b].kind == K_RNIL)) {
-        char s1[256], s2[256];
+        char s1[TY_SHOW_MAX], s2[TY_SHOW_MAX];
         if (ty[a].kind == K_SNIL || ty[b].kind == K_SNIL) ty_depth_why = 1, snprintf(ty_why, sizeof ty_why, "the stack is shorter than this needs");
         else {
             ty_show(s2, sizeof s2, b, 0);
@@ -957,7 +973,7 @@ static int ty_unify_chain(int a, int b, int depth) {
         if (pa && ty[ty_find(pa)].kind == K_ABSENT) { a = ty[a].c; b = rest; continue; }
         if (ty_unify_at(ty[a].b, f, depth + 1)) {
             /* the innermost tag names the clash */
-            if (ty_row_tag && !ty_why_tag) { char w[512]; snprintf(w, sizeof w, "'%s has two payload types: %s", sym_name(ty[ty[a].a].sym), ty_why); snprintf(ty_why, sizeof ty_why, "%s", w); ty_why_tag = 1; }
+            if (ty_row_tag && !ty_why_tag) { char w[sizeof ty_why]; snprintf(w, sizeof w, "'%s has two payload types: %s", sym_name(ty[ty[a].a].sym), ty_why); snprintf(ty_why, sizeof ty_why, "%s", w); ty_why_tag = 1; }
             return 1; }
         a = ty[a].c; b = rest; continue;
     }
@@ -1375,7 +1391,7 @@ static void ty_apply(int scheme, const char *who, int line, int user) {
     if (ty_unify(ty[f].a, ty_cur)) {
         Ty *failed = malloc((size_t)(n1 + 1) * sizeof(Ty)); if (!failed) die("type checker: out of memory for %d types", n1);
         memcpy(failed, ty + n0, (size_t)n1 * sizeof(Ty)); memcpy(ty + n0, snap, (size_t)n1 * sizeof(Ty));
-        char want[512], before[512]; int g = f, n = 0;
+        char want[TY_SHOW_MAX], before[TY_SHOW_MAX]; int g = f, n = 0;
         for (int x = ty_find(ty[g].a); ty[x].kind == K_SCONS && n < ty_n; x = ty_find(ty[x].b)) n++;
         ty_show_top(want, sizeof want, ty[g].a, n);
         int tail = ty[ty_stack_tail(ty[f].a)].kind;
@@ -1493,7 +1509,7 @@ static void ty_define(Token *toks, int open, int close, int sig_ins, int sig_out
         if (bad) ty_err(ty_rec_line[k], "'%s' calls itself here with a stack its body does not take: %s.", sym_name(name), ty_why);
     }
     ty_rec_n = keep;
-    if (want) { char a[512], b[512];
+    if (want) { char a[TY_SHOW_MAX], b[TY_SHOW_MAX];
         /* shown before they meet, so the message names each variable once, in the types and in why */
         ty_print_count = 0; ty_show(a, sizeof a, want, 0); ty_show(b, sizeof b, bt, 0);
         if (ty_unify(want, bt)) {
@@ -1548,7 +1564,7 @@ static void ty_case(Token *toks, int open, int close, int line) {
         uint32_t tg = toks[key].as.sym; int p = s;
         if (tg != S_WILD) { p = ty[x].b; x = ty[x].c; }
         ty_print_count = 0;
-        if (ty_unify(ty[body].a, ty_new(K_SCONS, p, rest, 0))) { char ps[256]; ty_show(ps, sizeof ps, p, 0);
+        if (ty_unify(ty[body].a, ty_new(K_SCONS, p, rest, 0))) { char ps[TY_SHOW_MAX]; ty_show(ps, sizeof ps, p, 0);
             if (tg == S_WILD) ty_err(toks[key].line, "the '_ clause gets the tagged value, %s, but its body cannot take it: %s.", ps, ty_why);
             else ty_err(toks[key].line, "the clause for '%s gets its payload, %s, but its body cannot take it: %s.", sym_name(tg), ps, ty_why); }
         else if (ty_unify(ty[body].b, out)) ty_err(toks[key].line, "the clause for '%s does not leave what the other clauses leave: %s.", sym_name(tg), ty_why);
@@ -1693,7 +1709,7 @@ static void ty_range(Token *toks, int i, int end) {
                     if (ty[st].kind == K_SCONS && ty[rec = ty_find(ty[st].a)].kind == K_REC)
                         for (row = ty_find(ty[rec].a); ty[row].kind == K_REXT && ty[ty[row].a].sym != toks[kt].as.sym; row = ty_find(ty[row].c)) {}
                     if (row && ty[row].kind == K_RNIL) {
-                        char rs[256], ex[64] = "…"; Token *vt = kt > 0 ? &toks[kt-1] : 0; ty_print_count = 0; ty_show(rs, sizeof rs, rec, 0);
+                        char rs[TY_SHOW_MAX], ex[64] = "…"; Token *vt = kt > 0 ? &toks[kt-1] : 0; ty_print_count = 0; ty_show(rs, sizeof rs, rec, 0);
                         if (vt && vt->tag == TOK_INT) snprintf(ex, sizeof ex, "%lld", (long long)vt->as.i);
                         else if (vt && vt->tag == TOK_FLOAT) snprintf(ex, sizeof ex, "%g", vt->as.f);
                         else if (vt && vt->tag == TOK_WORD && tyb_find(vt->as.sym) >= 0 && !tyb[tyb_find(vt->as.sym)].word) snprintf(ex, sizeof ex, "%s", sym_name(vt->as.sym));
