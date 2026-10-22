@@ -760,6 +760,7 @@ def steps(slow):
             ),
             "codec": ("python3 tests/run_codec.py", None),
             "utils": ("python3 tests/run_utils.py", None),
+            "lua": ("python3 tests/run_lua.py", None),
         }
     )
     if HAS_SDL:

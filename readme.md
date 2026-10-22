@@ -728,6 +728,7 @@ App demos (terminal build):
 | `todo.slap` | Todo list in a JSON file, decoded with `jd-*` and written with `je-*` |
 | `banner.slap` | Text as ASCII art from a real `.uf1` bitmap font, via `icn.slap` |
 | `plasma.slap` | Writes a 24-bit TGA. Float-only: there is no `sin`, so it builds one |
+| `lua.slap` | A Lua interpreter for pico8's dialect, numbers in 16.16 fixed point: `cat examples/lib/strings.slap examples/lua.slap \| ./slap prog.lua`. It compiles to a flat int bytecode list and steps it in a `while` loop. So far it runs expressions and call statements; `tests/run_lua.py` diffs it against the system `lua` |
 
 ```bash
 cat examples/lib/strings.slap examples/lib/parse.slap examples/wiki.slap | ./slap 8080 examples/wiki-pages

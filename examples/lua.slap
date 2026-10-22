@@ -1,0 +1,462 @@
+-- lua.slap: a Lua interpreter for pico8's dialect, the base of a pico8 cart runner.
+--
+--   cat examples/lib/strings.slap examples/lua.slap | ./slap prog.lua
+--
+-- runs prog.lua and writes what its `print` calls print. tests/run_lua.py diffs
+-- that against the system `lua` on tests/lua/*.lua.
+--
+-- ===== what this is =====
+--
+-- Source -> tokens -> a flat int bytecode list -> a `while` loop that steps it.
+-- Nothing recurses per token or per instruction; the compiler recurses only per
+-- nesting level of an expression, and a bound caps that.
+--
+-- A Lua value is one int, payload*8 + tag:
+--   0 nil  1 bool  2 number  3 string  4 table  5 closure  6 builtin  7 cell
+-- nil is 0, false is 1, true is 9. A number's payload is pico8's signed 16.16
+-- fixed point, so 1 is 65536*8+2. Tagged slap values lose here: they span
+-- several slots, so `nth` over a list of them walks the list.
+--
+-- A string's payload is where its bytes live: a payload p >= 0 is the record at
+-- p in the token list (the compiler's string literals and names stay there), and
+-- p < 0 is the record at -1-p in the machine's string area, which concatenation
+-- and tostr fill. Either record is [len bytes...]. Strings are never interned:
+-- `==` on two strings compares bytes.
+--
+-- ===== the one discipline rule =====
+--
+-- While the program runs, the stack holds `machine heap`: the machine, one flat
+-- int list, and above it the heap, one dict. A dict is one slot, so `dip` over
+-- it is O(1), and every machine read or write runs in a dip. Never swap, dip
+-- over or let-bind the machine; never let-bind the heap either, since a lookup
+-- of a bound dict copies it.
+
+-- ===== tokens =====
+-- A token is a record in one flat int list, so `nth` reads it in O(1):
+--   name [1 line len bytes...]   number [2 line raw]   string [3 line len bytes...]
+--   end of input [4 line]        keyword or symbol [id line]
+-- A keyword's id is 10 plus its index in KW, a symbol's 40 plus its index in SY.
+["and" "break" "do" "else" "elseif" "end" "false" "for" "function" "goto" "if" "in"
+ "local" "nil" "not" "or" "repeat" "return" "then" "true" "until" "while"] 'KW let
+-- Longest first wherever one symbol starts another: the lexer takes the first match.
+["..." "..=" ".." ">>>=" ">>>" ">><" ">>=" ">>" "<<>" "<<=" "<<" "^^=" "^^" "==" "~=" "!="
+ "<=" ">=" "+=" "-=" "*=" "/=" "%=" "\\=" "^=" "|=" "&=" "::" "+" "-" "*" "/" "%" "^" "#"
+ "&" "~" "|" "<" ">" "=" "(" ")" "{" "}" "[" "]" ";" ":" "," "." "\\" "?"] 'SY let
+('s let KW s index-of must 10 plus) 'kw-id let
+('s let SY s index-of must 40 plus) 'sy-id let
+
+1 'T-NAME let  2 'T-NUM let  3 'T-STR let  4 'T-EOF let
+
+-- lua-lex: (src -- toks).  Dies on input that is not a token, naming the line.
+('_lsrc let
+  _lsrc len '_ln let
+  -- _lc: (i -- c).  The byte at i, or -1 past the end.
+  ('_lsrc nth {'ok () 'no (drop -1)} case) '_lc let
+  ('c let c 97 ge c 122 le and c 65 ge c 90 le and or c 95 eq or) '_lalpha let
+  ('c let c 48 ge c 57 le and) '_ldigit let
+  (dup _lalpha swap _ldigit or) '_lalnum let
+  ('ln let "lua: line " ln int-str cat ": " cat swap cat fail) '_lfail let
+
+  -- _lline: (i -- i').  Skips to the newline that ends the line, not past it.
+  ((dup _lc dup 10 eq not swap 0 ge and) (1 plus) while) '_lline let
+
+  -- _llong: (i ln -- i' ln' bytes).  i is just past `[[`.  Reads to `]]`, counting
+  -- lines; a newline right after `[[` is not part of the text, as in Lua.
+  ('lln let 'li let
+   li _lc 10 eq (li 1 plus lln 1 plus) (li lln) if 'ln0 let 'i0 let
+   [] i0 ln0 0
+   (dup 0 eq)
+   (drop 'ln1 let 'i1 let i1 _lc 'c let
+     c 0 lt ("unfinished long string or comment" ln0 _lfail) (
+     c 93 eq i1 1 plus _lc 93 eq and (i1 2 plus ln1 1) (
+     c push i1 1 plus c 10 eq (ln1 1 plus) (ln1) if 0) if) if)
+   while drop rot) '_llong let
+
+  -- _lmatch: (i s -- 1 or 0).  Does s appear at i?
+  ('ms let 'mi let 0 ms len range 1 ('k let mi k plus _lc k 'ms nth must eq and) fold) '_lmatch let
+  -- _lsym: (i ln -- i' ln' rec)
+  ('sln let 'si let
+   SY (si swap _lmatch) each 1 index-of {
+     'ok ('sk let si sk 'SY nth must len plus sln [] sk 40 plus push sln push)
+     'no (drop "unexpected character " si _lc int-str cat sln _lfail)} case) '_lsym let
+
+  -- _lname: (i ln -- i' ln' rec)
+  ('nln let 'ni let
+   [] ni (dup _lc _lalnum) ('nj let nj _lc push nj 1 plus) while 'ne let 'nb let
+   KW nb index-of {
+     'ok ('nk let ne nln [] nk 10 plus push nln push)
+     'no (drop ne nln [] T-NAME push nln push nb len push nb cat)} case) '_lname let
+
+  -- _ldigits: (n i base max -- n' i' count).  Folds at most max digits at i, in base 2, 10 or 16.
+  ('dm let 'db let 0
+   (dup dm lt 'dk let over _lc 'dc let
+    dc 48 ge dc 57 le and (dc 48 sub) (
+    dc 97 ge dc 102 le and (dc 87 sub) (
+    dc 65 ge dc 70 le and (dc 55 sub) (99) if) if) if db lt dk and)
+   ('dn let 'di let 'dv let
+    di _lc 'dc let
+    dc 48 ge dc 57 le and (dc 48 sub) (dc 97 ge dc 102 le and (dc 87 sub) (dc 55 sub) if) if 'dd let
+    dv 1099511627776 lt (dv db mul dd plus) (dv) if di 1 plus dn 1 plus) while) '_ldigits let
+
+  -- _lnum: (i ln -- i' ln' rec).  The raw value is 16.16 fixed point, wrapped to
+  -- 32 bits as pico8 does, so 0xffff is -1.  A decimal fraction rounds to the
+  -- nearest 1/65536; a hex or binary fraction keeps its bits, up to 16 of them.
+  ('uln let 'ui let
+   ui _lc 48 eq ui 1 plus _lc 'u1 let u1 120 eq u1 88 eq or and (16 ui 2 plus) (
+   ui _lc 48 eq u1 98 eq u1 66 eq or and (2 ui 2 plus) (10 ui) if) if 'ua let 'ub let
+   0 ua ub 99 _ldigits 'uc let 'ui2 let 'un let
+   ui2 _lc 46 eq ui2 1 plus _lc 46 eq not and (
+     0 ui2 1 plus ub 99 _ldigits 'fc let 'fi let 'fv let
+     ub 10 eq (
+       fc 9 gt ("a decimal fraction has more than 9 digits" uln _lfail) () if
+       1 fc (10 mul) repeat 'fs let fv 65536 mul fs 2 div plus fs div)
+     (ub 16 eq (4) (1) if fc mul 'fbits let
+       fbits 16 gt ("a fraction has more than 16 bits" uln _lfail) () if
+       fv 16 fbits sub shl) if fi) (0 ui2) if 'ue let 'uf let
+   uc 0 eq ue ui2 eq and ("expected a digit" uln _lfail) () if
+   un 1099511627776 ge ("number is too large" uln _lfail) () if
+   ue _lc _lalnum ue _lc 46 eq or ("malformed number" uln _lfail) () if
+   un 65536 mul uf plus 2147483648 plus 4294967295 band 2147483648 sub 'uv let
+   ue uln [] T-NUM push uln push uv push) '_lnum let
+
+  -- _lstr: (i ln -- i' ln' rec).  i is at the quote.
+  ('qln let 'qi let qi _lc 'qq let
+   [] qi 1 plus 0
+   (dup 0 eq)
+   (drop 'qj let qj _lc 'qc let
+     qc 0 lt qc 10 eq or ("unfinished string" qln _lfail) (
+     qc qq eq (qj 1 plus 1) (
+     qc 92 eq (
+       qj 1 plus _lc 'qe let
+       qe 110 eq (10 qj 2 plus) (qe 116 eq (9 qj 2 plus) (qe 114 eq (13 qj 2 plus) (
+       qe 97 eq (7 qj 2 plus) (qe 98 eq (8 qj 2 plus) (qe 102 eq (12 qj 2 plus) (qe 118 eq (11 qj 2 plus) (
+       qe 92 eq qe 34 eq or qe 39 eq or (qe qj 2 plus) (
+       qe 120 eq (0 qj 2 plus 16 2 _ldigits 2 eq not ("\\x needs two hex digits" qln _lfail) () if) (
+       qe _ldigit (0 qj 1 plus 10 3 _ldigits drop 'qn let 'qv let qv 255 gt ("escape \\" qv int-str cat " is past 255" cat qln _lfail) () if qv qn) (
+         "unknown escape \\" [] qe push cat qln _lfail) if) if) if) if) if) if) if) if) if) if 'qk let 'qb let
+       qb push qk 0) (
+     qc push qj 1 plus 0) if) if) if)
+   while drop 'qend let 'qbytes let
+   qend qln [] T-STR push qln push qbytes len push qbytes cat) '_lstr let
+
+  [] 0 1
+  (over _ln lt)
+  ('ln let 'i let i _lc 'c let
+   c 10 eq (i 1 plus ln 1 plus []) (
+   c 32 le (i 1 plus ln []) (
+   c 45 eq i 1 plus _lc 45 eq and (
+     i 2 plus "[[" _lmatch (i 4 plus ln _llong drop []) (i _lline ln []) if) (
+   c 47 eq i 1 plus _lc 47 eq and (i _lline ln []) (
+   c _lalpha (i ln _lname) (
+   c _ldigit c 46 eq i 1 plus _lc _ldigit and or (i ln _lnum) (
+   c 34 eq c 39 eq or (i ln _lstr) (
+   c 91 eq i 1 plus _lc 91 eq and (i 2 plus ln _llong 'lb let [] T-STR push ln push lb len push lb cat) (
+   c 91 eq i 1 plus _lc 61 eq and ("long brackets with = are not supported" ln _lfail) (
+     i ln _lsym) if) if) if) if) if) if) if) if) if
+   'r let 'ln2 let 'i2 let r cat i2 ln2) while
+  'eln let drop [] T-EOF push eln push cat) 'lua-lex let
+
+-- lua-index: (toks -- tix).  The base of each token record, so token t is at `t 'tix nth`.
+('xt let xt len 'xn let
+ [] 0 (dup xn lt)
+ ('xb let xb push
+  xb 'xt nth must 'xk let
+  xk T-NAME eq xk T-STR eq or (xb 2 plus 'xt nth must 3 plus) (xk T-NUM eq (3) (2) if) if xb plus) while drop) 'lua-index let
+
+-- ===== bytecode =====
+-- An instruction is three ints, [op arg line]; jumps are relative, so a compiled
+-- fragment means the same wherever it lands.
+-- REVIEW: Relative jumps. Alternative: absolute targets, as the design said. They need a fix-up pass once fragments are joined.
+["RET" "POP" "PUSHK" "GETG" "SETG" "CALL" "JMP" "JF" "JFK" "JTK"
+ "ADD" "SUB" "MUL" "DIV" "IDIV" "MOD" "POW" "CONCAT" "EQ" "NE" "LT" "LE" "GT" "GE"
+ "BAND" "BOR" "BXOR" "SHL" "SHR" "LSHR" "ROTL" "ROTR" "NEG" "NOT" "LEN" "BNOT"] 'OPS let
+('s let OPS s index-of must) 'op-id let
+"RET" op-id 'O-RET let  "POP" op-id 'O-POP let  "PUSHK" op-id 'O-PUSHK let
+"GETG" op-id 'O-GETG let  "SETG" op-id 'O-SETG let  "CALL" op-id 'O-CALL let
+"JMP" op-id 'O-JMP let  "JF" op-id 'O-JF let  "JFK" op-id 'O-JFK let  "JTK" op-id 'O-JTK let
+
+-- BIN[kind] packs a binary operator as op*256 + left*16 + right, its op and
+-- Lua's precedences; 0 is no binary operator.  UN[kind] is a unary op, or -1.
+-- `and` and `or` compile to JFK and JTK around their right side.
+('rp let 'lp let 'bo let 'bk let bk bo 256 mul lp 16 mul plus rp plus set must) '_bin! let
+0 100 range (drop 0) each
+ "or" kw-id O-JTK 1 1 _bin!  "and" kw-id O-JFK 2 2 _bin!
+ "<" sy-id "LT" op-id 3 3 _bin!  ">" sy-id "GT" op-id 3 3 _bin!  "<=" sy-id "LE" op-id 3 3 _bin!
+ ">=" sy-id "GE" op-id 3 3 _bin!  "~=" sy-id "NE" op-id 3 3 _bin!  "!=" sy-id "NE" op-id 3 3 _bin!
+ "==" sy-id "EQ" op-id 3 3 _bin!
+ "|" sy-id "BOR" op-id 4 4 _bin!  "~" sy-id "BXOR" op-id 5 5 _bin!  "^^" sy-id "BXOR" op-id 5 5 _bin!
+ "&" sy-id "BAND" op-id 6 6 _bin!
+ "<<" sy-id "SHL" op-id 7 7 _bin!  ">>" sy-id "SHR" op-id 7 7 _bin!  ">>>" sy-id "LSHR" op-id 7 7 _bin!
+ "<<>" sy-id "ROTL" op-id 7 7 _bin!  ">><" sy-id "ROTR" op-id 7 7 _bin!
+ ".." sy-id "CONCAT" op-id 9 8 _bin!
+ "+" sy-id "ADD" op-id 10 10 _bin!  "-" sy-id "SUB" op-id 10 10 _bin!
+ "*" sy-id "MUL" op-id 11 11 _bin!  "/" sy-id "DIV" op-id 11 11 _bin!  "%" sy-id "MOD" op-id 11 11 _bin!
+ "\\" sy-id "IDIV" op-id 11 11 _bin!
+ "^" sy-id "POW" op-id 14 13 _bin!
+'BIN let
+12 'UNARY-PREC let
+('uo let 'uk let uk uo set must) '_un! let
+0 100 range (drop -1) each
+ "not" kw-id "NOT" op-id _un!  "-" sy-id "NEG" op-id _un!  "#" sy-id "LEN" op-id _un!  "~" sy-id "BNOT" op-id _un!
+'UN let
+
+-- ===== the program =====
+args len 1 eq () ("usage: cat examples/lib/strings.slap examples/lua.slap | ./slap prog.lua" fail) if
+args 0 get must 'lua-path let
+lua-path read {'ok () 'no ('e let "lua: cannot read " e cat fail)} case lua-lex 'toks let
+toks lua-index 'tix let
+
+-- ===== compiler =====
+-- Each compile word takes a token index and leaves `code t'`: the code it
+-- compiled, then the index past it.  It dies on code it cannot compile,
+-- naming the line.
+('tix nth must) '_tb let
+(_tb 'toks nth must) '_tk let
+(_tb 1 plus 'toks nth must) '_tl let
+(_tb 2 plus 'toks nth must) '_ta let
+-- _tbytes: (t -- bytes).  A name's or string's text.
+(_tb 'tsb let 0 tsb 2 plus 'toks nth must range (tsb 3 plus plus 'toks nth must) each) '_tbytes let
+-- _tdesc: (t -- str).  The token, as an error message names it.
+('dt let dt _tk 'dk let
+ dk T-NAME eq ("'" dt _tbytes cat "'" cat) (
+ dk T-NUM eq ("a number") (
+ dk T-STR eq ("a string") (
+ dk T-EOF eq ("the end of the input") (
+ dk 40 lt (dk 10 sub 'KW nth must) (dk 40 sub 'SY nth must) if "'" swap cat "'" cat) if) if) if) if) '_tdesc let
+('ln let "lua: line " ln int-str cat ": " cat swap cat fail) '_cfail-at let
+-- _cwant: (what t -- ).  Dies with "expected what, found <token>".
+('wt let "expected " swap cat ", found " cat wt _tdesc cat wt _tl _cfail-at) '_cwant let
+-- _cskip: (t kind what -- t+1).  t must be a token of that kind.
+('sw let 'sk let 'st let st _tk sk eq (st 1 plus) (sw st _cwant) if) '_cskip let
+-- _cins: (op arg line -- code).  One instruction.
+('il let 'ia let 'io let [] io push ia push il push) '_cins let
+
+'_cexp [int int int] [int 'list tag int] effect
+
+-- _cargs: (t depth -- code nargs t').  t is at `(`.  Compiles the arguments.
+('ad let 'gt0 let
+ gt0 1 plus _tk ")" sy-id eq ([] 0 gt0 2 plus) (
+   gt0 1 plus 0 ad 1 plus _cexp 'a0 let 1 a0
+   (dup _tk "," sy-id eq)
+   ('a3 let 'a2 let a3 1 plus 0 ad 1 plus _cexp 'a5 let cat a2 1 plus a5) while
+   ")" sy-id "')' to close the arguments" _cskip) if) '_cargs let
+
+-- _csuffix: (code t depth -- code t').  Calls after a prefix expression.  A call
+-- compiles for one result; a call statement changes its count to none.
+('sd let
+ (dup _tk 'sk let sk "(" sy-id eq sk T-STR eq or sk "{" sy-id eq or sk "." sy-id eq or sk "[" sy-id eq or sk ":" sy-id eq or)
+ ('xt let xt _tk 'xk let xt _tl 'xl let
+  xk "(" sy-id eq (xt sd _cargs 'xt2 let 'xn let cat O-CALL xn 256 mul 2 plus xl _cins cat xt2) (
+  xk T-STR eq (O-PUSHK xt _tb 2 plus 8 mul 3 plus xl _cins cat O-CALL 256 2 plus xl _cins cat xt 1 plus) (
+    "tables are not supported yet" xl _cfail-at) if) if) while) '_csuffix let
+
+-- _cprimary: (t depth -- code t')
+('pd let 'pt let pt _tk 'pk let pt _tl 'pl let
+ pk T-NUM eq (O-PUSHK pt _ta 8 mul 2 plus pl _cins pt 1 plus) (
+ pk T-STR eq (O-PUSHK pt _tb 2 plus 8 mul 3 plus pl _cins pt 1 plus) (
+ pk "nil" kw-id eq (O-PUSHK 0 pl _cins pt 1 plus) (
+ pk "false" kw-id eq (O-PUSHK 1 pl _cins pt 1 plus) (
+ pk "true" kw-id eq (O-PUSHK 9 pl _cins pt 1 plus) (
+ pk T-NAME eq (O-GETG pt _tb 2 plus 8 mul 3 plus pl _cins pt 1 plus pd _csuffix) (
+ pk "(" sy-id eq (pt 1 plus 0 pd 1 plus _cexp ")" sy-id "')' to close the parenthesis" _cskip pd _csuffix) (
+ pk "..." sy-id eq ("varargs (...) are not supported" pl _cfail-at) (
+ pk "function" kw-id eq ("function expressions are not supported yet" pl _cfail-at) (
+ pk "{" sy-id eq ("tables are not supported yet" pl _cfail-at) (
+   "an expression" pt _cwant) if) if) if) if) if) if) if) if) if) if) '_cprimary let
+
+-- _cexp: (t limit depth -- code t').  Precedence climbing: it takes binary
+-- operators whose left precedence is above limit.  It recurses once per nesting
+-- level, so depth bounds the C stack.
+('cd let 'cl let 'ct let
+ cd 200 gt ("an expression nests deeper than 200 levels" ct _tl _cfail-at) () if
+ ct _tk 'UN nth must 'cu let
+ cu 0 ge (ct 1 plus UNARY-PREC cd 1 plus _cexp 'cut let cu 0 ct _tl _cins cat cut) (ct cd _cprimary) if
+ (dup _tk 'BIN nth must 'cb let cb 0 gt cb 16 div 15 band cl gt and)
+ ('bt let bt _tk 'BIN nth must 'bb let bb 256 div 'bo let bb 15 band 'br let
+  bt 1 plus br cd 1 plus _cexp 'rt let 'rc let
+  bo O-JFK eq bo O-JTK eq or (bo rc len bt _tl _cins cat rc cat) (rc cat bo 0 bt _tl _cins cat) if rt) while) '_cexp let
+
+-- _cstat: (t -- code t').  One statement.
+('s0 let s0 _tk 's0k let
+ s0k ";" sy-id eq ([] s0 1 plus) (
+ s0k T-NAME eq s0k "(" sy-id eq or (
+   s0 0 _cprimary 's1 let 'sc let
+   sc len 3 sub 'sc nth must O-CALL eq (sc len 2 sub 'si let sc si si 'sc nth must 1 sub set must s1) ("a statement" s0 _cwant) if) (
+   "a statement" s0 _cwant) if) if) '_cstat let
+
+[] 0 (dup _tk T-EOF eq not) ('c0 let c0 _cstat 'c1 let cat c1) while
+'cend let O-RET 0 cend _tl _cins cat 'code let
+
+-- ===== machine =====
+0 'PC-I let     -- index of the next instruction in code
+1 'SP-I let     -- next free cell of the value stack
+2 'RUN-I let    -- 1 until RET leaves the main chunk
+3 'STRN-I let   -- runtime strings made so far
+4 'STEPS-I let  -- instructions run
+16 'STK-B let  4096 'STK-N let
+STK-B STK-N plus 'STATE-N let
+-- REVIEW: A run stops after 100,000,000 instructions. Alternative: no bound; a cart that loops forever then hangs make test.
+100000000 'MAX-STEPS let
+1000000 'MAX-STRS let
+
+-- The stack is `machine heap strs` from here on: heap is a dict of ints (globals,
+-- and later tables), strs a dict of runtime strings keyed by their 4-byte number.
+('ma let ((ma peek must) dip) dip rot) 'mget let
+('mw let 'ma let ((ma mw set must) dip) dip) 'mset let
+('n let [] n 24 shr 255 band push n 16 shr 255 band push n 8 shr 255 band push n 255 band push) '_ikey let
+
+-- _rfail: (msg -- ).  Dies naming the line of the instruction that runs.
+('rm let PC-I mget 1 sub 'code nth must 'rl let "lua: line " rl int-str cat ": " cat rm cat fail) '_rfail let
+
+('pv let SP-I mget 'ps let ps STK-B STK-N plus ge ("stack overflow: more than 4096 values" _rfail) () if
+ ps pv mset SP-I ps 1 plus mset) 'vpush let
+(SP-I mget 1 sub 'qs let SP-I qs mset qs mget) 'vpop let
+
+-- ===== values =====
+('v let v 7 band 2 eq) '_isnum let
+('v let v 7 band 3 eq) '_isstr let
+(2 sub 8 div) '_raw let
+(8 mul 2 plus) '_num let
+('v let v 0 eq v 1 eq or) '_falsy let
+(2147483648 plus 4294967295 band 2147483648 sub) '_wrap let
+-- _fdiv: (x d -- q).  Floor division; slap's div truncates.
+('fd let 'fx let fx fd div 'fq let fx fq fd mul sub 0 eq not fx 0 lt fd 0 lt neq and (fq 1 sub) (fq) if) '_fdiv let
+('gd let 'gx let gx gx gd _fdiv gd mul sub) '_fmod let
+('v let v 7 band 'tg let
+ tg 0 eq ("nil") (tg 1 eq ("boolean") (tg 2 eq ("number") (tg 3 eq ("string") (
+ tg 4 eq ("table") (tg 7 eq ("cell") ("function") if) if) if) if) if) if) '_tname let
+
+-- _sbytes: (v -- bytes).  A string's text; strs is right below.
+('sv let sv 3 sub 8 div 'sp let
+ sp 0 ge (0 sp 'toks nth must range (sp 1 plus plus 'toks nth must) each)
+         (-1 sp sub _ikey of must) if) '_sbytes let
+-- _snew: (bytes -- v).  A new runtime string.
+('nb let STRN-I mget 'nn let nn MAX-STRS ge ("more than 1000000 strings made" _rfail) () if
+ STRN-I nn 1 plus mset nn _ikey nb insert -1 nn sub 8 mul 3 plus) '_snew let
+
+-- _numstr: (raw -- bytes).  pico8's tostr: the integer part, then up to 4 decimals.
+-- REVIEW: Decimals round to the nearest 1/10000. Alternative: truncate. It needs checking against pico8 itself.
+('nr let nr 0 lt (0 nr sub) (nr) if 'na let
+ na 65535 band 10000 mul 32768 plus 65536 div 'nf let
+ na 65536 div nf 10000 eq (1 plus 0) (nf) if 'nf2 let 'ni let
+ nr 0 lt nf2 0 gt ni 0 gt or and ("-") ("") if ni int-str cat
+ nf2 0 eq () (
+   "." cat nf2 10000 plus int-str 1 drop-n
+   (dup len 0 gt (dup len 1 sub peek must 48 eq) (0) if) (pop must drop) while cat) if) '_numstr let
+
+-- _tostr: (v -- bytes)
+('tv let tv 7 band 'tt let
+ tt 0 eq ("nil") (tt 1 eq (tv 9 eq ("true") ("false") if) (tt 2 eq (tv _raw _numstr) (tt 3 eq (tv _sbytes) (
+   tv _tname ": " cat tv 3 shr int-str cat) if) if) if) if) '_tostr let
+
+-- _streq: (a b -- 1 or 0).  Both strings; strs is right below.
+('eb let 'ea let ea _sbytes 'ex let eb _sbytes 'ey let ex ey eq) '_streq let
+-- _strcmp: (a b -- -1, 0 or 1).  Compares bytes, as Lua's < on strings does.
+('cb let 'ca let ca _sbytes 'cx let cb _sbytes 'cy let cx len 'cxn let cy len 'cyn let
+ 0 (dup cxn lt over cyn lt and (dup 'cx nth must over 'cy nth must eq) (0) if) (1 plus) while 'ck let
+ ck cxn lt ck cyn lt and (ck 'cx nth must ck 'cy nth must lt (-1) (1) if) (
+   cxn cyn lt (-1) (cyn cxn lt (1) (0) if) if) if) '_strcmp let
+
+-- _hkey: (tid v -- key).  A heap key: kind 0, the table id, then the Lua key:
+-- a string by its text, so equal strings are one key, anything else by its int.
+('hv let 'ht let hv _isstr (hv _sbytes [3] swap cat) (hv _ikey [9] swap cat hv 32 shr _ikey cat) if 'hb let
+ [0] ht 16 shr 255 band push ht 8 shr 255 band push ht 255 band push hb cat) '_hkey let
+('gk let (gk of {'ok () 'no (drop 0)} case) dip swap) 'hget let
+('sv2 let 'sk2 let (sk2 sv2 insert) dip) 'hset let
+1 'GLOBALS let
+
+-- ===== instructions =====
+-- Each takes its arg; the stack below is `machine heap strs`.
+5 'ARGI-I let   -- scratch: the argument print is at
+('nn let nn 0 gt (0 vpush nn 1 sub _nils) () if) '_nils let
+(vpop 'nb let vpop 'na let
+ na _isnum not ("attempt to perform arithmetic on a " na _tname cat " value" cat _rfail) () if
+ nb _isnum not ("attempt to perform arithmetic on a " nb _tname cat " value" cat _rfail) () if
+ na _raw nb _raw) '_nums let
+(vpop 'nx let nx _isnum not ("attempt to perform arithmetic on a " nx _tname cat " value" cat _rfail) () if nx _raw) '_num1 let
+-- _cmp: ( -- -1, 0 or 1).  Pops b, then a, and compares a with b.
+(vpop 'mb let vpop 'ma let
+ ma _isnum mb _isnum and (ma mb lt (-1) (mb ma lt (1) (0) if) if) (
+ ma _isstr mb _isstr and (ma mb _strcmp) (
+   "attempt to compare " ma _tname cat " with " cat mb _tname cat _rfail) if) if) '_cmp let
+-- Shifts take the integer part of the count, as pico8 does; past 31 the value is gone.
+'_shr [int int] [int] effect
+('hn let 'ha let hn 0 lt (ha 0 hn sub _shr) (hn 31 gt (0) (ha hn shl _wrap) if) if) '_shl let
+('rn let 'ra let rn 0 lt (ra 0 rn sub _shl) (rn 31 gt (ra 0 lt (-1) (0) if) (ra 1 rn shl _fdiv) if) if) '_shr let
+('ln let 'la let ln 0 lt ln 31 gt or (0) (la 4294967295 band ln shr _wrap) if) '_lshr let
+('rn2 let 'oa let oa 4294967295 band 'ou let rn2 31 band 'om let
+ ou om shl ou 32 om sub shr bor 4294967295 band _wrap) '_rotl let
+(65536 _fdiv) '_int let
+('ja let PC-I mget ja plus 'jt let PC-I jt mset) '_jump let
+
+-- CALL's arg is nargs*256 + nres+1.  print is builtin 1.
+('ca let ca 256 div 'cn let ca 255 band 1 sub 'cr let
+ SP-I mget cn sub 1 sub 'cf let cf mget 'fv let
+ fv 7 band 6 eq (
+   ARGI-I 0 mset
+   (ARGI-I mget cn lt)
+   (ARGI-I mget 'ai let ai 0 gt ("\t" stdout-write) () if cf 1 plus ai plus mget _tostr stdout-write ARGI-I ai 1 plus mset) while
+   "\n" stdout-write
+   SP-I cf mset cr _nils)
+   ("attempt to call a " fv _tname cat " value" cat _rfail) if) '_call let
+
+[ (drop RUN-I 0 mset)                                                           -- RET
+  (drop vpop drop)                                                               -- POP
+  (vpush)                                                                        -- PUSHK
+  ('ga let GLOBALS ga _hkey hget vpush)                                          -- GETG
+  ('sa let vpop 'sv let GLOBALS sa _hkey sv hset)                                -- SETG
+  (_call)                                                                        -- CALL
+  (_jump)                                                                        -- JMP
+  ('ja let vpop _falsy (ja _jump) () if)                                         -- JF
+  ('ja let SP-I mget 1 sub mget _falsy (ja _jump) (vpop drop) if)                -- JFK
+  ('ja let SP-I mget 1 sub mget _falsy (vpop drop) (ja _jump) if)                -- JTK
+  (drop _nums plus _wrap _num vpush)                                             -- ADD
+  (drop _nums sub _wrap _num vpush)                                              -- SUB
+  (drop _nums mul 65536 _fdiv _wrap _num vpush)                                  -- MUL
+  (drop _nums 'db let 'da let db 0 eq ("division by zero" _rfail) () if
+   da 65536 mul db _fdiv _wrap _num vpush)                                       -- DIV
+  (drop _nums 'db let 'da let db 0 eq ("division by zero" _rfail) () if
+   da db _fdiv 65536 mul _wrap _num vpush)                                       -- IDIV
+  (drop _nums 'db let 'da let db 0 eq ("modulo by zero" _rfail) () if
+   da db _fmod _num vpush)                                                       -- MOD
+  (drop _nums 'pb let 'pa let pb 65535 band 0 eq pb 0 ge and pb 2147418112 le and not
+     ("^ takes a whole exponent from 0 to 32767" _rfail) () if
+   65536 pb _int (pa mul 65536 _fdiv _wrap) repeat _num vpush)                  -- POW
+  (drop vpop 'kb let vpop 'ka let
+   ka _isstr ka _isnum or not ("attempt to concatenate a " ka _tname cat " value" cat _rfail) () if
+   kb _isstr kb _isnum or not ("attempt to concatenate a " kb _tname cat " value" cat _rfail) () if
+   ka _tostr 'kx let kb _tostr 'ky let kx ky cat _snew vpush)                   -- CONCAT
+  (drop vpop 'eb let vpop 'ea let ea _isstr eb _isstr and (ea eb _streq) (ea eb eq) if (9) (1) if vpush)     -- EQ
+  (drop vpop 'eb let vpop 'ea let ea _isstr eb _isstr and (ea eb _streq) (ea eb eq) if (1) (9) if vpush)     -- NE
+  (drop _cmp -1 eq (9) (1) if vpush)                                             -- LT
+  (drop _cmp 1 lt (9) (1) if vpush)                                              -- LE
+  (drop _cmp 1 eq (9) (1) if vpush)                                              -- GT
+  (drop _cmp -1 gt (9) (1) if vpush)                                             -- GE
+  (drop _nums band _num vpush)                                                   -- BAND
+  (drop _nums bor _num vpush)                                                    -- BOR
+  (drop _nums bxor _num vpush)                                                   -- BXOR
+  (drop _nums _int _shl _num vpush)                                              -- SHL
+  (drop _nums _int _shr _num vpush)                                              -- SHR
+  (drop _nums _int _lshr _num vpush)                                             -- LSHR
+  (drop _nums _int _rotl _num vpush)                                             -- ROTL
+  (drop _nums _int 32 swap sub _rotl _num vpush)                                 -- ROTR
+  (drop _num1 0 swap sub _wrap _num vpush)                                       -- NEG
+  (drop vpop _falsy (9) (1) if vpush)                                            -- NOT
+  (drop vpop 'lv let lv _isstr (lv _sbytes len 65536 mul _num vpush) (
+     "attempt to get the length of a " lv _tname cat " value" cat _rfail) if)   -- LEN
+  (drop _num1 -1 bxor _num vpush)                                                -- BNOT
+] 'OPTAB let
+OPTAB len OPS len eq () ("OPTAB and OPS differ in length" fail) if
+
+(PC-I mget 'pc let
+ pc 'code nth must 'op let pc 1 plus 'code nth must 'arg let
+ PC-I pc 3 plus mset
+ STEPS-I mget 'ns let ns MAX-STEPS ge ("ran more than 100000000 instructions" _rfail) () if
+ STEPS-I ns 1 plus mset
+ arg op 'OPTAB nth must apply) 'step let
+
+[] STATE-N (0 push) repeat SP-I STK-B set must RUN-I 1 set must
+dict [0 0 0 1 3] "print" cat 14 insert
+dict
+(RUN-I mget) (step) while
+drop drop drop
