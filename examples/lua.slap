@@ -277,25 +277,25 @@ FARG ('c let c 48 lt c 57 gt or) filter len 0 eq FARG len 1 ge and FARG len 5 le
  (FARG 0 ('c let 10 mul c 48 sub plus) fold) (-1) if 'FRAMES let
 FRAMES 0 lt FRAMES 32767 gt or ("lua: the frame count must be 1 to 5 digits up to 32767, got \"" FARG cat "\"" cat fail) () if
 
--- pico8's API, where plain Lua can say it.  Only `function name` statements:
+-- pico8's API, where plain Lua can say it.  __num reads an argument as z8lua's lua_tonumber does.  Only `function name` statements:
 -- a local here would be in the program's scope.
-["function flr(x) return (x or 0) \\ 1 end"
- "function ceil(x) return -((-(x or 0)) \\ 1) end"
- "function abs(x) x = x or 0 if x == 0x8000 then return 0x7fff.ffff end if x < 0 then return -x end return x end"
- "function sgn(x) if (x or 0) < 0 then return -1 end return 1 end"
- "function min(a, b) a, b = a or 0, b or 0 if a < b then return a end return b end"
- "function max(a, b) a, b = a or 0, b or 0 if a > b then return a end return b end"
- "function mid(x, y, z) x, y, z = x or 0, y or 0, z or 0"
+["function flr(x) return __num(x) \\ 1 end"
+ "function ceil(x) return -((-__num(x)) \\ 1) end"
+ "function abs(x) x = __num(x) if x == 0x8000 then return 0x7fff.ffff end if x < 0 then return -x end return x end"
+ "function sgn(x) if __num(x) < 0 then return -1 end return 1 end"
+ "function min(a, b) a, b = __num(a), __num(b) if a < b then return a end return b end"
+ "function max(a, b) a, b = __num(a), __num(b) if a > b then return a end return b end"
+ "function mid(x, y, z) x, y, z = __num(x), __num(y), __num(z)"
  "  if x > y then if y > z then return y end return min(x, z) end if x > z then return x end return min(y, z) end"
- "function band(a, b) return (a or 0) & (b or 0) end"
- "function bor(a, b) return (a or 0) | (b or 0) end"
- "function bxor(a, b) return (a or 0) ^^ (b or 0) end"
- "function bnot(a) return ~(a or 0) end"
- "function shl(a, n) return (a or 0) << (n or 0) end"
- "function shr(a, n) return (a or 0) >> (n or 0) end"
- "function lshr(a, n) return (a or 0) >>> (n or 0) end"
- "function rotl(a, n) return (a or 0) <<> (n or 0) end"
- "function rotr(a, n) return (a or 0) >>< (n or 0) end"
+ "function band(a, b) return __num(a) & __num(b) end"
+ "function bor(a, b) return __num(a) | __num(b) end"
+ "function bxor(a, b) return __num(a) ^^ __num(b) end"
+ "function bnot(a) return ~__num(a) end"
+ "function shl(a, n) return __num(a) << __num(n) end"
+ "function shr(a, n) return __num(a) >> __num(n) end"
+ "function lshr(a, n) return __num(a) >>> __num(n) end"
+ "function rotl(a, n) return __num(a) <<> __num(n) end"
+ "function rotr(a, n) return __num(a) >>< __num(n) end"
  "function count(c) local cnt, max = 0, #c for i = 1, max do if (c[i] != nil) cnt += 1 end return cnt end"
  "function add(c, x, i) if c != nil then i = i and mid(1, i \\ 1, #c + 1) or #c + 1"
  "  for j = #c, i, -1 do c[j + 1] = c[j] end c[i] = x return x end end"
@@ -1193,10 +1193,10 @@ FLAGS-B 256 plus 'DPAL-B let
 -- ===== pico8's API =====
 -- Each word below follows zepto8's (github.com/samhocevar/zepto8), which
 -- matches pico8 pixel for pixel: gfx.cpp for drawing, vm.cpp for the PRNG,
--- z8lua's lpico8lib.c for the math.  Coordinates are floored to integers;
--- a missing or nil number argument reads as 0.
-('nv let nv 0 eq (0) (nv _isnum (nv _raw) (nv _isstr (nv _sbytes _tonum 'nok let 'nr let nok (nr) (0) if) (
-   "expected a number, got " nv _tname cat _rfail) if) if) if) '_num0 let
+-- z8lua's lpico8lib.c for the math.  Coordinates are floored to integers.
+-- _num0: (v -- raw).  An API number, read as z8lua's lua_tonumber reads it: a
+-- string that reads as a number is one, and any other value is 0.
+('nv let nv _isnum (nv _raw) (nv _isstr (nv _sbytes _tonum 'nok let 'nr let nok (nr) (0) if) (0) if) if) '_num0 let
 (_num0 65536 _fdiv) '_int0 let
 (_arg _int0) '_ia let
 (_arg 0 eq not) '_has let
@@ -1219,6 +1219,8 @@ FLAGS-B 256 plus 'DPAL-B let
    vy1 vy2 min k1 max 'ya let vy1 vy2 max k3 1 sub min 'yb let
    ya (dup yb le) ('vy let SCREEN-B vy 128 mul plus vx plus 'va let va vc mset vy 1 plus) while drop) () if) '_vline let
 (CAMX-I mget 'cx let CAMY-I mget 'cy let cx cy) '_cam let
+-- _w16: (n -- n).  To int16, wrapping, as zepto8 keeps coordinates once the camera is taken off.
+(32768 plus 65535 band 32768 sub) '_w16 let
 -- The map's rows 32-63 are pico8's sprite rows 64-127, a tile per two pixels, the
 -- left one low, so mset there changes sprites and sset changes tiles.
 -- _mtile: (x y -- tile) and _mtile!: (x y tile -- ), on the 128x64 map.
@@ -1231,7 +1233,7 @@ FLAGS-B 256 plus 'DPAL-B let
 -- _spx: (x y col -- ).  A sprite pixel: through the draw palette, unless transparent.
 ('sc let 'sy let 'sx let DPAL-B sc plus 'sa let sa mget 'sp let sp 240 band 0 eq (sx sy sp 15 band _px) () if) '_spx let
 -- _circle: (x y r c fill -- ).  The midpoint circle both circ and circfill draw.
-('cfl let 'cc let 'cr let 'cy let 'cx let _cam 'ky let 'kx let cx kx sub 'x0 let cy ky sub 'y0 let
+('cfl let 'cc let 'cr let 'cy let 'cx let _cam 'ky let 'kx let cx kx sub _w16 'x0 let cy ky sub _w16 'y0 let
  x0 cr plus 0 lt x0 cr sub 128 ge or y0 cr plus 0 lt or y0 cr sub 128 ge or () (
    cr 0 0
    ('ce let 'cdy let 'cdx let cdx cdy ce cdx cdy ge)
@@ -1247,7 +1249,7 @@ FLAGS-B 256 plus 'DPAL-B let
 ('ld let 'ln let 'lb let 'la let la itof lb itof la itof fsub ln itof ld itof fdiv fmul fplus fround ftoi) '_lmix let
 -- _line: (x0 y0 x1 y1 c -- )
 ('lc let 'ly1 let 'lx1 let 'ly0 let 'lx0 let _cam 'ky let 'kx let
- lx0 kx sub 'x0 let ly0 ky sub 'y0 let lx1 kx sub 'x1 let ly1 ky sub 'y1 let
+ lx0 kx sub _w16 'x0 let ly0 ky sub _w16 'y0 let lx1 kx sub _w16 'x1 let ly1 ky sub _w16 'y1 let
  x1 x0 sub abs y1 y0 sub abs ge 'horiz let x0 x1 le (1) (-1) if 'sdx let y0 y1 le (1) (-1) if 'sdy let
  x1 -1 128 clamp 'xend let y1 -1 128 clamp 'yend let
  x0 -1 128 clamp y0 -1 128 clamp 1
@@ -1281,7 +1283,7 @@ FLAGS-B 256 plus 'DPAL-B let
  drop nip qx 0 gt () (drop 0) if) '_sqrt let
 -- _rect: (x0 y0 x1 y1 c fill -- )
 ('rf let 'rc let 'ry1 let 'rx1 let 'ry0 let 'rx0 let _cam 'ky let 'kx let
- rx0 kx sub 'x0 let ry0 ky sub 'y0 let rx1 kx sub 'x1 let ry1 ky sub 'y1 let
+ rx0 kx sub _w16 'x0 let ry0 ky sub _w16 'y0 let rx1 kx sub _w16 'x1 let ry1 ky sub _w16 'y1 let
  rf (
    y0 y1 min -1 max 'ya let y0 y1 max 128 min 'yb let
    x0 x1 gt (x0 0 lt x1 128 ge or) (x1 0 lt x0 128 ge or) if () (
@@ -1291,9 +1293,8 @@ FLAGS-B 256 plus 'DPAL-B let
      xa xb ya rc _hline xa xb yb rc _hline
      ya 1 plus yb lt (xa ya 1 plus yb 1 sub rc _vline xb ya 1 plus yb 1 sub rc _vline) () if) if) if) '_rect let
 
-(32768 plus 65535 band 32768 sub) '_w16 let
 -- _spr: (n x y w8 h8 fx fy -- ).  It walks only the rows and columns on the screen.
-('fy let 'fx let 'h8 let 'w8 let 'sy0 let 'sx0 let 'sn let _cam 'ky let 'kx let sx0 kx sub 'x let sy0 ky sub 'y let
+('fy let 'fx let 'h8 let 'w8 let 'sy0 let 'sx0 let 'sn let _cam 'ky let 'kx let sx0 kx sub _w16 'x let sy0 ky sub _w16 'y let
  x w8 plus 0 le x 128 ge or y h8 plus 0 le or y 128 ge or () (
    0 y sub 0 max (dup h8 128 y sub min lt) ('j let
      0 x sub 0 max (dup w8 128 x sub min lt) ('i let fx (w8 1 sub i sub) (i) if 'di let fy (h8 1 sub j sub) (j) if 'dj let
@@ -1303,7 +1304,7 @@ FLAGS-B 256 plus 'DPAL-B let
 -- _map: (cel_x cel_y sx sy cel_w cel_h layer -- ); cel_w -1 for the default size.
 -- zepto8 clips the source rectangle to the screen and draws it pixel by pixel;
 -- this walks it a tile at a time, so a skipped tile costs one lookup.
-('ml let 'mch let 'mcw let 'msy let 'msx let 'mcy let 'mcx let _cam 'ky let 'kx let msx kx sub 'sx let msy ky sub 'sy let
+('ml let 'mch let 'mcw let 'msy let 'msx let 'mcy let 'mcx let _cam 'ky let 'kx let msx kx sub _w16 'sx let msy ky sub _w16 'sy let
  mcw -1 eq (1024 256) (mcw 8 mul mch 8 mul) if 'sh0 let 'sw0 let
  0 sx sub 0 max 'mx let 0 sy sub 0 max 'my let
  mcx 8 mul mx plus 'srcx let mcy 8 mul my plus 'srcy let
@@ -1348,7 +1349,7 @@ FLAGS-B 256 plus 'DPAL-B let
   ch 9 eq (cx 16 plus cx 16 mod sub cy ph) (
   ch 16 lt ("print's control code " ch int-str cat " is not supported" cat _rfail) (
     pco not (cy 6 plus 128 sub 'fy let fy 0 gt (fy _scroll cy fy sub) (cy) if) (cy) if 'cy2 let
-    ch cx kx sub cy2 ky sub pcc _glyph cx ch 128 lt (4) (8) if plus cy2 6) if) if) if) if
+    ch cx kx sub _w16 cy2 ky sub _w16 pcc _glyph cx ch 128 lt (4) (8) if plus cy2 6) if) if) if) if
   pk9 1 plus) while
  drop 'ph2 let 'cy3 let 'cx3 let
  pco not (cy3 ph2 plus 6 plus 128 sub 'fz let fz 0 gt (6 _scroll cy3 6 sub) (cy3) if) (cy3) if 'cy4 let
@@ -1370,8 +1371,8 @@ FLAGS-B 256 plus 'DPAL-B let
   {'name "cls" 'body ('nn let 'nf let nf nn 0 _ia 15 band _cls
    CURX-I 0 mset CURY-I 0 mset PSX-I 0 mset CLIPX0-I 0 mset CLIPY0-I 0 mset CLIPX1-I 128 mset CLIPY1-I 128 mset nf 0 _ret0)}
   {'name "pset" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _arg _pen 'c let
-   _cam 'ky let 'kx let x kx sub y ky sub c _px nf 0 _ret0)}
-  {'name "pget" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let _cam 'ky let 'kx let x kx sub 'gx let y ky sub 'gy let
+   _cam 'ky let 'kx let x kx sub _w16 y ky sub _w16 c _px nf 0 _ret0)}
+  {'name "pget" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let _cam 'ky let 'kx let x kx sub _w16 'gx let y ky sub _w16 'gy let
    _clip 'k3 let 'k2 let 'k1 let 'k0 let
    gx k0 ge gx k2 lt and gy k1 ge and gy k3 lt and (SCREEN-B gy 128 mul plus gx plus 'ga let ga mget) (0) if _inum 'r let nf r _ret1)}
   {'name "rectfill" 'body ('nn let 'nf let nf nn 0 _ia 'x0 let nf nn 1 _ia 'y0 let nf nn 2 _ia 'x1 let nf nn 3 _ia 'y1 let
@@ -1394,8 +1395,8 @@ FLAGS-B 256 plus 'DPAL-B let
    nf nn 4 _ia 'dx0 let nf nn 5 _ia 'dy0 let
    nf nn 6 _has (nf nn 6 _ia) (sw) if 'dw0 let nf nn 7 _has (nf nn 7 _ia) (sh) if 'dh0 let
    nf nn 8 _arg _falsy not 'fx0 let nf nn 9 _arg _falsy not 'fy0 let _cam 'ky let 'kx let
-   dw0 0 lt (0 dw0 sub dx0 kx sub 0 dw0 sub 1 sub sub fx0 not) (dw0 dx0 kx sub fx0) if 'fx let 'dx let 'dw let
-   dh0 0 lt (0 dh0 sub dy0 ky sub 0 dh0 sub 1 sub sub fy0 not) (dh0 dy0 ky sub fy0) if 'fy let 'dy let 'dh let
+   dw0 0 lt (0 dw0 sub dx0 kx sub _w16 0 dw0 sub 1 sub sub fx0 not) (dw0 dx0 kx sub _w16 fx0) if 'fx let 'dx let 'dw let
+   dh0 0 lt (0 dh0 sub dy0 ky sub _w16 0 dh0 sub 1 sub sub fy0 not) (dh0 dy0 ky sub _w16 fy0) if 'fy let 'dy let 'dh let
    dx dw plus 0 le dx 128 ge or dy dh plus 0 le or dy 128 ge or () (
      0 dy sub 0 max (dup dh 128 dy sub min lt) ('j let
        0 dx sub 0 max (dup dw 128 dx sub min lt) ('i let fx (dw 1 sub i sub) (i) if 'di let fy (dh 1 sub j sub) (j) if 'dj let
@@ -1497,6 +1498,7 @@ FLAGS-B 256 plus 'DPAL-B let
   {'name "printh" 'body ('nn let 'nf let nf nn 0 _arg _p8str "\n" cat stdout-write nf 0 _ret0)}
   {'name "sfx" 'body ('nn let 'nf let nf 0 _ret0)}
   {'name "music" 'body ('nn let 'nf let nf 0 _ret0)}
+  {'name "__num" 'body ('nn let 'nf let nf nn 0 _arg _num0 _num 'r let nf r _ret1)}
   {'name "sget" 'body ('nn let 'nf let nf nn 0 _ia 'gx0 let nf nn 1 _ia 'gy0 let gx0 gy0 _sget _inum 'r let nf r _ret1)}
   {'name "sset" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _has (nf nn 2 _ia) (COLOR-I mget) if 15 band 'c let
    DPAL-B c plus 'pa let pa mget 15 band 'pc let
