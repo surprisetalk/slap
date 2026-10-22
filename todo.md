@@ -1,3 +1,20 @@
+## Open
+
+- [ ] You read a verdict on Valen's group borrowing
+      (https://verdagon.dev/blog/valen-group-borrowing) for slap: adopt,
+      adapt, or decline, with the cost of each.
+  1. Read the post. Its idea: a reference carries the path it points into
+     (`world.entities[]`). A write invalidates references inside the
+     written object, not references to it. Signatures name the paths they
+     write.
+  2. Map it onto slap's ownership: `P_COPY`, one-owner boxes and dicts,
+     deep copy on `dup`/`peek`/`nth`/`of`/`lend`, and the sealed stack
+     under `each`, `fold`, `edit`, `mutate`, `lend`.
+  3. Find the deep copies and O(n²) loops it would remove, such as a
+     lookup of a bound list. Count them in examples/ and tests/.
+  4. Write the verdict in readme.md under `## Pending design`: the choice,
+     then the alternative and its cost in checker size and messages.
+
 ## Blocked on you
 
 - [ ] You run a tic80 cart with lua.slap, and its screen matches tic80's.
