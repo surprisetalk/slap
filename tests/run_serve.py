@@ -281,6 +281,34 @@ with tempfile.TemporaryDirectory() as d:
             check("tls-ip", r.stdout == b"\"connected\"\n", repr(r.stdout + r.stderr))
         finally:
             srv.kill(); srv.wait()
+        # https-get takes an end without close_notify only when Content-Length vouches for the body.
+        # Python's SSLSocket.close sends no close_notify; unwrap sends it first.
+        import ssl as pyssl
+        ctx = pyssl.SSLContext(pyssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(os.path.join(d, "s.pem"), os.path.join(d, "s.key"))
+        ls = socket.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(4); hport = ls.getsockname()[1]
+        replies = [(b"Content-Length: 2\r\n", False), (b"", False), (b"", True)]
+        def tls_server():
+            for head, clean in replies:
+                c, _ = ls.accept()
+                try:
+                    t = ctx.wrap_socket(c, server_side=True)
+                    t.recv(65536)
+                    t.sendall(b"HTTP/1.0 200 OK\r\n" + head + b"\r\nok")
+                    if clean:
+                        t.unwrap().close()
+                    else:
+                        t.close()
+                except OSError:
+                    c.close()
+        threading.Thread(target=tls_server, daemon=True).start()
+        hg = f"\"localhost\" {hport} \"/\" hg-fetch {{'ok ('body at) 'no ()}} case print\n"
+        r = subprocess.run(["./slap"], input=(open("examples/lib/strings.slap").read() + open("examples/lib/http.slap").read() + hg * 3).encode(),
+                           capture_output=True, timeout=30, env=dict(os.environ, SSL_CERT_FILE=os.path.join(d, "ca.pem")))
+        ls.close()
+        lines = r.stdout.decode(errors="replace").splitlines()
+        check("https-unclean-with-length", lines[:1] == ['"ok"'], repr(lines))
+        check("https-unclean-no-length", lines[1:2] == ['"https-get: the server closed without close_notify and sent no Content-Length, so the body may be cut"'], repr(lines))
+        check("https-clean", lines[2:3] == ['"ok"'], repr(lines))
         # a client that resets is logged with its reason, and the server keeps serving
         harness.reset(port)
         check("reset-survives", get(b"/a.txt").startswith(b"HTTP/1.0 200"))

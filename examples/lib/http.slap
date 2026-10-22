@@ -41,8 +41,9 @@
 
 -- https-get: (host path -- {'status 'headers 'body} ok | msg no). One GET over tls-connect, as HTTP/1.0
 -- with Connection: close, so the server sends no chunked body and closes when it is done. A server that
--- closes without close_notify gives 'no, since the body may be cut. The loop keeps acc n sock code msg
--- on the stack; code 1 reads on, 0 is done, -1 failed with msg.
+-- closes without close_notify may have cut the body, so that end counts only when a Content-Length
+-- matches the body. The loop keeps acc n sock code msg on the stack; code 1 reads on, 0 is done, 2
+-- ended without close_notify, -1 failed with msg. hg-fetch takes the port, for the tests.
 -- Each byte takes an operand stack slot, and parse-http copies the body once, so 1 MiB is what fits.
 1048576 'HG-CAP let
 ((dup 64 gt over 91 lt and (32 plus) () if) each) 'hg-lower let
@@ -57,9 +58,9 @@
   (hg-hs ('key at hg-lower "content-length" eq) filter ('value at hg-bl eq not) filter
     dup len 0 eq (drop hg-r ok) (0 get must 'value at 'hg-cl let
       "https-get: Content-Length is \"" hg-cl cat "\", which does not name the body's " cat hg-bl cat " bytes" cat no) if) if) if) 'hg-whole let
-('hg-path let 'hg-host let
+('hg-path let 'hg-port let 'hg-host let
  hg-host hg-path cat (dup 13 eq swap 10 eq or) filter len 0 gt ("https-get: the host or the path contains CR or LF" no) (
- hg-host 443 tls-connect {
+ hg-host hg-port tls-connect {
   'no (no)
   'ok ("GET " hg-path cat " HTTP/1.0" cat crlf cat "Host: " cat hg-host cat crlf cat
        "Connection: close" cat crlf cat crlf cat tcp-send {
@@ -69,8 +70,13 @@
       (drop drop 65536 tcp-recv {
         'ok ('hg-ch let (hg-ch len plus) dip ((hg-ch cat) dip) dip
              hg-ch len 0 eq (0 "") (over HG-CAP gt (-1 "https-get: the response is larger than 1 MiB") (1 "") if) if)
-        'no ("https-get: " swap cat -1 swap)} case) while
-      swap 0 eq (drop tcp-close drop parse-http (hg-whole) then) (swap tcp-close nip nip no) if)} case)} case) if) 'https-get let
+        -- OpenSSL's own words for an end without close_notify
+        'no (dup "unexpected eof while reading" str-find {'ok (drop drop 2 "") 'no (drop "https-get: " swap cat -1 swap)} case)} case) while
+      swap dup -1 eq (drop swap tcp-close nip nip no) (
+        'hg-code let drop tcp-close drop parse-http (hg-whole) then
+        hg-code 2 eq (('hg-ok let hg-ok 'headers at ('key at hg-lower "content-length" eq) filter len 0 gt (hg-ok ok)
+          ("https-get: the server closed without close_notify and sent no Content-Length, so the body may be cut" no) if) then) () if) if)} case)} case) if) 'hg-fetch let
+(443 swap hg-fetch) 'https-get let
 
 -- ========== Self-test (runs when the library loads) ==========
 

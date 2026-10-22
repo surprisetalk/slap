@@ -1,13 +1,14 @@
-## Blocked on you
+## Open
 
 - [ ] You open feed in slap-sdl and read the items of your feeds
       fullscreen, and an item you opened stays read on the next run. It is
-      sauce's first app. Blocked: approve the revised steps 1, 7 and 9
-      (feed now fetches its own https feeds with https-get).
+      sauce's first app. Design approved 2026-10-21.
   1. Run: `cat examples/lib/{strings,parse,http,xml,rss,cbor,ufx}.slap
      examples/feed-app.slap | ./slap-sdl state.cbor taylor.town /feed.xml
      e.com /rss`: host and path pairs. At startup https-get fetches each,
-     in order; a feed over 1 MiB is refused (https-get's cap).
+     in order; a feed over 1 MiB is refused (https-get's cap: each byte
+     takes a stack slot), and with fatal failures it stops the app. Full-text
+     and podcast feeds can pass 1 MiB.
   2. state.cbor holds only what you did: `{'read ["https://e.com/1"
      "tag:e.com,2026:2"]}`, the ids of items you opened. A missing
      state.cbor is a first run: `{'read []}`.
@@ -40,6 +41,8 @@
      disk, not fetched), then check state.cbor holds one id. suite.py runs
      it with `./slap-sdl --headless`. The fetch path runs in `make status`
      against one real https feed.
+
+## Blocked on you
 
 - [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,
       `let` and `dip` each cost at most twice `swap` (zoom.slap
