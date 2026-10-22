@@ -31,10 +31,7 @@ args 1 drop-n 2 chunks [] ('fp let
   fp 0 get must 'fh let fp 1 get must 'fpath let fh fpath cat 'furl let
   fh fpath https-get {'ok () 'no ("feed: " furl cat ": " cat swap cat fail)} case 'fr let
   fr 'status at 200 eq not ("feed: " furl cat ": status " cat fr 'status at int-str cat fail) () if
-  -- a body nothing vouched for counts only when it parses: a cut one lost its root's end tag
-  fr 'body at rss-parse {'ok () 'no ("feed: " furl cat ": " cat
-    fr 'whole at 0 eq ("the reply may be cut (no close_notify, no Content-Length), and it does not parse: ") ("") if cat
-    swap cat fail)} case
+  fr 'body at rss-parse {'ok () 'no ("feed: " furl cat ": " cat swap cat fail)} case
   dup rss-title plain furl feed-items cat
   dup items-size TEXT-CAP gt ("feed: " furl cat ": the feeds hold more than 512 KiB of text, the most the reader keeps; drop a feed" cat fail) () if
   ) fold 'ITEMS let
