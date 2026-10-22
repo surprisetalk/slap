@@ -1,5 +1,46 @@
 ## Blocked on you
 
+- [ ] You open feed in slap-sdl and read the items of your feeds
+      fullscreen, and an item you opened stays read on the next run. It is
+      sauce's first app. Blocked: approve the revised steps 1, 7 and 9
+      (feed now fetches its own https feeds with https-get).
+  1. Run: `cat examples/lib/{strings,parse,http,xml,rss,cbor,ufx}.slap
+     examples/feed-app.slap | ./slap-sdl state.cbor taylor.town /feed.xml
+     e.com /rss`: host and path pairs. At startup https-get fetches each,
+     in order; a feed over 1 MiB is refused (https-get's cap).
+  2. state.cbor holds only what you did: `{'read ["https://e.com/1"
+     "tag:e.com,2026:2"]}`, the ids of items you opened. A missing
+     state.cbor is a first run: `{'read []}`.
+  3. One item in memory: `{'feed "taylor.town" 'title "Post 1" 'id
+     "https://e.com/1" 'summary "text" 'read 0}`. Model: `{'w 640 'h 480
+     'items [...] 'at 0 'view 'list}`; `'view` is `'list` or `'item`.
+  4. Items keep each file's order (feeds list newest first), with feeds in
+     argument order. No date sort: it needs RFC 822 and ISO 8601 parsing,
+     which is date code we do not hand-roll.
+  5. Draw text with one uf2 font from fonts/ (ufx.slap decodes it) by
+     fill-rect, 2-bit grey. List view: one row per item, the feed and the
+     title; read items in dark grey, the row at `'at` inverted. Item view:
+     the title, then the summary as plain text, wrapped to the width.
+  6. Keys: j/k or down/up move `'at`; enter opens the item, marks it read
+     and writes state.cbor; escape goes back to the list; q quits.
+     A write replaces the file atomically (`write`).
+  7. Failure modes, each fatal at startup with the URL or path:
+     `feed: taylor.town/feed.xml: tls-connect: taylor.town:443: certificate
+     verify failed: certificate has expired`;
+     `feed: e.com/rss: status 404`;
+     `feed: e.com/rss: rss: expected <rss> or <feed> at byte 0, found 'x'`;
+     `feed: state.cbor: cbor: tags are not supported at byte 0, found byte
+     192`; `feed: usage: ./slap-sdl STATE.cbor HOST PATH [HOST PATH...]`.
+     Tradeoff: one dead feed stops the app; the strongest alternative, an
+     error row in the list, keeps reading but hides a failure in the UI.
+  8. A failed state write while running dies with
+     `feed: state.cbor: <strerror>`, so the read mark is never lost quietly.
+  9. Test, as zoom.slap does: under `isheadless`, run the keydown handler
+     on j, enter, escape over sample.xml and sample-atom.xml (read from
+     disk, not fetched), then check state.cbor holds one id. suite.py runs
+     it with `./slap-sdl --headless`. The fetch path runs in `make status`
+     against one real https feed.
+
 - [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,
       `let` and `dip` each cost at most twice `swap` (zoom.slap
       microbenchmarks). Where the time goes: run callgrind on zoom's tick on
@@ -8,7 +49,7 @@
       loop differently when it grows, so a fast path inlined there can make
       zoom slower: keep new paths in noinline helpers. Tradeoff: each fast
       path is more C to keep correct.
-      Blocked: approve a design for the next cut (step 3).
+      Blocked: design the next cut (step 9).
   1. Benchmark first, by CPU time, minimum of 10 rounds, order alternated
      each round (ABBA): without it the first binary in a pair wins by ~5%.
      The microbenchmark
@@ -26,7 +67,29 @@
      primitives skip the staged/aux bookkeeping. ABBA: swap +11%, dip +10%,
      zoom +6%. The branch in eval_run's loop costs more than the
      bookkeeping. Next: design a cut for frame scans or nth_must.
-  4. Keep a change only if every benchmark in step 1 gets no slower.
+  4. Chosen: nth_must. Every list zoom reads with `nth` is flat, so
+     compound_elem is O(1); the scan is frame_lookup. `'old nth` walks up
+     several frames, and frame_find scans each frame's bindings in full
+     before it moves to the parent.
+  5. Design: Frame gains `uint64_t mask`, bit `sym & 63` set for each name
+     the frame binds. frame_bind sets it (line ~342, the one place a binding
+     is added); frame_end_run and the pool reset clear it. frame_lookup
+     skips a frame whose mask lacks the bit, before frame_find.
+  6. Every lookup speeds up, not only nth: words and values too. No change
+     to eval_run's loop, so no layout trap there. Rejected: a per-call-site
+     cache of (hops, index). It hits faster, but it writes into a body,
+     which never changes once built, and it needs the call site passed to
+     prim_nth.
+  7. Failure mode: a bit missing for a bound name hides that binding, so a
+     lookup falls through to a parent or the global frame and finds the
+     wrong value, or none. A stale bit only costs a scan. Test: a
+     shadowing case in expect.slap whose name shares `sym & 63` with a
+     parent's name.
+  8. Keep a change only if every benchmark in step 1 gets no slower.
+  9. Tried and refused: the frame mask (steps 5-7). ABBA: zoom -0.4%, uxn
+     +1.7%, empty +3.3%, let +2.3%. The frame walk is not the 7%. Next: on
+     pc, `callgrind_annotate --auto=yes` on zoom's tick, and read the lines
+     inside prim_nth_impl and frame_lookup before designing again.
 
 - [ ] You paste the type of a word built on `each`, `fold`, `lend`,
       `mutate`, `dip` or `repeat` from a message into its signature, and it
@@ -79,9 +142,8 @@
       share a charmbracelet-like UI. A dir app opens a general thing. A file
       app opens one specific thing, and it is always a viewer and an editor.
       With no subject, a file app opens the last file. A file app saves by
-      tags only, with no file name. Decide: the first app from the shortlist
-      clock, feed, book, sheet, music, chat/claude; whether you publish your
-      own ware registry.
+      tags only, with no file name. First app: feed (its own entry). Decide:
+      whether you publish your own ware registry.
       - Dir apps:
         - home: the launcher. A grid of app icons (or text) and widgets, and
           search. Or maybe timeline history with graphics?

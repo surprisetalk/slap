@@ -1907,4 +1907,7 @@ dict "k" 1 insert dict "k" 2 insert eq not assert
 ({'cons ('tl at len-l 1 plus) 'nil (drop 0)} case) [dict "cons" dict "tl" 'a var insert "_" 'b var insert rec insert "nil" 'c copy insert either 'a as] [int] effect 'len-l let
 {'tl 0 'nil tag} 'cons tag len-l 1 eq assert
 
+-- tls-connect refuses a host with a NUL byte before it resolves anything
+"x\0" 443 tls-connect {'ok (tcp-close "") 'no ()} case "tls-connect: the host contains a NUL byte" eq assert
+
 "All tests passed!" print

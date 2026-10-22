@@ -903,7 +903,11 @@ def status():
             os.path.join(SCRATCH, "slap"),
             "slap.c",
             "-lm",
-        ],
+        ]
+        + (
+            subprocess.run(["pkg-config", "--cflags", "--libs", "openssl"], capture_output=True, text=True).stdout.split()
+            or ["-lssl", "-lcrypto"]
+        ),
         capture_output=True,
         text=True,
     )
@@ -941,6 +945,25 @@ def status():
         if r.stdout.rstrip().endswith("4100 items")
         else 0.0
     )
+    # The network is outside the suite, so tls-connect meets real hosts here: one it must trust, and one
+    # with an expired certificate it must refuse. A failure prints why to stderr.
+    code = (
+        "\"example.com\" \"/\" https-get must 'status at print\n"
+        "\"expired.badssl.com\" 443 tls-connect {'ok (tcp-close \"trusted an expired certificate\") 'no ()} case print\n"
+    )
+    try:
+        r = subprocess.run(
+            ["./slap"], input=open(lib("strings")).read() + open(lib("http")).read() + code,
+            capture_output=True, text=True, timeout=60,
+        )
+        out = r.stdout.splitlines()[-2:]
+        https_ok = r.returncode == 0 and out[:1] == ["200"] and "certificate verify failed: certificate has expired" in out[-1]
+        if not https_ok:
+            print(f"status: https check: exit {r.returncode}, stdout tail {out!r}, stderr {r.stderr[-300:]!r}", file=sys.stderr)
+    except subprocess.TimeoutExpired:
+        https_ok = False
+        print("status: https check: no answer within 60 s", file=sys.stderr)
+    score["https-get trusts example.com and tls-connect refuses an expired certificate."] = 1.0 if https_ok else 0.0
     rng = random.Random(1)
     vocab = [
         "apple",

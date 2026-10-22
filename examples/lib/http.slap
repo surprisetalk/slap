@@ -1,5 +1,6 @@
 -- http.slap: parse-http reads the raw bytes of an HTTP response.
 -- It gives {'status int 'headers {'key str 'value str} list 'body str} ok, or message no.
+-- https-get fetches one https URL and parses it; it needs a build with tls-connect.
 -- Cat it after strings.slap (for crlf) and before the program:
 --   cat examples/lib/strings.slap examples/lib/http.slap prog.slap | slap
 
@@ -38,6 +39,39 @@
         ("header line has no colon" no) if) then)
   } case) 'parse-http let
 
+-- https-get: (host path -- {'status 'headers 'body} ok | msg no). One GET over tls-connect, as HTTP/1.0
+-- with Connection: close, so the server sends no chunked body and closes when it is done. A server that
+-- closes without close_notify gives 'no, since the body may be cut. The loop keeps acc n sock code msg
+-- on the stack; code 1 reads on, 0 is done, -1 failed with msg.
+-- Each byte takes an operand stack slot, and parse-http copies the body once, so 1 MiB is what fits.
+1048576 'HG-CAP let
+((dup 64 gt over 91 lt and (32 plus) () if) each) 'hg-lower let
+-- The body is whole when it matches Content-Length. HTTP/1.0 asked for no chunked body, so
+-- Transfer-Encoding is refused rather than handed over as framing.
+('hg-r let hg-r 'body at len int-str 'hg-bl let hg-r 'headers at 'hg-hs let
+ hg-hs ('key at (dup 32 eq swap 9 eq or) filter len 0 gt) filter len 0 gt
+ ("https-get: a header name contains a space or a tab, so its meaning is unclear" no)
+ (hg-hs ('key at hg-lower "transfer-encoding" eq) filter len 0 gt
+  ("https-get: the server sent Transfer-Encoding, which a reply to HTTP/1.0 may not use" no)
+  -- every Content-Length must be the body's length in plain digits; two that disagree are refused too
+  (hg-hs ('key at hg-lower "content-length" eq) filter ('value at hg-bl eq not) filter
+    dup len 0 eq (drop hg-r ok) (0 get must 'value at 'hg-cl let
+      "https-get: Content-Length is \"" hg-cl cat "\", which does not name the body's " cat hg-bl cat " bytes" cat no) if) if) if) 'hg-whole let
+('hg-path let 'hg-host let
+ hg-host hg-path cat (dup 13 eq swap 10 eq or) filter len 0 gt ("https-get: the host or the path contains CR or LF" no) (
+ hg-host 443 tls-connect {
+  'no (no)
+  'ok ("GET " hg-path cat " HTTP/1.0" cat crlf cat "Host: " cat hg-host cat crlf cat
+       "Connection: close" cat crlf cat crlf cat tcp-send {
+    'no ("https-get: " swap cat swap tcp-close no)
+    'ok (drop [] 0 rot 1 ""
+      (over 1 eq)
+      (drop drop 65536 tcp-recv {
+        'ok ('hg-ch let (hg-ch len plus) dip ((hg-ch cat) dip) dip
+             hg-ch len 0 eq (0 "") (over HG-CAP gt (-1 "https-get: the response is larger than 1 MiB") (1 "") if) if)
+        'no ("https-get: " swap cat -1 swap)} case) while
+      swap 0 eq (drop tcp-close drop parse-http (hg-whole) then) (swap tcp-close nip nip no) if)} case)} case) if) 'https-get let
+
 -- ========== Self-test (runs when the library loads) ==========
 
 ('ph-raw let ph-raw parse-http) 'ph-run let
@@ -64,3 +98,13 @@ crlf crlf cat ph-run "status line has no 3-digit code" no eq assert
 "HTTP/1.1 200 OK" crlf cat "garbage line" cat crlf cat crlf cat ph-run "header line has no colon" no eq assert
 "HTTP/1.1 2/0 OK" crlf cat crlf cat ph-run "status line has no 3-digit code" no eq assert
 "HTTP/1.1 2:0 OK" crlf cat crlf cat ph-run "status line has no 3-digit code" no eq assert
+"x" "/" crlf cat https-get "https-get: the host or the path contains CR or LF" no eq assert
+"HTTP/1.1 200 OK" crlf cat "Content-Length: 3" cat crlf cat crlf cat "ab" cat ph-run must hg-whole
+  "https-get: Content-Length is \"3\", which does not name the body's 2 bytes" no eq assert
+"HTTP/1.1 200 OK" crlf cat "content-length: 2" cat crlf cat crlf cat "ab" cat ph-run must hg-whole must 'body at "ab" eq assert
+"HTTP/1.1 200 OK" crlf cat "Transfer-Encoding: chunked" cat crlf cat crlf cat "2" cat ph-run must hg-whole
+  "https-get: the server sent Transfer-Encoding, which a reply to HTTP/1.0 may not use" no eq assert
+"HTTP/1.1 200 OK" crlf cat "Content-Length: 2" cat crlf cat "Content-Length: 3" cat crlf cat crlf cat "ab" cat ph-run must hg-whole
+  "https-get: Content-Length is \"3\", which does not name the body's 2 bytes" no eq assert
+"HTTP/1.1 200 OK" crlf cat "Transfer-Encoding : chunked" cat crlf cat crlf cat "2" cat ph-run must hg-whole
+  "https-get: a header name contains a space or a tab, so its meaning is unclear" no eq assert

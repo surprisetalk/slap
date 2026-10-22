@@ -227,6 +227,60 @@ with tempfile.TemporaryDirectory() as d:
             timeout=20,
         )
         check("fetch-refused", r.returncode != 0, "a dead port must fail, not hang")
+        # a keep-alive server closes only when the request asks it to, so fetch must ask
+        import socket, threading, time
+        ka = socket.socket(); ka.bind(("127.0.0.1", 0)); ka.listen(1)
+        def keep_alive():
+            c, _ = ka.accept()
+            req = c.recv(65536)
+            c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            if b"Connection: close" in req:
+                c.close()
+            else:
+                tm = threading.Timer(10, c.close); tm.daemon = True; tm.start()
+        threading.Thread(target=keep_alive, daemon=True).start()
+        t0 = time.monotonic()
+        r = subprocess.run(
+            ["./slap", "127.0.0.1", str(ka.getsockname()[1]), "/"],
+            input=FETCH_SRC.encode(), capture_output=True, timeout=20,
+        )
+        ka.close()
+        took = time.monotonic() - t0
+        check("fetch-closes", r.returncode == 0 and r.stdout == b"ok" and took < 5,
+              f"fetch must send Connection: close; it took {took:.1f} s")
+        # tls-connect against a local server whose certificate a test CA signed. Without the CA the
+        # certificate is refused; with SSL_CERT_FILE naming it, which OpenSSL honours, it is trusted.
+        def ssl(*argv):
+            subprocess.run(["openssl", *argv], capture_output=True, check=True, timeout=20, cwd=d)
+        ec = ["-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes"]
+        ssl("req", "-x509", *ec, "-keyout", "ca.key", "-out", "ca.pem", "-days", "1", "-subj", "/CN=slap-test-ca")
+        ssl("req", "-new", *ec, "-keyout", "s.key", "-out", "s.csr", "-subj", "/CN=localhost")
+        with open(os.path.join(d, "ext"), "w") as f:
+            f.write("subjectAltName=DNS:localhost,IP:127.0.0.1\n")
+        ssl("x509", "-req", "-in", "s.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial",
+            "-out", "s.pem", "-days", "1", "-extfile", "ext")
+        tls_port = port + 1
+        # -rev sends each line back reversed, so a reply proves both directions went through TLS
+        srv = subprocess.Popen(["openssl", "s_server", "-accept", str(tls_port), "-cert", "s.pem", "-key", "s.key", "-rev", "-quiet"],
+                               cwd=d, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        def tls(code, ca):
+            env = dict(os.environ, SSL_CERT_FILE=os.path.join(d, "ca.pem")) if ca else None
+            return subprocess.run(["./slap"], input=code.encode(), capture_output=True, timeout=20, env=env)
+        try:
+            for _ in range(100):
+                try:
+                    socket.create_connection(("127.0.0.1", tls_port), timeout=1).close(); break
+                except OSError:
+                    time.sleep(0.05)
+            probe = f"{{'ok (tcp-close \"connected\") 'no ()}} case print"
+            r = tls(f"\"localhost\" {tls_port} tls-connect " + probe, ca=False)
+            check("tls-untrusted", b"certificate verify failed: unable to get local issuer certificate" in r.stdout, repr(r.stdout + r.stderr))
+            r = tls(f"\"localhost\" {tls_port} tls-connect must \"abc\\n\" tcp-send must drop 100 tcp-recv must print tcp-close", ca=True)
+            check("tls-roundtrip", r.returncode == 0 and r.stdout == b"[99 98 97 10]\n", repr(r.stdout + r.stderr))
+            r = tls(f"\"127.0.0.1\" {tls_port} tls-connect " + probe, ca=True)
+            check("tls-ip", r.stdout == b"\"connected\"\n", repr(r.stdout + r.stderr))
+        finally:
+            srv.kill(); srv.wait()
         # a client that resets is logged with its reason, and the server keeps serving
         harness.reset(port)
         check("reset-survives", get(b"/a.txt").startswith(b"HTTP/1.0 200"))

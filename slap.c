@@ -22,6 +22,9 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/x509v3.h>
 #endif
 #define STACK_MAX  2097152
 #define SYM_MAX   4096
@@ -1116,6 +1119,7 @@ static const char *TYPES =
     "'tcp-connect [str int] [dict \"ok\" socket insert \"no\" str insert either] 'tcp-send [socket str] [socket dict \"ok\" int insert \"no\" str insert either]\n"
     "'tcp-recv [socket int] [socket dict \"ok\" str insert \"no\" str insert either] 'tcp-close [socket] [] 'tcp-listen [int] [dict \"ok\" socket insert \"no\" str insert either]\n"
     "'tcp-accept [socket] [socket dict \"ok\" socket insert \"no\" str insert either]\n"
+    "'tls-connect [str int] [dict \"ok\" socket insert \"no\" str insert either]\n"
     "'clear [int] [] 'pixel [int int int] [] 'fill-rect [int int int int int] []\n";
 
 /* ---- signatures ----
@@ -2946,6 +2950,8 @@ static void prim_ls(Frame *e) {
 /* recv on a connected socket gives up on a silent peer after 30 s; a listening socket must not (accept waits for clients). Returns -1 with errno set when an option fails. */
 static int sock_setup(int fd) {
     struct timeval tv = {30, 0};
+    /* tcp-send polls on its own, but OpenSSL's writes inside tcp-recv and tcp-close block. */
+    if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) < 0) return -1;
 #ifdef SO_NOSIGPIPE
     int one = 1; if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) < 0) return -1;
 #endif
@@ -2966,16 +2972,14 @@ static int connect_bounded(int fd, const struct sockaddr *sa, socklen_t sl, int 
     }
     return fcntl(fd, F_SETFL, fl);
 }
-static void prim_tcp_connect(Frame *e) {
-    (void)e; int64_t port=pop_int(); int hlen;char *host=pop_string_path("tcp-connect",&hlen);
-    if(port<0||port>65535) die("tcp-connect: port %lld is outside 0-65535",(long long)port);
-    if(memchr(host,0,hlen)){free(host);push_fail("tcp-connect: the host contains a NUL byte");return;}
+/* A connected socket, or -1 with msg set. tcp-connect and tls-connect share it; who names the word. */
+static int tcp_open(const char *who, const char *host, int64_t port, struct timespec t0, char *msg, size_t cap) {
     struct addrinfo hints={0},*res; hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
     char ps[16]; snprintf(ps,sizeof(ps),"%lld",(long long)port);
-    char msg[512]; int err=getaddrinfo(host,ps,&hints,&res);
-    if(err){snprintf(msg,sizeof msg,"tcp-connect: cannot resolve %s: %s",host,gai_strerror(err));free(host);push_fail(msg);return;}
-    /* One 10 s deadline covers every address. getaddrinfo waits as long as the system resolver does. */
-    int fd=-1,last=0; struct timespec t0,t1; clock_gettime(CLOCK_MONOTONIC,&t0);
+    int err=getaddrinfo(host,ps,&hints,&res);
+    if(err){snprintf(msg,cap,"%s: cannot resolve %s: %s",who,host,gai_strerror(err));return -1;}
+    /* One 10 s deadline from t0 covers every address. getaddrinfo waits as long as the system resolver does. */
+    int fd=-1,last=0; struct timespec t1;
     for(struct addrinfo *a=res;a&&fd<0;a=a->ai_next){
         clock_gettime(CLOCK_MONOTONIC,&t1); long left=10000-((t1.tv_sec-t0.tv_sec)*1000+(t1.tv_nsec-t0.tv_nsec)/1000000);
         if(left<=0){last=ETIMEDOUT;break;}
@@ -2984,8 +2988,93 @@ static void prim_tcp_connect(Frame *e) {
         if(connect_bounded(fd,a->ai_addr,a->ai_addrlen,(int)left)<0||sock_setup(fd)<0){last=errno;close(fd);fd=-1;}
     }
     freeaddrinfo(res);
-    if(fd<0){if(last==ETIMEDOUT)snprintf(msg,sizeof msg,"tcp-connect: %s:%s timed out after 10 s",host,ps);else snprintf(msg,sizeof msg,"tcp-connect: cannot connect to %s:%s: %s",host,ps,strerror(last));free(host);push_fail(msg);return;}
-    free(host); if(shell_jmp) shell_sock(fd+1); spush(val_int(fd));push_ok();
+    if(fd<0){if(last==ETIMEDOUT)snprintf(msg,cap,"%s: %s:%s timed out after 10 s",who,host,ps);else snprintf(msg,cap,"%s: cannot connect to %s:%s: %s",who,host,ps,strerror(last));}
+    return fd;
+}
+static void prim_tcp_connect(Frame *e) {
+    (void)e; int64_t port=pop_int(); int hlen;char *host=pop_string_path("tcp-connect",&hlen);
+    if(port<0||port>65535) die("tcp-connect: port %lld is outside 0-65535",(long long)port);
+    if(memchr(host,0,hlen)){free(host);push_fail("tcp-connect: the host contains a NUL byte");return;}
+    char msg[512]; struct timespec t0; clock_gettime(CLOCK_MONOTONIC,&t0);
+    int fd=tcp_open("tcp-connect",host,port,t0,msg,sizeof msg); free(host);
+    if(fd<0){push_fail(msg);return;}
+    if(shell_jmp) shell_sock(fd+1); spush(val_int(fd));push_ok();
+}
+/* The TLS session of each socket tls-connect made, by fd; NULL for a plain socket. */
+static SSL **tls_of; static int tls_cap;
+static SSL_CTX *tls_ctx;
+static SSL *tls_get(int fd) { return fd < tls_cap ? tls_of[fd] : NULL; }
+/* OpenSSL sends with write(2), which raises SIGPIPE when the peer has gone: MSG_NOSIGNAL cannot reach it,
+   and Linux has no SO_NOSIGPIPE. SIGPIPE is ignored while a TLS call runs. */
+static struct sigaction tls_sigpipe;
+static void tls_enter(void) { struct sigaction ign = {0}; ign.sa_handler = SIG_IGN; sigaction(SIGPIPE, &ign, &tls_sigpipe); ERR_clear_error(); errno = 0; }
+static void tls_leave(void) { sigaction(SIGPIPE, &tls_sigpipe, NULL); ERR_clear_error(); }
+/* Why the TLS call that returned r failed, from OpenSSL's own strings. */
+static const char *tls_why(SSL *s, int r) {
+    static char why[256]; long v = SSL_get_verify_result(s); unsigned long e = ERR_get_error();
+    if (v != X509_V_OK) snprintf(why, sizeof why, "certificate verify failed: %s", X509_verify_cert_error_string(v));
+    else if (e) snprintf(why, sizeof why, "%s", ERR_reason_error_string(e) ? ERR_reason_error_string(e) : "an unnamed OpenSSL error");
+    else if (SSL_get_error(s, r) == SSL_ERROR_SYSCALL) snprintf(why, sizeof why, "%s", errno ? strerror(errno) : "the peer closed the connection without close_notify, so the data may be cut");
+    else if (SSL_get_error(s, r) == SSL_ERROR_ZERO_RETURN) snprintf(why, sizeof why, "the peer ended the TLS session");
+    /* OpenSSL names a fatal error once; later calls on that session find an empty queue. */
+    else if (SSL_get_error(s, r) == SSL_ERROR_SSL) snprintf(why, sizeof why, "the TLS session failed earlier; close the socket");
+    else snprintf(why, sizeof why, "OpenSSL error %d", SSL_get_error(s, r));
+    return why;
+}
+/* After a TLS call on a non-blocking socket returned r: wait for what OpenSSL asks, to read or to write,
+   until ms after t0. 1 means call again; 0 means stop, with *why set when the time ran out or poll failed. */
+static int tls_wait(SSL *s, int fd, int r, struct timespec t0, long ms, const char **why) {
+    int se = SSL_get_error(s, r);
+    if (se != SSL_ERROR_WANT_READ && se != SSL_ERROR_WANT_WRITE) return 0;
+    struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
+    long left = ms - ((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
+    struct pollfd p = {fd, se == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, 0};
+    int pr = left > 0 ? poll(&p, 1, (int)left) : 0;
+    if (pr == 0) *why = "the connect and the handshake took more than 10 s";
+    else if (pr < 0) *why = strerror(errno);
+    return pr > 0;
+}
+static void prim_tls_connect(Frame *e) {
+    (void)e; int64_t port=pop_int(); int hlen; char *host=pop_string_path("tls-connect",&hlen);
+    if(port<0||port>65535) die("tls-connect: port %lld is outside 0-65535",(long long)port);
+    if(memchr(host,0,hlen)){free(host);push_fail("tls-connect: the host contains a NUL byte");return;}
+    /* One 10 s deadline covers the connect and the handshake. */
+    char msg[512]; struct timespec t0; clock_gettime(CLOCK_MONOTONIC,&t0);
+    int fd=tcp_open("tls-connect",host,port,t0,msg,sizeof msg);
+    if(fd<0){free(host);push_fail(msg);return;}
+    /* The context becomes tls_ctx only once verification is on: in the shell a die returns, and a half-made
+       context would verify nothing on the next line. */
+    if(!tls_ctx){
+        SSL_CTX *x=SSL_CTX_new(TLS_client_method());
+        if(!x||!SSL_CTX_set_min_proto_version(x,TLS1_2_VERSION)||!SSL_CTX_set_default_verify_paths(x)){
+            const char *rs=ERR_reason_error_string(ERR_get_error()); SSL_CTX_free(x); close(fd); free(host);
+            die("tls-connect: OpenSSL cannot set up a TLS client: %s", rs ? rs : "no reason given"); }
+        SSL_CTX_set_verify(x,SSL_VERIFY_PEER,NULL);
+        SSL_CTX_set_mode(x,SSL_MODE_ENABLE_PARTIAL_WRITE|SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+        tls_ctx=x;
+    }
+    SSL *s=SSL_new(tls_ctx); if(!s){ close(fd); free(host); die("tls-connect: out of memory for a TLS session"); }
+    /* An IP address is checked against the certificate's IP names and sends no SNI (RFC 6066). */
+    unsigned char ip[16]; int is_ip=inet_pton(AF_INET,host,ip)==1||inet_pton(AF_INET6,host,ip)==1;
+    const char *why=NULL; int r=0; tls_enter(); int fl=fcntl(fd,F_GETFL,0);
+    if(fl<0||fcntl(fd,F_SETFL,fl|O_NONBLOCK)<0) why=strerror(errno);
+    else if(!SSL_set_fd(s,fd)) why="OpenSSL refused the socket";
+    else if(is_ip?!X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(s),host):!SSL_set_tlsext_host_name(s,host)||!X509_VERIFY_PARAM_set1_host(SSL_get0_param(s),host,0))
+        why="OpenSSL cannot check a certificate against this host name: it takes ASCII labels, no trailing dot, at most 255 bytes";
+    else while((r=SSL_connect(s))!=1) if(!tls_wait(s,fd,r,t0,10000,&why)){ if(!why) why=tls_why(s,r); break; }
+    if(!why&&fcntl(fd,F_SETFL,fl)<0) why=strerror(errno);
+    if(why){ snprintf(msg,sizeof msg,"tls-connect: %s:%lld: %s",host,(long long)port,why);
+        tls_leave(); SSL_free(s); close(fd); free(host); push_fail(msg); return; }
+    tls_leave(); free(host);
+    if(fd>=tls_cap){ int nc=fd+64; SSL **g=realloc(tls_of,(size_t)nc*sizeof *g); if(!g){ SSL_free(s); close(fd); die("tls-connect: out of memory for %d socket slots",nc); }
+        memset(g+tls_cap,0,(size_t)(nc-tls_cap)*sizeof *g); tls_of=g; tls_cap=nc; }
+    tls_of[fd]=s; if(shell_jmp) shell_sock(fd+1); spush(val_int(fd)); push_ok();
+}
+/* Ends a socket's TLS session, with close_notify when the peer still listens, then closes it. */
+static int sock_close(int fd) {
+    SSL *s = tls_get(fd);
+    if (s) { tls_enter(); SSL_shutdown(s); tls_leave(); SSL_free(s); tls_of[fd] = NULL; }
+    return close(fd);
 }
 static void prim_tcp_send(Frame *e) {
     (void)e; int len; unsigned char *buf = pop_byte_list_buf("tcp-send", &len);
@@ -2995,15 +3084,25 @@ static void prim_tcp_send(Frame *e) {
     int fl = fcntl(fd, F_GETFL, 0); const char *err = NULL;
     if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) { free(buf); push_fail(strerror(errno)); return; }
     struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+    SSL *s = tls_get(fd); if (s) tls_enter();
     for (size_t sent = 0; sent < (size_t)len && !err; ) {
-        ssize_t n = send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
-        if (n > 0) { sent += n; continue; }
-        if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) { err = strerror(errno); break; }
+        short want = POLLOUT;
+        if (s) {
+            int n = SSL_write(s, buf + sent, len - (int)sent);
+            if (n > 0) { sent += n; continue; }
+            int se = SSL_get_error(s, n);
+            if (se == SSL_ERROR_WANT_READ) want = POLLIN; else if (se != SSL_ERROR_WANT_WRITE) { err = tls_why(s, n); break; }
+        } else {
+            ssize_t n = send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
+            if (n > 0) { sent += n; continue; }
+            if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) { err = strerror(errno); break; }
+        }
         clock_gettime(CLOCK_MONOTONIC, &t1);
         long left = 30000 - ((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
-        struct pollfd p = {fd, POLLOUT, 0}; int r = left > 0 ? poll(&p, 1, (int)left) : 0;
+        struct pollfd p = {fd, want, 0}; int r = left > 0 ? poll(&p, 1, (int)left) : 0;
         if (r < 0) err = strerror(errno); else if (r == 0) err = "timed out after 30 s";
     }
+    if (s) tls_leave();
     if (fcntl(fd, F_SETFL, fl) < 0 && !err) err = strerror(errno);
     free(buf);
     if (err) { push_fail(err); return; }
@@ -3012,11 +3111,20 @@ static void prim_tcp_send(Frame *e) {
 static void prim_tcp_recv(Frame *e) {
     (void)e; int64_t maxlen = pop_int(); if (maxlen < 1) die("tcp-recv: length must be at least 1, got %lld", (long long)maxlen);
     int fd = (int)pop_int(); spush(val_int(fd));
-    static unsigned char buf[65536]; ssize_t n = recv(fd, buf, maxlen < (int64_t)sizeof buf ? (size_t)maxlen : sizeof buf, 0);
+    static unsigned char buf[65536]; size_t want = maxlen < (int64_t)sizeof buf ? (size_t)maxlen : sizeof buf;
+    SSL *s = tls_get(fd);
+    if (s) {
+        /* The socket's 30 s receive timeout ends a blocking read with EAGAIN, which OpenSSL reports as WANT_READ. */
+        tls_enter(); int r = SSL_read(s, buf, (int)want), se = r > 0 ? SSL_ERROR_NONE : SSL_get_error(s, r);
+        const char *why = se == SSL_ERROR_NONE || se == SSL_ERROR_ZERO_RETURN ? NULL : se == SSL_ERROR_WANT_READ ? "timed out after 30 s" : tls_why(s, r);
+        tls_leave(); if (why) { push_fail(why); return; }
+        push_byte_list(buf, r > 0 ? r : 0); push_ok(); return;
+    }
+    ssize_t n = recv(fd, buf, want, 0);
     if (n < 0) { push_fail(errno == EAGAIN || errno == EWOULDBLOCK ? "timed out after 30 s" : strerror(errno)); return; }
     push_byte_list(buf, n); push_ok();
 }
-static void prim_tcp_close(Frame *e) { (void)e; int fd=(int)pop_int(); if(shell_jmp){shell_sock(-(fd+1));return;} if(close(fd)) die("tcp-close: closing socket %d failed: %s", fd, strerror(errno)); }
+static void prim_tcp_close(Frame *e) { (void)e; int fd=(int)pop_int(); if(shell_jmp){shell_sock(-(fd+1));return;} if(sock_close(fd)) die("tcp-close: closing socket %d failed: %s", fd, strerror(errno)); }
 static void prim_tcp_listen(Frame *e) {
     (void)e; int64_t port=pop_int(); if(port<0||port>65535) die("tcp-listen: port %lld is outside 0-65535",(long long)port);
     int fd=socket(AF_INET,SOCK_STREAM,0); if(fd<0){push_fail(strerror(errno));return;}
@@ -3101,6 +3209,7 @@ static void register_prims(void) {
 #ifndef SLAP_WASM
         {"tcp-connect",prim_tcp_connect,NULL},{"tcp-send",prim_tcp_send,NULL},{"tcp-recv",prim_tcp_recv,NULL},
         {"tcp-close",prim_tcp_close,NULL},{"tcp-listen",prim_tcp_listen,NULL},{"tcp-accept",prim_tcp_accept,NULL},
+        {"tls-connect",prim_tls_connect,NULL},
 #endif
 #ifdef SLAP_SDL
         R(clear,clear),R(pixel,pixel),{"fill-rect",prim_fill_rect,NULL},R(on,on),R(show,show),
@@ -3118,7 +3227,7 @@ static void refuse_missing_words(Token *toks, int n) {
         if(t->tag!=TOK_WORD||prim_fns[w]||!(ty_builtin[w]||w==S_ON||w==S_SHOW)) continue;
         current_loc=LOC_PACK(t->fid,t->line,t->col);
 #ifdef SLAP_WASM
-        die("'%s' is not in the wasm build: a browser has no TCP sockets. Remove the tcp-* words from this program.",sym_name(w));
+        die("'%s' is not in the wasm build: a browser has no TCP sockets. Remove the tcp-* and tls-connect words from this program.",sym_name(w));
 #else
         die("'%s' needs the SDL build, but this is the terminal build. Build it with make slap-sdl and run ./slap-sdl.",sym_name(w));
 #endif
@@ -3175,12 +3284,12 @@ static int shell(Token *table, int table_count, Token *combined, int prelude_n) 
         } else died = 1;
         shell_jmp = NULL;
         if (ok) {
-            for (int k = 0; k < shell_socks_n; k++) if (shell_socks[k] < 0 && close(-shell_socks[k] - 1)) die("tcp-close: closing socket %d failed: %s", -shell_socks[k] - 1, strerror(errno));
+            for (int k = 0; k < shell_socks_n; k++) if (shell_socks[k] < 0 && sock_close(-shell_socks[k] - 1)) die("tcp-close: closing socket %d failed: %s", -shell_socks[k] - 1, strerror(errno));
             deep_free_values(snap, sp0); free(snap); free(hist); hist = src; hlen = strlen(src); hist_toks = toks;
         } else {
             if (died) {
                 /* What the line left on the stack and the aux stack is dropped unfreed: after an error it may be half moved. */
-                for (int k = 0; k < shell_socks_n; k++) if (shell_socks[k] > 0) close(shell_socks[k] - 1);
+                for (int k = 0; k < shell_socks_n; k++) if (shell_socks[k] > 0) sock_close(shell_socks[k] - 1);
                 asp = 0; staged_n = 0; eval_depth = 0; user_loc = 0;
                 VCPY(stack, snap, sp0); sp = sp0;
                 frame_trim(global_frame, binds0);

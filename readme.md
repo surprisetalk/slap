@@ -359,7 +359,7 @@ Realistic example — a mutable counter:
 free
 ```
 
-A box stays on the stack from `box` to `free`: it cannot be bound with `let`, stored in a list, record or dict, duplicated or dropped. `lend` and `mutate` give it back. The body of `lend`, as the body of `mutate`, leaves exactly one value. A socket from `tcp-listen`, `tcp-connect` or `tcp-accept` follows the same rules and ends with `tcp-close`.
+A box stays on the stack from `box` to `free`: it cannot be bound with `let`, stored in a list, record or dict, duplicated or dropped. `lend` and `mutate` give it back. The body of `lend`, as the body of `mutate`, leaves exactly one value. A socket from `tcp-listen`, `tcp-connect`, `tls-connect` or `tcp-accept` follows the same rules and ends with `tcp-close`.
 
 ## type system
 
@@ -580,7 +580,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 
 ### networking / http
 
-Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http` from `examples/lib/http.slap`. `tcp-recv` gives up to n bytes, and at most 64 KiB per call. `tcp-recv` gives `'no` after 30 s with no data, `tcp-send` gives `'no` when it has not sent everything after 30 s, and `tcp-connect` gives `'no` after 10 s. `tcp-accept` waits without a limit, and skips a client that resets before it is accepted. strings.slap's `accept-loop` (`..s server name (..s client -- ..s continue) -- ..s server`) hands each client to a body until it leaves 0; it logs a failed accept, such as no free file descriptor, and stops after 100 in a row. `tcp-listen` binds 127.0.0.1 only, so a client on another machine cannot reach a slap server. `http-request` lives in `examples/lib/strings.slap`.
+Built on `tcp-connect`/`tcp-send`/`tcp-recv`/`tcp-close` primitives plus `parse-http` from `examples/lib/http.slap`. `tcp-recv` gives up to n bytes, and at most 64 KiB per call. `tcp-recv` gives `'no` after 30 s with no data, `tcp-send` gives `'no` when it has not sent everything after 30 s, and `tcp-connect` gives `'no` after 10 s. `tcp-accept` waits without a limit, and skips a client that resets before it is accepted. strings.slap's `accept-loop` (`..s server name (..s client -- ..s continue) -- ..s server`) hands each client to a body until it leaves 0; it logs a failed accept, such as no free file descriptor, and stops after 100 in a row. `tcp-listen` binds 127.0.0.1 only, so a client on another machine cannot reach a slap server. `http-request` lives in `examples/lib/strings.slap`. `tls-connect` (`host port -- socket ok | msg no`) opens a TLS 1.2+ connection and checks the certificate against the system's CA store (or the file `SSL_CERT_FILE` names) and the host name, or the IP address for an IP host, which sends no SNI. It checks no revocation (CRL or OCSP), and `SSL_CERT_FILE` and `SSL_CERT_DIR` replace the CA store; `tcp-send`, `tcp-recv` and `tcp-close` work on its socket, and `tcp-close` sends close_notify. Its 10 s cover the connect and the handshake. A refused certificate is `'no` with OpenSSL's reason: `tls-connect: expired.badssl.com:443: certificate verify failed: certificate has expired`. A peer that closes without close_notify makes `tcp-recv` give `'no`, since the data may be cut. http.slap's `https-get` (`host path -- {'status 'headers 'body} ok | msg no`) sends one HTTP/1.0 GET over it and reads until the server closes, at most 1 MiB (each byte takes a stack slot). It gives `'no` for a host or path with CR or LF, a Content-Length that is not the body's length in plain digits, a header name with a space, and a Transfer-Encoding reply; `fetch.slap` takes `-s` for https.
 
 | Word | Effect |
 |------|--------|
@@ -836,7 +836,7 @@ git config core.hooksPath .githooks
 
 ## building
 
-Requires only a C99 compiler and `-lm`. No dependencies beyond SDL2 for the graphics build.
+Requires a C99 compiler, `-lm` and OpenSSL (for `tls-connect`; `pkg-config openssl` finds it). The graphics build also needs SDL2, and the WASM build needs neither OpenSSL nor sockets.
 
 ```bash
 make slap          # terminal interpreter
