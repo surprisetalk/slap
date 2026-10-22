@@ -1,70 +1,71 @@
-## Blocked on you
+## Open
 
 - [ ] You read RSS 1.0 (RDF) feeds, ISO-8859-1 feeds, and RSS channels
-      without a description (6 of the 917 in taylor-town/feeds.tsv).
-      Blocked: approve a design.
-  1. Decide per case: rss.slap's strictness is the spec; readers accept
-     these. Each needs xml.slap or rss.slap changes and a test.
+      without a description. Design approved 2026-10-22.
+  1. RDF: `_rss-dispatch` (rss.slap:80) gains a `rdf:RDF` root branch. It
+     reads channel (title, link, description via `_rss-opt`) and items
+     (via `_rss2-item`) from the root, where they are siblings. `'kind`
+     stays "rss", since feed.slap and rss-to-xml switch on it.
+  2. Latin-1: at `_xml-parse` entry (xml.slap:218), a declaration of
+     ISO-8859-1 or latin1 (any case) transcodes each byte >= 0x80 to two
+     UTF-8 bytes. Every other encoding stays refused, windows-1252 too.
+  3. No description: rss.slap:43 uses `_rss-opt`, so it reads as `none`.
+     rss-to-xml omits the element for `none`, so a round trip is exact.
+  4. Tests first in rss.slap's and xml.slap's assert sections: flip the
+     refusal cases at xml.slap:564 and rss.slap:277, 381; add an RDF
+     case. Update readme ~579 and the comment at rss.slap:11.
 
-- [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,
-      `let` and `dip` each cost at most twice `swap`.
-      Blocked: approve the next cut (step 3).
-  1. Benchmark by CPU time, minimum of 10 rounds, order alternated each
-     round (ABBA); without it the first binary wins by ~5%. Keep a change
-     only if no benchmark gets slower. The microbenchmark
-     `2000000 'N let ('label let 'body let millis 't0 let 0 (dup N lt) (body apply 1 plus) while drop millis t0 sub 'dt let label print dt print) 'bench let`
-     with `() "empty" bench`, `(1 (2) (3) if drop) "if" bench`,
-     `(5 'v let) "let" bench`, `(1 2 (drop) dip drop) "dip" bench`,
-     `(1 2 swap drop drop) "swap" bench`; zoom's tick without SDL
-     (zoom.slap, X0/XW/Y0/YW at 640x480, `start`, then `0 (plot) step` to
-     `3 (plot) step`, plot ending in five `drop`s); the 600 KB feed; and
-     uxn.slap (patch_geometry 320x240) on drool.rom for 60 frames.
-  2. Refused, do not retry: a `VF_PLAIN` flag that skips staged/aux
-     bookkeeping (swap +11%, zoom +6%); a per-frame 64-bit name mask for
-     lookups (uxn +1.7%, empty +3.3%). clang lays out eval_run's loop
-     differently when it grows: keep new paths in noinline helpers.
-  3. On pc, callgrind zoom's tick (`nix-shell -p valgrind --run "valgrind
-     --tool=callgrind ./slap < prog"`, `callgrind_annotate --auto=yes`).
-     Read the hot lines in prim_nth_impl and frame_lookup, then design the
-     cut. Last profile: staged/aux bookkeeping ~12%, frame scans ~9%,
-     nth_must ~7%.
-
-- [ ] You paste the type of a word built on `each`, `fold`, `lend`,
-      `mutate`, `dip` or `repeat` from a message into its signature, and it
-      checks. Today `(each) ['a copy 'list tag ['b sealed 'a copy] ['b sealed
-      'c copy] fn] ['c copy 'list tag] effect 'ee let` is refused: "this body
-      must turn its inputs into one value".
-      Blocked: approve a design.
-  1. Find why a signature's `'b sealed` does not unify with each's sealed
-     rest (ty_unify, the `sealed` branch near "cannot reach the stack").
-  2. For dip and repeat, `takes` omits the word's own rest, so the pasted
-     body's `['c rest]` is unrelated to it. Decide: print the word's rest
-     in `takes`, or say that such a type does not paste.
+- [ ] You paste the type a message prints for a word built on `each`,
+      `fold`, `lend`, `mutate`, `dip` or `repeat` into its signature, and it
+      checks. Design approved 2026-10-22.
+  1. Tests first. expect.slap: each pasted signature checks and runs.
+     errors.slap: a pasted each called with a body that reaches below is
+     still refused; two different sealed names still clash.
+  2. slap.c:853 (ty_bind): a sealed variable meeting a sealed K_SVAR links
+     the free one to the rigid one; two rigid ones still clash.
+  3. The `takes` message prefixes the word's rest (`'a rest int ['a rest]
+     ['a rest] fn`) when a printed body type shares it, so dip and repeat
+     types paste.
 
 - [ ] You run a pico8 cart headless for N frames and its screen matches a
-      reference render. Decided: pico8 first; tic80 reuses the interpreter
-      later. 16 colours rank-map to 4 greys like uxn.slap. No audio. Carts
-      run far below 30 fps; correctness first. Lua tables cannot be slap
-      values (a lookup of a bound dict copies it, and so does dup), so all
-      Lua state lives in one heap threaded on the stack.
-      Blocked: approve a design with data shapes and failure modes.
-  1. examples/lua.slap lexer: read the source by index with `nth`, as
-     json.slap does. No per-character recursion.
-  2. The parser emits a flat int bytecode list. A `while` + step loop runs
-     it, like uxn.slap's run-more; the Lua call stack is data.
-  3. Heap: tables are int ids; entries live in one dict keyed by encoded
-     `id:key` bytes, plus a key list per table for `pairs`. Closures are
-     (proto id, upvalue ids).
-  4. Numbers are pico8 16.16 fixed point in ints.
-  5. tests/run_lua.py diffs `print` output against system `lua` on
-     tests/lua/*.lua scripts that stay in integers.
-  6. Cart loader for the .p8 text format: **lua**, **gfx**, **map**.
-  7. API subset: cls pset pget rectfill circfill line spr map btn print rnd
-     flr sin cos; _init/_update/_draw.
-  8. tests/run_pico8.py runs a small cart headless and diffs a
-     palette-index pixel dump against a committed reference made by
-     zepto8 on pc (real pico8 needs a license).
-  9. Then tic80 on the same lua.slap; duskos and decker after.
+      reference render. Design approved 2026-10-22. pico8 first; tic80
+      reuses the interpreter later. No audio. Correctness first: an
+      estimated 100-200k VM ops/s, so a small cart's 60 frames take 10-20 s.
+  1. A Lua value is one int, `payload*8 + tag`: 0 nil, 1 bool, 2 num
+     (signed 16.16), 3 str id, 4 table id, 5 closure id, 6 builtin id, 7
+     cell id. Tagged slap values lose: they span slots, so `nth` is O(n).
+  2. Machine: one flat int list at fixed offsets, as uxn.slap: registers,
+     bytecode `[op arg]` pairs, Lua stack (4096), call stack (200 frames
+     of ret-pc, base, closure, nargs), protos, 128x128 screen of palette
+     indices, gfx, map, flags, buttons. Loops use `while`, not `each`.
+  3. Heap: one int dict above the machine, never `let`-bound (a lookup
+     would copy it). 8-byte keys: kind, id, key. Kinds: entry, head, tail,
+     next-link (insertion order for `pairs`), length, cell, closure cell.
+     Captured locals box at compile time; no open upvalues. No GC: the
+     heap bound crashes a cart that allocates every frame.
+  4. Number words: slap `mod`/`div` truncate and `shr` is logical, so
+     pico8 `%`, `\` and `>>` get floor/arithmetic words; add/sub/mul wrap
+     to 32 bits.
+  5. Compile-time crash with line and fix: metatables, coroutines, `goto`,
+     varargs, string methods, `load`, `require`. In scope: `+= != ?`,
+     `\`, bit ops, `if (c) stmt`, `//`, `#`, sub tostr tonum add del all
+     count foreach min max mid abs sgn. Unknown API calls crash naming it.
+  6. Bounds crash and name the counter: instructions per frame, heap
+     entries, strings, call depth, Lua stack, table ids.
+  7. Milestone 1: examples/lua.slap lexer (by index, as json.slap) and
+     expressions; tests/run_lua.py diffs `print` against system `lua` on
+     tests/lua/*.lua, integers below 32768, no `/`, Lua's `3.0` normalized.
+  8. Milestones 2-4, same diff: statements and functions; tables, `pairs`
+     and `#`; closures.
+  9. Milestone 5: .p8 loader (__lua__, __gfx__, __map__) into
+     `{'lua str 'gfx int list 'map int list 'flags int list}`; a bad hex
+     digit names section and line. Golden arrays from a tiny cart.
+  10. Milestone 6: cls pset pget rectfill circfill line spr map btn print
+     flr sin cos; _init/_update/_draw. tests/run_pico8.py diffs a 16-index
+     pixel dump against a zepto8 reference made on pc. Test carts avoid
+     `rnd` until a bit-exact PRNG lands. Greys only at display.
+
+## Blocked on you
 
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps
@@ -77,27 +78,23 @@
       (examples/lib/cbor.slap) and share a charmbracelet-like UI. A dir app
       opens a general thing. A file app opens one specific thing, as viewer
       and editor; with no subject it opens the last file; it saves by tags
-      only. First app: feed (examples/feed-app.slap).
-      Dir apps: home (launcher, search), stuff (files by tag, libraries),
-      shell (the slap REPL). File apps: ware (package registries), config,
-      web, book, feed, code, slides, prose, sheet, email, cal, phone, chat,
-      video, music, photo, camera, print, clock, map, steno, cast.
-      Unplaced: query, debug, talk, claude, hypercard.
-      Blocked: decide whether you publish your own ware registry, and which
-      batteries the first app needs.
-  1. Batteries to choose from: sized ints and floats (`i8`…`f32`), slices,
-     `dice`, sets, SIMD, GPU, go-like threads with input queues, a charm-like
-     UI framework with a WYSIWYG editor, a graphics stack language, a query
-     language. Each chosen one: expect.slap first, then TYPES, then readme.
-  2. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
-     deep keyframes (~240 ns an iteration), and every pass is
-     data-parallel. Time the ticks first, then cut the tricks that no
-     longer pay: guesses, tweens, line reuse, the two-step unroll.
-  3. home.slap lists the apps and runs one.
-  4. prose.slap: a markdown editor with vim/leap movement, a minimap, image
-     preview, linters (like hemingway) and AI editing.
-  5. stuff.slap: SQL or FQL finds files by tag, instead of directories.
-  6. Move the blog and all projects into sauce. taylor.town serves its
+      only. First app: feed (examples/feed-app.slap), done.
+      Blocked: sort the app list in step 1 by priority. Decide later
+      whether you publish your own ware registry.
+  1. Apps, unsorted: home (launcher, search), stuff (files by tag,
+     libraries; SQL or FQL), shell (the slap REPL), ware (registries),
+     config, web (html/css), book, code, slides, prose (markdown, vim/leap,
+     minimap, image preview, linters, AI editing), sheet, email, cal,
+     phone, chat, video, music, photo, camera, print, clock, map, steno,
+     cast. Unplaced: query, debug, talk, claude, hypercard.
+  2. Batteries to choose from as apps need them: sized ints and floats,
+     slices, `dice`, sets, SIMD, GPU, go-like threads with input queues, a
+     charm-like UI framework with a WYSIWYG editor, a graphics stack
+     language, a query language. Each: expect.slap, then TYPES, then readme.
+  3. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
+     deep keyframes, and every pass is data-parallel. Time the ticks
+     first, then cut the tricks that no longer pay.
+  4. Move the blog and all projects into sauce. taylor.town serves its
      pages (indexed) and assets (not indexed) from sauce.
 
 - [ ] You read a post series on slap: 001 why I built it; 002 API,
