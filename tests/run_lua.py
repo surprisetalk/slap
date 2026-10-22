@@ -57,6 +57,9 @@ PICO8 = [
     ("power", "print(2 ^ 10, 3 ^ 0)", "1024\t1\n"),
     ("double-slash comment", "print(1) // print(2)", "1\n"),
     ("long comment", "--[[ print(1)\nprint(2) ]] print(3)", "3\n"),
+    ("leveled long comment", "--[==[\nprint(1)\n]] ]=]\n]==] print(2) --[=[ x ]=] print(3)", "2\n3\n"),
+    ("leveled long string", "print([==[a]]b]=]c]==])", "a]]b]=]c\n"),
+    ("long string folds CR LF", "print(#[[a\r\nb]], #[[a\rb]])", "3\t3\n"),
     ("string call", 'print "hi"', "hi\n"),
 ]
 for name, text, want in PICO8:
@@ -110,6 +113,12 @@ ERRORS = [
         "print([[abc",
         "lua: line 1: unfinished long string or comment",
     ),
+    ("backslash at the end", 'print("a\\', "lua: line 1: unfinished string"),
+    ("CR counts lines", "print(1)\rprint(nil+1)", "lua: line 2: attempt to perform arithmetic"),
+    ("hex point alone", "print(0x.)", "lua: line 1: expected a digit"),
+    ("NUL byte", "print(1)\0print(2)", "lua: line 1: unexpected character 0"),
+    ("unfinished leveled comment", "print(1) --[==[ x\n]=]", "lua: line 1: unfinished long string or comment"),
+    ("bad long bracket", "print([=x)", "lua: line 1: expected [ after [= to start a long string"),
     ("varargs", "print(...)", "lua: line 1: varargs (...) are not supported"),
     (
         "deep nesting",

@@ -58,18 +58,25 @@
   ('ln let "lua: line " ln int-str cat ": " cat swap cat fail) '_lfail let
 
   -- _lline: (i -- i').  Skips to the newline that ends the line, not past it.
-  ((dup _lc dup 10 eq not swap 0 ge and) (1 plus) while) '_lline let
+  ((dup _lc 'c let c 10 eq not c 13 eq not and c 0 ge and) (1 plus) while) '_lline let
+  -- _lnl: (i -- i').  Past the newline at i: LF, CR, CR LF or LF CR, each one line, as in Lua.
+  ('ni let ni _lc 'na let ni 1 plus _lc 'nb let
+   na nb plus 23 eq na nb eq not and (ni 2 plus) (ni 1 plus) if) '_lnl let
+  -- _lopen: (i -- level).  At `[`, the number of `=` before the next `[`, or -1.
+  ('oi let oi 1 plus (dup _lc 61 eq) (1 plus) while 'oj let oj _lc 91 eq (oj oi sub 1 sub) (-1) if) '_lopen let
 
-  -- _llong: (i ln -- i' ln' bytes).  i is just past `[[`.  Reads to `]]`, counting
-  -- lines; a newline right after `[[` is not part of the text, as in Lua.
-  ('lln let 'li let
-   li _lc 10 eq (li 1 plus lln 1 plus) (li lln) if 'ln0 let 'i0 let
+  -- _llong: (i ln level -- i' ln' bytes).  i is just past the opening bracket.
+  -- Reads to the closing bracket of the same level, counting lines.  As in Lua,
+  -- each newline reads as LF, and one right after the opening bracket is dropped.
+  ('lv let 'lln let 'li let
+   li _lc 'l0 let l0 10 eq l0 13 eq or (li _lnl lln 1 plus) (li lln) if 'ln0 let 'i0 let
    [] i0 ln0 0
    (dup 0 eq)
    (drop 'ln1 let 'i1 let i1 _lc 'c let
-     c 0 lt ("unfinished long string or comment" ln0 _lfail) (
-     c 93 eq i1 1 plus _lc 93 eq and (i1 2 plus ln1 1) (
-     c push i1 1 plus c 10 eq (ln1 1 plus) (ln1) if 0) if) if)
+     c 0 lt ("unfinished long string or comment" lln _lfail) (
+     c 93 eq 1 lv 1 plus range 1 ('k let i1 k plus _lc 61 eq and) fold i1 lv plus 1 plus _lc 93 eq and and (i1 lv plus 2 plus ln1 1) (
+     c 10 eq c 13 eq or (10 push i1 _lnl ln1 1 plus 0) (
+     c push i1 1 plus ln1 0) if) if) if)
    while drop rot) '_llong let
 
   -- _lmatch: (i s -- 1 or 0).  Does s appear at i?
@@ -113,7 +120,7 @@
      (ub 16 eq (4) (1) if fc mul 'fbits let
        fbits 16 gt ("a fraction has more than 16 bits" uln _lfail) () if
        fv 16 fbits sub shl) if fi) (0 ui2) if 'ue let 'uf let
-   uc 0 eq ue ui2 eq and ("expected a digit" uln _lfail) () if
+   uc 0 eq ue ui2 1 plus le and ("expected a digit" uln _lfail) () if
    un 1099511627776 ge ("number is too large" uln _lfail) () if
    ue _lc _lalnum ue _lc 46 eq or ("malformed number" uln _lfail) () if
    un 65536 mul uf plus 2147483648 plus 4294967295 band 2147483648 sub 'uv let
@@ -128,6 +135,7 @@
      qc qq eq (qj 1 plus 1) (
      qc 92 eq (
        qj 1 plus _lc 'qe let
+       qe 0 lt ("unfinished string" qln _lfail) () if
        qe 110 eq (10 qj 2 plus) (qe 116 eq (9 qj 2 plus) (qe 114 eq (13 qj 2 plus) (
        qe 97 eq (7 qj 2 plus) (qe 98 eq (8 qj 2 plus) (qe 102 eq (12 qj 2 plus) (qe 118 eq (11 qj 2 plus) (
        qe 92 eq qe 34 eq or qe 39 eq or (qe qj 2 plus) (
@@ -142,16 +150,18 @@
   [] 0 1
   (over _ln lt)
   ('ln let 'i let i _lc 'c let
-   c 10 eq (i 1 plus ln 1 plus []) (
-   c 32 le (i 1 plus ln []) (
+   c 10 eq c 13 eq or (i _lnl ln 1 plus []) (
+   c 32 eq c 9 eq or c 11 eq or c 12 eq or (i 1 plus ln []) (
    c 45 eq i 1 plus _lc 45 eq and (
-     i 2 plus "[[" _lmatch (i 4 plus ln _llong drop []) (i _lline ln []) if) (
+     i 2 plus _lc 91 eq (i 2 plus _lopen) (-1) if 'cv let
+     cv 0 ge (i cv plus 4 plus ln cv _llong drop []) (i _lline ln []) if) (
    c 47 eq i 1 plus _lc 47 eq and (i _lline ln []) (
    c _lalpha (i ln _lname) (
    c _ldigit c 46 eq i 1 plus _lc _ldigit and or (i ln _lnum) (
    c 34 eq c 39 eq or (i ln _lstr) (
-   c 91 eq i 1 plus _lc 91 eq and (i 2 plus ln _llong 'lb let [] T-STR push ln push lb len push lb cat) (
-   c 91 eq i 1 plus _lc 61 eq and ("long brackets with = are not supported" ln _lfail) (
+   c 91 eq (i _lopen) (-1) if 'sv let
+   sv 0 ge (i sv plus 2 plus ln sv _llong 'lb let [] T-STR push ln push lb len push lb cat) (
+   c 91 eq i 1 plus _lc 61 eq and ("expected [ after [= to start a long string" ln _lfail) (
      i ln _lsym) if) if) if) if) if) if) if) if) if
    'r let 'ln2 let 'i2 let r cat i2 ln2) while
   'eln let drop [] T-EOF push eln push cat) 'lua-lex let
