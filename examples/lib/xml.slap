@@ -69,10 +69,10 @@
 
 -- _x-latin1: (source -- source').  A declaration that names ISO-8859-1 or latin1 (any case) turns each
 -- byte >= 0x80 into its two UTF-8 bytes, in one pass, before the parser reads anything.  A byte-order mark stays as it is.  Only the
--- declaration's own text is searched, so no other name can trigger it; _xdecl still checks the exact name.
+-- declaration's own text (`<?xml` and white space) is searched, so no other name can trigger it; _xdecl still checks the exact name.
 ('xs let
   xs 3 take-n [239 187 191] eq (3) (0) if 'xo let
-  xs xo drop-n 5 take-n "<?xml" eq (
+  xs xo drop-n 5 take-n "<?xml" eq  xo 5 plus 'xs nth {'ok (_x-ws?) 'no (drop 0)} case and (
     xs "?>" str-find {'ok ('xe let xs xe take-n (dup 65 ge over 90 le and (32 plus) () if) each) 'no (drop "")} case 'xh let
     xh "iso-8859-1" str-find {'ok (drop 1) 'no (drop 0)} case
     xh "latin1" str-find {'ok (drop 1) 'no (drop 0)} case or
@@ -575,6 +575,8 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 
 -- A byte-order mark does not hide the declaration from the Latin-1 recoding
 [239 187 191] "<?xml version=\"1.0\" encoding=\"latin1\"?><a>" cat [233] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169] eq assert
+-- A processing instruction whose name starts with xml is no declaration, so its text cannot trigger it
+"<?xml-stylesheet href=\"latin1.xsl\"?><a>" [195 169] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169] eq assert
 
 -- A declared encoding must be UTF-8, US-ASCII, ISO-8859-1 or latin1, in any case; Latin-1 bytes become UTF-8
 "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a>" [233] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169] eq assert
