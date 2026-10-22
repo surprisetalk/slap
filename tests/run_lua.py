@@ -86,12 +86,14 @@ def run_all(cases):
     return POOL.map(lambda c: run_text(c[0].replace(" ", "-"), c[1]), cases)
 
 
-for (name, text, want), r in zip(PICO8, run_all(PICO8)):
-    check(
-        f"pico8 {name}",
-        r.returncode == 0 and r.stdout.decode() == want,
-        f"exit {r.returncode}\nwant {want!r}\ngot  {r.stdout.decode()!r}\n{r.stderr.decode()[-600:]}",
-    )
+# The cases run as one program, each in its own block after a "#n" line, since
+# each ./slap spends most of its time checking lua.slap.
+r = run_text("pico8", "\n".join(f"print('#{i}')\ndo\n{text}\nend" for i, (_, text, _) in enumerate(PICO8)))
+out = r.stdout.decode().split("\n")
+marks = [out.index(f"#{i}") if f"#{i}" in out else len(out) for i in range(len(PICO8))] + [len(out) - 1]
+for i, (name, text, want) in enumerate(PICO8):
+    got = "".join(line + "\n" for line in out[marks[i] + 1 : marks[i + 1]])
+    check(f"pico8 {name}", got == want, f"exit {r.returncode}\nwant {want!r}\ngot  {got!r}\n{r.stderr.decode()[-600:]}")
 
 # Each program dies, exit 1, and its message names the line.
 ERRORS = [
