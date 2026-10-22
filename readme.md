@@ -689,7 +689,7 @@ Interactive SDL demos in `examples/`:
 | `zoom.slap` | Mandelbrot zoom in to 1e5 and back out: reuses the last keyframe's rows and columns, guesses smooth gaps, tweens between keyframes, 8x8 Bayer dither |
 | `dots.slap`, `fish.slap`, `gradient.slap` | More graphics demos |
 
-`chip8`, `uxn`, `maze`, `raycast` and `zoom` each come in two files: `x.slap` holds the machine and its self-test, and `x-sdl.slap` holds the window, keys and drawing. `on` and `show` run only at the top level, and no word ends a program early, so the shell is a separate file.
+`chip8`, `uxn`, `maze`, `raycast`, `zoom` and `feed-app` each come in two files: `x.slap` holds the machine and its self-test, and `x-sdl.slap` holds the window, keys and drawing. `on` and `show` run only at the top level, and no word ends a program early, so the shell is a separate file.
 
 ```bash
 make slap-sdl
@@ -697,6 +697,8 @@ cat examples/chip8.slap examples/chip8-sdl.slap | ./slap-sdl roms/pong.ch8   # o
 ./slap --headless < examples/chip8.slap                                      # run the opcode self-test (no SDL needed)
 cat examples/uxn.slap examples/uxn-sdl.slap | ./slap-sdl game.rom            # likewise for the uxn emulator
 cat examples/zoom.slap examples/zoom-sdl.slap | ./slap-sdl                   # the Mandelbrot zoom
+cat examples/lib/{strings,parse,http,xml,rss,cbor,icn,ufx}.slap examples/feed-app.slap examples/feed-app-sdl.slap \
+  | ./slap-sdl state.cbor github.com /surprisetalk/slap/commits/main.atom      # the feed reader
 ```
 
 The whole machine — 4 KB of memory, registers, call stack, keypad, and the 64×32 display — is one flat int list threaded on the stack, with no boxes. `set` is an in-place O(1) store and `peek` an O(1) non-consuming read, so a `cycle` decodes and executes one instruction against the live state without ever copying it. That is what keeps the per-cycle cost independent of how big the machine is. The full opcode set (including the COSMAC shift/`FX55`/`FX65` quirks and `DXYN` sprite collision) is covered by an in-language self-test that runs on the plain terminal build.
@@ -720,6 +722,7 @@ App demos (terminal build):
 | `serve.slap` | Static file HTTP server: directory listings, MIME by extension, path-traversal refusal |
 | `fetch.slap` | A small curl. Builds the request with `http-request` and reads the reply with `parse-http` |
 | `feed.slap` | RSS 2.0 and Atom reader — the consumer for `xml.slap` and `rss.slap` |
+| `feed-app.slap` | Fullscreen feed reader, sauce's first app: fetches each feed with `https-get`; j/k or the arrows move and scroll, enter opens an item and marks it read in a CBOR state file (merged with the file on each write), escape goes back, closing the window quits. Run it from the repo root (it reads `fonts/chicago12.uf2`). A feed or state file that cannot be read stops it at startup. It keeps at most 512 KiB of text across feeds and the first 4 KiB of each summary, whose HTML tags show as text |
 | `todo.slap` | Todo list in a JSON file, decoded with `jd-*` and written with `je-*` |
 | `banner.slap` | Text as ASCII art from a real `.uf1` bitmap font, via `icn.slap` |
 | `plasma.slap` | Writes a 24-bit TGA. Float-only: there is no `sin`, so it builds one |

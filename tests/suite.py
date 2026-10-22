@@ -101,6 +101,9 @@ def drive_demo(files, probe=""):
     return r.stdout, None
 
 
+FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml rss cbor icn ufx".split())
+
+
 def headless_demo(files, ok, probe=""):
     def check():
         out, err = drive_demo(files, probe)
@@ -743,6 +746,11 @@ def steps(slow):
             "feed": ("python3 tests/run_feed.py", None),
             "todo": ("python3 tests/run_todo.py", None),
             "serve": ("python3 tests/run_serve.py", None),
+            "feed-app": (
+                f"cat {FEED_LIBS} examples/feed-app.slap | ./slap --headless"
+                f" && cat {FEED_LIBS} examples/feed-app.slap examples/feed-app-sdl.slap | ./slap --check",
+                lambda out: "feed-selftest-ok" in out,
+            ),
             "codec": ("python3 tests/run_codec.py", None),
             "utils": ("python3 tests/run_utils.py", None),
         }
@@ -964,6 +972,25 @@ def status():
         https_ok = False
         print("status: https check: no answer within 60 s", file=sys.stderr)
     score["https-get trusts example.com and tls-connect refuses an expired certificate."] = 1.0 if https_ok else 0.0
+    # The feed app end to end: fetch a real https feed, press j and enter, and find the item's id in
+    # state.cbor. The driver's tick handler ends the headless run.
+    src = "".join(open(f).read() for f in FEED_LIBS.split() + ["examples/feed-app.slap", "examples/feed-app-sdl.slap"])
+    head = re.sub(r"\bshow\s*\Z", "", src).replace("'keydown on", "'test-keydown let (test-keydown) 'keydown on")
+    driver = "('tf let tf 3 eq (106 test-keydown 13 test-keydown) () if tf 6 eq (\"test-done\" fail) () if) 'tick on\nshow\n"
+    state = os.path.join(SCRATCH, "feed-state.cbor")
+    feed_ok = False
+    if HAS_SDL:
+        try:
+            r = subprocess.run(
+                ["./slap-sdl", "--headless", state, "github.com", "/surprisetalk/slap/commits/main.atom"],
+                input=head + driver, capture_output=True, text=True, timeout=60,
+            )
+            feed_ok = "test-done" in r.stderr and os.path.exists(state) and b"tag:github.com" in open(state, "rb").read()
+            if not feed_ok:
+                print(f"status: feed app: stderr {r.stderr[-300:]!r}", file=sys.stderr)
+        except subprocess.TimeoutExpired:
+            print("status: feed app: no end within 60 s", file=sys.stderr)
+    score["The feed app reads a real https feed and saves a read mark."] = 1.0 if feed_ok else 0.0
     rng = random.Random(1)
     vocab = [
         "apple",

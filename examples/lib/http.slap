@@ -48,8 +48,10 @@
 1048576 'HG-CAP let
 ((dup 64 gt over 91 lt and (32 plus) () if) each) 'hg-lower let
 -- The body is whole when it matches Content-Length. HTTP/1.0 asked for no chunked body, so
--- Transfer-Encoding is refused rather than handed over as framing.
-('hg-r let hg-r 'body at len int-str 'hg-bl let hg-r 'headers at 'hg-hs let
+-- Transfer-Encoding is refused rather than handed over as framing. A reply outside 2xx passes as it
+-- is, so the caller reports its status rather than its framing.
+('hg-r let hg-r 'body at len int-str 'hg-bl let hg-r 'headers at 'hg-hs let hg-r 'status at 'hg-st let
+ hg-st 200 lt hg-st 299 gt or (hg-r ok) (
  hg-hs ('key at (dup 32 eq swap 9 eq or) filter len 0 gt) filter len 0 gt
  ("https-get: a header name contains a space or a tab, so its meaning is unclear" no)
  (hg-hs ('key at hg-lower "transfer-encoding" eq) filter len 0 gt
@@ -57,7 +59,7 @@
   -- every Content-Length must be the body's length in plain digits; two that disagree are refused too
   (hg-hs ('key at hg-lower "content-length" eq) filter ('value at hg-bl eq not) filter
     dup len 0 eq (drop hg-r ok) (0 get must 'value at 'hg-cl let
-      "https-get: Content-Length is \"" hg-cl cat "\", which does not name the body's " cat hg-bl cat " bytes" cat no) if) if) if) 'hg-whole let
+      "https-get: Content-Length is \"" hg-cl cat "\", which does not name the body's " cat hg-bl cat " bytes" cat no) if) if) if) if) 'hg-whole let
 ('hg-path let 'hg-port let 'hg-host let
  hg-host hg-path cat (dup 13 eq swap 10 eq or) filter len 0 gt ("https-get: the host or the path contains CR or LF" no) (
  hg-host hg-port tls-connect {
@@ -114,3 +116,4 @@ crlf crlf cat ph-run "status line has no 3-digit code" no eq assert
   "https-get: Content-Length is \"3\", which does not name the body's 2 bytes" no eq assert
 "HTTP/1.1 200 OK" crlf cat "Transfer-Encoding : chunked" cat crlf cat crlf cat "2" cat ph-run must hg-whole
   "https-get: a header name contains a space or a tab, so its meaning is unclear" no eq assert
+"HTTP/1.1 404 Not Found" crlf cat "Transfer-Encoding: chunked" cat crlf cat crlf cat "9" cat ph-run must hg-whole must 'status at 404 eq assert

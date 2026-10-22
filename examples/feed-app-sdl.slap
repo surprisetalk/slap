@@ -1,0 +1,94 @@
+-- The window for feed-app.slap: fetch the feeds, then read them fullscreen.
+-- Run from the repo root with:
+--
+--   cat examples/lib/{strings,parse,http,xml,rss,cbor,icn,ufx}.slap \
+--       examples/feed-app.slap examples/feed-app-sdl.slap \
+--     | ./slap-sdl state.cbor github.com /surprisetalk/slap/commits/main.atom
+--
+-- j k or the arrows move and scroll, enter opens an item and marks it read,
+-- escape goes back. Closing the window quits. A feed or state file that cannot
+-- be read stops the app at startup, since it would look like an empty one; a
+-- failed write stops it when it happens.
+
+args len 3 lt args len 1 sub 2 mod 0 neq or
+  ("feed: usage: ./slap-sdl STATE.cbor HOST PATH [HOST PATH...]" fail) () if
+args 0 get must 'STATE let
+
+-- A missing state file is a first run, and gets written now, so a path that
+-- cannot be written stops the app before the fetch rather than at the first
+-- read mark.
+('ws-ids let STATE ws-ids state-encode write {'ok (drop) 'no ("feed: " swap cat fail)} case) 'write-state let
+STATE read {
+  'ok (state-decode {'ok () 'no ("feed: " STATE cat ": " cat swap cat ". Delete it to start over." cat fail)} case)
+  'no ('se let se "No such file or directory" str-find {'ok (drop [] write-state []) 'no (drop "feed: " se cat fail)} case)
+} case 'READ let
+
+-- Every byte of item text takes a stack slot, and the fold below holds the
+-- items gathered so far beside the next feed, so all feeds together keep at
+-- most 512 KiB of text.
+524288 'TEXT-CAP let
+args 1 drop-n 2 chunks [] ('fp let
+  fp 0 get must 'fh let fp 1 get must 'fpath let fh fpath cat 'furl let
+  fh fpath https-get {'ok () 'no ("feed: " furl cat ": " cat swap cat fail)} case 'fr let
+  fr 'status at 200 eq not ("feed: " furl cat ": status " cat fr 'status at int-str cat fail) () if
+  fr 'body at rss-parse {'ok () 'no ("feed: " furl cat ": " cat swap cat fail)} case
+  dup rss-title plain furl feed-items cat
+  dup items-size TEXT-CAP gt ("feed: " furl cat ": the feeds hold more than 512 KiB of text, the most the reader keeps; drop a feed" cat fail) () if
+  ) fold 'ITEMS let
+ITEMS ('id at) each 'IDS let
+
+-- save: (ids --).  Merge with what the file holds now, so a second window on
+-- the same file keeps its marks too.
+('sv-ids let STATE read {
+  'ok (state-decode {'ok () 'no ("feed: " STATE cat ": " cat swap cat fail)} case)
+  'no ("feed: " swap cat fail)} case
+ sv-ids ('svi let dup svi member () (svi push) if) fold write-state) 'save let
+
+-- ===== drawing =====
+-- glyph: (x y c color --).  One fill-rect per run of lit pixels.
+('g-col let 'g-c let 'g-y let 'g-x let
+ g-c 1 plus 'OFF nth must 'g-e let
+ g-c 'OFF nth must (dup g-e lt) ('g-i let
+   g-i 'RUNS nth must g-x plus  g-i 1 plus 'RUNS nth must g-y plus
+   g-i 2 plus 'RUNS nth must 1 g-col fill-rect
+   g-i 3 plus) while drop) 'glyph let
+
+-- text: (str x y color xmax --).  Characters past xmax are not drawn.
+('t-max let 't-col let 't-y let 't-x let
+ ascii t-x ('tc let 'tx let tx tc 'FW nth must plus 'tn let
+   tn t-max le (tx t-y tc t-col glyph) () if tn) fold drop) 'text let
+
+-- The list: the chosen row inverted, a read item dim. Items are read by
+-- index, so a redraw copies only the rows on screen.
+('dl let dl 'w at 'dl-w let dl 'h at LH div 1 max 'dl-rows let dl 'top at 'dl-top let dl 'marks at 'dl-marks let
+ dl 'n at 0 eq ("no items" 8 4 3 dl-w text) (
+   0 dl-rows dl 'n at dl-top sub min range 0 ('rr let
+     rr dl-top plus 'ri let rr LH mul 'ry let
+     ri dl 'at at eq (0 ry dl-w LH 3 fill-rect 0) (ri 'dl-marks nth must 1 eq (1) (3) if) if 'rc let
+     ri 'ITEMS nth must 'rit let
+     rit 'feed at ": " cat rit 'title at cat 8 ry 1 plus rc dl-w 8 sub text) fold drop) if) 'draw-list let
+
+-- An item: its title, then its wrapped summary from line 'scroll down.
+('di let di 'w at 16 sub 'di-w let di 'h at 'di-h let
+ di 'at at 'ITEMS nth must 'title at di-w wrap-text 4 ('tl let 'ty let tl 8 ty 3 di-w 8 plus text ty LH plus) fold LH plus 'di-y let
+ di 'lines at di 'scroll at drop-n di-h di-y sub LH div 0 max take-n
+   di-y ('sl let 'sy let sl 8 sy 2 di-w 8 plus text sy LH plus) fold drop) 'draw-item let
+
+('dm let 0 clear dm 'view at 'list eq (dm draw-list) (dm draw-item) if) 'draw let
+
+-- ===== window =====
+IDS READ feed-model
+
+('rh let 'rw let rw 'w into rh 'h into 1 'dirty into follow
+ dup 'view at 'item eq (dup 'at at 'ITEMS nth must relines) () if) 'resize on
+
+-- Opening an item writes state.cbor at once, so a read mark is never lost.
+('kk let 'km let
+ kk enter-key km 'view at 'list eq and km 'n at 0 gt and
+   (km km 'at at 'ITEMS nth must IDS open dup 'read at save)
+   (km kk feed-key) if) 'keydown on
+
+-- The canvas keeps what was drawn, so a frame draws only after a change.
+('tf let 'tm let tm 'dirty at (tm draw tm 0 'dirty into) (tm) if) 'tick on
+
+(drop) show

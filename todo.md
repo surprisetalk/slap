@@ -1,47 +1,3 @@
-## Open
-
-- [ ] You open feed in slap-sdl and read the items of your feeds
-      fullscreen, and an item you opened stays read on the next run. It is
-      sauce's first app. Design approved 2026-10-21.
-  1. Run: `cat examples/lib/{strings,parse,http,xml,rss,cbor,ufx}.slap
-     examples/feed-app.slap | ./slap-sdl state.cbor taylor.town /feed.xml
-     e.com /rss`: host and path pairs. At startup https-get fetches each,
-     in order; a feed over 1 MiB is refused (https-get's cap: each byte
-     takes a stack slot), and with fatal failures it stops the app. Full-text
-     and podcast feeds can pass 1 MiB.
-  2. state.cbor holds only what you did: `{'read ["https://e.com/1"
-     "tag:e.com,2026:2"]}`, the ids of items you opened. A missing
-     state.cbor is a first run: `{'read []}`.
-  3. One item in memory: `{'feed "taylor.town" 'title "Post 1" 'id
-     "https://e.com/1" 'summary "text" 'read 0}`. Model: `{'w 640 'h 480
-     'items [...] 'at 0 'view 'list}`; `'view` is `'list` or `'item`.
-  4. Items keep each file's order (feeds list newest first), with feeds in
-     argument order. No date sort: it needs RFC 822 and ISO 8601 parsing,
-     which is date code we do not hand-roll.
-  5. Draw text with one uf2 font from fonts/ (ufx.slap decodes it) by
-     fill-rect, 2-bit grey. List view: one row per item, the feed and the
-     title; read items in dark grey, the row at `'at` inverted. Item view:
-     the title, then the summary as plain text, wrapped to the width.
-  6. Keys: j/k or down/up move `'at`; enter opens the item, marks it read
-     and writes state.cbor; escape goes back to the list; q quits.
-     A write replaces the file atomically (`write`).
-  7. Failure modes, each fatal at startup with the URL or path:
-     `feed: taylor.town/feed.xml: tls-connect: taylor.town:443: certificate
-     verify failed: certificate has expired`;
-     `feed: e.com/rss: status 404`;
-     `feed: e.com/rss: rss: expected <rss> or <feed> at byte 0, found 'x'`;
-     `feed: state.cbor: cbor: tags are not supported at byte 0, found byte
-     192`; `feed: usage: ./slap-sdl STATE.cbor HOST PATH [HOST PATH...]`.
-     Tradeoff: one dead feed stops the app; the strongest alternative, an
-     error row in the list, keeps reading but hides a failure in the UI.
-  8. A failed state write while running dies with
-     `feed: state.cbor: <strerror>`, so the read mark is never lost quietly.
-  9. Test, as zoom.slap does: under `isheadless`, run the keydown handler
-     on j, enter, escape over sample.xml and sample-atom.xml (read from
-     disk, not fetched), then check state.cbor holds one id. suite.py runs
-     it with `./slap-sdl --headless`. The fetch path runs in `make status`
-     against one real https feed.
-
 ## Blocked on you
 
 - [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,
@@ -145,7 +101,8 @@
       share a charmbracelet-like UI. A dir app opens a general thing. A file
       app opens one specific thing, and it is always a viewer and an editor.
       With no subject, a file app opens the last file. A file app saves by
-      tags only, with no file name. First app: feed (its own entry). Decide:
+      tags only, with no file name. First app: feed (examples/feed-app.slap); it
+      holds at most 512 KiB of text, since each byte takes a stack slot. Decide:
       whether you publish your own ware registry.
       - Dir apps:
         - home: the launcher. A grid of app icons (or text) and widgets, and

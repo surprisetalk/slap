@@ -9,7 +9,6 @@
 (dup 'widths at swap 'glyphs at (icn-encode) each flatten cat) 'ufx-encode let
 
 -- ===== tests =====
-[]
 0 256 range (drop 4) each
 60 push 66 push 129 push 129 push 129 push 129 push 66 push 60 push
 'ufx-data let
