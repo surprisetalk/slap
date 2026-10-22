@@ -1440,13 +1440,12 @@ static void ty_apply(int scheme, const char *who, int line, int user) {
     if (ty_unify(ty[f].a, ty_cur)) {
         Ty *failed = malloc((size_t)(n1 + 1) * sizeof(Ty)); if (!failed) die("type checker: out of memory for %d types", n1);
         memcpy(failed, ty + n0, (size_t)n1 * sizeof(Ty)); memcpy(ty + n0, snap, (size_t)n1 * sizeof(Ty));
-        char want[TY_SHOW_MAX], before[TY_SHOW_MAX]; int g = f, n = 0;
+        char want[TY_SHOW_MAX] = "", before[TY_SHOW_MAX]; int g = f, n = 0;
         for (int x = ty_find(ty[g].a); ty[x].kind == K_SCONS && n < ty_n; x = ty_find(ty[x].b)) n++;
         /* A body type in the inputs may run on the word's own rest (dip, repeat). A pasted signature must then name it, so the message does. */
         int tv = ty_stack_tail(ty[f].a), tail = ty[tv].kind, named = 0;
         if (tail == K_SVAR && !ty[tv].sealed) { int x = ty_find(ty[g].a); for (int k = 0; k < n && !named; k++, x = ty_find(ty[x].b)) named = ty_reaches(ty[x].a, tv); }
         if (named) { char v[16]; ty_print_var(v, sizeof v, tv); snprintf(want, sizeof want, "%s rest ", v); }
-        else want[0] = 0;
         ty_show_top(want + strlen(want), sizeof want - strlen(want), ty[g].a, n);
         memcpy(ty + n0, failed, (size_t)n1 * sizeof(Ty)); free(failed); ty_show_top(before, sizeof before, ty_cur, n);
         /* A value bound with let has one type, so once a use fixes a bound body's stack depth, it runs only there. */
