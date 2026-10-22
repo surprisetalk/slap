@@ -1,3 +1,76 @@
+## Open
+
+- [ ] You open a feed of up to 16 MiB in feed, such as taylor.town's 4.3 MB
+      feed (today 40 of the 917 feeds in taylor-town/feeds.tsv pass the
+      1 MiB cap), and a string costs a byte per byte, not a 32-byte slot.
+      Chosen 2026-10-22 over a bigger stack (measured: 1.5 GB peak for
+      taylor.town). Blocked: approve the design (steps 1-10).
+  1. Data: `VAL_BYTES`, one stack slot whose `as.box` points to a heap
+     block `{int len, cap; uint8_t b[]}`. `"hi"` is `{tag VAL_BYTES, box ->
+     {len 2, b "hi"}}` where today it is 3 slots. One owner, as a dict: a
+     copy (dup, a lookup, nth) copies the bytes; a drop frees them.
+  2. No new type. `str` and `int list` stay one type; the checker does not
+     change. Packing is how the runtime stores a list, never what a
+     program sees: same results, same printing, same eq and sort order.
+  3. Rule: a list is packed exactly when it is non-empty and every element
+     is an int in 0-255. Each word that builds a list keeps the rule:
+     string literals, `[...]`, read, tcp-recv, push, set, cat, take-n,
+     drop-n, reverse, str-split, each, filter, sort, zip, range.
+  4. A word that breaks the rule unpacks once: `"ab" 300 push` gives
+     `[97 98 300]` as slots; `[300] 0 0 set` packs again. Unpacking a large
+     string can overflow the stack, and the message says so: `push: a
+     4194304-byte string becomes a list of values here, since 300 is not a
+     byte; that needs 4194305 of the 2097152 stack slots`.
+  5. Reading words take either form: len, get, peek, nth, pop, index-of,
+     str-find, fold, eq, lt, print, write, tcp-send, insert, of, and every
+     record or tagged value that holds a list. nth, get and peek on bytes
+     are O(1).
+  6. Limits: read returns at most 256 MiB (`"path: 300000000 bytes, more
+     than the 268435456 read returns" no`); https-get's cap becomes 16 MiB;
+     feed's 512 KiB text cap goes, since items then take a few slots each.
+     A malloc that fails dies: `out of memory for a 300000000-byte string`.
+  7. Tests first: expect.slap asserts each word gives the same result on a
+     packed and an unpacked list, at the boundary values 0, 255, 256 and
+     -1; errors.slap gets the unpack-overflow message. suite.py's
+     3,000,000-byte literal check becomes a pass (it fits now), and the
+     read cap is tested on a sparse file one byte past 256 MiB, which costs
+     no disk and which read refuses from its size before reading.
+  8. make status's 600 KB feed timing and sort.slap timing must not get
+     slower; zoom and uxn benchmarks (todo's ABBA recipe) must not either.
+  9. ASan breaker rounds: the runtime trusts the checker, so a missed
+     branch shows as memory damage. Run the fuzz rounds claude.md names.
+  10. Tradeoff: every list word gains a second path, roughly 40 primitives;
+     the strongest alternative, an 8x stack, is a one-line change but keeps
+     32 bytes per byte and a 1 GiB runaway ceiling.
+
+- [ ] You add a feed that has moved, or that refuses clients without a
+      User-Agent, and feed reads it (83 of the 917 feeds redirect; some 403s
+      want a User-Agent). Design approved 2026-10-22.
+  1. https-get sends `User-Agent: slap`.
+  2. On 301, 302, 303, 307 or 308 with a Location, it follows: an
+     `https://host[:port]/path` URL or an absolute `/path` on the same host,
+     at most 5 hops. A Location to http:// gives 'no "https-get: e.com/a
+     redirects to http://e.com/b, which drops TLS".
+  3. Any other Location ("feed.xml") gives 'no naming it. More than 5 hops
+     gives 'no "https-get: more than 5 redirects from e.com/a; the last went
+     to ...".
+  4. Test: run_serve.py's local TLS server answers /a with 301 to
+     https://localhost:PORT/b, and a chain of 6, and an http:// Location.
+
+- [ ] You read a feed whose server hangs up without close_notify and sends
+      no Content-Length (31 of the 917). Design approved 2026-10-22.
+  1. https-get then gives the reply with `'whole 0`; every other reply has
+     `'whole 1`. A record field, so callers decide.
+  2. feed takes `'whole 0` only when rss-parse succeeds: a cut body loses
+     the root's end tag, so an XML parse of it fails.
+  3. fetch.slap dies on `'whole 0` with today's message, since it prints
+     bodies it cannot check.
+
+- [ ] You read RSS 1.0 (RDF) feeds, ISO-8859-1 feeds, and RSS channels
+      without a description (6 of the 917). Blocked: write a design.
+  1. Decide per case: rss.slap's strictness is the spec; readers accept
+     these. Each needs xml.slap or rss.slap changes and a test.
+
 ## Blocked on you
 
 - [ ] A tight stack loop runs at the cost of its cheapest primitives: `if`,

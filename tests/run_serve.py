@@ -281,19 +281,33 @@ with tempfile.TemporaryDirectory() as d:
             check("tls-ip", r.stdout == b"\"connected\"\n", repr(r.stdout + r.stderr))
         finally:
             srv.kill(); srv.wait()
-        # https-get takes an end without close_notify only when Content-Length vouches for the body.
-        # Python's SSLSocket.close sends no close_notify; unwrap sends it first.
+        # https-get against a local TLS server that answers by path. Python's SSLSocket.close sends no
+        # close_notify; unwrap sends it first. 'whole says whether close_notify or Content-Length vouched.
         import ssl as pyssl
         ctx = pyssl.SSLContext(pyssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(os.path.join(d, "s.pem"), os.path.join(d, "s.key"))
-        ls = socket.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(4); hport = ls.getsockname()[1]
-        replies = [(b"Content-Length: 2\r\n", False), (b"", False), (b"", True)]
+        ls = socket.socket(); ls.bind(("127.0.0.1", 0)); ls.listen(8); hport = ls.getsockname()[1]
+        def reply(path):
+            if path == "/len": return b"200 OK", b"Content-Length: 2\r\n", False
+            if path == "/nolen": return b"200 OK", b"", False
+            if path == "/clean": return b"200 OK", b"", True
+            if path == "/r1": return b"301 Moved", f"Location: https://localhost:{hport}/clean\r\n".encode(), True
+            if path.startswith("/c"): return b"302 Found", f"Location: /c{int(path[2:]) + 1}\r\n".encode(), True
+            if path == "/h": return b"301 Moved", b"Location: http://localhost/x\r\n", True
+            if path == "/rel": return b"301 Moved", b"Location: clean\r\n", True
+            return b"404 Not Found", b"", True
+        seen = []
         def tls_server():
-            for head, clean in replies:
-                c, _ = ls.accept()
+            while True:
+                try:
+                    c, _ = ls.accept()
+                except OSError:
+                    return
                 try:
                     t = ctx.wrap_socket(c, server_side=True)
-                    t.recv(65536)
-                    t.sendall(b"HTTP/1.0 200 OK\r\n" + head + b"\r\nok")
+                    req = t.recv(65536)
+                    seen.append(req)
+                    status, head, clean = reply(req.split(b" ")[1].decode())
+                    t.sendall(b"HTTP/1.0 " + status + b"\r\n" + head + b"\r\nok")
                     if clean:
                         t.unwrap().close()
                     else:
@@ -301,14 +315,21 @@ with tempfile.TemporaryDirectory() as d:
                 except OSError:
                     c.close()
         threading.Thread(target=tls_server, daemon=True).start()
-        hg = f"\"localhost\" {hport} \"/\" hg-fetch {{'ok ('body at) 'no ()}} case print\n"
-        r = subprocess.run(["./slap"], input=(open("examples/lib/strings.slap").read() + open("examples/lib/http.slap").read() + hg * 3).encode(),
+        paths = ["/len", "/nolen", "/clean", "/r1", "/c0", "/h", "/rel"]
+        hg = "".join(f"\"localhost\" {hport} \"{p}\" hg-fetch {{'ok ('hr let hr 'body at hr 'whole at int-str cat) 'no ()}} case print\n" for p in paths)
+        r = subprocess.run(["./slap"], input=(open("examples/lib/strings.slap").read() + open("examples/lib/http.slap").read() + hg).encode(),
                            capture_output=True, timeout=30, env=dict(os.environ, SSL_CERT_FILE=os.path.join(d, "ca.pem")))
         ls.close()
         lines = r.stdout.decode(errors="replace").splitlines()
-        check("https-unclean-with-length", lines[:1] == ['"ok"'], repr(lines))
-        check("https-unclean-no-length", lines[1:2] == ['"https-get: the server closed without close_notify and sent no Content-Length, so the body may be cut"'], repr(lines))
-        check("https-clean", lines[2:3] == ['"ok"'], repr(lines))
+        check("https-unclean-with-length", lines[0:1] == ['"ok1"'], repr(lines))
+        check("https-unclean-no-length", lines[1:2] == ['"ok0"'], repr(lines))
+        check("https-clean", lines[2:3] == ['"ok1"'], repr(lines))
+        check("https-redirect", lines[3:4] == ['"ok1"'], repr(lines))
+        check("https-redirect-limit", lines[4:5] == ['"https-get: more than 5 redirects; the last went to /c6"'], repr(lines))
+        check("https-redirect-downgrade", lines[5:6] == ['"https-get: localhost redirects to http://localhost/x, which drops TLS"'], repr(lines))
+        check("https-redirect-relative", lines[6:7] == ['"https-get: localhost redirects to clean, which is not an https URL or an absolute path"'], repr(lines))
+        check("https-user-agent", bool(seen) and all(b"User-Agent: slap\r\n" in q for q in seen), repr(seen[:1]))
+        check("https-host-port", bool(seen) and all(f"Host: localhost:{hport}\r\n".encode() in q for q in seen), repr(seen[:1]))
         # a client that resets is logged with its reason, and the server keeps serving
         harness.reset(port)
         check("reset-survives", get(b"/a.txt").startswith(b"HTTP/1.0 200"))
