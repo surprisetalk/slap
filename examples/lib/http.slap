@@ -39,11 +39,12 @@
         ("header line has no colon" no) if) then)
   } case) 'parse-http let
 
--- https-get: (host path -- {'status 'headers 'body} ok | msg no). One GET over tls-connect, as HTTP/1.0
--- with Connection: close, so the server sends no chunked body and closes when it is done. A server that
--- closes without close_notify may have cut the body, so that end counts only when a Content-Length
--- matches the body. The loop keeps acc n sock code msg on the stack; code 1 reads on, 0 is done, 2
--- ended without close_notify, -1 failed with msg. hg-fetch takes the port, for the tests.
+-- https-get: (host path -- {'status 'headers 'body 'whole} ok | msg no). A GET over tls-connect, as
+-- HTTP/1.0 with Connection: close, so the server sends no chunked body and closes when it is done. It
+-- follows up to 5 redirects to https. 'whole is 1 when close_notify or a matching Content-Length vouches
+-- for the body, and 0 when the server closed without either: the body may be cut, and the caller
+-- decides. The read loop keeps acc n sock code msg on the stack; code 1 reads on, 0 is done, 2 ended
+-- without close_notify, -1 failed with msg. hg-fetch takes the port, for the tests.
 -- Each byte takes an operand stack slot, and parse-http copies the body once, so 1 MiB is what fits.
 1048576 'HG-CAP let
 ((dup 64 gt over 91 lt and (32 plus) () if) each) 'hg-lower let
@@ -60,12 +61,17 @@
   (hg-hs ('key at hg-lower "content-length" eq) filter ('value at hg-bl eq not) filter
     dup len 0 eq (drop hg-r ok) (0 get must 'value at 'hg-cl let
       "https-get: Content-Length is \"" hg-cl cat "\", which does not name the body's " cat hg-bl cat " bytes" cat no) if) if) if) if) 'hg-whole let
+-- hg-mark: (response code -- response ok).  Add 'whole: an end with close_notify (code 0) vouches for the
+-- body, and so does a Content-Length, which hg-whole has checked. Each lookup copies one field at a time.
+('hm-code let 'hm-r let
+ hm-code 0 eq hm-r 'headers at ('key at hg-lower "content-length" eq) filter len 0 gt or 'hm-w let
+ {'status hm-r 'status at 'headers hm-r 'headers at 'body hm-r 'body at 'whole hm-w} ok) 'hg-mark let
 ('hg-path let 'hg-port let 'hg-host let
  hg-host hg-path cat (dup 13 eq swap 10 eq or) filter len 0 gt ("https-get: the host or the path contains CR or LF" no) (
  hg-host hg-port tls-connect {
   'no (no)
-  'ok ("GET " hg-path cat " HTTP/1.0" cat crlf cat "Host: " cat hg-host cat crlf cat
-       "Connection: close" cat crlf cat crlf cat tcp-send {
+  'ok ("GET " hg-path cat " HTTP/1.0" cat crlf cat "Host: " cat hg-host cat hg-port 443 eq ("") (":" hg-port int-str cat) if cat crlf cat
+       "User-Agent: slap" cat crlf cat "Connection: close" cat crlf cat crlf cat tcp-send {
     'no ("https-get: " swap cat swap tcp-close no)
     'ok (drop [] 0 rot 1 ""
       (over 1 eq)
@@ -75,9 +81,52 @@
         -- OpenSSL's own words for an end without close_notify
         'no (dup "unexpected eof while reading" str-find {'ok (drop drop 2 "") 'no (drop "https-get: " swap cat -1 swap)} case)} case) while
       swap dup -1 eq (drop swap tcp-close nip nip no) (
-        'hg-code let drop tcp-close drop parse-http (hg-whole) then
-        hg-code 2 eq (('hg-ok let hg-ok 'headers at ('key at hg-lower "content-length" eq) filter len 0 gt (hg-ok ok)
-          ("https-get: the server closed without close_notify and sent no Content-Length, so the body may be cut" no) if) then) () if) if)} case)} case) if) 'hg-fetch let
+        'hg-code let drop tcp-close drop parse-http {'ok (ok) 'no ("https-get: " swap cat no)} case (hg-whole) then (hg-code hg-mark) then) if)} case)} case) if) 'hg-once let
+
+-- Some servers turn away a client with no User-Agent, and a feed that moved answers with a redirect.
+-- hg-url reads a Location: an https URL, with an optional port, or an absolute path on the same host.
+('hs-p let 'hs-s let hs-s hs-p len take-n hs-p eq) 'hg-starts let
+-- Blanks around a header value are not part of it, a fragment never goes to the server, and the scheme
+-- may be any case. A user, an IPv6 address, a space or a control byte is refused by name.
+('hp-p let hp-p ('hpc let hpc 33 lt hpc 127 eq or) filter len 0 gt) 'hg-bad-path let
+('hu-port let 'hu-host let
+ reverse ph-trim reverse ph-trim dup "#" str-find {'ok (take-n) 'no (drop)} case 'hu-loc let
+ hu-loc len 0 eq ("https-get: " hu-host cat " sent a redirect with an empty Location" cat no) (
+ hu-loc 8 take-n hg-lower "https://" eq (
+   hu-loc 8 drop-n 'hu-rest let
+   hu-rest ('hc let hc 47 eq hc 63 eq or) each 1 index-of {'ok () 'no (drop hu-rest len)} case 'hu-slash let
+   hu-rest hu-slash take-n 'hu-auth let hu-rest hu-slash drop-n 'hu-p0 let
+   hu-p0 len 0 eq ("/") (hu-p0 0 get must 63 eq ("/" hu-p0 cat) (hu-p0) if) if 'hu-path let
+   hu-auth ('ha let ha 64 eq ha 91 eq or) filter len 0 gt
+   ("https-get: the redirect to " hu-loc cat " names a user or an IPv6 address, which https-get does not follow" cat no) (
+   hu-path hg-bad-path ("https-get: the redirect to " hu-loc cat " has a space or a control byte in its path" cat no) (
+   hu-auth ":" str-find {
+     'ok ('hu-colon let hu-auth hu-colon 1 plus drop-n 'hu-ps let
+       hu-ps len 0 gt hu-ps ('hu-d let hu-d 48 ge hu-d 57 le and) filter len hu-ps len eq and hu-ps len 6 lt and
+         (hu-ps 0 (48 sub swap 10 mul plus) fold 'hu-pn let
+          hu-pn 1 ge hu-pn 65535 le and
+            ({'host hu-auth hu-colon take-n 'port hu-pn 'path hu-path} ok)
+            ("https-get: the redirect to " hu-loc cat " names port " cat hu-ps cat ", outside 1-65535" cat no) if)
+         ("https-get: the redirect to " hu-loc cat " has a port that is not a number" cat no) if)
+     'no (drop {'host hu-auth 'port 443 'path hu-path} ok)} case) if) if)
+ (hu-loc "/" hg-starts hu-loc "//" hg-starts not and (
+    hu-loc hg-bad-path ("https-get: the redirect to " hu-loc cat " has a space or a control byte in its path" cat no)
+      ({'host hu-host 'port hu-port 'path hu-loc} ok) if)
+  (hu-loc 7 take-n hg-lower "http://" eq
+    ("https-get: " hu-host cat " redirects to " cat hu-loc cat ", which drops TLS" cat no)
+    ("https-get: " hu-host cat " redirects to " cat hu-loc cat ", which is not an https URL or an absolute path" cat no) if) if) if) if) 'hg-url let
+('hl-hops let 'hl-path let 'hl-port let 'hl-host let
+ hl-host hl-port hl-path hg-once {
+  'ok ('hl-r let hl-r 'status at 'hl-st let
+    [301 302 303 307 308] hl-st member (
+      hl-r 'headers at ('key at hg-lower "location" eq) filter dup len 0 eq
+        (drop "https-get: " hl-host cat hl-path cat " sent status " cat hl-st int-str cat " with no Location" cat no)
+        (0 get must 'value at 'hl-loc let
+         hl-hops 5 eq ("https-get: more than 5 redirects; the last went to " hl-loc cat no) (
+           hl-loc hl-host hl-port hg-url {'ok ('hl-u let hl-u 'host at hl-u 'port at hl-u 'path at hl-hops 1 plus hg-follow) 'no (no)} case) if) if)
+    (hl-r ok) if)
+  'no (no)} case) 'hg-follow let
+('hf-path let 'hf-port let 'hf-host let hf-host hf-port hf-path 0 hg-follow) 'hg-fetch let
 (443 swap hg-fetch) 'https-get let
 
 -- ========== Self-test (runs when the library loads) ==========
@@ -117,3 +166,16 @@ crlf crlf cat ph-run "status line has no 3-digit code" no eq assert
 "HTTP/1.1 200 OK" crlf cat "Transfer-Encoding : chunked" cat crlf cat crlf cat "2" cat ph-run must hg-whole
   "https-get: a header name contains a space or a tab, so its meaning is unclear" no eq assert
 "HTTP/1.1 404 Not Found" crlf cat "Transfer-Encoding: chunked" cat crlf cat crlf cat "9" cat ph-run must hg-whole must 'status at 404 eq assert
+"https://e.com:8443/a" "x" 443 hg-url must {'host "e.com" 'port 8443 'path "/a"} eq assert
+"https://e.com" "x" 443 hg-url must {'host "e.com" 'port 443 'path "/"} eq assert
+"/b" "x" 9 hg-url must {'host "x" 'port 9 'path "/b"} eq assert
+"http://e.com/a" "x" 443 hg-url "https-get: x redirects to http://e.com/a, which drops TLS" no eq assert
+"feed.xml" "x" 443 hg-url "https-get: x redirects to feed.xml, which is not an https URL or an absolute path" no eq assert
+"https://e.com:0/a" "x" 443 hg-url "https-get: the redirect to https://e.com:0/a names port 0, outside 1-65535" no eq assert
+"https://e.com:8a/a" "x" 443 hg-url "https-get: the redirect to https://e.com:8a/a has a port that is not a number" no eq assert
+"https://e.com/a  \t" "x" 443 hg-url must 'path at "/a" eq assert
+"HTTPS://e.com/a?q=1#frag" "x" 443 hg-url must {'host "e.com" 'port 443 'path "/a?q=1"} eq assert
+"https://e.com?x=1" "x" 443 hg-url must {'host "e.com" 'port 443 'path "/?x=1"} eq assert
+"/a b" "x" 443 hg-url "https-get: the redirect to /a b has a space or a control byte in its path" no eq assert
+"https://u@e.com/" "x" 443 hg-url "https-get: the redirect to https://u@e.com/ names a user or an IPv6 address, which https-get does not follow" no eq assert
+"" "x" 443 hg-url "https-get: x sent a redirect with an empty Location" no eq assert
