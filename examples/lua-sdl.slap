@@ -1,0 +1,41 @@
+-- lua-sdl.slap: the SDL shell for lua.slap's pico8 carts.  It runs a frame per
+-- tick, feeds the arrow keys and z/x to btn, and draws the screen scaled to the
+-- largest whole-number fit in the window.
+--
+--   cat examples/lib/strings.slap examples/lua.slap examples/lua-sdl.slap | ./slap-sdl cart.p8
+
+IS-CART FRAMES 0 eq and () ("lua-sdl: give a .p8 cart and no frame count" fail) if
+
+-- pico8's 16 colours map to the canvas's 4 greys by rank of luminance, as
+-- uxn.slap maps its palette: the darkest quarter is 0, the lightest 3.
+-- The RGB values are pico8's, 0x1d2b53 and so on, written in decimal.
+[0 1977171 8267091 34641 11227702 6248271 12764103 16773608
+ 16711757 16753408 16772135 58422 2731519 8615580 16742312 16764074]
+('c let c 16 shr 299 mul c 8 shr 255 band 587 mul plus c 255 band 114 mul plus) each 'LUM let
+LUM ('l let LUM (l lt) filter len 4 mul 16 div) each 'SHADE let
+
+-- The view on top of the stack: the last frame's screen and the canvas size.
+lua-screen 'scr0 let {'screen scr0 'w 640 'h 480}
+
+('h let 'w let w 'w into h 'h into) 'resize on
+
+-- SDL keysym -> pico8 button bit: left right up down, z = O, x = X
+[1073741904 1073741903 1073741906 1073741905 122 120] 'KEY-SDL let
+('down let 'k let KEY-SDL k index-of {
+   'ok ('i let (BTN-I mget 'b let 1 i shl 'bit let BTN-I down (b bit bor) (b bit -1 bxor band) if mset) dip)
+   'no (drop)} case) 'key! let
+(1 key!) 'keydown on
+(0 key!) 'keyup on
+
+(drop 'v let lua-frame lua-screen 'scr let {'screen scr 'w v 'w at 'h v 'h at}) 'tick on
+
+-- Each row draws as runs of one shade, scaled by the largest whole factor that fits.
+('v let v 'w at v 'h at min 128 div 1 max 's let
+ v 'w at 128 s mul sub 2 div 'ox let v 'h at 128 s mul sub 2 div 'oy let
+ v 'screen at 'px let
+ 0 clear
+ 0 (dup 128 lt) ('y let
+   0 (dup 128 lt) ('x0 let y 128 mul x0 plus 'px nth must 'SHADE nth must 'c let
+     x0 (dup 128 lt (y 128 mul over plus 'px nth must 'SHADE nth must c eq) (0) if) (1 plus) while 'x1 let
+     ox x0 s mul plus oy y s mul plus x1 x0 sub s mul s c fill-rect x1) while drop
+   y 1 plus) while drop) show

@@ -3,7 +3,7 @@
 exactly what the system `lua` prints; pico8-only syntax prints what pico8
 would; and each refused program dies with its message and line."""
 
-import glob, os, subprocess, sys, tempfile
+import concurrent.futures, glob, os, re, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -67,8 +67,15 @@ PICO8 = [
     ("compound field assignment", "local q = {}\nq.v = 1 q.v += 4 q['v'] *= 2\nprint(q.v)", "10\n"),
     ("question print", "?1, 'two'\n? 3", "1\ttwo\n3\n"),
 ]
-for name, text, want in PICO8:
-    r = run_text(name.replace(" ", "-"), text)
+# Each program is a separate ./slap; they run in parallel and are checked in order.
+POOL = concurrent.futures.ThreadPoolExecutor(os.cpu_count())
+
+
+def run_all(cases):
+    return POOL.map(lambda c: run_text(c[0].replace(" ", "-"), c[1]), cases)
+
+
+for (name, text, want), r in zip(PICO8, run_all(PICO8)):
     check(
         f"pico8 {name}",
         r.returncode == 0 and r.stdout.decode() == want,
@@ -149,8 +156,7 @@ ERRORS = [
         "lua: line 1: an expression nests deeper than 200 levels",
     ),
 ]
-for name, text, want in ERRORS:
-    r = run_text(name.replace(" ", "-"), text)
+for (name, text, want), r in zip(ERRORS, run_all(ERRORS)):
     err = r.stderr.decode()
     check(
         f"error {name}",
@@ -164,7 +170,7 @@ CARTS = [
     ("bad hex", "__lua__\n__gfx__\n" + "0g" + "0" * 126 + "\n", "lua: cart line 5: __gfx__ has a digit that is not hex"),
     ("short row", "__lua__\n__map__\n0102\n", "lua: cart line 5: a __map__ row has 4 digits, not 256"),
     ("cart error line", "__lua__\nx = 1\nx = x + nil\n", "lua: line 5: attempt to perform arithmetic on a nil value"),
-    ("frame loop error", "__lua__\nfunction _draw() __flip = nil end\n", "lua: the frame loop's line 2: attempt to call a nil value"),
+    ("frame loop error", "__lua__\n_update = 5\n", "lua: the frame loop's line 2: attempt to call a number value"),
 ]
 for name, text, want in CARTS:
     path = os.path.join(tmp, name.replace(" ", "-") + ".p8")
@@ -178,6 +184,34 @@ with open(path, "w") as f:
     f.write(HEAD + "__lua__\nn = 0\nfunction _update() n = n + 1 end\nfunction _draw() assert_n = n end\n")
 r = subprocess.run(["./slap", path, "3"], input=SRC, capture_output=True, timeout=60)
 check("cart dump", r.returncode == 0 and r.stdout == (b"0" * 128 + b"\n") * 128, r.stderr.decode()[-600:])
+# Each tests/pico8 cart draws what zepto8 drew: tests/pico8/refs.sh made the .ref
+# files with it, after the frames the cart's "-- frames: N" line names.
+def cart_diff(path):
+    n = re.search(r"^-- frames: (\d+)$", open(path).read(), re.M).group(1)
+    r = subprocess.run(["./slap", path, n], input=SRC, capture_output=True, timeout=60)
+    want = open(path[:-3] + ".ref", "rb").read().split()
+    got = r.stdout.split()
+    bad = [(y, x) for y in range(min(len(want), len(got))) for x in range(128) if want[y][x : x + 1] != got[y][x : x + 1]]
+    return r, len(want) == len(got) == 128 and not bad, f"{len(bad)} pixels differ, first at (x, y) = {bad[0][::-1] if bad else None}"
+
+
+for path, (r, same, why) in zip(sorted(glob.glob("tests/pico8/*.p8")), POOL.map(cart_diff, sorted(glob.glob("tests/pico8/*.p8")))):
+    check(f"{path} matches zepto8", r.returncode == 0 and same, f"exit {r.returncode}: {why}\n{r.stderr.decode()[-600:]}")
+# The SDL shell, headless: a held left arrow reaches btn(0), and the view the
+# render body draws holds the cart's screen.
+if os.path.exists("./slap-sdl"):
+    path = os.path.join(tmp, "btn.p8")
+    with open(path, "w") as f:
+        f.write(HEAD + "__lua__\nfunction _draw() cls(1) if btn(0) then pset(0, 0, 8) end end\n")
+    driver = (
+        "('tf let tf 2 eq (1073741904 1 key!) () if"
+        " tf 5 eq (dup 'screen at dup 0 get must print 1 get must print \"test-done\" fail) () if) 'tick on show\n"
+    )
+    sdl = open("examples/lua-sdl.slap").read()
+    sdl = sdl[: sdl.rindex(") show")] + ") 'render let\n"
+    r = subprocess.run(["./slap-sdl", "--headless", path], input=SRC + sdl.encode() + b"(render)" + driver.encode(), capture_output=True, timeout=60)
+    check("lua-sdl headless", r.returncode == 1 and r.stdout == b"8\n1\n" and b"test-done" in r.stderr, f"exit {r.returncode} {r.stdout!r}\n{r.stderr.decode()[-600:]}")
+
 r = run_text("frames-need-a-cart", "print(1)")
 r = subprocess.run(["./slap", os.path.join(tmp, "frames-need-a-cart.lua"), "3"], input=SRC, capture_output=True, timeout=60)
 check("frames need a cart", r.returncode == 1 and b"lua: a frame count needs a .p8 cart" in r.stderr, r.stderr.decode()[-600:])
