@@ -67,21 +67,30 @@
 -- state is `i ok`, or `msg no` from the first failure; `then` and `pthen`
 -- carry a failure past the steps after it.
 
--- _x-latin1: (source -- source').  A declaration that names ISO-8859-1 or latin1 (any case) turns each
--- byte >= 0x80 into its two UTF-8 bytes, in one pass, before the parser reads anything.  A byte-order mark stays as it is.  Only the
+-- _x-1252: (source -- source').  A declaration that names ISO-8859-1, latin1 or windows-1252 (any case) turns each
+-- byte >= 0x80 into UTF-8, in one pass, before the parser reads anything.  A byte-order mark stays as it is.  Only the
 -- declaration's own text (`<?xml` and white space) is searched, so no other name can trigger it; _xdecl still checks the exact name.
+-- REVIEW: All three names decode as windows-1252, as the WHATWG Encoding Standard says for ISO-8859-1 and latin1: bytes 0x80-0x9F
+-- are the code points below, so curly quotes and dashes survive.  Alternative: refuse 0x80-0x9F under ISO-8859-1; it keeps
+-- Latin-1 exact but refuses the many such feeds that hold windows-1252 text.
 ('xs let
+  [8364 129 8218 402 8222 8230 8224 8225 710 8240 352 8249 338 141 381 143
+   144 8216 8217 8220 8221 8226 8211 8212 732 8482 353 8250 339 157 382 376] 'xt let
   xs 3 take-n [239 187 191] eq (3) (0) if 'xo let
   xs xo drop-n 5 take-n "<?xml" eq  xo 5 plus 'xs nth {'ok (_x-ws?) 'no (drop 0)} case and (
     xs "?>" str-find {'ok ('xe let xs xe take-n (dup 65 ge over 90 le and (32 plus) () if) each) 'no (drop "")} case 'xh let
     xh "iso-8859-1" str-find {'ok (drop 1) 'no (drop 0)} case
     xh "latin1" str-find {'ok (drop 1) 'no (drop 0)} case or
-    (xs xo drop-n xs xo take-n ('xb let xb 128 lt (xb push) (xb 6 shr 192 bor push xb 63 band 128 bor push) if) fold) (xs) if
-  ) (xs) if) '_x-latin1 let
+    xh "windows-1252" str-find {'ok (drop 1) 'no (drop 0)} case or
+    (xs xo drop-n xs xo take-n ('xb let xb 128 lt (xb push) (
+       xb 160 lt (xb 128 sub 'xt nth must) (xb) if 'xc let
+       xc 2048 lt (xc 6 shr 192 bor push) (xc 12 shr 224 bor push xc 6 shr 63 band 128 bor push) if
+       xc 63 band 128 bor push) if) fold) (xs) if
+  ) (xs) if) '_x-1252 let
 
 -- _xml-parse: (source -- record ok | msg no).  The helpers live inside it, so each reads the
 -- input it binds as '_xin by name, not a caller's.
-(_x-latin1 '_xin let
+(_x-1252 '_xin let
   -- _xc: (i -- c).  The byte at i, or -1 past the end.
   ('_xin nth {'ok () 'no (drop -1)} case) '_xc let
 
@@ -194,7 +203,7 @@
   (ok 1 (dup) (drop 0 ('xvi let xvi _xws 'xvj let xvj "<!--" _xat (1 xvj 4 plus "-->" _xpast) (0 xvj ok) if) pthen swap) while drop) '_xtrivia let
 
   -- _xdecl: (i -- i' st).  i is just past "<?xml".  Reads version, encoding and standalone, each once, up to ?>.
-  -- The encoding may be UTF-8, US-ASCII, ISO-8859-1 or latin1, in any case; _x-latin1 has already recoded the last two.  The state under the loop is a mask of the names seen.
+  -- The encoding may be UTF-8, US-ASCII, ISO-8859-1, latin1 or windows-1252, in any case; _x-1252 has already recoded the last three.  The state under the loop is a mask of the names seen.
   ('xy0 let
    0 xy0 ok 1
    (dup) (drop 0 ('xyi let 'xym let
@@ -212,8 +221,8 @@
          xyq _xattr-val swap 'xyv let {'ok ('xyx let
            xyn "encoding" eq not (xym xyb bor 1 xyx ok) (
            xyv (dup 97 ge over 122 le and (32 sub) () if) each 'xyu let
-           xyu "UTF-8" eq xyu "US-ASCII" eq or xyu "ISO-8859-1" eq or xyu "LATIN1" eq or (xym xyb bor 1 xyx ok) (
-             xym 0 "xml: unsupported encoding \"" xyv cat "\"; expected UTF-8, US-ASCII, ISO-8859-1 or latin1" cat xyq 1 plus _xpos no) if) if)
+           xyu "UTF-8" eq xyu "US-ASCII" eq or xyu "ISO-8859-1" eq or xyu "LATIN1" eq or xyu "WINDOWS-1252" eq or (xym xyb bor 1 xyx ok) (
+             xym 0 "xml: unsupported encoding \"" xyv cat "\"; expected UTF-8, US-ASCII, ISO-8859-1, latin1 or windows-1252" cat xyq 1 plus _xpos no) if) if)
            'no ('xyy let xym 0 xyy no)} case) if) if) if) if) if) if) pthen swap) while
    drop swap drop) '_xdecl let
 
@@ -573,16 +582,21 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 "<a b=\"1\" c=\"2\" b=\"3\">x</a>" _xml-parse xerr "xml: duplicate attribute b at byte 15" eq assert
 "<a b=\"1\"><c b=\"2\"/></a>" _xml-parse xerr "" eq assert
 
--- A byte-order mark does not hide the declaration from the Latin-1 recoding
+-- A byte-order mark does not hide the declaration from the recoding
 [239 187 191] "<?xml version=\"1.0\" encoding=\"latin1\"?><a>" cat [233] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169] eq assert
 -- A processing instruction whose name starts with xml is no declaration, so its text cannot trigger it
 "<?xml-stylesheet href=\"latin1.xsl\"?><a>" [195 169] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169] eq assert
 
--- A declared encoding must be UTF-8, US-ASCII, ISO-8859-1 or latin1, in any case; Latin-1 bytes become UTF-8
+-- A declared encoding must be UTF-8, US-ASCII, ISO-8859-1, latin1 or windows-1252, in any case; their bytes become UTF-8
 "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a>" [233] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169] eq assert
 "<?xml version=\"1.0\" encoding='Latin1'?><a>" [233 255] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169 195 191] eq assert
+-- ISO-8859-1 and latin1 read as windows-1252, as browsers read them: 0x93 0x80 0x94 are curly quotes around a euro sign
+"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a>" [147 128 148] cat "</a>" cat _xml-parse must 'children at 0 get must node-text
+  [226 128 156 226 130 172 226 128 157] eq assert
+"<?xml version=\"1.0\" encoding=\"Windows-1252\"?><a>" [140 159 129] cat "</a>" cat _xml-parse must 'children at 0 get must node-text
+  [197 146 197 184 194 129] eq assert
 "<?xml version='1.0' encoding='UTF-16'?><a/>" _xml-parse xerr
-  "xml: unsupported encoding \"UTF-16\"; expected UTF-8, US-ASCII, ISO-8859-1 or latin1 at byte 30" eq assert
+  "xml: unsupported encoding \"UTF-16\"; expected UTF-8, US-ASCII, ISO-8859-1, latin1 or windows-1252 at byte 30" eq assert
 "<?xml version=\"1.0\" encoding=UTF-8?><a/>" _xml-parse xerr
   "xml: encoding value must be quoted at byte 29, found 'U'" eq assert
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><a/>" _xml-parse xerr "" eq assert

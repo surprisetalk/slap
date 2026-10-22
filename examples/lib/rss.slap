@@ -390,9 +390,9 @@ art rss-items 0 get must rss-item-id "urn:uuid:1" ok eq assert
 nd "<rss version=\"2.0\"><channel><title>T</title><link>L</link></channel></rss>" eq assert
 nd rss-parse must rss-description none eq assert
 
--- A feed in an encoding other than UTF-8, US-ASCII or Latin-1 is an error, not UTF-8 misread.
-"<?xml version=\"1.0\" encoding=\"windows-1252\"?><rss><channel><title>T</title></channel></rss>" rss-parse xerr
-  "xml: unsupported encoding \"windows-1252\"; expected UTF-8, US-ASCII, ISO-8859-1 or latin1 at byte 30" eq assert
+-- A feed in another encoding is an error, not UTF-8 misread.
+"<?xml version=\"1.0\" encoding=\"UTF-16\"?><rss><channel><title>T</title></channel></rss>" rss-parse xerr
+  "xml: unsupported encoding \"UTF-16\"; expected UTF-8, US-ASCII, ISO-8859-1, latin1 or windows-1252 at byte 30" eq assert
 
 -- A Latin-1 feed: byte 0xE9 reads back as the UTF-8 bytes C3 A9
 "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><rss><channel><title>caf" [233] cat "</title><link>L</link></channel></rss>" cat rss-parse must rss-title
