@@ -68,14 +68,15 @@
 -- carry a failure past the steps after it.
 
 -- _x-latin1: (source -- source').  A declaration that names ISO-8859-1 or latin1 (any case) turns each
--- byte >= 0x80 into its two UTF-8 bytes, in one pass, before the parser reads anything.  Only the
+-- byte >= 0x80 into its two UTF-8 bytes, in one pass, before the parser reads anything.  A byte-order mark stays as it is.  Only the
 -- declaration's own text is searched, so no other name can trigger it; _xdecl still checks the exact name.
 ('xs let
-  xs 5 take-n "<?xml" eq (
+  xs 3 take-n [239 187 191] eq (3) (0) if 'xo let
+  xs xo drop-n 5 take-n "<?xml" eq (
     xs "?>" str-find {'ok ('xe let xs xe take-n (dup 65 ge over 90 le and (32 plus) () if) each) 'no (drop "")} case 'xh let
     xh "iso-8859-1" str-find {'ok (drop 1) 'no (drop 0)} case
     xh "latin1" str-find {'ok (drop 1) 'no (drop 0)} case or
-    (xs [] ('xb let xb 128 lt (xb push) (xb 6 shr 192 bor push xb 63 band 128 bor push) if) fold) (xs) if
+    (xs xo drop-n xs xo take-n ('xb let xb 128 lt (xb push) (xb 6 shr 192 bor push xb 63 band 128 bor push) if) fold) (xs) if
   ) (xs) if) '_x-latin1 let
 
 -- _xml-parse: (source -- record ok | msg no).  The helpers live inside it, so each reads the
@@ -571,6 +572,9 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 "<a b=\"1\" b=\"2\"/>" _xml-parse xerr "xml: duplicate attribute b at byte 9" eq assert
 "<a b=\"1\" c=\"2\" b=\"3\">x</a>" _xml-parse xerr "xml: duplicate attribute b at byte 15" eq assert
 "<a b=\"1\"><c b=\"2\"/></a>" _xml-parse xerr "" eq assert
+
+-- A byte-order mark does not hide the declaration from the Latin-1 recoding
+[239 187 191] "<?xml version=\"1.0\" encoding=\"latin1\"?><a>" cat [233] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169] eq assert
 
 -- A declared encoding must be UTF-8, US-ASCII, ISO-8859-1 or latin1, in any case; Latin-1 bytes become UTF-8
 "<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a>" [233] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169] eq assert
