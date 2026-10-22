@@ -8,7 +8,7 @@
 -- Every field but 'kind, the feed's 'title, 'items and 'attrs is `value ok`, or none when the
 -- feed leaves it out.  Titles, 'description and 'summary hold markup, the element's inner XML
 -- (xd-markup): AT&amp;T stays AT&amp;T.  'link, 'published and 'id hold text (xd-text).
--- An RSS channel needs <title>, <link> and <description>, and an Atom feed needs <title>.
+-- An RSS channel needs <title> and <link>, and an Atom feed needs <title>.  RSS 1.0 (<rdf:RDF>) reads as "rss".
 
 -- ========== Helpers ==========
 
@@ -40,11 +40,20 @@
 (('e let
    e "title" xd-markup xd-child apply ('ttl let
    e "link" xd-text xd-child (_rss-nonempty) xd-map apply ('lnk let
-   e "description" xd-markup xd-child apply ('dsc let
+   e "description" xd-markup _rss-opt apply ('dsc let
    e "item" _rss2-item xd-children apply ('its let
-   {'kind "rss" 'title ttl 'link lnk 'description dsc ok 'items its} ok) then) then) then) then)) '_rss2-channel let
+   {'kind "rss" 'title ttl 'link lnk 'description dsc 'items its} ok) then) then) then) then)) '_rss2-channel let
 
 ("channel" _rss2-channel xd-child) '_rss2-feed let
+
+-- RSS 1.0 (RDF): <rdf:RDF> holds <channel> and the <item>s as siblings.  An item has no pubDate or guid.
+(('e let
+   e "channel" ('c let
+     c "title" xd-markup xd-child apply ('ttl let
+     c "link" xd-text xd-child (_rss-nonempty) xd-map apply ('lnk let
+     c "description" xd-markup _rss-opt apply ('dsc let
+     e "item" _rss2-item xd-children apply ('its let
+     {'kind "rss" 'title ttl 'link lnk 'description dsc 'items its} ok) then) then) then) then) xd-child apply)) '_rdf-feed let
 
 -- ========== Atom ==========
 
@@ -80,8 +89,9 @@
 ('root-tag let
   root-tag "rss" eq (_rss2-feed) (
   root-tag "feed" eq (_atom-feed) (
+  root-tag "rdf:RDF" eq (_rdf-feed) (
     "unknown feed format: " root-tag cat xd-fail
-  ) if) if) '_rss-dispatch let
+  ) if) if) if) '_rss-dispatch let
 
 -- rss-parse: (source -- feed-record ok | err no)
 (xd-tag (_rss-dispatch) xd-and-then xd-run) 'rss-parse let
@@ -138,10 +148,9 @@
 -- _rss-make-channel: (feed -- channel-element ok | msg no).  RSS needs a channel link, so an
 -- absent one is written empty, which rss-parse reads back as none.
 ('feed let
-  feed rss-description {'ok (ok) 'no (drop "rss-to-xml: an RSS channel needs a description, and this feed's 'description is none; give it one, or write the feed with 'kind \"atom\"" no)} case
-  ('d let [] [{'name "title"       'markup feed rss-title ok}
-              {'name "link"        'markup feed rss-link "" default xe-text xml-render ok}
-              {'name "description" 'markup d ok}] _rss-kids) then
+  [] [{'name "title"       'markup feed rss-title ok}
+      {'name "link"        'markup feed rss-link "" default xe-text xml-render ok}
+      {'name "description" 'markup feed rss-description}] _rss-kids
   ('k0 let feed rss-items k0 ok ('it let (it _rss-make-item) then) fold) then
   ('ck let "channel" [] ck xe-elem ok) then) '_rss-make-channel let
 
@@ -274,7 +283,7 @@ el rss-items 0 get must rss-item-link none eq assert
 -- A channel needs its title, link and description; an item needs none of its fields, and an absent one is none
 "<rss><channel><link>L</link><description>d</description></channel></rss>" rss-parse xerr "/rss/channel: missing <title>" eq assert
 "<rss><channel><title>T</title><description>d</description></channel></rss>" rss-parse xerr "/rss/channel: missing <link>" eq assert
-"<rss><channel><title>T</title><link>L</link></channel></rss>" rss-parse xerr "/rss/channel: missing <description>" eq assert
+"<rss><channel><title>T</title><link>L</link></channel></rss>" rss-parse must rss-description none eq assert
 "<feed><entry/></feed>" rss-parse xerr "/feed: missing <title>" eq assert
 "<rss><channel><title>T</title><link>L</link><description>d</description><item/></channel></rss>" rss-parse must rss-items 0 get must 'bare let
 [bare rss-item-title bare rss-item-summary bare rss-item-published bare rss-item-id] [none none none none] eq assert
@@ -368,8 +377,6 @@ art rss-items 0 get must rss-item-id "urn:uuid:1" ok eq assert
   nl rss-link none eq nl rss-items 0 get must rss-item-link none eq and) each [1 1] eq assert
 
 -- rss-to-xml refuses what the format cannot hold or what is not markup
-{'kind "rss" 'title "T" 'link none 'description none 'items []} rss-to-xml xerr
-  "rss-to-xml: an RSS channel needs a description, and this feed's 'description is none; give it one, or write the feed with 'kind \"atom\"" eq assert
 {'kind "atom" 'title "AT&T" 'link none 'description none 'items []} rss-to-xml xerr
   "rss-to-xml: <title> must hold XML markup, as rss-parse gives it; escape plain text with xe-text xml-render. In <title>…</title>, where the markup starts at byte 7: xml: unterminated entity at byte 9" eq assert
 
@@ -378,6 +385,31 @@ art rss-items 0 get must rss-item-id "urn:uuid:1" ok eq assert
   {'kind k 'title "T" 'link none 'description "d" ok 'items []}
   rss-to-xml xerr "rss-to-xml: expected kind \"rss\" or \"atom\", got \"" k cat "\"" cat eq) each [1 1 1 1] eq assert
 
--- A feed in another encoding is an error, not UTF-8 misread.
-"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><rss><channel><title>T</title></channel></rss>" rss-parse xerr
-  "xml: unsupported encoding \"ISO-8859-1\"; expected UTF-8 or US-ASCII at byte 30" eq assert
+-- A channel without a description writes none and reads back as none
+{'kind "rss" 'title "T" 'link "L" ok 'description none 'items []} rss-to-xml must 'nd let
+nd "<rss version=\"2.0\"><channel><title>T</title><link>L</link></channel></rss>" eq assert
+nd rss-parse must rss-description none eq assert
+
+-- A feed in an encoding other than UTF-8, US-ASCII or Latin-1 is an error, not UTF-8 misread.
+"<?xml version=\"1.0\" encoding=\"windows-1252\"?><rss><channel><title>T</title></channel></rss>" rss-parse xerr
+  "xml: unsupported encoding \"windows-1252\"; expected UTF-8, US-ASCII, ISO-8859-1 or latin1 at byte 30" eq assert
+
+-- A Latin-1 feed: byte 0xE9 reads back as the UTF-8 bytes C3 A9
+"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><rss><channel><title>caf" [233] cat "</title><link>L</link></channel></rss>" cat rss-parse must rss-title
+  "caf" [195 169] cat eq assert
+
+-- An RSS 1.0 (RDF) feed: the items are siblings of the channel, and have no date or id
+"<?xml version=\"1.0\"?><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns=\"http://purl.org/rss/1.0/\">
+  <channel rdf:about=\"http://e.com/\"><title>RDF</title><link>http://e.com/</link><description>d</description></channel>
+  <item rdf:about=\"http://e.com/1\"><title>One</title><link>http://e.com/1</link><description>s1</description></item>
+  <item rdf:about=\"http://e.com/2\"><title>Two</title><link>http://e.com/2</link></item>
+</rdf:RDF>" rss-parse must 'rdf let
+rdf rss-kind "rss" eq assert
+rdf rss-title "RDF" eq assert
+rdf rss-link "http://e.com/" ok eq assert
+rdf rss-description "d" ok eq assert
+rdf rss-items len 2 eq assert
+rdf rss-items 0 get must rss-item-title "One" ok eq assert
+rdf rss-items 0 get must rss-item-published none eq assert
+rdf rss-items 1 get must rss-item-id none eq assert
+rdf rss-items 1 get must rss-item-summary none eq assert

@@ -67,9 +67,20 @@
 -- state is `i ok`, or `msg no` from the first failure; `then` and `pthen`
 -- carry a failure past the steps after it.
 
+-- _x-latin1: (source -- source').  A declaration that names ISO-8859-1 or latin1 (any case) turns each
+-- byte >= 0x80 into its two UTF-8 bytes, in one pass, before the parser reads anything.  Only the
+-- declaration's own text is searched, so no other name can trigger it; _xdecl still checks the exact name.
+('xs let
+  xs 5 take-n "<?xml" eq (
+    xs "?>" str-find {'ok ('xe let xs xe take-n (dup 65 ge over 90 le and (32 plus) () if) each) 'no (drop "")} case 'xh let
+    xh "iso-8859-1" str-find {'ok (drop 1) 'no (drop 0)} case
+    xh "latin1" str-find {'ok (drop 1) 'no (drop 0)} case or
+    (xs [] ('xb let xb 128 lt (xb push) (xb 6 shr 192 bor push xb 63 band 128 bor push) if) fold) (xs) if
+  ) (xs) if) '_x-latin1 let
+
 -- _xml-parse: (source -- record ok | msg no).  The helpers live inside it, so each reads the
 -- input it binds as '_xin by name, not a caller's.
-('_xin let
+(_x-latin1 '_xin let
   -- _xc: (i -- c).  The byte at i, or -1 past the end.
   ('_xin nth {'ok () 'no (drop -1)} case) '_xc let
 
@@ -182,7 +193,7 @@
   (ok 1 (dup) (drop 0 ('xvi let xvi _xws 'xvj let xvj "<!--" _xat (1 xvj 4 plus "-->" _xpast) (0 xvj ok) if) pthen swap) while drop) '_xtrivia let
 
   -- _xdecl: (i -- i' st).  i is just past "<?xml".  Reads version, encoding and standalone, each once, up to ?>.
-  -- The encoding may be UTF-8 or US-ASCII, in any case.  The state under the loop is a mask of the names seen.
+  -- The encoding may be UTF-8, US-ASCII, ISO-8859-1 or latin1, in any case; _x-latin1 has already recoded the last two.  The state under the loop is a mask of the names seen.
   ('xy0 let
    0 xy0 ok 1
    (dup) (drop 0 ('xyi let 'xym let
@@ -200,8 +211,8 @@
          xyq _xattr-val swap 'xyv let {'ok ('xyx let
            xyn "encoding" eq not (xym xyb bor 1 xyx ok) (
            xyv (dup 97 ge over 122 le and (32 sub) () if) each 'xyu let
-           xyu "UTF-8" eq xyu "US-ASCII" eq or (xym xyb bor 1 xyx ok) (
-             xym 0 "xml: unsupported encoding \"" xyv cat "\"; expected UTF-8 or US-ASCII" cat xyq 1 plus _xpos no) if) if)
+           xyu "UTF-8" eq xyu "US-ASCII" eq or xyu "ISO-8859-1" eq or xyu "LATIN1" eq or (xym xyb bor 1 xyx ok) (
+             xym 0 "xml: unsupported encoding \"" xyv cat "\"; expected UTF-8, US-ASCII, ISO-8859-1 or latin1" cat xyq 1 plus _xpos no) if) if)
            'no ('xyy let xym 0 xyy no)} case) if) if) if) if) if) if) pthen swap) while
    drop swap drop) '_xdecl let
 
@@ -561,11 +572,11 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 "<a b=\"1\" c=\"2\" b=\"3\">x</a>" _xml-parse xerr "xml: duplicate attribute b at byte 15" eq assert
 "<a b=\"1\"><c b=\"2\"/></a>" _xml-parse xerr "" eq assert
 
--- A declared encoding must be UTF-8 or US-ASCII, in any case
-"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a/>" _xml-parse xerr
-  "xml: unsupported encoding \"ISO-8859-1\"; expected UTF-8 or US-ASCII at byte 30" eq assert
+-- A declared encoding must be UTF-8, US-ASCII, ISO-8859-1 or latin1, in any case; Latin-1 bytes become UTF-8
+"<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?><a>" [233] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169] eq assert
+"<?xml version=\"1.0\" encoding='Latin1'?><a>" [233 255] cat "</a>" cat _xml-parse must 'children at 0 get must node-text [195 169 195 191] eq assert
 "<?xml version='1.0' encoding='UTF-16'?><a/>" _xml-parse xerr
-  "xml: unsupported encoding \"UTF-16\"; expected UTF-8 or US-ASCII at byte 30" eq assert
+  "xml: unsupported encoding \"UTF-16\"; expected UTF-8, US-ASCII, ISO-8859-1 or latin1 at byte 30" eq assert
 "<?xml version=\"1.0\" encoding=UTF-8?><a/>" _xml-parse xerr
   "xml: encoding value must be quoted at byte 29, found 'U'" eq assert
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><a/>" _xml-parse xerr "" eq assert
