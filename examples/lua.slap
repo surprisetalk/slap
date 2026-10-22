@@ -181,7 +181,8 @@
  "ADD" "SUB" "MUL" "DIV" "IDIV" "MOD" "POW" "CONCAT" "EQ" "NE" "LT" "LE" "GT" "GE"
  "BAND" "BOR" "BXOR" "SHL" "SHR" "LSHR" "ROTL" "ROTR" "NEG" "NOT" "LEN" "BNOT"
  "GETL" "SETL" "CLOSURE" "BREAK" "FORPREP" "FORCHK" "FORINC"
- "FUNC" "GETU" "SETU" "CAPTL" "CAPTU" "DECL" "PARAM" "GETLC" "SETLC" "DECLC" "BOXL"] 'OPS let
+ "FUNC" "GETU" "SETU" "CAPTL" "CAPTU" "DECL" "PARAM" "GETLC" "SETLC" "DECLC" "BOXL"
+ "NEWT" "GETT" "SETT" "SETTK" "SETTD" "SETMULTI" "SELF" "DUP2" "JNIL"] 'OPS let
 ('s let OPS s index-of must) 'op-id let
 "RET" op-id 'O-RET let  "POP" op-id 'O-POP let  "PUSHK" op-id 'O-PUSHK let
 "GETG" op-id 'O-GETG let  "SETG" op-id 'O-SETG let  "CALL" op-id 'O-CALL let
@@ -191,6 +192,9 @@
 "FUNC" op-id 'O-FUNC let  "GETU" op-id 'O-GETU let  "SETU" op-id 'O-SETU let  "CAPTL" op-id 'O-CAPTL let
 "CAPTU" op-id 'O-CAPTU let  "DECL" op-id 'O-DECL let  "PARAM" op-id 'O-PARAM let  "GETLC" op-id 'O-GETLC let
 "SETLC" op-id 'O-SETLC let  "DECLC" op-id 'O-DECLC let  "BOXL" op-id 'O-BOXL let
+"NEWT" op-id 'O-NEWT let  "GETT" op-id 'O-GETT let  "SETT" op-id 'O-SETT let  "SETTK" op-id 'O-SETTK let
+"SETTD" op-id 'O-SETTD let  "SETMULTI" op-id 'O-SETMULTI let  "SELF" op-id 'O-SELF let  "DUP2" op-id 'O-DUP2 let
+"JNIL" op-id 'O-JNIL let
 (8 mul 2 plus) '_num let
 
 -- BIN[kind] packs a binary operator as op*256 + left*16 + right, its op and
@@ -221,8 +225,10 @@
 -- ===== the program =====
 args len 1 eq () ("usage: cat examples/lib/strings.slap examples/lua.slap | ./slap prog.lua" fail) if
 args 0 get must 'lua-path let
-lua-path read {'ok () 'no ('e let "lua: cannot read " e cat fail)} case lua-lex 'toks let
+-- A method's hidden `self` parameter needs a name token: one more, after the end.
+lua-path read {'ok () 'no ('e let "lua: cannot read " e cat fail)} case lua-lex [] T-NAME push 0 push "self" len push "self" cat cat 'toks let
 toks lua-index 'tix let
+tix len 1 sub 'SELF-TOK let
 
 -- ===== compiler =====
 -- Each compile word takes a token index and leaves `code t'`: the code it
@@ -256,6 +262,9 @@ toks lua-index 'tix let
 ('cc let cc len 3 lt (0) (cc len 3 sub 'cc nth must O-CALL eq) if) '_clastcall let
 -- _cnres: (code n -- code).  The call that ends the code leaves n results, or all for -1.
 ('sn let 'scc let scc len 2 sub 'si let scc si si 'scc nth must 256 div 256 mul sn 1 plus plus set must) '_cnres let
+-- _clast: (code -- op).  The last instruction's op, or -1.  _cdroplast: (code -- code).  Without it.
+('lq let lq len 3 lt (-1) (lq len 3 sub 'lq nth must) if) '_clast let
+(dup len 3 sub take-n) '_cdroplast let
 -- _cresolve: (body after -- body).  Each break in the loop body jumps to the
 -- loop's end, `after` ints past the body.  Inner loops resolved their own.
 ('rx let 'rb let rb len 'rn let rb 0
@@ -338,6 +347,7 @@ toks lua-index 'tix let
 'CMPD let
 
 '_cexp [int int int int 'list tag] [int 'list tag int] effect
+'_ctable [int int int 'list tag] [int 'list tag int] effect
 '_cblock [int int 'list tag] [int 'list tag int int 'list tag] effect
 
 -- _cexplist: (t ctx want depth -- code k dyn t').  Expressions separated by
@@ -359,17 +369,25 @@ toks lua-index 'tix let
  gt0 1 plus _tk ")" sy-id eq ([] 0 gt0 2 plus) (
    gt0 1 plus ac -1 ad 1 plus _cexplist 'a3 let swap 2 mul plus a3
    ")" sy-id "')' to close the arguments" _cskip) if) '_cargs let
+-- _cargsany: (t depth ctx -- code nargs t').  Arguments in parentheses, or one string, or one table.
+('yc let 'yd let 'yt let yt _tk 'yk let
+ yk "(" sy-id eq (yt yd yc _cargs) (
+ yk T-STR eq (O-PUSHK yt _tstr yt _tl _cins 2 yt 1 plus) (
+ yk "{" sy-id eq (yt yd yc _ctable 'yt2 let 2 yt2) ("arguments" yt _cwant) if) if) if) '_cargsany let
 
-'_cfunc [int int 'list tag] [int 'list tag int] effect
+'_cfunc [int int 'list tag int] [int 'list tag int] effect
 
--- _csuffix: (code t depth ctx -- code t').  Calls after a prefix expression.  A
--- call compiles for one result; a call statement changes its count to none.
+-- _csuffix: (code t depth ctx -- code t').  Field reads and calls after a prefix
+-- expression.  A call compiles for one result; a call statement changes its
+-- count to none.  `a:m(x)` is SELF, which leaves a.m and a, then the call.
 ('xc let 'xd let
  (dup _tk 'xk0 let xk0 "(" sy-id eq xk0 T-STR eq or xk0 "{" sy-id eq or xk0 "." sy-id eq or xk0 "[" sy-id eq or xk0 ":" sy-id eq or)
  ('xt let xt _tk 'xk let xt _tl 'xl let
-  xk "(" sy-id eq (xt xd xc _cargs 'xt2 let 'xn let cat O-CALL xn 256 mul 2 plus xl _cins cat xt2) (
-  xk T-STR eq (O-PUSHK xt _tstr xl _cins cat O-CALL 2 256 mul 2 plus xl _cins cat xt 1 plus) (
-    "tables are not supported yet" xl _cfail-at) if) if) while) '_csuffix let
+  xk "." sy-id eq (xt 1 plus T-NAME "a name after '.'" _cskip 'xt2 let O-PUSHK xt2 1 sub _tstr xl _cins cat O-GETT 0 xl _cins cat xt2) (
+  xk "[" sy-id eq (xt 1 plus 0 xd 1 plus xc _cexp "]" sy-id "']' to close the index" _cskip 'xt2 let cat O-GETT 0 xl _cins cat xt2) (
+  xk ":" sy-id eq (xt 1 plus T-NAME "a name after ':'" _cskip 'xt2 let O-SELF xt2 1 sub _tstr xl _cins cat
+    xt2 xd xc _cargsany 'xt3 let 'xn let cat O-CALL xn 2 plus 256 mul 2 plus xl _cins cat xt3) (
+    xt xd xc _cargsany 'xt2 let 'xn let cat O-CALL xn 256 mul 2 plus xl _cins cat xt2) if) if) if) while) '_csuffix let
 
 -- _cprimary: (t depth ctx -- code t')
 ('pc let 'pd let 'pt let pt _tk 'pk let pt _tl 'pl let
@@ -384,8 +402,8 @@ toks lua-index 'tix let
  pk "(" sy-id eq (pt 1 plus 0 pd 1 plus pc _cexp ")" sy-id "')' to close the parenthesis" _cskip 'pt2 let
    dup _clastcall (O-JMP 0 pl _cins cat) () if pt2 pd pc _csuffix) (
  pk "..." sy-id eq ("varargs (...) are not supported" pl _cfail-at) (
- pk "function" kw-id eq (pt 1 plus pc _cfunc) (
- pk "{" sy-id eq ("tables are not supported yet" pl _cfail-at) (
+ pk "function" kw-id eq (pt 1 plus pc 0 _cfunc) (
+ pk "{" sy-id eq (pt pd pc _ctable pd pc _csuffix) (
    "an expression" pt _cwant) if) if) if) if) if) if) if) if) if) if) '_cprimary let
 
 -- _cexp: (t limit depth ctx -- code t').  Precedence climbing: it takes binary
@@ -400,19 +418,39 @@ toks lua-index 'tix let
   bt 1 plus br cd 1 plus cc _cexp 'rt let 'rc let
   bo O-JFK eq bo O-JTK eq or (bo rc len bt _tl _cins cat rc cat) (rc cat bo 0 bt _tl _cins cat) if rt) while) '_cexp let
 
--- _cfunc: (t ctx -- code t').  t is at the parameters' `(`.  The code jumps
+-- _ctable: (t depth ctx -- code t').  t is at `{`.  NEWT, then a SETTK per
+-- field; a call as the last positional field leaves all its results (SETMULTI).
+('tc let 'td let 'tt let
+ O-NEWT 0 tt _tl _cins tt 1 plus 1
+ (over _tk "}" sy-id eq not)
+ ('ti let 'tp let tp _tk 'tk let tp _tl 'tl0 let
+  tk "[" sy-id eq (
+    tp 1 plus 0 td 1 plus tc _cexp "]" sy-id "']' to close the key" _cskip "=" sy-id "'=' after the key" _cskip
+    0 td 1 plus tc _cexp 'tq let cat O-SETTK 0 tl0 _cins cat cat tq ti) (
+  tk T-NAME eq tp 1 plus _tk "=" sy-id eq and (
+    O-PUSHK tp _tstr tl0 _cins tp 2 plus 0 td 1 plus tc _cexp 'tq let cat O-SETTK 0 tl0 _cins cat cat tq ti) (
+    tp 0 td 1 plus tc _cexp 'tq let 'tv let
+    tq _tk "}" sy-id eq tq _tk "," sy-id eq tq _tk ";" sy-id eq or tq 1 plus _tk "}" sy-id eq and or 'tlast let
+    tlast tv _clastcall and (tv -1 _cnres O-SETMULTI ti 65536 mul _num tl0 _cins cat cat tq ti) (
+      O-PUSHK ti 65536 mul _num tl0 _cins tv cat O-SETTK 0 tl0 _cins cat cat tq ti 1 plus) if) if) if
+  'ti2 let 'tp2 let tp2 _tk 'tsep let
+  tsep "," sy-id eq tsep ";" sy-id eq or (tp2 1 plus) (tsep "}" sy-id eq (tp2) ("',' or '}' in the table" tp2 _cwant) if) if ti2)
+ while drop 1 plus) '_ctable let
+
+-- _cfunc: (t ctx self -- code t').  t is at the parameters' `(`; with self 1 a hidden `self` comes first.  The code jumps
 -- over the function's body, whose first instruction is its header
 -- [nparams nslots nups], then makes a closure of it.
 -- The closure's descriptors follow CLOSURE: CAPTL for a local of this
 -- function, CAPTU for one of its own outer locals, one per outer local the new
 -- function uses, in its order.
-('fc let 'ft let
+('fself let 'fc let 'ft let
  ft "(" sy-id "'(' to start the parameters" _cskip 'fp let
- [0 0] C-LVL 'fc nth must 1 plus push 0 push fc C-SCOPE drop-n cat 'fc0 let
+ [0 0] C-LVL 'fc nth must 1 plus push 0 push fc C-SCOPE drop-n cat 'fc00 let
+ fself (fc00 SELF-TOK _cdeclare drop) (fc00) if 'fc0 let
  fp _tk T-NAME eq (
-   fc0 fp _cdeclare drop fp 1 plus 1
+   fc0 fp _cdeclare drop fp 1 plus fself 1 plus
    (over _tk "," sy-id eq) ('fnn let 'fp1 let fp1 1 plus T-NAME "a parameter name after ','" _cskip 'fp2 let fp2 1 sub _cdeclare drop fp2 fnn 1 plus) while)
-   (fc0 fp 0) if
+   (fc0 fp fself) if
  'np let 'fp3 let 'fc1 let
  fp3 _tk "..." sy-id eq ("varargs (...) are not supported" fp3 _tl _cfail-at) () if
  fp3 ")" sy-id "')' to close the parameters" _cskip fc1 _cblock 'fc2 let 'fb let 'body let
@@ -426,6 +464,24 @@ toks lua-index 'tix let
  fups [] ('fk let fc fk _cfindtok 'dlv let 'dsl let
    dlv flv eq (O-CAPTL dsl fk 65536 mul plus) (O-CAPTU fk 65536 mul) if ft _tl _cins cat) fold cat fe) '_cfunc let
 
+
+-- _cassign: (targets rhs line -- code).  Each target is the code that reads
+-- it: a name's one GET, or a field's object and key code and GETT.  The fields'
+-- objects and keys stay below the values; SETTD n reaches one n slots under its
+-- value, and the POPs clear them after.  One field target is a plain SETT.
+('al let 'ar let 'ats let ats len 'an let
+ ats [] ('x let x _clast O-GETT eq (x _cdroplast) ([]) if cat) fold ar cat
+ [] 0 an 1 sub
+ (dup 0 ge)
+ ('aj let 'ap let aj 'ats nth must 'ax let ax _clast 'axo let
+  axo O-GETT eq (an 1 eq (O-SETT 0 al _cins) (O-SETTD aj ap plus al _cins) if cat ap 2 plus) (
+    axo O-GETL eq (O-SETL) (axo O-GETG eq (O-SETG) (O-SETU) if) if 1 'ax nth must al _cins cat ap) if
+  aj 1 sub) while drop 'atp let
+ cat an 1 eq () (O-POP atp al _crep cat) if) '_cassign let
+-- _ctarget: (code t -- ).  Dies unless the code reads a name or a field.
+('gt2 let 'gc let gc _clast 'go let
+ go O-GETT eq go O-GETL eq go O-GETG eq or go O-GETU eq or gc len 3 eq and gt2 _tk T-NAME eq and or not
+   ("a name or a field to assign to" gt2 _cwant) () if) '_ctarget let
 
 -- ===== statements =====
 -- Each takes `t ctx` and leaves `code t' ctx'`.
@@ -454,7 +510,7 @@ toks lua-index 'tix let
    lc ln1 _cdeclare 'lsl let 'lc2 let
    lsl ln1 65536 mul plus 'lsa let
    O-PUSHK 0 ln1 _tl _cins O-DECL lsa ln1 _tl _cins cat
-   ln1 1 plus lc2 _cfunc 'lt2 let cat O-SETL lsa ln1 _tl _cins cat lt2 lc2) (
+   ln1 1 plus lc2 0 _cfunc 'lt2 let cat O-SETL lsa ln1 _tl _cins cat lt2 lc2) (
    l1 T-NAME "a name after 'local'" _cskip 'l2 let [] l1 push l2
    (dup _tk "," sy-id eq) ('n1 let n1 1 plus T-NAME "a name after ','" _cskip 'n3 let n3 1 sub push n3) while
    'tn let 'names let names len 'nn let
@@ -464,9 +520,15 @@ toks lua-index 'tix let
    lcode 0 nn range reverse [] ('k let O-DECL ls0 k plus k 'names nth must 65536 mul plus l1 _tl _cins cat) fold cat lt4
    names lc (_cdeclare drop) fold) if) '_clocal let
 
+-- function a.b.c:m(...): the target reads a.b.c.m; with `:` the function takes self.
 ('fc let 'ft let ft 1 plus 'fnm let fnm T-NAME "a name after 'function'" _cskip 'fn2 let
- fn2 _tk "." sy-id eq fn2 _tk ":" sy-id eq or ("functions in tables are not supported yet" fn2 _tl _cfail-at) () if
- fn2 fc _cfunc 'fn3 let fnm fc 0 _cvar cat fn3 fc) '_cfuncstat let
+ fnm fc 1 _cvar fn2
+ (dup _tk "." sy-id eq) ('fq let fq 1 plus T-NAME "a name after '.'" _cskip 'fq2 let
+   O-PUSHK fq2 1 sub _tstr fq _tl _cins cat O-GETT 0 fq _tl _cins cat fq2) while
+ 'fq3 let fq3 _tk ":" sy-id eq (fq3 1 plus T-NAME "a name after ':'" _cskip 'fq4 let
+   O-PUSHK fq4 1 sub _tstr fq3 _tl _cins cat O-GETT 0 fq3 _tl _cins cat fq4 1) (fq3 0) if 'fself let 'fq5 let 'ftgt let
+ fq5 fc fself _cfunc 'fn3 let 'fcl let
+ [] ftgt push fcl ft _tl _cassign fn3 fc) '_cfuncstat let
 
 -- while: cond JF body JMP; a break jumps past the JMP.
 ('wc let 'wt let wt _tl 'wl let wt 1 plus 0 0 wc _cexp 'wt2 let 'cond let
@@ -501,8 +563,27 @@ toks lua-index 'tix let
 
 -- for v = a, b, c: three hidden slots (counter, limit, step), then v.
 --   a b c FORPREP s; top: FORCHK s; JF end; GETL s; SETL v; body; FORINC s; JF end; JMP top; end:
+
+-- for a, b in explist: three hidden slots (iterator, state, control), then the names.
+--   explist(3) DECL c, s, f; top: GETL f, s, c; CALL with n results; DECL the names, last first;
+--   GETL a; SETL c; GETL a; JNIL end; body; JMP top; end:
+('gc let 'gt3 let gt3 _tl 'gl let gt3 1 plus 'g1 let
+ g1 T-NAME "a name after 'for'" _cskip 'g2 let [] g1 push g2
+ (dup _tk "," sy-id eq) ('g3 let g3 1 plus T-NAME "a name after ','" _cskip 'g4 let g4 1 sub push g4) while
+ 'g5 let 'gnames let gnames len 'gn let
+ g5 "in" kw-id "'=' or 'in' after the for's names" _cskip gc 3 0 _cexplist 'g6 let drop drop 'ginit let
+ g6 _tk "do" kw-id eq not ("'do' after the for's expressions" g6 _cwant) () if
+ gc C-LOOP 1 set must 0 _cdeclare 'gf let 0 _cdeclare 'gs let 0 _cdeclare 'gcs let
+ gnames swap ('gk let gk _cdeclare drop) fold 'gc1 let
+ C-NA 'gc1 nth must gn sub 'gv0 let gv0 g1 65536 mul plus 'ga0 let
+ g6 1 plus gc1 _cblock 'gc2 let "end" kw-id "'end' to close 'for'" _cskip 'gt4 let 3 _cresolve 'body let
+ 0 gn range reverse [] ('k let O-DECL gv0 k plus k 'gnames nth must 65536 mul plus gl _cins cat) fold 'gdecls let
+ ginit O-DECL gcs gl _cins cat O-DECL gs gl _cins cat O-DECL gf gl _cins cat
+ O-GETL gf gl _cins cat O-GETL gs gl _cins cat O-GETL gcs gl _cins cat O-CALL 4 256 mul gn 1 plus plus gl _cins cat
+ gdecls cat O-GETL ga0 gl _cins cat O-SETL gcs gl _cins cat O-GETL ga0 gl _cins cat O-JNIL body len 3 plus gl _cins cat
+ body cat O-JMP 0 gdecls len body len plus 27 plus sub gl _cins cat gt4 gc gc2 _ckeep) '_cforin let
+
 ('oc let 'ot let ot _tl 'ol let ot 1 plus 'ov let ov T-NAME "a name after 'for'" _cskip 'oe let
- oe _tk "=" sy-id eq not ("generic for (in) is not supported yet" ol _cfail-at) () if
  oe 1 plus 0 0 oc _cexp "," sy-id "',' after the for's start" _cskip 0 0 oc _cexp 'o2 let cat
  o2 _tk "," sy-id eq (o2 1 plus 0 0 oc _cexp 'o3 let cat o3) (O-PUSHK 65536 _num ol _cins cat o2) if 'ot2 let 'init let
  ot2 _tk "do" kw-id eq not ("'do' after the for's bounds" ot2 _cwant) () if
@@ -510,21 +591,26 @@ toks lua-index 'tix let
  ot2 1 plus oc1 _cblock 'oc2 let "end" kw-id "'end' to close 'for'" _cskip 'ot3 let 9 _cresolve 'body let
  init O-FORPREP os ol _cins cat O-FORCHK os ol _cins cat O-JF body len 15 plus ol _cins cat
  O-GETL os ol _cins cat O-DECL vs ov 65536 mul plus ol _cins cat body cat O-FORINC os ol _cins cat O-JF 3 ol _cins cat
- O-JMP 0 body len 21 plus sub ol _cins cat ot3 oc oc2 _ckeep) '_cfor let
+ O-JMP 0 body len 21 plus sub ol _cins cat ot3 oc oc2 _ckeep) '_cfornum let
+('oc let 'ot let ot _tl 'ol let ot 1 plus 'ov let ov T-NAME "a name after 'for'" _cskip 'oe let
+ oe _tk "=" sy-id eq (ot oc _cfornum) (ot oc _cforin) if) '_cfor let
+
 
 -- An expression statement: a call, an assignment, or pico8's `a += b`.
--- An assignment's targets are names, each compiled as its one GET instruction.
 ('ec let 'et let et 0 ec _cprimary 'et2 let 'ecode let et2 _tk 'ek let et _tl 'el let
  ek "=" sy-id eq ek "," sy-id eq or (
-   et _tk T-NAME eq ecode len 3 eq and not ("a name before '='" et _cwant) () if
-   [] et push et2
-   (dup _tk "," sy-id eq) ('a1 let a1 1 plus 'a2 let a2 0 ec _cprimary 'a3 let len 3 eq a2 _tk T-NAME eq and not ("a name after ','" a2 _cwant) () if a2 push a3) while
+   ecode et _ctarget
+   [] ecode push et2
+   (dup _tk "," sy-id eq) ('a1 let a1 1 plus 'a2 let a2 0 ec _cprimary 'a3 let dup a2 _ctarget push a3) while
    'a4 let 'ts let ts len 'tn let
-   a4 "=" sy-id "'=' in the assignment" _cskip ec tn 0 _cexplist 'a5 let drop drop
-   ts reverse [] ('k let k ec 0 _cvar cat) fold cat a5 ec) (
+   a4 "=" sy-id "'=' in the assignment" _cskip ec tn 0 _cexplist 'a5 let drop drop 'arhs let
+   ts arhs el _cassign a5 ec) (
  ek 'CMPD nth must 'co let co 0 gt (
-   et _tk T-NAME eq ecode len 3 eq and not ("a name before " et2 _tdesc cat et _cwant) () if
-   ecode et2 1 plus 0 0 ec _cexp 'a6 let cat co 0 el _cins cat et ec 0 _cvar cat a6 ec) (
+   ecode et _ctarget
+   et2 1 plus 0 0 ec _cexp 'a6 let 'aexp let
+   ecode _clast O-GETT eq (
+     ecode _cdroplast O-DUP2 0 el _cins cat O-GETT 0 el _cins cat aexp cat co 0 el _cins cat O-SETT 0 el _cins cat) (
+     [] ecode push ecode aexp cat co 0 el _cins cat el _cassign) if a6 ec) (
  ecode _clastcall (ecode 0 _cnres et2 ec) ("a statement" et _cwant) if) if) if) '_cexpstat let
 
 ('sc let 'st let st _tk 'sk let st _tl 'sl let
@@ -567,6 +653,10 @@ C-NL 'mc nth must 'MAIN-NL let
 14 'CLOSN-I let -- closure ids made so far
 15 'CELLN-I let -- cells made so far
 16 'UI-I let    -- scratch: CLOSURE's descriptor
+17 'TABN-I let  -- tables made so far; table 1 holds the globals
+18 'NX-I let    -- scratch: next's key
+19 'LN-I let    -- scratch: #'s border
+20 'MJ-I let    -- scratch: SETMULTI's index
 32 'STK-B let  16384 'STK-N let
 -- A call record is [return-pc base ftop callee nres+1 closure].
 STK-B STK-N plus 'CS-B let  6 'CS-W let  1000 'CS-MAX let
@@ -575,7 +665,7 @@ CS-B CS-W CS-MAX mul plus 'STATE-N let
 100000000 'MAX-STEPS let
 1000000 'MAX-STRS let
 -- REVIEW: No garbage collector, so cells and closures that take outer locals count against a bound. Alternative: mark and sweep the heap, about as much code again as the VM.
-1000000 'MAX-CELLS let  1000000 'MAX-CLOS let
+1000000 'MAX-CELLS let  1000000 'MAX-CLOS let  1000000 'MAX-TABLES let
 16777216 'PROTO-SPAN let   -- a closure's payload is id*PROTO-SPAN + its header's index in code
 
 -- The stack is `machine heap strs` from here on: heap is a dict of ints (globals,
@@ -642,6 +732,44 @@ CS-B CS-W CS-MAX mul plus 'STATE-N let
 ('gk let (gk of {'ok () 'no (drop 0)} case) dip swap) 'hget let
 ('sv2 let 'sk2 let (sk2 sv2 insert) dip) 'hset let
 1 'GLOBALS let
+('hk3 let (hk3 of {'ok (drop 1) 'no (drop 0)} case) dip swap) 'hhas let
+('hk4 let (hk4 remove) dip) 'hdel let
+
+-- ===== tables =====
+-- Table id's entry for key k is at heap key [0 id k] (_hkey), [1 id] holds a
+-- hint for #, [2 id] the first key set and [3 id] the last, and [4 id k] the
+-- key set after k, or nil.  Setting a key to nil removes its entry but leaves
+-- it in the order, so next skips it, and setting it again keeps its place.
+-- REVIEW: Keys set to nil stay in the order list for good. Alternative: unlink them, which needs a back link per key.
+('ti0 let [] ti0 16 shr 255 band push ti0 8 shr 255 band push ti0 255 band push) '_t3 let
+(4 sub 8 div) '_tid let
+('tg let tg 7 band 4 eq not ("attempt to index a " tg _tname cat " value" cat _rfail) () if tg _tid) '_tcheck let
+('lk0 let 'lt0 let lt0 lk0 _hkey 0 4 set must) '_lkey let
+-- _tset: (id k v -- )
+('sv3 let 'sk3 let 'st3 let
+ sk3 0 eq ("table index is nil" _rfail) () if
+ st3 sk3 _hkey 'vk3 let
+ sv3 0 eq (vk3 hdel) (
+   st3 sk3 _lkey 'lk3 let
+   lk3 hhas not (
+     [3] st3 _t3 cat 'tk3 let tk3 hget 'tl3 let
+     tl3 0 eq ([2] st3 _t3 cat 'hk5 let hk5 sk3 hset) (st3 tl3 _lkey 'lk5 let lk5 sk3 hset) if
+     tk3 sk3 hset lk3 0 hset) () if
+   vk3 sv3 hset) if) '_tset let
+-- _tnext: (id k -- k' v'), or 0 0 past the last key.
+('nk let 'nt let
+ nk 0 eq ([2] nt _t3 cat 'nh let nh hget) (nt nk _lkey 'nl let nl hhas not ("invalid key to 'next'" _rfail) () if nl hget) if 'n0 let
+ NX-I n0 mset
+ (NX-I mget 'nc let nc 0 eq not (nt nc _hkey 'nck let nck hget 0 eq) (0) if)
+ (NX-I mget 'nc2 let nt nc2 _lkey 'ncl let ncl hget 'nn2 let NX-I nn2 mset) while
+ NX-I mget 'nr let nr 0 eq (0 0) (nt nr _hkey 'nrk let nrk hget 'nrv let nr nrv) if) '_tnext let
+-- _tlen: (id -- n).  A border, as Lua's # gives: t[n] is not nil and t[n+1] is,
+-- found from the hint, so appending stays O(1).
+('tl9 let [1] tl9 _t3 cat 'lhk let lhk hget 'lh let LN-I lh mset
+ (LN-I mget 'l1 let tl9 l1 1 plus 65536 mul _num _hkey 'lk6 let lk6 hget 0 eq not) (LN-I mget 1 plus 'l2 let LN-I l2 mset) while
+ (LN-I mget 'l3 let l3 0 gt (tl9 l3 65536 mul _num _hkey 'lk7 let lk7 hget 0 eq) (0) if) (LN-I mget 1 sub 'l4 let LN-I l4 mset) while
+ LN-I mget 'ln5 let lhk ln5 hset ln5) '_tlen let
+
 -- A cell's value lives at heap key [7 id]; a closure's i-th outer cell at [5 id i].
 ('ci let [7] ci _ikey cat) '_cellkey let
 ('cv0 let CELLN-I mget 1 plus 'cn0 let cn0 MAX-CELLS gt ("more than 1000000 cells made" _rfail) () if
@@ -687,17 +815,38 @@ CS-B CS-W CS-MAX mul plus 'STATE-N let
  rr 0 lt (MRET-I rn mset SP-I ra rn plus mset) (
    rn rr lt (ra rn plus rr rn sub _mnil) () if SP-I ra rr plus mset) if) '_results let
 
+-- ===== builtins =====
+-- Each takes the callee's slot and the argument count, sets SP to the callee's
+-- slot, pushes its results there, and leaves how many it pushed.
+('ai let 'an let 'af let ai an lt (af 1 plus ai plus 'aa let aa mget) (0) if) '_arg let
+('bn let 'bv let bv 7 band 4 eq not ("bad argument #1 to '" bn cat "' (table expected, got " cat bv _tname cat ")" cat _rfail) () if bv _tid) '_targ let
+[ ('pn let 'pf let                                                              -- 1 print
+   ARGI-I 0 mset
+   (ARGI-I mget pn lt)
+   (ARGI-I mget 'ai let ai 0 gt ("\t" stdout-write) () if pf 1 plus ai plus 'pa let pa mget _tostr stdout-write ARGI-I ai 1 plus mset) while
+   "\n" stdout-write SP-I pf mset 0)
+  ('nn let 'nf let nf nn 0 _arg "next" _targ 'nt let nf nn 1 _arg 'nk let      -- 2 next
+   nt nk _tnext 'nv let 'nk2 let SP-I nf mset nk2 0 eq (0 vpush 1) (nk2 vpush nv vpush 2) if)
+  ('nn let 'nf let nf nn 0 _arg 'pv let pv "pairs" _targ drop                   -- 3 pairs
+   SP-I nf mset 22 vpush pv vpush 0 vpush 3)
+  ('nn let 'nf let nf nn 0 _arg 'pv let pv "ipairs" _targ drop                  -- 4 ipairs
+   SP-I nf mset 46 vpush pv vpush 0 _num vpush 3)
+  ('nn let 'nf let nf nn 0 _arg _tid 'it let nf nn 1 _arg _raw 65536 plus _num 'ii let   -- 5 ipairs' iterator
+   it ii _hkey 'ik let ik hget 'iv let SP-I nf mset iv 0 eq (0 vpush 1) (ii vpush iv vpush 2) if)
+  ('nn let 'nf let nf nn 0 _arg _tname _snew 'tv let SP-I nf mset tv vpush 1)  -- 6 type
+  ('nn let 'nf let nf nn 0 _arg _tostr _snew 'tv let SP-I nf mset tv vpush 1)  -- 7 tostring
+] 'BUILTINS let
+-- The globals that hold builtins, with their ids.
+[{'name "print" 'id 1} {'name "next" 'id 2} {'name "pairs" 'id 3} {'name "ipairs" 'id 4}
+ {'name "type" 'id 6} {'name "tostring" 'id 7}] 'BUILTIN-NAMES let
+
 -- CALL's arg is nargs*256 + nres+1, where nargs is fixed*2 + dyn: with dyn 1
--- the last argument was a call that left MRET values.  print is builtin 1.
+-- the last argument was a call that left MRET values.
 ('ca let ca 256 div 'cx let ca 255 band 1 sub 'cr let
  cx 2 div 'ck let cx 1 band (MRET-I mget ck plus) (ck) if 'cn let
  SP-I mget cn sub 1 sub 'cf let cf mget 'fv let
  fv 7 band 6 eq (
-   ARGI-I 0 mset
-   (ARGI-I mget cn lt)
-   (ARGI-I mget 'ai let ai 0 gt ("\t" stdout-write) () if cf 1 plus ai plus mget _tostr stdout-write ARGI-I ai 1 plus mset) while
-   "\n" stdout-write
-   cf 0 cr _results) (
+   fv 6 sub 8 div 1 sub 'bid let cf cn bid 'BUILTINS nth must apply 'bn2 let cf bn2 cr _results) (
  fv 7 band 5 eq (
    fv 5 sub 8 div 'fpay let fpay PROTO-SPAN mod 'fa let fpay PROTO-SPAN div 'fcl let
    fa 'code nth must 'np let fa 1 plus 'code nth must 'nl let
@@ -787,7 +936,8 @@ CS-B CS-W CS-MAX mul plus 'STATE-N let
   (drop _num1 0 swap sub _wrap _num vpush)                                       -- NEG
   (drop vpop _falsy (9) (1) if vpush)                                            -- NOT
   (drop vpop 'lv let lv _isstr (lv _sbytes len 65536 mul _num vpush) (
-     "attempt to get the length of a " lv _tname cat " value" cat _rfail) if)   -- LEN
+   lv 7 band 4 eq (lv _tid _tlen 65536 mul _num vpush) (
+     "attempt to get the length of a " lv _tname cat " value" cat _rfail) if) if)   -- LEN
   (drop _num1 -1 bxor _num vpush)                                                -- BNOT
   ('gl let BASE-I mget gl plus 'ga let ga mget vpush)                            -- GETL
   ('sl let vpop 'sv let BASE-I mget sl plus 'sa let sa sv mset)                 -- SETL
@@ -807,6 +957,21 @@ CS-B CS-W CS-MAX mul plus 'STATE-N let
   ('sl let vpop 'sv let BASE-I mget sl plus 'sa let sa mget sv _cellset)        -- SETLC
   ('sl let vpop _cellnew 'sv let BASE-I mget sl plus 'sa let sa sv mset)        -- DECLC
   ('sl let BASE-I mget sl plus 'sa let sa mget _cellnew 'sv let sa sv mset)     -- BOXL
+  (drop TABN-I mget 1 plus 'tn let tn MAX-TABLES gt ("more than 1000000 tables made" _rfail) () if
+   TABN-I tn mset tn 8 mul 4 plus vpush)                                         -- NEWT
+  (drop vpop 'gk let vpop _tcheck 'gt9 let gt9 gk _hkey 'gh let gh hget vpush)  -- GETT
+  (drop vpop 'sv let vpop 'sk let vpop _tcheck 'st let st sk sv _tset)         -- SETT
+  (drop vpop 'sv let vpop 'sk let SP-I mget 1 sub 'sp9 let sp9 mget _tcheck 'st let st sk sv _tset)   -- SETTK
+  ('sn let vpop 'sv let SP-I mget 1 sub sn sub 'kp let kp mget 'sk let kp 1 sub 'tp9 let tp9 mget _tcheck 'st let
+   st sk sv _tset)                                                               -- SETTD
+  ('si let si _raw 65536 div 'si2 let MRET-I mget 'mn let SP-I mget mn sub 'mb let mb 1 sub 'mt9 let mt9 mget _tcheck 'mtt let
+   MJ-I 0 mset
+   (MJ-I mget mn lt)
+   (MJ-I mget 'mj let mb mj plus 'mvp let mvp mget 'mv let mtt si2 mj plus 65536 mul _num mv _tset MJ-I mj 1 plus mset) while
+   SP-I mb mset)                                                                 -- SETMULTI
+  ('sn let vpop 'so let so _tcheck 'st let st sn _hkey 'sh let sh hget vpush so vpush)   -- SELF
+  (drop SP-I mget 'dp let dp 2 sub 'da let da mget 'd1 let dp 1 sub 'db let db mget 'd2 let d1 vpush d2 vpush)  -- DUP2
+  ('ja let vpop 0 eq (ja _jump) () if)                                           -- JNIL
 ] 'OPTAB let
 OPTAB len OPS len eq () ("OPTAB and OPS differ in length" fail) if
 
@@ -820,8 +985,8 @@ OPTAB len OPS len eq () ("OPTAB and OPS differ in length" fail) if
 MAIN-NL STK-N gt ("lua: the main chunk needs more than 16384 local slots" fail) () if
 [] STATE-N (0 push) repeat
  BASE-I STK-B set must FTOP-I STK-B MAIN-NL plus set must SP-I STK-B MAIN-NL plus set must
- CSP-I CS-B set must RUN-I 1 set must
-dict [0 0 0 1 3] "print" cat 14 insert
+ CSP-I CS-B set must RUN-I 1 set must TABN-I GLOBALS set must
+BUILTIN-NAMES dict ('b let [0 0 0 1 3] b 'name at cat b 'id at 8 mul 6 plus insert) fold
 dict
 (RUN-I mget) (step) while
 drop drop drop

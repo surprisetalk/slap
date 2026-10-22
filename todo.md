@@ -25,12 +25,8 @@
      count foreach min max mid abs sgn. Unknown API calls crash naming it.
   6. Bounds crash and name the counter: instructions per frame, heap
      entries, strings, call depth, Lua stack, table ids.
-  7. Done: lexer, expressions, statements, functions, closures (cells made
-     per declaration; see lua.slap's compiler comment). Next, milestone 3:
-     tables, `pairs`, `#`, `.`/`[]`/`:` access, table constructors, in the
-     tests/run_lua.py diff.
-  8. Assignment to table fields needs the object and key below the value:
-     a multiple assignment with several table targets must find each pair.
+  7. Done: the Lua core (expressions, statements, functions, closures,
+     tables, generic for); see lua.slap's comments. Next, milestone 5.
   9. Milestone 5: .p8 loader (__lua__, __gfx__, __map__) into
      `{'lua str 'gfx int list 'map int list 'flags int list}`; a bad hex
      digit names section and line. Golden arrays from a tiny cart.
