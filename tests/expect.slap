@@ -1941,4 +1941,18 @@ dict "k" 1 insert dict "k" 2 insert eq not assert
 -- a string far past the stack's 2097152 slots is one value
 0 22 range "a" (drop dup cat) fold len 4194304 eq assert
 
+-- a signature pasted from the type a message prints for a word built on a body checks and runs
+(each) ['a copy 'list tag ['b sealed 'a copy] ['b sealed 'c copy] fn] ['c copy 'list tag] effect 'ee let
+[1 2] (1 plus) ee [2 3] eq assert
+(fold) ['a copy 'list tag 'b var ['c sealed 'b var 'a copy] ['c sealed 'b var] fn] ['b var] effect 'ff let
+[1 2 3] 0 (plus) ff 6 eq assert
+(lend) ['a copy 'box tag ['b sealed 'a copy] ['b sealed 'c var] fn] ['a copy 'box tag 'c var] effect 'ld let
+5 box (1 plus) ld 6 eq assert free
+(mutate) ['a copy 'box tag ['b sealed 'a copy] ['b sealed 'c copy] fn] ['c copy 'box tag] effect 'mu let
+5 box (1 plus) mu (0 plus) ld 6 eq assert free
+(dip) ['a rest 'b var ['a rest] ['c rest] fn] ['c rest 'b var] effect 'dd let
+(repeat) ['a rest int ['a rest] ['a rest] fn] ['a rest] effect 'rr let
+5 7 (1 plus) dd 7 eq assert 6 eq assert
+0 3 (1 plus) rr 3 eq assert
+
 "All tests passed!" print

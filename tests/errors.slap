@@ -48,11 +48,11 @@ plus
 -- EXPECT: assertion failed
 false assert
 
--- EXPECT: 'apply' takes ['a rest] ['b rest] fn
+-- EXPECT: 'apply' takes 'a rest ['a rest] ['b rest] fn
 -- EXPECT: int is not a body.
 1 apply
 
--- EXPECT: 'if' takes int ['a rest] ['b rest] fn ['a rest] ['b rest] fn
+-- EXPECT: 'if' takes 'a rest int ['a rest] ['b rest] fn ['a rest] ['b rest] fn
 -- EXPECT: int is not a body.
 1 2 3 if
 
@@ -116,7 +116,7 @@ nonexistent_word_xyz
 -- EXPECT: int 'list tag is not int.
 [[1 2] [3 4]] sort
 
--- EXPECT: 'if' takes int
+-- EXPECT: 'if' takes 'a rest int
 -- EXPECT: sym is not int.
 'x (1 plus) (2 plus) if
 
@@ -140,7 +140,7 @@ nonexistent_word_xyz
 -- EXPECT: must: expected 'ok tagged
 "_nonexistent_dir_abc123" ls must
 
--- EXPECT: 'then' takes dict "ok" 'a var insert "no" 'b var insert either ['c rest 'a var] ['c rest dict "no" 'b var insert "_" 'd var insert either] fn
+-- EXPECT: 'then' takes 'a rest dict "ok" 'b var insert "no" 'c var insert either ['a rest 'b var] ['a rest dict "no" 'c var insert "_" 'd var insert either] fn
 -- EXPECT: int is not a tagged value.
 123 (1 plus) then
 
@@ -205,7 +205,7 @@ nip
 -- EXPECT: int 'list tag is not int.
 [1 2] 3 mul
 
--- EXPECT: 'if' takes int
+-- EXPECT: 'if' takes 'a rest int
 -- EXPECT: sym is not int.
 'x (1) (2) if
 
@@ -232,7 +232,7 @@ nip
 -- EXPECT: int is not a box.
 42 () mutate
 
--- EXPECT: 'then' takes dict "ok" 'a var insert "no" 'b var insert either ['c rest 'a var] ['c rest dict "no" 'b var insert "_" 'd var insert either] fn
+-- EXPECT: 'then' takes 'a rest dict "ok" 'b var insert "no" 'c var insert either ['a rest 'b var] ['a rest dict "no" 'c var insert "_" 'd var insert either] fn
 -- EXPECT: int is not a tagged value.
 42 () then
 
@@ -248,7 +248,7 @@ nip
 -- EXPECT: int is not a list.
 42 dedup
 
--- EXPECT: 'while' takes ['a rest] ['b rest int] fn ['b rest] ['a rest] fn
+-- EXPECT: 'while' takes 'a rest ['a rest] ['b rest int] fn ['b rest] ['a rest] fn
 -- EXPECT: int is not a body.
 1 42 while
 
@@ -265,7 +265,7 @@ nip
 -- EXPECT: out of bounds
 [] last
 
--- EXPECT: 'dip' takes 'a var ['b rest] ['c rest] fn
+-- EXPECT: 'dip' takes 'a rest 'b var ['a rest] ['c rest] fn
 -- EXPECT: but the stack has only 1 value: int
 1 dip
 
@@ -717,7 +717,7 @@ dict "a" 1 insert (drop 0) each drop
 -- tagging a box without consuming the tagged
 42 box ok
 
--- EXPECT: 'if' takes int
+-- EXPECT: 'if' takes 'a rest int
 -- EXPECT: one path leaves 1 more value on the stack than the other
 -- if branches produce different arity
 1 1 lt (99 99) (0) if drop drop
@@ -750,7 +750,7 @@ dict "a" 1 insert (drop 0) each drop
 -- set would place box into list slot
 [1 2 3] 0 42 box set drop
 
--- EXPECT: 'if' takes int
+-- EXPECT: 'if' takes 'a rest int
 -- EXPECT: str is not int.
 -- if inside a recursive body with type-mismatched branches
 (dup 0 eq ("hi") (99) if) 'bad let
@@ -918,7 +918,7 @@ dict [256] 1 insert drop
 -- let with no name
 1 2 let
 
--- EXPECT: 'then' takes dict "ok" 'a var insert "no" 'b var insert either ['c rest 'a var] ['c rest dict "no" 'b var insert "_" 'd var insert either] fn
+-- EXPECT: 'then' takes 'a rest dict "ok" 'b var insert "no" 'c var insert either ['a rest 'b var] ['a rest dict "no" 'c var insert "_" 'd var insert either] fn
 -- EXPECT: int is not a tagged value.
 -- then's body must return ok or no
 42 ok (3 mul) then drop
@@ -1000,7 +1000,7 @@ dict [256] 1 insert drop
 -- a word used before its definition: its effect is unknown where it is used
 (later 1 plus) 'early let (2) 'later let
 
--- EXPECT: 'if' takes int
+-- EXPECT: 'if' takes 'a rest int
 -- EXPECT: one path leaves 1 more value on the stack than the other
 -- a word's branches must leave the same count
 (dup 0 gt (1 sub down2 drop) () if) [int] [int] effect 'down2 let
@@ -1045,11 +1045,11 @@ dict [256] 1 insert drop
 -- EXPECT: int 'list tag is not int.
 [1] [2] gt
 
--- EXPECT: 'apply' takes ['a rest] ['b rest] fn
+-- EXPECT: 'apply' takes 'a rest ['a rest] ['b rest] fn
 -- EXPECT: str is not int.
 "a" (1 plus) apply
 
--- EXPECT: 'dip' takes 'a var ['b rest] ['c rest] fn
+-- EXPECT: 'dip' takes 'a rest 'b var ['a rest] ['c rest] fn
 -- EXPECT: str is not int.
 "a" 5 (1 plus) dip
 
@@ -1074,7 +1074,7 @@ dict [256] 1 insert drop
 -- a lend body gets the box's contents
 {'y 1} box ('x at) lend drop free
 
--- EXPECT: 'if' takes int
+-- EXPECT: 'if' takes 'a rest int
 -- EXPECT: one record has 'b and the other has not.
 -- either branch of an if may make the record
 1 ({'a 1}) ({'b 1}) if 'b at
@@ -1383,14 +1383,14 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- a word that takes more than the top of the program has
 (drop) 'f let f
 
--- EXPECT: 'if' takes int
+-- EXPECT: 'if' takes 'a rest int
 -- EXPECT: the stack is shorter than this needs.
 1 (dup) (dup) if
 
 -- EXPECT: 'g' is declared here but never defined
 'g [] [int] effect g drop
 
--- EXPECT: 'apply' takes ['a rest] ['b rest] fn
+-- EXPECT: 'apply' takes 'a rest ['a rest] ['b rest] fn
 -- EXPECT: int is not a body.
 5 apply
 
@@ -1494,7 +1494,7 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- a body taken out of a box by lend keeps the key it reads
 {'b 1} ('a at) box () lend swap free apply
 
--- EXPECT: 'then' takes dict "ok" 'a var insert "no" 'b var insert either ['c rest 'a var] ['c rest dict "no" 'b var insert "_" 'd var insert either] fn
+-- EXPECT: 'then' takes 'a rest dict "ok" 'b var insert "no" 'c var insert either ['a rest 'b var] ['a rest dict "no" 'c var insert "_" 'd var insert either] fn
 -- EXPECT: it may be tagged 'x, which is not one of the tags this takes.
 -- then leaves () for any other tag
 5 'x tag (ok) then must
@@ -1504,17 +1504,17 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- a word that thens its input: its callers must pass 'ok or 'no
 ((ok) then) 'f let 5 'x tag f must
 
--- EXPECT: 'if' takes int ['a rest] ['b rest] fn ['a rest] ['b rest] fn
+-- EXPECT: 'if' takes 'a rest int ['a rest] ['b rest] fn ['a rest] ['b rest] fn
 -- EXPECT: int is not a body.
 -- a value as the else branch
 1 (5) 7 if
 
--- EXPECT: 'repeat' takes int ['a rest] ['a rest] fn
+-- EXPECT: 'repeat' takes 'a rest int ['a rest] ['a rest] fn
 -- EXPECT: one path leaves 1 more value on the stack than the other
 -- a loop body that changes the stack's depth
 1 2 3 4 (drop) repeat
 
--- EXPECT: 'while' takes ['a rest] ['b rest int] fn ['b rest] ['a rest] fn
+-- EXPECT: 'while' takes 'a rest ['a rest] ['b rest int] fn ['b rest] ['a rest] fn
 -- EXPECT: one path leaves 1 more value on the stack than the other
 0 (dup 3 lt) (1 plus 7) while
 
@@ -1536,12 +1536,12 @@ dict "k" {'a 1} insert dict-entries nip ('value at) each 0 get must 'zzz at
 -- a body bound after a literal, then run, is refused where it would become a body
 ( 'f let 0 3 (0 plus) repeat drop f 'g let g apply ) 'go let 0
 
--- EXPECT: 'apply' takes ['a rest] ['b rest] fn
+-- EXPECT: 'apply' takes 'a rest ['a rest] ['b rest] fn
 -- EXPECT: a copy of the body lies below it on the stack
 -- dup gives both copies one type, so one cannot run above the other
 (5) dup apply print drop
 
--- EXPECT: 'if' takes int
+-- EXPECT: 'if' takes 'a rest int
 -- EXPECT: str is not int.
 "s" (1) (2) if
 
@@ -2124,3 +2124,18 @@ list
 
 -- EXPECT: push: a 4194304-byte string becomes a list of values here, which needs 4194305 of the 2097152 stack slots
 0 22 range "a" (drop dup cat) fold 300 push len print
+
+-- ===== A pasted body signature keeps its stack sealed =====
+
+-- EXPECT: cannot reach the stack below them
+(each) ['a copy 'list tag ['b sealed 'a copy] ['b sealed 'c copy] fn] ['c copy 'list tag] effect 'ee let
+[1 2] (drop drop 1) ee
+
+-- EXPECT: cannot reach the stack below them
+(each) ['a copy 'list tag ['b sealed 'a copy] ['d sealed 'c copy] fn] ['c copy 'list tag] effect 'ee let
+
+-- EXPECT: is not a body
+(swap each) ['a copy 'list tag ['b sealed 'a copy] ['b sealed 'c copy] fn] ['c copy 'list tag] effect 'ee let
+
+-- EXPECT: 'ff' takes 'a rest int ['a rest] ['a rest] fn
+(repeat) 'ff let 1 2 ff
