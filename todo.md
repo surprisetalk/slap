@@ -1,32 +1,5 @@
 ## Open
 
-- [ ] You read RSS 1.0 (RDF) feeds, ISO-8859-1 feeds, and RSS channels
-      without a description. Design approved 2026-10-22.
-  1. RDF: `_rss-dispatch` (rss.slap:80) gains a `rdf:RDF` root branch. It
-     reads channel (title, link, description via `_rss-opt`) and items
-     (via `_rss2-item`) from the root, where they are siblings. `'kind`
-     stays "rss", since feed.slap and rss-to-xml switch on it.
-  2. Latin-1: at `_xml-parse` entry (xml.slap:218), a declaration of
-     ISO-8859-1 or latin1 (any case) transcodes each byte >= 0x80 to two
-     UTF-8 bytes. Every other encoding stays refused, windows-1252 too.
-  3. No description: rss.slap:43 uses `_rss-opt`, so it reads as `none`.
-     rss-to-xml omits the element for `none`, so a round trip is exact.
-  4. Tests first in rss.slap's and xml.slap's assert sections: flip the
-     refusal cases at xml.slap:564 and rss.slap:277, 381; add an RDF
-     case. Update readme ~579 and the comment at rss.slap:11.
-
-- [ ] You paste the type a message prints for a word built on `each`,
-      `fold`, `lend`, `mutate`, `dip` or `repeat` into its signature, and it
-      checks. Design approved 2026-10-22.
-  1. Tests first. expect.slap: each pasted signature checks and runs.
-     errors.slap: a pasted each called with a body that reaches below is
-     still refused; two different sealed names still clash.
-  2. slap.c:853 (ty_bind): a sealed variable meeting a sealed K_SVAR links
-     the free one to the rigid one; two rigid ones still clash.
-  3. The `takes` message prefixes the word's rest (`'a rest int ['a rest]
-     ['a rest] fn`) when a printed body type shares it, so dip and repeat
-     types paste.
-
 - [ ] You run a pico8 cart headless for N frames and its screen matches a
       reference render. Design approved 2026-10-22. pico8 first; tic80
       reuses the interpreter later. No audio. Correctness first: an
