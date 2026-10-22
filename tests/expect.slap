@@ -1910,4 +1910,35 @@ dict "k" 1 insert dict "k" 2 insert eq not assert
 -- tls-connect refuses a host with a NUL byte before it resolves anything
 "x\0" 443 tls-connect {'ok (tcp-close "") 'no ()} case "tls-connect: the host contains a NUL byte" eq assert
 
+-- a packed list (ints in 0-255) gives the same result as its slots form in every list word
+[0 255] len 2 eq assert
+[0 255] 1 get must 255 eq assert
+[0 255] 256 push [0 255 256] eq assert
+[0 255] -1 push 2 get must -1 eq assert
+[0 255] 0 300 set must [300 255] eq assert
+[0 255] 0 7 set must [7 255] eq assert
+"ab" [97 98] eq assert
+"ab" "cd" cat "abcd" eq assert
+"ab" [300] cat [97 98 300] eq assert
+[300] "ab" cat [300 97 98] eq assert
+[] "ab" cat "ab" eq assert
+"abc" 1 take-n "a" eq assert
+"abc" 1 drop-n "bc" eq assert
+"abc" reverse "cba" eq assert
+"cab" sort "abc" eq assert
+"abc" (1 plus) each "bcd" eq assert
+"abc" (300 plus) each [397 398 399] eq assert
+"abc" 0 (plus) fold 294 eq assert
+"abc" (98 neq) filter "ac" eq assert
+"abc" 98 index-of must 1 eq assert
+"abc" 300 index-of {'ok (drop 0) 'no (drop 1)} case assert
+"ab" pop must 98 eq assert "a" eq assert
+"ab" "xy" zip [[97 120] [98 121]] eq assert
+"abc" 'pk let 2 'pk nth must 99 eq assert
+[] 104 push 105 push "hi" eq assert
+{'s "x"} 's at "x" eq assert
+"a\0b" len 3 eq assert
+-- a string far past the stack's 2097152 slots is one value
+0 22 range "a" (drop dup cat) fold len 4194304 eq assert
+
 "All tests passed!" print

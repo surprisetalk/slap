@@ -2121,3 +2121,6 @@ list
 
 -- EXPECT: tls-connect: port 99999 is outside 0-65535
 "x" 99999 tls-connect {'ok (tcp-close 0) 'no (drop 1)} case drop
+
+-- EXPECT: push: a 4194304-byte string becomes a list of values here, which needs 4194305 of the 2097152 stack slots
+0 22 range "a" (drop dup cat) fold 300 push len print

@@ -45,8 +45,8 @@
 -- for the body, and 0 when the server closed without either: the body may be cut, and the caller
 -- decides. The read loop keeps acc n sock code msg on the stack; code 1 reads on, 0 is done, 2 ended
 -- without close_notify, -1 failed with msg. hg-fetch takes the port, for the tests.
--- Each byte takes an operand stack slot, and parse-http copies the body once, so 1 MiB is what fits.
-1048576 'HG-CAP let
+-- A response is a packed string, a byte per byte; 16 MiB bounds what a server can make it hold.
+16777216 'HG-CAP let
 ((dup 64 gt over 91 lt and (32 plus) () if) each) 'hg-lower let
 -- The body is whole when it matches Content-Length. HTTP/1.0 asked for no chunked body, so
 -- Transfer-Encoding is refused rather than handed over as framing. A reply outside 2xx passes as it
@@ -77,7 +77,7 @@
       (over 1 eq)
       (drop drop 65536 tcp-recv {
         'ok ('hg-ch let (hg-ch len plus) dip ((hg-ch cat) dip) dip
-             hg-ch len 0 eq (0 "") (over HG-CAP gt (-1 "https-get: the response is larger than 1 MiB") (1 "") if) if)
+             hg-ch len 0 eq (0 "") (over HG-CAP gt (-1 "https-get: the response is larger than 16 MiB") (1 "") if) if)
         -- OpenSSL's own words for an end without close_notify
         'no (dup "unexpected eof while reading" str-find {'ok (drop drop 2 "") 'no (drop "https-get: " swap cat -1 swap)} case)} case) while
       swap dup -1 eq (drop swap tcp-close nip nip no) (

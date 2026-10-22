@@ -51,8 +51,7 @@ over len push 'OFF let 'RUNS let
 -- Titles and summaries are markup from xml-render, so each entity decodes.
 -- Tags inside a summary stay as text: stripping them means parsing HTML.
 (xml-unescape must) 'plain let
--- The item view shows a screen of text, so a summary keeps its first 4 KiB;
--- every byte takes a stack slot.
+-- The item view shows a screen of text, so a summary keeps its first 4 KiB.
 4096 'SUMMARY-CAP let
 -- feed-items: (feed name url -- items).  An item is known by its id, else by
 -- its link; one with neither cannot stay read, so it stops the app.
@@ -63,8 +62,6 @@ over len push 'OFF let 'RUNS let
    'title fi rss-item-title {'ok (plain) 'no (drop "(no title)")} case
    'id fi-id
    'summary fi rss-item-summary {'ok (plain SUMMARY-CAP take-n) 'no (drop "")} case}) each) 'feed-items let
--- The bytes an item list holds, for the cap on all feeds together.
-(0 ('ti let ti 'title at len ti 'summary at len plus ti 'id at len plus plus) fold) 'items-size let
 
 -- ===== model and keys =====
 -- A model: {'w 'h 'n 'at 'top 'view 'scroll 'lines 'dirty 'read 'marks}. The
@@ -132,7 +129,6 @@ isheadless (
   st-items len 2 gt assert
   st-items ('id at) each 'st-ids let
   0 'st-ids nth must 'st-id0 let 1 'st-ids nth must 'st-id1 let
-  st-items items-size 0 gt assert
   -- the second item, read in an earlier run, starts marked
   st-ids [] st-id1 push feed-model 640 'w into 480 'h into 'st-m let
   st-m 'marks at 1 get must 1 eq assert

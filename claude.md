@@ -43,6 +43,7 @@ One file, `slap.c`: lex → type-check → eval.
 ## Invariants
 
 - A compound is a flat run of `Value`s on the operand stack with its header last. Primitives move runs in place (`memmove`, `swap_blocks`, `replace_run`). Anything that must step aside while code runs goes on the aux stack (`aux_take`). No C buffer may be sized by data: it overflows the C stack with no message.
+- A list whose elements are all ints in 0-255 may be one `VAL_BYTES` slot (`Bytes`: a heap block with one owner, as a dict). String literals, `read`, `tcp-recv`, `push_byte_list`, and `pack_top` (after `[...]`, `each`, `filter`) make one. Every list word takes either form; a word with no packed path calls `unpack_top` or `unpack_under` first. Equal lists may differ in slots, so equality never compares slot counts of lists. A body that holds a string literal has `VF_BYTES`: each pushed copy clones its strings (`clone_bytes_run`), and a staged body frees them (`staged_free_bytes`). A primitive that pops a packed string frees it, so nothing may restore `sp` over it afterwards (`fail` reads its text in place).
 - The aux stack never moves, so bodies execute from it; `eval_body` releases what a primitive staged when the primitive returns.
 - `dispatch_word` pins the block a word executes from; `frame_bind` never writes into a pinned block.
 - Deep-copy (never `VCPY`) when a value is duplicated and its source survives (`dup`, `peek`, `nth`, `of`, `lend`): boxes and dicts are heap objects with one owner.

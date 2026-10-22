@@ -29,7 +29,8 @@
 #define STACK_MAX  2097152
 #define SYM_MAX   4096
 #define TOK_MAX   65536
-typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_BOX, VAL_TAGGED, VAL_DICT } ValTag;
+/* VAL_TUPLE and every tag from VAL_BOX on own something: deep_free_values tests that range. */
+typedef enum { VAL_INT, VAL_FLOAT, VAL_SYM, VAL_XT, VAL_TUPLE, VAL_LIST, VAL_RECORD, VAL_TAGGED, VAL_BOX, VAL_DICT, VAL_BYTES } ValTag;
 typedef struct Frame Frame;
 typedef void (*PrimFn)(Frame *env);
 typedef struct Value {
@@ -54,6 +55,28 @@ typedef struct Value {
 __attribute__((noreturn)) static void die(const char *fmt, ...);
 typedef struct { char *key; int klen; Value *vals; int nvals; } DictEntry;
 typedef struct DictData { DictEntry *entries; int cap; int len; } DictData;
+/* A packed list: every element an int in 0-255, one byte each in a heap block with one owner, as a dict
+   has. A program never sees which form a list has; each list word takes either. */
+typedef struct { int len, cap; unsigned char b[]; } Bytes;
+#define BYTES(v) ((Bytes*)(v).as.box)
+/* A string longer than this is refused rather than grown: cap doubling would overflow an int past it. */
+#define BYTES_MAX (1 << 30)
+static Bytes *bytes_alloc(int cap) {
+    if (cap > BYTES_MAX) die("a string of %d bytes is past the %d-byte limit", cap, BYTES_MAX);
+    Bytes *p = malloc(sizeof(Bytes) + (size_t)(cap ? cap : 1));
+    if (!p) die("out of memory for a %d-byte string", cap);
+    p->len = 0; p->cap = cap; return p;
+}
+static Bytes *bytes_grow(Bytes *p, int need) {
+    if (need <= p->cap) return p;
+    if (need > BYTES_MAX) die("a string of %d bytes is past the %d-byte limit", need, BYTES_MAX);
+    int cap = p->cap > BYTES_MAX / 2 ? BYTES_MAX : p->cap * 2; if (cap < need) cap = need; if (cap < 16) cap = 16;
+    Bytes *q = realloc(p, sizeof(Bytes) + (size_t)cap); if (!q) die("out of memory growing a string to %d bytes", cap);
+    q->cap = cap; return q;
+}
+static Value bytes_value(Bytes *p) { Value v = {0}; v.tag = VAL_BYTES; v.as.box = p; return v; }
+static Value bytes_of(const unsigned char *src, int n) { Bytes *p = bytes_alloc(n); if (n) memcpy(p->b, src, (size_t)n); p->len = n; return bytes_value(p); }
+static Bytes *bytes_clone(const Bytes *o) { Bytes *p = bytes_alloc(o->len); memcpy(p->b, o->b, (size_t)o->len); p->len = o->len; return p; }
 static int is_compound(ValTag tag) { return tag == VAL_TUPLE || tag == VAL_LIST || tag == VAL_RECORD || tag == VAL_TAGGED; }
 static int val_slots(Value v) {
     if (is_compound(v.tag)) {
@@ -152,6 +175,9 @@ static Value speek(void) { if (sp <= 0) die("stack underflow: this word needs a 
 #define VF_BINDS 1u
 #define VF_LIST 2u
 #define VF_REC 4u
+/* On a tuple header, or on a `{clauses} case` record built when the program is read: its run holds a
+   packed string, which each pushed copy owns. */
+#define VF_BYTES 8u
 static Value val_int(int64_t i){MKVAL(VAL_INT);v.as.i=i;return v;}
 static Value val_float(double f){MKVAL(VAL_FLOAT);v.as.f=f;return v;}
 static Value val_sym(uint32_t s){MKVAL(VAL_SYM);v.as.sym=s;return v;}
@@ -314,7 +340,7 @@ static void frame_grow(Frame *f) {
 static void deep_free_owned(Value *vals, int slots);
 /* Most runs hold only ints and symbols: the scan stays inline until it meets a value that owns something. */
 static inline __attribute__((always_inline)) void deep_free_values(Value *vals, int slots) {
-    for(int i=0;i<slots;i++) if(vals[i].tag==VAL_TUPLE||vals[i].tag==VAL_BOX||vals[i].tag==VAL_DICT){ deep_free_owned(vals+i,slots-i); return; }
+    for(int i=0;i<slots;i++) if(vals[i].tag==VAL_TUPLE||vals[i].tag>=VAL_BOX){ deep_free_owned(vals+i,slots-i); return; }
 }
 static void frame_drop(Frame *f);
 /* A binding's values leave: dicts it owns are freed and each tuple's frame loses a reference, except
@@ -325,7 +351,7 @@ static inline __attribute__((always_inline)) void binding_release(Frame *f, Bind
     for (int i = 0; i < b->slots; i++) {
         Value *v = &b->vals[i];
         if (v->tag == VAL_TUPLE && v->as.compound.env != f) frame_drop(v->as.compound.env);
-        else if (v->tag == VAL_DICT && b->heap) deep_free_values(v, 1);
+        else if ((v->tag == VAL_DICT || v->tag == VAL_BYTES) && b->heap) deep_free_values(v, 1);
     }
     b->heap = 0; b->tuples = 0; b->slots = 0;
 }
@@ -360,7 +386,7 @@ static inline __attribute__((always_inline)) void frame_bind(Frame *f, uint32_t 
             b->tuples = 1;
             /* a closure over f that f itself holds does not keep f */
             if (b->vals[i].as.compound.env == f && f != global_frame) f->refs--;
-        } else if (b->vals[i].tag == VAL_DICT) b->heap = 1;
+        } else if (b->vals[i].tag == VAL_DICT || b->vals[i].tag == VAL_BYTES) b->heap = 1;
     }
 }
 /* A run that made names is over, or a closure over f is gone. A frame at zero waits on `pending`, linked
@@ -505,6 +531,12 @@ static void val_print_node(Value *data, int slots, FILE *out) {
     case VAL_RECORD: print_elems(data,slots,2*(int)top.as.compound.len,'{','}',out); break;
     case VAL_BOX: fprintf(out, "<box>"); break;
     case VAL_DICT: { DictData *dd=(DictData*)top.as.box; fprintf(out,"<dict:%d>",dd?dd->len:0); break; }
+    case VAL_BYTES: {
+        Bytes *p=BYTES(top); int is_str=p->len>0;
+        for(int i=0;is_str&&i<p->len;i++) if(p->b[i]<32||p->b[i]>126) is_str=0;
+        int shown=print_max&&p->len>(is_str?200:print_max)?(is_str?200:print_max):p->len;
+        if(is_str){ fputc('"',out); fwrite(p->b,1,(size_t)shown,out); fputc('"',out); if(shown<p->len) fprintf(out," ...%d more bytes",p->len-shown); break; }
+        fputc('[',out); for(int i=0;i<shown;i++) fprintf(out,i?" %d":"%d",p->b[i]); if(shown<p->len) fprintf(out," ...%d more",p->len-shown); fputc(']',out); break; }
     case VAL_TAGGED: val_print(data,(int)top.as.compound.slots-1,out); fprintf(out," '%s tagged",sym_name(top.as.compound.len)); break;
     }
 }
@@ -526,9 +558,19 @@ static int body_reads_names(Value *v, int slots) {
 /* Structural equality, element by element: a record by its keys, whatever order they were written in, a
    dict by its entries, and a body by its code, and by the frame it closes over when it reads names. A
    compound's elements are read from its end, where each one's header gives its size. */
+/* A packed list equals a packed or a slot list with the same ints. */
+static int bytes_equal(Value *a, int aslots, Value *b, int bslots) {
+    if (a[aslots-1].tag != VAL_BYTES) { Value *t = a; a = b; b = t; int ts = aslots; aslots = bslots; bslots = ts; }
+    Bytes *p = BYTES(a[aslots-1]); Value bt = b[bslots-1];
+    if (bt.tag == VAL_BYTES) return p->len == BYTES(bt)->len && !memcmp(p->b, BYTES(bt)->b, (size_t)p->len);
+    if (bt.tag != VAL_LIST || (int)bt.as.compound.len != p->len || bslots != p->len + 1) return 0;
+    for (int i = 0; i < p->len; i++) if (b[i].tag != VAL_INT || b[i].as.i != p->b[i]) return 0;
+    return 1;
+}
 static int val_equal(Value *a, int aslots, Value *b, int bslots) {
     c_stack_check("while comparing a deeply nested value");
     Value atop = a[aslots - 1], btop = b[bslots - 1];
+    if (atop.tag == VAL_BYTES || btop.tag == VAL_BYTES) return bytes_equal(a, aslots, b, bslots);
     if (atop.tag != btop.tag) return 0;
     switch (atop.tag) {
     case VAL_INT: return atop.as.i == btop.as.i;
@@ -556,12 +598,14 @@ static int val_equal(Value *a, int aslots, Value *b, int bslots) {
         if (atop.as.compound.env != btop.as.compound.env && (body_reads_names(a, aslots) || body_reads_names(b, bslots))) return 0;
         /* fall through */
     case VAL_LIST: case VAL_TAGGED:
-        if (atop.as.compound.len != btop.as.compound.len || aslots != bslots) return 0;
+        /* equal lists can differ in slots: an element may be packed in one and not the other */
+        if (atop.as.compound.len != btop.as.compound.len || (atop.tag == VAL_TUPLE && aslots != bslots)) return 0;
         for (int p = aslots - 1, q = bslots - 1; p > 0 && q > 0; ) {
             int as = val_slots(a[p-1]), bs = val_slots(b[q-1]);
             if (!val_equal(&a[p-as], as, &b[q-bs], bs)) return 0;
             p -= as; q -= bs; }
         return 1;
+    default: break;
     }
     return 0;
 }
@@ -1871,6 +1915,29 @@ static Value *aux_reserve(int n) {
 static Value *aux_take(int n) {
     Value *p = aux_reserve(n); VCPY(p, &stack[sp-n], n); sp -= n; return p;
 }
+/* The list on top as slots: a packed one becomes one int slot per byte and a header. A word with no
+   packed path calls it first. */
+static void unpack_top(const char *who) {
+    Value v = stack[sp-1]; if (v.tag != VAL_BYTES) return;
+    Bytes *p = BYTES(v); int n = p->len;
+    if (sp + n >= STACK_MAX) die("%s: a %d-byte string becomes a list of values here, which needs %d of the %d stack slots", who, n, n + 1, STACK_MAX);
+    sp--; for (int i = 0; i < n; i++) stack[sp++] = val_int(p->b[i]);
+    free(p); stack[sp++] = val_compound(VAL_LIST, n, n + 1);
+}
+/* The same for the list under the top value. */
+static void unpack_under(const char *who) {
+    int xs = val_slots(stack[sp-1]); if (stack[sp-1-xs].tag != VAL_BYTES) return;
+    int a0 = asp; Value *x = aux_take(xs); unpack_top(who); SPUSH(x, xs); asp = a0;
+}
+/* A list of ints in 0-255 on top becomes one packed slot; any other list stays as it is. */
+static void pack_top(void) {
+    Value h = stack[sp-1]; if (h.tag != VAL_LIST) return;
+    int n = (int)h.as.compound.len; if (n == 0 || (int)h.as.compound.slots != n + 1) return;
+    Value *e = &stack[sp-1-n];
+    for (int i = 0; i < n; i++) if (e[i].tag != VAL_INT || (uint64_t)e[i].as.i > 255) return;
+    Bytes *p = bytes_alloc(n); for (int i = 0; i < n; i++) p->b[i] = (unsigned char)e[i].as.i; p->len = n;
+    sp -= n + 1; stack[sp++] = bytes_value(p);
+}
 /* Element starts of a compound, staged on aux; NULL when every element is one slot. */
 static void fill_starts(int *st, const Value *data, int slots, int len) {
     st[len] = slots-1; for (int i = len-1; i >= 0; i--) st[i] = st[i+1] - val_slots(data[st[i+1]-1]);
@@ -2025,11 +2092,21 @@ FLOAT2(fpow,pow) FLOAT2(fatan2,atan2)
 static void dict_data_free(DictData *dd);
 static void prim_size(Frame *e) {
     (void)e; Value top=speek();
+    if(top.tag==VAL_BYTES){ int n=BYTES(top)->len; free(top.as.box); stack[sp-1]=val_int(n); return; }
     int s=val_slots(top); deep_free_values(&stack[sp-s],s); sp-=s; spush(val_int((int)top.as.compound.len));
 }
 static void prim_push_op(Frame *e) {
     (void)e; int vb=val_start(sp),vs=sp-vb;
     Value h=stack[vb-1];
+    if(h.tag==VAL_BYTES||(h.tag==VAL_LIST&&h.as.compound.len==0)){
+        Value v=stack[sp-1];
+        if(vs==1&&v.tag==VAL_INT&&(uint64_t)v.as.i<=255){
+            Bytes *p=h.tag==VAL_BYTES?BYTES(h):bytes_alloc(16);
+            p=bytes_grow(p,p->len+1); p->b[p->len++]=(unsigned char)v.as.i;
+            sp-=2; stack[sp++]=bytes_value(p); return;
+        }
+        if(h.tag==VAL_BYTES){ unpack_under("push"); vb=val_start(sp); h=stack[vb-1]; }
+    }
     memmove(&stack[vb-1],&stack[vb],(size_t)vs*sizeof(Value));
     h.as.compound.len++; h.as.compound.slots+=(uint32_t)vs; h.loc=0; stack[sp-1]=h;
 }
@@ -2037,6 +2114,9 @@ static void prim_push_op(Frame *e) {
     static void prim_##nm##_must(Frame *e) { prim_##nm##_impl(e,0); }
 static inline void prim_pop_impl(Frame *e, int tagged) {
     (void)e; Value top=speek();
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top);
+        if(p->len==0) { if(tagged) push_none(); else die("pop: empty list"); return; }
+        spush(val_int(p->b[--p->len])); if(tagged) push_ok(); return; }
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     if(len==0) { if(tagged) push_none(); else die("pop: empty list"); return; }
     ElemRef last=compound_elem(&stack[base],s,len,len-1);
@@ -2047,6 +2127,9 @@ static inline void prim_pop_impl(Frame *e, int tagged) {
 MUST_PAIR(pop)
 static inline void prim_get_impl(Frame *e, int tagged) {
     (void)e; int64_t idx=pop_int(); Value top=speek();
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top); int len=p->len;
+        if(idx<0||idx>=len){ free(p); sp--; if(tagged) push_none(); else die("get: index %lld out of bounds (len %d)",(long long)idx,len); return; }
+        stack[sp-1]=val_int(p->b[idx]); free(p); if(tagged) push_ok(); return; }
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,idx);
     if(ref.base<0) { deep_free_values(&stack[base],s); sp=base; if(tagged) push_none(); else die("get: index %lld out of bounds (len %d)",(long long)idx,len); return; }
@@ -2057,6 +2140,9 @@ static inline void prim_get_impl(Frame *e, int tagged) {
 MUST_PAIR(get)
 static inline void prim_peek_impl(Frame *e, int tagged) {
     (void)e; int64_t idx=pop_int(); Value top=speek();
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top);
+        if(idx<0||idx>=p->len){ if(tagged) push_none(); else die("peek: index %lld out of bounds (len %d)",(long long)idx,p->len); return; }
+        spush(val_int(p->b[idx])); if(tagged) push_ok(); return; }
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef ref=compound_elem(&stack[base],s,len,idx);
     if(ref.base<0) { if(tagged) push_none(); else die("peek: index %lld out of bounds (len %d)",(long long)idx,len); return; }
@@ -2075,6 +2161,10 @@ static void replace_run(int old_base,int os,int vs){
 }
 static inline void prim_set_impl(Frame *e, int tagged) {
     (void)e; POP_VAL(v); int64_t idx=pop_int(); Value top=speek();
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top);
+        if(idx<0||idx>=p->len){ int len=p->len; deep_free_values(v_buf,v_s); free(p); sp--; if(tagged) push_none(); else die("set: index %lld out of bounds (len %d)",(long long)idx,len); return; }
+        if(v_s==1&&v_top.tag==VAL_INT&&(uint64_t)v_top.as.i<=255){ p->b[idx]=(unsigned char)v_top.as.i; if(tagged) push_ok(); return; }
+        unpack_top("set"); top=speek(); }
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     ElemRef old=compound_elem(&stack[base],s,len,idx);
     if(old.base<0) { deep_free_values(v_buf,v_s); deep_free_values(&stack[base],s); sp=base; if(tagged) push_none(); else die("set: index %lld out of bounds (len %d)",(long long)idx,len); return; }
@@ -2089,6 +2179,13 @@ static void prim_concat(Frame *e) {
     Value t2=stack[sp-1];
     int s2=val_slots(t2),b2=sp-s2;
     Value t1=stack[b2-1];
+    if(t1.tag==VAL_BYTES&&t2.tag==VAL_BYTES){ Bytes *a=BYTES(t1),*b=BYTES(t2);
+        if((int64_t)a->len+b->len>BYTES_MAX) die("cat: a string of %lld bytes is past the %d-byte limit",(long long)a->len+b->len,BYTES_MAX);
+        a=bytes_grow(a,a->len+b->len); memcpy(a->b+a->len,b->b,(size_t)b->len); a->len+=b->len; free(b);
+        sp--; stack[sp-1]=bytes_value(a); return; }
+    if(t2.tag==VAL_BYTES){ if(t1.tag==VAL_LIST&&t1.as.compound.len==0){ stack[sp-2]=t2; sp--; return; } unpack_top("cat"); }
+    else if(t1.tag==VAL_BYTES){ if(t2.as.compound.len==0){ sp--; return; } unpack_under("cat"); }
+    t2=stack[sp-1]; s2=val_slots(t2); b2=sp-s2; t1=stack[b2-1];
     memmove(&stack[b2-1],&stack[b2],(size_t)(s2-1)*sizeof(Value)); sp--;
     t2.as.compound.len+=t1.as.compound.len; t2.as.compound.slots=(uint32_t)(val_slots(t1)+s2-1); t2.loc=0;
     stack[sp-1]=t2;
@@ -2098,6 +2195,9 @@ static inline void prim_nth_impl(Frame *env, int tagged) {
     Lookup lu=frame_lookup(env,sym);
     Value *data=lu.bind->vals; int s=lu.bind->slots;
     Value top=data[s-1];
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top);
+        if(idx<0||idx>=p->len){ if(tagged) push_none(); else die("nth: index %lld out of bounds (len %d)",(long long)idx,p->len); return; }
+        spush(val_int(p->b[idx])); if(tagged) push_ok(); return; }
     int len=(int)top.as.compound.len;
     ElemRef ref=compound_elem(data,s,len,idx);
     if(ref.base<0) { if(tagged) push_none(); else die("nth: index %lld out of bounds (len %d)",(long long)idx,len); return; }
@@ -2111,6 +2211,11 @@ MUST_PAIR(nth)
 static void prim_slice_n(int take) {
     int64_t n=pop_int(); Value top=speek();
     const char *label=take?"take-n":"drop-n";
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top);
+        if(n<0) die("%s: count %lld is negative", label, (long long)n);
+        if(n>p->len) n=p->len;
+        if(take) p->len=(int)n; else { memmove(p->b,p->b+n,(size_t)(p->len-n)); p->len-=(int)n; }
+        return; }
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     if(n<0) die("%s: count %lld is negative", label, (long long)n);
     if(n>len) n=len;
@@ -2127,6 +2232,7 @@ static void prim_slice_n(int take) {
    back. Its header, now first, gives its size. */
 static void prim_reverse(Frame *e){
     (void)e; Value top=speek();
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top); for(int i=0,j=p->len-1;i<j;i++,j--){ unsigned char t=p->b[i]; p->b[i]=p->b[j]; p->b[j]=t; } return; }
     int s=val_slots(top),len=(int)top.as.compound.len,p=sp-s;
     slot_reverse(&stack[p],s-1);
     for(int i=0;i<len;i++){ int n=val_slots(stack[p]); slot_reverse(&stack[p],n); p+=n; }
@@ -2135,6 +2241,7 @@ static void prim_reverse(Frame *e){
    reading element i by index walks a list whose elements span several slots. */
 static void prim_zip(Frame *e){
     (void)e;
+    unpack_top("zip"); unpack_under("zip");
     POP_VAL(b);
     POP_VAL(a);
     int la=(int)a_top.as.compound.len,lb=(int)b_top.as.compound.len,n=la<lb?la:lb,p0=sp;
@@ -2155,20 +2262,32 @@ static void prim_range(Frame *e){(void)e;int64_t end=pop_int(),start=pop_int();
 static void push_string_bytes(const char *buf, int len);
 static void prim_each(Frame *env) {
     POP_BODY(fn);
-    POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len),rb=sp;
+    POP_VAL(list);
+    if(list_top.tag==VAL_BYTES){ Bytes *p=BYTES(list_top); int rb=sp;
+        for(int i=0;i<p->len;i++){ spush(val_int(p->b[i])); eval_body(fn_buf,fn_s,env); }
+        spush(val_compound(VAL_LIST,p->len,sp-rb+1)); free(p); pack_top(); return; }
+    int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len),rb=sp;
     for(int i=0;i<len;i++){ if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); }
-    spush(val_compound(VAL_LIST,len,sp-rb+1));
+    spush(val_compound(VAL_LIST,len,sp-rb+1)); pack_top();
 }
 static void prim_fold(Frame *env) {
     POP_BODY(fn); POP_VAL(init);
-    POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len);
+    POP_VAL(list);
+    if(list_top.tag==VAL_BYTES){ Bytes *p=BYTES(list_top); SPUSH(init_buf,init_s);
+        for(int i=0;i<p->len;i++){ spush(val_int(p->b[i])); eval_body(fn_buf,fn_s,env); }
+        free(p); return; }
+    int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len);
     SPUSH(init_buf,init_s);
     for(int i=0;i<len;i++){ if(st) SPUSH(&list_buf[st[i]],st[i+1]-st[i]); else spush(list_buf[i]); eval_body(fn_buf,fn_s,env); }
 }
 /* The predicate takes a copy of each element; the list keeps the element when it leaves a nonzero int. */
 static void prim_filter(Frame *env) {
     POP_BODY(fn);
-    POP_VAL(list); int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len),rb=sp,kept=0;
+    POP_VAL(list);
+    if(list_top.tag==VAL_BYTES){ Bytes *p=BYTES(list_top); int kept=0;
+        for(int i=0;i<p->len;i++){ spush(val_int(p->b[i])); eval_body(fn_buf,fn_s,env); if(spop().as.i) p->b[kept++]=p->b[i]; }
+        p->len=kept; spush(bytes_value(p)); return; }
+    int len=(int)list_top.as.compound.len,*st=elem_starts(list_buf,list_s,len),rb=sp,kept=0;
     for(int i=0;i<len;i++){
         int b=st?st[i]:i,n=st?st[i+1]-st[i]:1;
         stack_room(n,"filter"); deep_copy_values(&stack[sp],&list_buf[b],n); sp+=n;
@@ -2176,7 +2295,7 @@ static void prim_filter(Frame *env) {
         Value keep=spop();
         if(keep.as.i){ SPUSH(&list_buf[b],n); kept++; } else deep_free_values(&list_buf[b],n);
     }
-    spush(val_compound(VAL_LIST,kept,sp-rb+1));
+    spush(val_compound(VAL_LIST,kept,sp-rb+1)); pack_top();
 }
 static int val_cmp(const Value *va, const Value *vb) {
     if(va->tag==VAL_INT) return(va->as.i>vb->as.i)-(va->as.i<vb->as.i);
@@ -2185,11 +2304,21 @@ static int val_cmp(const Value *va, const Value *vb) {
 static int sort_cmp(const void *a,const void *b) { return val_cmp((const Value*)a,(const Value*)b); }
 static void prim_sort(Frame *e){
     (void)e; Value top=speek();
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top); int count[256]={0};
+        for(int i=0;i<p->len;i++) count[p->b[i]]++;
+        for(int b=0,k=0;b<256;b++) while(count[b]--) p->b[k++]=(unsigned char)b;
+        return; }
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     qsort(&stack[base],len,sizeof(Value),sort_cmp);
 }
 static inline void prim_indexof_impl(Frame *e, int tagged) {
     (void)e; POP_VAL(val); Value top=speek();
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top); int r=-1;
+        if(val_s==1&&val_top.tag==VAL_INT&&(uint64_t)val_top.as.i<=255){ unsigned char *hit=memchr(p->b,(int)val_top.as.i,(size_t)p->len); if(hit) r=(int)(hit-p->b); }
+        free(p); deep_free_values(val_buf,val_s); sp--;
+        if(r<0) { if(tagged) push_none(); else die("index-of: element not found"); }
+        else { spush(val_int(r)); if(tagged) push_ok(); }
+        return; }
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s,r=-1,*st=elem_starts(&stack[base],s,len);
     for(int i=0;i<len&&r<0;i++){int b=st?st[i]:i,n=st?st[i+1]-st[i]:1;if(val_equal(&stack[base+b],n,val_buf,val_s))r=i;}
     deep_free_values(&stack[base],s); deep_free_values(val_buf,val_s); sp=base;
@@ -2270,7 +2399,7 @@ static void deep_copy_values(Value *dst, const Value *src, int slots) {
             deep_copy_values(c->data,o->data,o->slots); dst[i].as.box=c;
         } else if(dst[i].tag==VAL_DICT){
             dst[i].as.box=dict_clone((DictData*)dst[i].as.box);
-        }
+        } else if(dst[i].tag==VAL_BYTES) dst[i].as.box=bytes_clone(BYTES(dst[i]));
     }
     box_walk_depth--;
 }
@@ -2280,6 +2409,7 @@ static void deep_free_owned(Value *vals, int slots) {
     for(int i=0;i<slots;i++){
         if(vals[i].tag==VAL_TUPLE) frame_drop(vals[i].as.compound.env);
         else if(vals[i].tag==VAL_DICT) dict_data_free((DictData*)vals[i].as.box);
+        else if(vals[i].tag==VAL_BYTES) free(vals[i].as.box);
         else if(vals[i].tag==VAL_BOX){
             BoxData *bd=(BoxData*)vals[i].as.box;
             deep_free_values(bd->data,bd->slots); free(bd->data); free(bd);
@@ -2361,7 +2491,10 @@ static DictData *dict_clone(DictData *orig) {
     return c;
 }
 static unsigned char *pop_byte_list_buf(const char *who, int *out_len) {
-    Value top=spop(); int len=(int)top.as.compound.len;
+    Value top=spop();
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top); unsigned char *buf=malloc(p->len?(size_t)p->len:1); if(!buf) die("%s: out of memory for %d bytes",who,p->len);
+        memcpy(buf,p->b,(size_t)p->len); *out_len=p->len; free(p); return buf; }
+    int len=(int)top.as.compound.len;
     unsigned char *buf=malloc(len?len:1);
     for(int i=0;i<len;i++){ int64_t c=stack[sp-len+i].as.i;
         if(c<0||c>255) die("%s: byte %d is %lld, outside 0-255",who,i,(long long)c);
@@ -2369,14 +2502,21 @@ static unsigned char *pop_byte_list_buf(const char *who, int *out_len) {
     sp-=len; *out_len=len; return buf;
 }
 static void prim_fail(Frame *e) {
+    /* A packed text is read in place, so a refused one stays on the stack for the report. */
+    Value top=speek();
+    if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top);
+        if(!p->len) die("fail: the text is empty; expected a message");
+        unsigned char *z=memchr(p->b,0,(size_t)p->len);
+        if(z) die("fail: the text holds a NUL byte at offset %d; expected text without NUL bytes", (int)(z-p->b));
+        die("%.*s", p->len, (const char*)p->b); }
     (void)e; int n, s0=sp; char *msg=(char*)pop_byte_list_buf("fail",&n);
     if(!n){ sp=s0; die("fail: the text is empty; expected a message"); }
     for(int i=0;i<n;i++) if(!msg[i]){ sp=s0; die("fail: the text holds a NUL byte at offset %d; expected text without NUL bytes", i); }
     die("%.*s", n, msg);
 }
 static void push_byte_list(const unsigned char *buf, size_t len) {
-    for (size_t i = 0; i < len; i++) spush(val_int(buf[i]));
-    spush(val_compound(VAL_LIST, (int)len, (int)len + 1));
+    if (len > BYTES_MAX) die("a string of %zu bytes is past the %d-byte limit", len, BYTES_MAX);
+    if (len) spush(bytes_of(buf, (int)len)); else spush(val_compound(VAL_LIST, 0, 1));
 }
 static void push_string_bytes(const char *buf, int len) { push_byte_list((const unsigned char*)buf, (size_t)len); }
 static void push_c_string(const char *s) { push_byte_list((const unsigned char*)s, strlen(s)); }
@@ -2494,6 +2634,15 @@ __attribute__((noinline)) static void lit_run(Value *code, int slots, Frame *ee)
     /* a record's key is one slot before its value */
     for(int p=sp;p>base;n++) p-=val_slots(stack[p-1])+rec;
     spush(val_compound(rec?VAL_RECORD:VAL_LIST,n,sp-base+1)); stack[sp-1].loc=hdr.loc;
+    if(!rec) pack_top();
+}
+/* A body's packed strings belong to the body; each pushed copy owns its own. Kept out of eval_run's loop. */
+__attribute__((noinline)) static void clone_bytes_run(Value *v, int n) { for (int i = 0; i < n; i++) if (v[i].tag == VAL_BYTES) v[i].as.box = bytes_clone(BYTES(v[i])); }
+__attribute__((noinline)) static void push_bytes_literal(const Value *ep) { spush(bytes_value(bytes_clone(BYTES(*ep)))); }
+/* A body or a clause record a primitive took is used up: the packed strings its run owns go with it.
+   Its tuples' frames are not dropped here; eval_run drops the header's. */
+__attribute__((noinline)) static void staged_free_bytes(Value *h) {
+    int n = val_slots(*h); for (Value *v = h - n + 1; v < h; v++) if (v->tag == VAL_BYTES) free(v->as.box);
 }
 /* Each body's element starts, made once by build_tuple. A body never changes once built, and its header's
    flags carry its index from bit 8 up, so every copy finds them; 0 means every element is one slot.
@@ -2525,7 +2674,7 @@ static void eval_run(Value *body, int slots, Frame *ee) {
             else if(__builtin_expect(prof_on,0)) prof_dispatch(ep->as.xt.sym,ee);
             else dispatch_word(ep->as.xt.sym,ee);
             /* the bodies the primitive took are used up */
-            while(staged_n>s0){ Value *h=&aux[staged[--staged_n]]; if(h->tag==VAL_TUPLE) frame_drop(h->as.compound.env); }
+            while(staged_n>s0){ Value *h=&aux[staged[--staged_n]]; if(h->tag==VAL_TUPLE) frame_drop(h->as.compound.env); if(h->flags&VF_BYTES) staged_free_bytes(h); }
             asp=a1;
         } else if(is_compound(ep->tag)){
             /* `{clauses} case`, `(body) pthen`, `(body) dip`, `(then) (else) if` and `(pred) (body) while`
@@ -2553,7 +2702,8 @@ static void eval_run(Value *body, int slots, Frame *ee) {
             if(ep->flags&(VF_LIST|VF_REC)){ lit_run(&body[eo],es,ee); continue; }
             SPUSH(&body[eo],es);
             if(ep->tag==VAL_TUPLE){ stack[sp-1].as.compound.env=ee; frame_ref(ee); }
-        } else spush(*ep);
+            if(ep->flags&VF_BYTES) clone_bytes_run(&stack[sp-es],es-1);
+        } else push_bytes_literal(ep);
     }
     asp=a0; eval_depth--;
 }
@@ -2576,9 +2726,9 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
             }
             break;
         case TOK_STRING:
-            stack_room(tt->as.str.len+1,"a string literal");
-            for(int c=0;c<tt->as.str.len;c++) spush(with_tok(val_int(tt->as.str.codes[c]),tt));
-            spush(with_tok(val_compound(VAL_LIST,tt->as.str.len,tt->as.str.len+1),tt)); ec++; break;
+            if(tt->as.str.len==0){ spush(with_tok(val_compound(VAL_LIST,0,1),tt)); ec++; break; }
+            { Bytes *p=bytes_alloc(tt->as.str.len); for(int c=0;c<tt->as.str.len;c++) p->b[c]=(unsigned char)tt->as.str.codes[c]; p->len=tt->as.str.len;
+              spush(with_tok(bytes_value(p),tt)); ec++; break; }
         case TOK_LPAREN:{int nc=(j+toks[j].span);build_tuple(toks,j+1,nc,tc,env);stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col);ec++;j=nc;break;}
         case TOK_LBRACKET:{
             int bc=(j+toks[j].span);
@@ -2595,6 +2745,8 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
             int lb=sp; eval(toks+j+1,bc-j-1,env); int ts=sp-lb,nf=0,p=sp;
             while(p>lb){p-=val_slots(stack[p-1])+1;nf++;}
             spush(with_tok(val_compound(VAL_RECORD,nf,ts+1),tt));
+            /* --profile pushes this record as a value for the case primitive, so a copy must own its strings */
+            for(int i=lb;i<sp-1;i++) if(stack[i].tag==VAL_BYTES){ stack[sp-1].flags|=VF_BYTES; break; }
             ec++; j=bc; break;
         }
         default: break;
@@ -2602,6 +2754,7 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
     }
     Value hdr=val_compound(VAL_TUPLE,ec,sp-eb+1); if(ft) hdr.loc=LOC_PACK(ft->fid,ft->line,ft->col);
     if(binds) hdr.flags|=VF_BINDS;
+    for(int i=eb;i<sp;i++) if(stack[i].tag==VAL_BYTES){ hdr.flags|=VF_BYTES; break; }
     if(sp-eb!=ec){
         if(body_starts_n>0xFFFFFF) die("build: this process has built %d bodies, the most a tuple header's 24-bit index can name. Restart the shell, which keeps every line's bodies, or split the program.", 0xFFFFFF);
         if(body_starts_n==body_starts_cap){ int **g=realloc(body_starts,(size_t)body_starts_cap*2*sizeof *body_starts);
@@ -2616,7 +2769,10 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
 static void eval(Token *toks, int count, Frame *env) {
     int base=sp; build_tuple(toks,0,count,count,env);
     int s=val_slots(stack[sp-1]); Value *body=malloc(s*sizeof(Value));
-    VCPY(body,&stack[base],s); sp=base; eval_run(body,s,env); free(body);
+    VCPY(body,&stack[base],s); sp=base; eval_run(body,s,env);
+    /* the body's packed strings are its own: every copy it pushed, bound or stored has clones */
+    for(int i=0;i<s;i++) if(body[i].tag==VAL_BYTES) free(body[i].as.box);
+    free(body);
 }
 static void prim_millis(Frame *e){(void)e;struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);spush(val_int((int64_t)(ts.tv_sec*1000+ts.tv_nsec/1000000)));}
 /* Local wall clock in Varvara's Datetime port order: year month(0-11) day hour
@@ -2838,13 +2994,15 @@ static void push_path_fail(const char *path, int len, const char *reason) {
     for (int i = 0; i < len; i++) spush(val_int((unsigned char)path[i]));
     spush(val_int(':')); spush(val_int(' '));
     for (int i = 0; i < rl; i++) spush(val_int((unsigned char)reason[i]));
-    spush(val_compound(VAL_LIST, len + 2 + rl, len + 3 + rl)); push_no();
+    spush(val_compound(VAL_LIST, len + 2 + rl, len + 3 + rl)); pack_top(); push_no();
 }
 /* A C string stops at a NUL, so a path with one cannot name a file. */
 static int path_has_nul(const char *path, int len) {
     if (!memchr(path, 0, len)) return 0;
     push_path_fail(path, len, "contains a NUL byte"); return 1;
 }
+/* A read past this dies: 64 MiB is far more than any app here reads, and a test of the limit stays cheap. */
+#define READ_MAX (64 << 20)
 static void prim_read(Frame *e) {
     (void)e; int plen;char *path=pop_string_path("read",&plen);
     if(path_has_nul(path,plen)){free(path);return;}
@@ -2852,12 +3010,12 @@ static void prim_read(Frame *e) {
     if(!f) { push_path_fail(path,plen,strerror(errno)); free(path); return; }
     size_t n=0,cap=65536,got; unsigned char *buf=malloc(cap); errno=0;
     while(buf&&(got=fread(buf+n,1,cap-n,f))>0){ n+=got;
-        if(n>STACK_MAX-2) die("read: %s holds more than %d bytes, the most read returns: each byte, the list and its 'ok take one slot of the %d-slot stack. Split the file into smaller files.", path, STACK_MAX-2, STACK_MAX);
+        if(n>READ_MAX) die("read: %s holds more than %d bytes, the most read returns. Split the file into smaller files.", path, READ_MAX);
         if(n==cap){ cap*=2; buf=realloc(buf,cap); } }
     if(!buf) die("read: out of memory reading %s", path);
     int bad=ferror(f), er=errno; fclose(f);
     if(bad) { free(buf); push_path_fail(path,plen,er?strerror(er):"the read did not finish"); free(path); return; }
-    stack_room((int)n+2,"read"); push_byte_list(buf,n);free(buf);free(path); push_ok();
+    push_byte_list(buf,n);free(buf);free(path); push_ok();
 }
 /* Linux's own limit on symlinks met while resolving one path. */
 #define LINK_HOPS_MAX 40
@@ -2937,7 +3095,7 @@ static void prim_ls(Frame *e) {
     for(;;){errno=0; if(!(ent=readdir(d))) break; if(strcmp(ent->d_name,".")==0||strcmp(ent->d_name,"..")==0)continue;
         push_c_string(ent->d_name);count++;}
     int er=errno; closedir(d);
-    if(er){ sp=base; push_path_fail(path,plen,strerror(er)); free(path); return; }
+    if(er){ deep_free_values(&stack[base],sp-base); sp=base; push_path_fail(path,plen,strerror(er)); free(path); return; }
     spush(val_compound(VAL_LIST,count,sp-base+1));free(path); push_ok();
 }
 
@@ -3174,8 +3332,8 @@ static void prim_str_split(Frame *e) {
     spush(val_compound(VAL_LIST,count,sp-base+1));free(delim);free(str);
 }
 static void prim_args(Frame *e) {
-    (void)e; int ts=0; for(int i=0;i<cli_argc;i++){push_c_string(cli_args[i]);ts+=(int)strlen(cli_args[i])+1;}
-    spush(val_compound(VAL_LIST,cli_argc,ts+1));
+    (void)e; int base=sp; for(int i=0;i<cli_argc;i++) push_c_string(cli_args[i]);
+    spush(val_compound(VAL_LIST,cli_argc,sp-base+1));
 }
 static void prim_isheadless(Frame *e){(void)e;spush(val_int(headless_mode));}
 #define PRIM(nm,body) static void prim_##nm(Frame *e){(void)e;body;}
@@ -3367,7 +3525,8 @@ int main(int argc, char **argv) {
     store_source_lines(src, FID_STDIN);
     static Token user_tokens[TOK_MAX];
     int user_start=cpos;
-    tok_limit=TOK_MAX-cpos; lex(src, FID_STDIN); int user_tok_count=tok_count;
+    /* tokens hold no pointer into src: words are interned, strings and source lines are copies */
+    tok_limit=TOK_MAX-cpos; lex(src, FID_STDIN); free(src); int user_tok_count=tok_count;
     memcpy(user_tokens,tokens,user_tok_count*sizeof(Token));
     current_loc=LOC_PACK(FID_STDIN,0,0);
     memcpy(&combined[cpos],user_tokens,user_tok_count*sizeof(Token)); cpos+=user_tok_count;

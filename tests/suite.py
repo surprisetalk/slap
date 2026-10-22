@@ -685,9 +685,10 @@ def steps(slow):
             ),
             # A file one byte past the limit, never an endless one: a read without the bound
             # allocates until the disk fills with swap, since macOS ignores ulimit -v.
-            "read past the stack": (
-                f"head -c 2097151 /dev/zero > {SCRATCH}/big.bin; out=$(echo '\"{SCRATCH}/big.bin\" read must len print' | ./slap 2>&1);"
-                " test $? -eq 1 && grep -q 'holds more than 2097150 bytes' <<<\"$out\"",
+            # A sparse file costs no disk: read refuses it at the cap, after 64 MiB of zeros.
+            "read past its cap": (
+                f"python3 -c \"open('{SCRATCH}/big.bin', 'wb').truncate(64 * 2**20 + 1)\"; out=$(echo '\"{SCRATCH}/big.bin\" read must len print' | ./slap 2>&1);"
+                " test $? -eq 1 && grep -q 'holds more than 67108864 bytes' <<<\"$out\"",
                 None,
             ),
             "program past 16 MiB": (
@@ -723,9 +724,9 @@ def steps(slow):
                 "echo '0 950000 range 0 950000 range ((0 250000 range 0 250000 range swap len print len print) dip) dip len print len print' | ./slap",
                 lambda out: out == "250000\n250000\n950000\n950000\n",
             ),
-            "string literal past the stack": (
-                "out=$(python3 -c \"print('\\\"' + 'a' * 3000000 + '\\\" len print')\" | ./slap 2>&1); test $? -eq 1 && grep -q 'a string literal: stack overflow' <<<\"$out\"",
-                None,
+            "a 3 MB string literal is one value": (
+                "python3 -c \"print('\\\"' + 'a' * 3000000 + '\\\" len print')\" | ./slap",
+                lambda out: out.strip() == "3000000",
             ),
             "small C stack": (
                 "(ulimit -s 4096; out=$(python3 -c \"print('[ ' * 20000 + ' ] ' * 20000)\" | ./slap 2>&1); test $? -eq 1 && grep -q 'C stack exhausted' <<<\"$out\")"
@@ -736,6 +737,12 @@ def steps(slow):
             "stdout reader quits": (
                 "echo '(1) (1 print) while' | ./slap | head -1 >/dev/null; true",
                 None,
+            ),
+            # Under --profile `case` is a primitive that takes its clause record as a value; the record's
+            # string literals must be the pushed copy's own, or a second call reads freed memory.
+            "profile: a case with a string clause, run three times": (
+                """echo "(1 ok {'ok (drop \\"A\\") 'no (drop \\"B\\")} case print) 'f let f f f" | ./slap --profile 2>/dev/null""",
+                lambda out: out == '"A"\n"A"\n"A"\n',
             ),
             "stdout write keeps order": (
                 """echo '42 print "/dev/stdout" "x" write must drop 43 print' | ./slap""",
