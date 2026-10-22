@@ -76,6 +76,15 @@ PICO8 = [
     ("prelude tables", "local t = {} add(t, 1) add(t, 2) add(t, 3, 1) del(t, 2) deli(t) foreach(t, print) print(#t, count(t), mid(5, 1, 3), mid(nil, 2, 1))", "3\n1\t1\t3\t1\n"),
     ("foreach deletes", "local t = {1, 2, 3, 4} foreach(t, function(v) print(v) if v == 2 then del(t, v) end end)", "1\n2\n3\n4\n"),
     ("huge sprite", "spr(0, 0, 0, 2000, 2000) sspr(0, 0, 8, 8, 0, 0, 30000, 30000) print('drawn')", "drawn\n"),
+    ("division edges", "print(1 / 0 == 0x7fff.ffff, -1 / 0 == 0x8000.0001, 7 / 2, -7 / 2, tostr(-1 / 3, 1))", "true\ttrue\t3.5\t-3.5\t0xffff.aaab\n"),
+    ("modulo edges", "print(5 % 0, -7 % 3, 7 % -3, -7 % -3)", "0\t2\t1\t2\n"),
+    ("integer division truncates first", "print(tostr(-1 \\ 3, 1), 7 \\ 0)", "0xffff.0000\t32767\n"),
+    ("shift by a negative count", "print(tostr(-1 << -1, 1), tostr(-1 >>> -1, 1))", "0x7fff.8000\t0xfffe.0000\n"),
+    ("abs of -32768", "print(tostr(abs(0x8000), 1))", "0x7fff.ffff\n"),
+    ("fractional power", "print(2 ^ 0.5, 2 ^ -1)", "1.4142\t0.5\n"),
+    ("string arithmetic", "print('5' + 1, '0x10' * 2, 10 - '2.5', pget('1', '1'))", "6\t32\t7.5\t0\n"),
+    ("map rows 32 to 63 are sprite memory", "mset(0, 32, 0x21) print(sget(0, 64), sget(1, 64)) sset(0, 65, 3) print(mget(64, 32))", "1\t2\n3\n"),
+    ("flags are bytes", "fset(5, 8, true) print(fget(5))", "0\n"),
     ("question print", "?1, 'two'\n? 3", "1\ttwo\n3\n"),
 ]
 # Each program is a separate ./slap; they run in parallel and are checked in order.
@@ -110,13 +119,6 @@ ERRORS = [
         "lua: line 1: attempt to concatenate a nil value",
     ),
     ("length", "print(#5)", "lua: line 1: attempt to get the length of a number value"),
-    ("divide by zero", "print(1 / 0)", "lua: line 1: division by zero"),
-    ("modulo by zero", "print(1 % 0)", "lua: line 1: modulo by zero"),
-    (
-        "fractional power",
-        "print(2 ^ 0.5)",
-        "lua: line 1: ^ takes a whole exponent from 0 to 32767",
-    ),
     (
         "unclosed call",
         "print(1",

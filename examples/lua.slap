@@ -243,7 +243,6 @@
 -- such as __lua__.  __gfx__ is up to 128 rows of 128 hex digits, a pixel each;
 -- __gff__ up to 2 rows of 256, two digits a sprite's flags; __map__ up to 32
 -- rows of 256, two digits a tile.  Missing rows are zero, as pico8's memory is.
--- REVIEW: The map's rows 32-63 come from the gfx bytes at load and stay apart from them after. Alternative: one shared memory, as pico8 has, which matters only to carts that draw sprites over map rows 32-63 and then mset them.
 ('h let h len 4 ge (h 2 take-n "__" eq h len 2 sub 'hl let h hl drop-n "__" eq and) (0) if) '_csec? let
 -- lua-cart: (bytes -- cart).  {'lua str 'gfx 'map 'flags}, each an int list.
 ('cb let cb "\n" str-split (dup len 0 gt (dup len 1 sub peek must 13 eq) (0) if (pop must drop) () if) each 'cl let
@@ -282,7 +281,7 @@ FRAMES 0 lt FRAMES 32767 gt or ("lua: the frame count must be 1 to 5 digits up t
 -- a local here would be in the program's scope.
 ["function flr(x) return (x or 0) \\ 1 end"
  "function ceil(x) return -((-(x or 0)) \\ 1) end"
- "function abs(x) x = x or 0 if x < 0 then return -x end return x end"
+ "function abs(x) x = x or 0 if x == 0x8000 then return 0x7fff.ffff end if x < 0 then return -x end return x end"
  "function sgn(x) if (x or 0) < 0 then return -1 end return 1 end"
  "function min(a, b) a, b = a or 0, b or 0 if a < b then return a end return b end"
  "function max(a, b) a, b = a or 0, b or 0 if a > b then return a end return b end"
@@ -781,7 +780,7 @@ C-NL 'mc nth must C-NL 'postc nth must max 'MAIN-NL let
 STK-B STK-N plus 'CS-B let  6 'CS-W let  1000 'CS-MAX let
 CS-B CS-W CS-MAX mul plus 'SCREEN-B let
 -- The screen, the sprites and the map hold one pixel or tile per cell.
-SCREEN-B 16384 plus 'GFX-B let  GFX-B 16384 plus 'MAP-B let  MAP-B 8192 plus 'FLAGS-B let
+SCREEN-B 16384 plus 'GFX-B let  GFX-B 16384 plus 'MAP-B let  MAP-B 4096 plus 'FLAGS-B let
 -- The draw palette holds pico8's color | 16 for a transparent one, as zepto8's does.
 FLAGS-B 256 plus 'DPAL-B let
 -- REVIEW: The main chunk, and each frame, stop after 20,000,000 instructions, about 40 s. Alternative: no bound; a cart that loops forever then hangs make test.
@@ -906,21 +905,47 @@ FLAGS-B 256 plus 'DPAL-B let
 
 -- ===== instructions =====
 -- Each takes its arg; the stack below is `machine heap strs`.
-(vpop 'nb let vpop 'na let
- na _isnum not ("attempt to perform arithmetic on a " na _tname cat " value" cat _rfail) () if
- nb _isnum not ("attempt to perform arithmetic on a " nb _tname cat " value" cat _rfail) () if
- na _raw nb _raw) '_nums let
-(vpop 'nx let nx _isnum not ("attempt to perform arithmetic on a " nx _tname cat " value" cat _rfail) () if nx _raw) '_num1 let
+-- _tonum: (bytes -- raw 1), or 0 0 for text that is not a number: an optional
+-- -, then decimal digits or 0x and hex digits, then an optional point and fraction.
+('tb let tb len 'tl let
+ ('ti let ti tl lt (ti 'tb nth must) (-1) if) '_tc let
+ 0 _tc 45 eq (1 1) (0 0) if 'p0 let 'isneg let
+ p0 _tc 48 eq p0 1 plus _tc 'c1 let c1 120 eq c1 88 eq or and (16 p0 2 plus) (10 p0) if 'p1 let 'base let
+ 0 p1 (dup _tc base _tdig 0 ge) ('pp let pp _tc base _tdig 'd let dup 1099511627776 lt (base mul d plus) () if pp 1 plus) while 'p2 let 'ip let
+ p2 _tc 46 eq (
+   0 1 p2 1 plus (dup _tc base _tdig 0 ge) ('pq let 'fs let 'fv let pq _tc base _tdig 'd let
+     fs 1000000000 lt (fv base mul d plus fs base mul) (fv fs) if pq 1 plus) while 'p3 let 'fs2 let 'fv2 let
+   fv2 65536 mul fs2 div p3) (0 p2) if 'p4 let 'fr let
+ p4 tl eq p2 p1 gt p4 p2 1 plus gt or and ip 1099511627776 lt and (
+   ip 65536 mul fr plus isneg (0 swap sub) () if _wrap 1) (0 0) if) '_tonum let
+-- _strtol10: (bytes -- n).  C's strtol in base 10: an optional -, then the digits up to the first other byte.
+('lb let lb len 'lbn let lbn 0 gt (0 'lb nth must 45 eq) (0) if 'lneg let
+ 0 lneg (1) (0) if
+ (dup lbn lt (dup 'lb nth must 10 _tdig 0 ge) (0) if)
+ ('lp let dup 1099511627776 lt (10 mul lp 'lb nth must 48 sub plus) () if lp 1 plus) while drop lneg (0 swap sub) () if) '_strtol10 let
+-- _arith: (v -- raw).  An arithmetic operand: a number, or a string that reads as one, as Lua 5.2 coerces it.
+('av let av _isnum (av _raw) (av _isstr (av _sbytes _tonum 'aok let 'ar let aok (ar) ("attempt to perform arithmetic on a string value" _rfail) if) (
+   "attempt to perform arithmetic on a " av _tname cat " value" cat _rfail) if) if) '_arith let
+(vpop 'nb let vpop 'na let na _arith 'ra let nb _arith 'rb let ra rb) '_nums let
+(vpop _arith) '_num1 let
+-- The 16.16 operations below follow z8lua's fix32.h.  _fixdiv: (a b -- q).  The quotient
+-- truncated, as C divides; b = 1 gives a; past the range, or for b = 0, 0x7fff.ffff, or
+-- 0x8000.0001 when the signs differ.
+('qb let 'qa let qa qb bxor 0 ge (2147483647) (-2147483647) if 'qsat let
+ qb 65536 eq (qa) (qb 0 eq (qsat) (qa 65536 mul qb div 'qr let qr abs 2147483647 le (qr) (qsat) if) if) if) '_fixdiv let
+-- _fixabs: (a -- |a|), where |0x8000| is 0x7fff.ffff.
+('fa let fa 0 ge (fa) (fa -2147483648 eq (2147483647) (0 fa sub) if) if) '_fixabs let
 -- _cmp: ( -- -1, 0 or 1).  Pops b, then a, and compares a with b.
 (vpop 'mb let vpop 'ma let
  ma _isnum mb _isnum and (ma mb lt (-1) (mb ma lt (1) (0) if) if) (
  ma _isstr mb _isstr and (ma mb _strcmp) (
    "attempt to compare " ma _tname cat " with " cat mb _tname cat _rfail) if) if) '_cmp let
 -- Shifts take the integer part of the count, as pico8 does; past 31 the value is gone.
-'_shr [int int] [int] effect
-('hn let 'ha let hn 0 lt (ha 0 hn sub _shr) (hn 31 gt (0) (ha hn shl _wrap) if) if) '_shl let
-('rn let 'ra let rn 0 lt (ra 0 rn sub _shl) (rn 31 gt (ra 0 lt (-1) (0) if) (ra 1 rn shl _fdiv) if) if) '_shr let
-('ln let 'la let ln 0 lt ln 31 gt or (0) (la 4294967295 band ln shr _wrap) if) '_lshr let
+-- A negative count shifts the other way: << turns into >>>, and >> and >>> into <<.
+'_lshr [int int] [int] effect
+('hn let 'ha let hn 0 lt (ha 0 hn sub _lshr) (hn 31 gt (0) (ha hn shl _wrap) if) if) '_shl let
+('rn let 'ra let rn 0 lt (ra 0 rn sub _shl) (ra 1 rn 31 min shl _fdiv) if) '_shr let
+('ln let 'la let ln 0 lt (la 0 ln sub _shl) (ln 31 gt (0) (la 4294967295 band ln shr _wrap) if) if) '_lshr let
 ('rn2 let 'oa let oa 4294967295 band 'ou let rn2 31 band 'om let
  ou om shl ou 32 om sub shr bor 4294967295 band _wrap) '_rotl let
 (65536 _fdiv) '_int let
@@ -1170,7 +1195,8 @@ FLAGS-B 256 plus 'DPAL-B let
 -- matches pico8 pixel for pixel: gfx.cpp for drawing, vm.cpp for the PRNG,
 -- z8lua's lpico8lib.c for the math.  Coordinates are floored to integers;
 -- a missing or nil number argument reads as 0.
-('nv let nv 0 eq (0) (nv _isnum (nv _raw) ("expected a number, got " nv _tname cat _rfail) if) if) '_num0 let
+('nv let nv 0 eq (0) (nv _isnum (nv _raw) (nv _isstr (nv _sbytes _tonum 'nok let 'nr let nok (nr) (0) if) (
+   "expected a number, got " nv _tname cat _rfail) if) if) if) '_num0 let
 (_num0 65536 _fdiv) '_int0 let
 (_arg _int0) '_ia let
 (_arg 0 eq not) '_has let
@@ -1193,6 +1219,13 @@ FLAGS-B 256 plus 'DPAL-B let
    vy1 vy2 min k1 max 'ya let vy1 vy2 max k3 1 sub min 'yb let
    ya (dup yb le) ('vy let SCREEN-B vy 128 mul plus vx plus 'va let va vc mset vy 1 plus) while drop) () if) '_vline let
 (CAMX-I mget 'cx let CAMY-I mget 'cy let cx cy) '_cam let
+-- The map's rows 32-63 are pico8's sprite rows 64-127, a tile per two pixels, the
+-- left one low, so mset there changes sprites and sset changes tiles.
+-- _mtile: (x y -- tile) and _mtile!: (x y tile -- ), on the 128x64 map.
+('my let 'mx let my 32 lt (MAP-B my 128 mul plus mx plus 'ma let ma mget) (
+   GFX-B 8192 plus my 32 sub 256 mul plus mx 2 mul plus 'ga let ga mget 'lo let ga 1 plus 'gb let gb mget 16 mul lo plus) if) '_mtile let
+('mv let 'my let 'mx let my 32 lt (MAP-B my 128 mul plus mx plus 'ma let ma mv mset) (
+   GFX-B 8192 plus my 32 sub 256 mul plus mx 2 mul plus 'ga let ga mv 15 band mset ga 1 plus 'gb let gb mv 4 shr mset) if) '_mtile! let
 -- _sget: (x y -- c).  A sprite sheet pixel, 0 off the sheet.
 ('sy let 'sx let sx 0 ge sx 128 lt and sy 0 ge and sy 128 lt and (GFX-B sy 128 mul plus sx plus 'sa let sa mget) (0) if) '_sget let
 -- _spx: (x y col -- ).  A sprite pixel: through the draw palette, unless transparent.
@@ -1280,7 +1313,7 @@ FLAGS-B 256 plus 'DPAL-B let
  sw 0 gt sh 0 gt and x0 x1 lt and y0 y1 lt and (
    y0 8 div (dup y1 1 sub 8 div le) ('ty let
      x0 8 div (dup x1 1 sub 8 div le) ('tx let
-       MAP-B ty 128 mul plus tx plus 'ma let ma mget 'spn let FLAGS-B spn plus 'fa let fa mget 'bits let
+       tx ty _mtile 'spn let FLAGS-B spn plus 'fa let fa mget 'bits let
        ml 0 eq bits ml band 0 eq not or spn 0 eq not and (
          ty 8 mul y0 max 'py0 let ty 8 mul 8 plus y1 min 'py1 let tx 8 mul x0 max 'px0 let tx 8 mul 8 plus x1 min 'px1 let
          py0 (dup py1 lt) ('cy let
@@ -1326,24 +1359,6 @@ FLAGS-B 256 plus 'DPAL-B let
  tt 0 eq ("[nil]") (tt 1 eq (tv 9 eq ("true") ("false") if) (tt 2 eq (tv _raw _numstr) (tt 3 eq (tv _sbytes) (
    "[" tv _tname cat "]" cat) if) if) if) if) '_p8str let
 ('h4 let [] h4 12 shr 15 band push h4 8 shr 15 band push h4 4 shr 15 band push h4 15 band push ("0123456789abcdef" swap get must) each) '_hex4 let
--- _tonum: (bytes -- raw 1), or 0 0 for text that is not a number: an optional
--- -, then decimal digits or 0x and hex digits, then an optional point and fraction.
-('tb let tb len 'tl let
- ('ti let ti tl lt (ti 'tb nth must) (-1) if) '_tc let
- 0 _tc 45 eq (1 1) (0 0) if 'p0 let 'isneg let
- p0 _tc 48 eq p0 1 plus _tc 'c1 let c1 120 eq c1 88 eq or and (16 p0 2 plus) (10 p0) if 'p1 let 'base let
- 0 p1 (dup _tc base _tdig 0 ge) ('pp let pp _tc base _tdig 'd let dup 1099511627776 lt (base mul d plus) () if pp 1 plus) while 'p2 let 'ip let
- p2 _tc 46 eq (
-   0 1 p2 1 plus (dup _tc base _tdig 0 ge) ('pq let 'fs let 'fv let pq _tc base _tdig 'd let
-     fs 1000000000 lt (fv base mul d plus fs base mul) (fv fs) if pq 1 plus) while 'p3 let 'fs2 let 'fv2 let
-   fv2 65536 mul fs2 div p3) (0 p2) if 'p4 let 'fr let
- p4 tl eq p2 p1 gt p4 p2 1 plus gt or and ip 1099511627776 lt and (
-   ip 65536 mul fr plus isneg (0 swap sub) () if _wrap 1) (0 0) if) '_tonum let
--- _strtol10: (bytes -- n).  C's strtol in base 10: an optional -, then the digits up to the first other byte.
-('lb let lb len 'lbn let lbn 0 gt (0 'lb nth must 45 eq) (0) if 'lneg let
- 0 lneg (1) (0) if
- (dup lbn lt (dup 'lb nth must 10 _tdig 0 ge) (0) if)
- ('lp let dup 1099511627776 lt (10 mul lp 'lb nth must 48 sub plus) () if lp 1 plus) while drop lneg (0 swap sub) () if) '_strtol10 let
 -- _sbtn: (i -- held frames)
 ('bi let BTNH-B bi plus 'ba let ba mget) '_sbtn let
 
@@ -1391,16 +1406,16 @@ FLAGS-B 256 plus 'DPAL-B let
    h4 h5 or (cw0 ch0) (-1 -1) if 'ch let 'cw let
    cx cy sx sy cw ch ly _map nf 0 _ret0)}
   {'name "mget" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let
-   x 0 ge x 128 lt and y 0 ge and y 64 lt and (MAP-B y 128 mul plus x plus 'ma let ma mget) (0) if _inum 'r let nf r _ret1)}
+   x 0 ge x 128 lt and y 0 ge and y 64 lt and (x y _mtile) (0) if _inum 'r let nf r _ret1)}
   {'name "mset" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _ia 255 band 'v let
-   x 0 ge x 128 lt and y 0 ge and y 64 lt and (MAP-B y 128 mul plus x plus 'ma let ma v mset) () if nf 0 _ret0)}
+   x 0 ge x 128 lt and y 0 ge and y 64 lt and (x y v _mtile!) () if nf 0 _ret0)}
   {'name "fget" 'body ('nn let 'nf let nf nn 0 _has not (nf 0 _ret0) (
    nf nn 0 _ia 'n let n 0 ge n 256 lt and (FLAGS-B n plus 'fa let fa mget) (0) if 'bits let
    nf nn 1 _has (nf nn 1 _ia 'f let f 0 ge f 8 lt and (bits 1 f shl band 0 eq not) (0) if (9) (1) if 'r let nf r _ret1) (bits _inum 'r2 let nf r2 _ret1) if) if)}
   {'name "fset" 'body ('nn let 'nf let nf nn 0 _ia 'n let nf nn 1 _ia 'f let
    nf nn 0 _has 'hn let nf nn 1 _has 'hf let hn hf and n 0 ge and n 256 lt and (
      FLAGS-B n plus 'fa let nf nn 2 _arg 'b let
-     b 0 eq (f 255 band) (fa mget 'old let b _falsy (old 1 f 15 band shl -1 bxor band) (old 1 f 15 band shl bor) if) if 'nv let fa nv mset) () if
+     b 0 eq (f 255 band) (fa mget 'old let b _falsy (old 1 f 15 band shl -1 bxor band) (old 1 f 15 band shl bor) if 255 band) if 'nv let fa nv mset) () if
    nf 0 _ret0)}
   {'name "__pal" 'body ('nn let 'nf let nf nn 0 _has 'h0 let nf nn 1 _has 'h1 let
    h0 h1 and not (
@@ -1578,15 +1593,12 @@ FLAGS-B 256 plus 'DPAL-B let
   (drop _nums plus _wrap _num vpush)                                             -- ADD
   (drop _nums sub _wrap _num vpush)                                              -- SUB
   (drop _nums mul 65536 _fdiv _wrap _num vpush)                                  -- MUL
-  (drop _nums 'db let 'da let db 0 eq ("division by zero" _rfail) () if
-   da 65536 mul db _fdiv _wrap _num vpush)                                       -- DIV
-  (drop _nums 'db let 'da let db 0 eq ("division by zero" _rfail) () if
-   da db _fdiv 65536 mul _wrap _num vpush)                                       -- IDIV
-  (drop _nums 'db let 'da let db 0 eq ("modulo by zero" _rfail) () if
-   da db _fmod _num vpush)                                                       -- MOD
-  (drop _nums 'pb let 'pa let pb 65535 band 0 eq pb 0 ge and pb 2147418112 le and not
-     ("^ takes a whole exponent from 0 to 32767" _rfail) () if
-   65536 pb _int (pa mul 65536 _fdiv _wrap) repeat _num vpush)                  -- POW
+  (drop _nums _fixdiv _num vpush)                                                -- DIV
+  (drop _nums _fixdiv -65536 band _num vpush)                                    -- IDIV: floor of the quotient
+  (drop _nums _fixabs 'mx let 'ma let mx 0 eq (0) (ma mx mod 'mr let mr 0 lt (mr mx plus) (mr) if) if _num vpush)   -- MOD
+  (drop _nums 'pb let 'pa let pa itof 65536.0 fdiv pb itof 65536.0 fdiv fpow 65536.0 fmul 'pr let
+   pr pr fsub 0.0 eq not ("^ gives no number for these operands" _rfail) () if
+   pr ftoi _wrap _num vpush)                                                     -- POW: pow in doubles, truncated
   (drop vpop 'kb let vpop 'ka let
    ka _isstr ka _isnum or not ("attempt to concatenate a " ka _tname cat " value" cat _rfail) () if
    kb _isstr kb _isnum or not ("attempt to concatenate a " kb _tname cat " value" cat _rfail) () if
@@ -1655,10 +1667,8 @@ OPTAB len OPS len eq () ("OPTAB and OPS differ in length" fail) if
  arg op 'OPTAB nth must apply) 'step let
 
 MAIN-NL STK-N gt ("lua: the main chunk needs more than 16384 local slots" fail) () if
--- The map's rows 32-63 are the bytes of the sprite rows 64-127, two pixels a byte, the left one low.
 CART 'gfx at 'CGFX let
-CART 'map at
- 0 4096 range ('b let 4096 b plus 2 mul 'pa let pa 'CGFX nth must pa 1 plus 'CGFX nth must 16 mul plus) each cat 'CMAP let
+CART 'map at 'CMAP let
 CART 'flags at 'CFLAGS let
 0 SCREEN-B 16384 plus range (drop 0) each CGFX cat CMAP cat CFLAGS cat [16] 1 16 range cat cat
  0 16 range swap ('i let SPAL-B i plus i set must) fold
