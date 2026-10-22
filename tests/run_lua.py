@@ -158,6 +158,30 @@ for name, text, want in ERRORS:
         f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}",
     )
 
+# Carts: the .p8 text format.
+HEAD = "pico-8 cartridge // http://www.pico-8.com\nversion 42\n"
+CARTS = [
+    ("bad hex", "__lua__\n__gfx__\n" + "0g" + "0" * 126 + "\n", "lua: cart line 5: __gfx__ has a digit that is not hex"),
+    ("short row", "__lua__\n__map__\n0102\n", "lua: cart line 5: a __map__ row has 4 digits, not 256"),
+    ("cart error line", "__lua__\nx = 1\nx = x + nil\n", "lua: line 5: attempt to perform arithmetic on a nil value"),
+    ("frame loop error", "__lua__\nfunction _draw() __flip = nil end\n", "lua: the frame loop's line 2: attempt to call a nil value"),
+]
+for name, text, want in CARTS:
+    path = os.path.join(tmp, name.replace(" ", "-") + ".p8")
+    with open(path, "w") as f:
+        f.write(HEAD + text)
+    r = subprocess.run(["./slap", path, "2"], input=SRC, capture_output=True, timeout=60)
+    err = r.stderr.decode()
+    check(f"cart {name}", r.returncode == 1 and want in err, f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}")
+path = os.path.join(tmp, "frames.p8")
+with open(path, "w") as f:
+    f.write(HEAD + "__lua__\nn = 0\nfunction _update() n = n + 1 end\nfunction _draw() assert_n = n end\n")
+r = subprocess.run(["./slap", path, "3"], input=SRC, capture_output=True, timeout=60)
+check("cart dump", r.returncode == 0 and r.stdout == (b"0" * 128 + b"\n") * 128, r.stderr.decode()[-600:])
+r = run_text("frames-need-a-cart", "print(1)")
+r = subprocess.run(["./slap", os.path.join(tmp, "frames-need-a-cart.lua"), "3"], input=SRC, capture_output=True, timeout=60)
+check("frames need a cart", r.returncode == 1 and b"lua: a frame count needs a .p8 cart" in r.stderr, r.stderr.decode()[-600:])
+
 r = subprocess.run(["./slap"], input=SRC, capture_output=True, timeout=60)
 check(
     "no argument",
