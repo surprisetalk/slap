@@ -148,6 +148,7 @@ ERRORS = [
     ("bad long bracket", "print([=x)", "lua: line 1: expected [ after [= to start a long string"),
     ("break outside a loop", "break", "lua: line 1: break outside a loop"),
     ("goto", "goto x", "lua: line 1: goto and labels are not supported"),
+    ("power past any number", "local x = -32768 print(x ^ 33)", "lua: line 1: ^ gives no 16.16 number for these operands"),
     ("unsupported", "print(stat(1))", "lua: line 1: pico8's 'stat' is not supported"),
     ("too many results", "local function f() return 1 end local " + ", ".join(f"a{i}" for i in range(260)) + " = f()", "lua: line 1: a call expects more than 254 results"),
     ("vararg parameter", "function f(...) end", "lua: line 1: varargs (...) are not supported"),

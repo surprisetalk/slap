@@ -1597,7 +1597,8 @@ FLAGS-B 256 plus 'DPAL-B let
   (drop _nums _fixdiv -65536 band _num vpush)                                    -- IDIV: floor of the quotient
   (drop _nums _fixabs 'mx let 'ma let mx 0 eq (0) (ma mx mod 'mr let mr 0 lt (mr mx plus) (mr) if) if _num vpush)   -- MOD
   (drop _nums 'pb let 'pa let pa itof 65536.0 fdiv pb itof 65536.0 fdiv fpow 65536.0 fmul 'pr let
-   pr pr fsub 0.0 eq not ("^ gives no number for these operands" _rfail) () if
+   -- zepto8 casts pow's double to an int: undefined past an int64, and for nan and inf.
+   pr pr fsub 0.0 eq pr fabs 2.0 63 itof fpow flt and not ("^ gives no 16.16 number for these operands" _rfail) () if
    pr ftoi _wrap _num vpush)                                                     -- POW: pow in doubles, truncated
   (drop vpop 'kb let vpop 'ka let
    ka _isstr ka _isnum or not ("attempt to concatenate a " ka _tname cat " value" cat _rfail) () if
