@@ -39,13 +39,18 @@
 ["and" "break" "do" "else" "elseif" "end" "false" "for" "function" "goto" "if" "in"
  "local" "nil" "not" "or" "repeat" "return" "then" "true" "until" "while"] 'KW let
 -- Longest first wherever one symbol starts another: the lexer takes the first match.
-["..." "..=" ".." ">>>=" ">>>" ">><" ">>=" ">>" "<<>" "<<=" "<<" "^^=" "^^" "==" "~=" "!="
+["..." "..=" ".." ">>>=" ">>>" ">><=" ">><" ">>=" ">>" "<<>=" "<<>" "<<=" "<<" "^^=" "^^" "==" "~=" "!="
  "<=" ">=" "+=" "-=" "*=" "/=" "%=" "\\=" "^=" "|=" "&=" "::" "+" "-" "*" "/" "%" "^" "#"
  "&" "~" "|" "<" ">" "=" "(" ")" "{" "}" "[" "]" ";" ":" "," "." "\\" "?"] 'SY let
 ('s let KW s index-of must 10 plus) 'kw-id let
 ('s let SY s index-of must 40 plus) 'sy-id let
 
 1 'T-NAME let  2 'T-NUM let  3 'T-STR let  4 'T-EOF let
+
+-- _hexv: (c -- d).  A hex digit's value, upper or lower case, or -1.
+('hv let hv 48 ge hv 57 le and (hv 48 sub) (hv 97 ge hv 102 le and (hv 87 sub) (hv 65 ge hv 70 le and (hv 55 sub) (-1) if) if) if) '_hexv let
+-- _tdig: (c base -- d).  The digit's value in that base, or -1.
+('db let _hexv 'dv let dv db lt (dv) (-1) if) '_tdig let
 
 -- Lines past these are pico8's prelude and the frame loop, which lua.slap adds
 -- around a program; _lwhere names them in messages.
@@ -103,13 +108,8 @@
 
   -- _ldigits: (n i base max -- n' i' count).  Folds at most max digits at i, in base 2, 10 or 16.
   ('dm let 'db let 0
-   (dup dm lt 'dk let over _lc 'dc let
-    dc 48 ge dc 57 le and (dc 48 sub) (
-    dc 97 ge dc 102 le and (dc 87 sub) (
-    dc 65 ge dc 70 le and (dc 55 sub) (99) if) if) if db lt dk and)
-   ('dn let 'di let 'dv let
-    di _lc 'dc let
-    dc 48 ge dc 57 le and (dc 48 sub) (dc 97 ge dc 102 le and (dc 87 sub) (dc 55 sub) if) if 'dd let
+   (dup dm lt 'dk let over _lc db _tdig 0 ge dk and)
+   ('dn let 'di let 'dv let di _lc db _tdig 'dd let
     dv 1099511627776 lt (dv db mul dd plus) (dv) if di 1 plus dn 1 plus) while) '_ldigits let
 
   -- _lnum: (i ln -- i' ln' rec).  The raw value is 16.16 fixed point, wrapped to
@@ -122,7 +122,7 @@
    0 ua ub 99 _ldigits 'uc let 'ui2 let 'un let
    ui2 _lc 46 eq ui2 1 plus _lc 46 eq not and (
      0 ui2 1 plus ub ub 10 eq (99) (ub 16 eq (4) (16) if) if _ldigits 'fc let 'fi let 'fv let
-     fi (dup _lc _ldigit over _lc 'hc let hc 97 ge hc 102 le and or hc 65 ge hc 70 le and or ub 10 eq not and) (1 plus) while 'fi2 let
+     fi (dup _lc _hexv 0 ge ub 10 eq not and) (1 plus) while 'fi2 let
      ub 10 eq (
        fc 9 gt ("a decimal fraction has more than 9 digits" uln _lfail) () if
        1 fc (10 mul) repeat 'fs let fv 65536 mul fs div)
@@ -133,26 +133,31 @@
    un 65536 mul uf plus 2147483648 plus 4294967295 band 2147483648 sub 'uv let
    ue uln [] T-NUM push uln push uv push) '_lnum let
 
-  -- _lstr: (i ln -- i' ln' rec).  i is at the quote.
+  -- _lstr: (i ln -- i' ln' rec).  i is at the quote.  As in Lua, a backslash
+  -- before a newline keeps the newline, and \z skips the white space after it.
   ('qln let 'qi let qi _lc 'qq let
-   [] qi 1 plus 0
+   [] qi 1 plus qln 0
    (dup 0 eq)
-   (drop 'qj let qj _lc 'qc let
-     qc 0 lt qc 10 eq or ("unfinished string" qln _lfail) (
-     qc qq eq (qj 1 plus 1) (
+   (drop 'ql let 'qj let qj _lc 'qc let
+     qc 0 lt qc 10 eq or qc 13 eq or ("unfinished string" qln _lfail) (
+     qc qq eq (qj 1 plus ql 1) (
      qc 92 eq (
        qj 1 plus _lc 'qe let
        qe 0 lt ("unfinished string" qln _lfail) () if
+       qe 10 eq qe 13 eq or (10 push qj 1 plus _lnl ql 1 plus 0) (
+       qe 122 eq (qj 2 plus ql
+         (over _lc 'zc let zc 32 eq zc 9 eq or zc 11 eq or zc 12 eq or zc 10 eq or zc 13 eq or)
+         ('zl let 'zi let zi _lc 'zc2 let zc2 10 eq zc2 13 eq or (zi _lnl zl 1 plus) (zi 1 plus zl) if) while 0) (
        qe 110 eq (10 qj 2 plus) (qe 116 eq (9 qj 2 plus) (qe 114 eq (13 qj 2 plus) (
        qe 97 eq (7 qj 2 plus) (qe 98 eq (8 qj 2 plus) (qe 102 eq (12 qj 2 plus) (qe 118 eq (11 qj 2 plus) (
        qe 92 eq qe 34 eq or qe 39 eq or (qe qj 2 plus) (
        qe 120 eq (0 qj 2 plus 16 2 _ldigits 2 eq not ("\\x needs two hex digits" qln _lfail) () if) (
        qe _ldigit (0 qj 1 plus 10 3 _ldigits drop 'qn let 'qv let qv 255 gt ("escape \\" qv int-str cat " is past 255" cat qln _lfail) () if qv qn) (
          "unknown escape \\" [] qe push cat qln _lfail) if) if) if) if) if) if) if) if) if) if 'qk let 'qb let
-       qb push qk 0) (
-     qc push qj 1 plus 0) if) if) if)
-   while drop 'qend let 'qbytes let
-   qend qln [] T-STR push qln push qbytes len push qbytes cat) '_lstr let
+       qb push qk ql 0) if) if) (
+     qc push qj 1 plus ql 0) if) if) if)
+   while drop 'qend2 let 'qend let 'qbytes let
+   qend qend2 [] T-STR push qln push qbytes len push qbytes cat) '_lstr let
 
   [] 0 _lstart
   (over _ln lt)
@@ -235,7 +240,6 @@
 -- __gff__ up to 2 rows of 256, two digits a sprite's flags; __map__ up to 32
 -- rows of 256, two digits a tile.  Missing rows are zero, as pico8's memory is.
 -- REVIEW: The map's rows 32-63 come from the gfx bytes at load and stay apart from them after. Alternative: one shared memory, as pico8 has, which matters only to carts that draw sprites over map rows 32-63 and then mset them.
-('c let c 48 ge c 57 le and (c 48 sub) (c 97 ge c 102 le and (c 87 sub) (-1) if) if) '_hexd let
 ('h let h len 4 ge (h 2 take-n "__" eq h len 2 sub 'hl let h hl drop-n "__" eq and) (0) if) '_csec? let
 -- lua-cart: (bytes -- cart).  {'lua str 'gfx 'map 'flags}, each an int list.
 ('cb let cb "\n" str-split (dup len 0 gt (dup len 1 sub peek must 13 eq) (0) if (pop must drop) () if) each 'cl let
@@ -249,11 +253,12 @@
   0 rl len range [] ('ri let 'acc let ri 'rl nth must 'row let
     row len rw eq not ("lua: cart line " r0 ri plus int-str cat ": a " cat rn cat " row has " cat row len int-str cat " digits, not " cat rw int-str cat fail) () if
     0 rw rd div range acc ('rk let 'acc2 let
-      0 rd range 0 ('rj let 'racc let rk rd mul rj plus 'row nth must _hexd 'rv let
+      0 rd range 0 ('rj let 'racc let rk rd mul rj plus 'row nth must _hexv 'rv let
         rv 0 lt ("lua: cart line " r0 ri plus int-str cat ": " cat rn cat " has a digit that is not hex" cat fail) () if
         racc 16 mul rv plus) fold 'rval let acc2 rval push) fold) fold
   rr rl len sub rw rd div mul (0 push) repeat) '_crows let
  "__lua__" _cpart 'll let 'l0 let
+ l0 0 eq ("lua: the cart has no __lua__ section" fail) () if
  [] l0 1 sub 0 max ("" push) repeat ll cat "\n" str-join 'lsrc let
  {'lua lsrc 'gfx "__gfx__" 128 128 1 _crows 'flags "__gff__" 2 256 2 _crows 'map "__map__" 32 256 2 _crows}) 'lua-cart let
 
@@ -262,10 +267,12 @@ args len 1 ge args len 2 le and () ("usage: cat examples/lib/strings.slap exampl
 args 0 get must 'lua-path let
 lua-path read {'ok () 'no ('e let "lua: cannot read " e cat fail)} case 'lua-bytes let
 lua-bytes 16 take-n "pico-8 cartridge" eq 'IS-CART let
-IS-CART (lua-bytes lua-cart) ({'lua lua-bytes 'gfx [] 'flags [] 'map []}) if 'CART let
+IS-CART (lua-bytes lua-cart) ({'lua lua-bytes 'gfx [] 16384 (0 push) repeat 'flags [] 256 (0 push) repeat 'map [] 4096 (0 push) repeat}) if 'CART let
 args len 2 eq IS-CART not and ("lua: a frame count needs a .p8 cart" fail) () if
-args len 2 eq (args 1 get must 0 ('c let 10 mul c 48 sub plus) fold) (0) if 'FRAMES let
-FRAMES 32767 gt ("lua: at most 32767 frames" fail) () if
+args len 2 eq (args 1 get must) ("0") if 'FARG let
+FARG ('c let c 48 lt c 57 gt or) filter len 0 eq FARG len 1 ge and FARG len 5 le and
+ (FARG 0 ('c let 10 mul c 48 sub plus) fold) (-1) if 'FRAMES let
+FRAMES 0 lt FRAMES 32767 gt or ("lua: the frame count must be 1 to 5 digits up to 32767, got \"" FARG cat "\"" cat fail) () if
 
 -- pico8's API, where plain Lua can say it.  Only `function name` statements:
 -- a local here would be in the program's scope.
@@ -309,10 +316,12 @@ IS-CART (["if _init then _init() end"
   "function __frame() if _update60 then _update60() elseif _update then _update() end if _draw then _draw() end end"
  ] "\n" str-join) ("") if POSTLUDE-LINE 1 plus lua-lex 'POST-TOKS let
 
--- A method's hidden `self` parameter needs a name token: one more, after the end.
-PRE-TOKS CART 'lua at 1 lua-lex cat POST-TOKS cat [] T-NAME push 0 push "self" len push "self" cat cat 'toks let
+-- Two name tokens after the end: a method's hidden `self` parameter, and the
+-- `print` that pico8's `?` calls.
+('nm let [] T-NAME push 0 push nm len push nm cat) '_name-tok let
+PRE-TOKS CART 'lua at 1 lua-lex cat POST-TOKS cat "print" _name-tok cat "self" _name-tok cat 'toks let
 toks lua-index 'tix let
-tix len 1 sub 'SELF-TOK let
+tix len 1 sub 'SELF-TOK let  tix len 2 sub 'PRINT-TOK let
 
 -- ===== compiler =====
 -- Each compile word takes a token index and leaves `code t'`: the code it
@@ -344,8 +353,9 @@ tix len 1 sub 'SELF-TOK let
 ('rl let 'rn let 'ro let [] rn (ro 0 rl _cins cat) repeat) '_crep let
 -- _clastcall: (code -- 1 or 0).  Does the code end in a call?
 ('cc let cc len 3 lt (0) (cc len 3 sub 'cc nth must O-CALL eq) if) '_clastcall let
--- _cnres: (code n -- code).  The call that ends the code leaves n results, or all for -1.
-('sn let 'scc let scc len 2 sub 'si let scc si si 'scc nth must 256 div 256 mul sn 1 plus plus set must) '_cnres let
+-- _cnres: (code n -- code).  The call that ends the code leaves n results, or all for -1; CALL's byte holds 254 at most.
+('sn let 'scc let sn 254 gt ("a call expects more than 254 results" scc len 1 sub 'scc nth must _cfail-at) () if
+ scc len 2 sub 'si let scc si si 'scc nth must 256 div 256 mul sn 1 plus plus set must) '_cnres let
 -- _clast: (code -- op).  The last instruction's op, or -1.  _cdroplast: (code -- code).  Without it.
 ('lq let lq len 3 lt (-1) (lq len 3 sub 'lq nth must) if) '_clast let
 (dup len 3 sub take-n) '_cdroplast let
@@ -429,6 +439,7 @@ tix len 1 sub 'SELF-TOK let
  "^=" sy-id "POW" op-id _cmpd!  "|=" sy-id "BOR" op-id _cmpd!  "&=" sy-id "BAND" op-id _cmpd!
  "^^=" sy-id "BXOR" op-id _cmpd!  "<<=" sy-id "SHL" op-id _cmpd!  ">>=" sy-id "SHR" op-id _cmpd!
  ">>>=" sy-id "LSHR" op-id _cmpd!  "..=" sy-id "CONCAT" op-id _cmpd!
+ "<<>=" sy-id "ROTL" op-id _cmpd!  ">><=" sy-id "ROTR" op-id _cmpd!
 'CMPD let
 
 '_cexp [int int int int 'list tag] [int 'list tag int] effect
@@ -658,6 +669,7 @@ tix len 1 sub 'SELF-TOK let
  g1 T-NAME "a name after 'for'" _cskip 'g2 let [] g1 push g2
  (dup _tk "," sy-id eq) ('g3 let g3 1 plus T-NAME "a name after ','" _cskip 'g4 let g4 1 sub push g4) while
  'g5 let 'gnames let gnames len 'gn let
+ gn 254 gt ("a for has more than 254 names" gl _cfail-at) () if
  g5 "in" kw-id "'=' or 'in' after the for's names" _cskip gc 3 0 _cexplist 'g6 let drop drop 'ginit let
  g6 _tk "do" kw-id eq not ("'do' after the for's expressions" g6 _cwant) () if
  gc C-LOOP 1 set must 0 _cdeclare 'gf let 0 _cdeclare 'gs let 0 _cdeclare 'gcs let
@@ -712,8 +724,8 @@ tix len 1 sub 'SELF-TOK let
  sk "if" kw-id eq (st sc _cif) (
  sk "for" kw-id eq (st sc _cfor) (
  sk "goto" kw-id eq sk "::" sy-id eq or ("goto and labels are not supported" sl _cfail-at) (
- -- pico8's `?a, b` is print(a, b), the builtin.
- sk "?" sy-id eq (O-PUSHK 14 sl _cins st 1 plus sc -1 0 _cexplist 'qt let swap 2 mul plus 'qn let cat O-CALL qn 256 mul 1 plus sl _cins cat qt sc) (
+ -- pico8's `?a, b` is print(a, b): the global, which a cart's print draws.
+ sk "?" sy-id eq (O-GETG PRINT-TOK _tstr sl _cins st 1 plus sc -1 0 _cexplist 'qt let swap 2 mul plus 'qn let cat O-CALL qn 256 mul 1 plus sl _cins cat qt sc) (
    st sc _cexpstat) if) if) if) if) if) if) if) if) if) if) if) if) '_cstat let
 
 
@@ -759,6 +771,7 @@ C-NL 'mc nth must C-NL 'postc nth must max 'MAIN-NL let
 36 'PSX-I let   -- where print's lines start
 37 'BTNH-B let  -- 8 cells: how many frames each button has been held
 45 'SPAL-B let  -- 16 cells: the screen palette, which only the display reads
+61 'TICK-I let  -- 60 Hz ticks since the first frame
 64 'STK-B let  16384 'STK-N let
 -- A call record is [return-pc base ftop callee nres+1 closure].
 STK-B STK-N plus 'CS-B let  6 'CS-W let  1000 'CS-MAX let
@@ -766,8 +779,8 @@ CS-B CS-W CS-MAX mul plus 'SCREEN-B let
 -- The screen, the sprites and the map hold one pixel or tile per cell.
 SCREEN-B 16384 plus 'GFX-B let  GFX-B 16384 plus 'MAP-B let  MAP-B 8192 plus 'FLAGS-B let
 -- The draw palette holds pico8's color | 16 for a transparent one, as zepto8's does.
-FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
--- REVIEW: A run stops after 20,000,000 instructions, about 40 s. Alternative: no bound; a cart that loops forever then hangs make test.
+FLAGS-B 256 plus 'DPAL-B let
+-- REVIEW: The main chunk, and each frame, stop after 20,000,000 instructions, about 40 s. Alternative: no bound; a cart that loops forever then hangs make test.
 20000000 'MAX-STEPS let
 1000000 'MAX-STRS let
 -- REVIEW: No garbage collector, so cells and closures that take outer locals count against a bound. Alternative: mark and sweep the heap, about as much code again as the VM.
@@ -861,6 +874,8 @@ FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
      [3] st3 _t3 cat 'tk3 let tk3 hget 'tl3 let
      tl3 0 eq ([2] st3 _t3 cat 'hk5 let hk5 sk3 hset) (st3 tl3 _lkey 'lk5 let lk5 sk3 hset) if
      tk3 sk3 hset lk3 0 hset) () if
+   sk3 _isnum (sk3 _raw 'kr let kr 65535 band 0 eq kr 0 gt and (
+     kr 65536 div 'kn let [1] st3 _t3 cat 'hk7 let hk7 hget 'hv7 let kn hv7 gt (hk7 kn hset) () if) () if) () if
    vk3 sv3 hset) if) '_tset let
 -- _tnext: (id k -- k' v'), or 0 0 past the last key.
 ('nk let 'nt let
@@ -869,10 +884,11 @@ FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
  (NX-I mget 'nc let nc 0 eq not (nt nc _hkey 'nck let nck hget 0 eq) (0) if)
  (NX-I mget 'nc2 let nt nc2 _lkey 'ncl let ncl hget 'nn2 let NX-I nn2 mset) while
  NX-I mget 'nr let nr 0 eq (0 0) (nt nr _hkey 'nrk let nrk hget 'nrv let nr nrv) if) '_tnext let
--- _tlen: (id -- n).  A border, as Lua's # gives: t[n] is not nil and t[n+1] is,
--- found from the hint, so appending stays O(1).
+-- _tlen: (id -- n).  A border, as Lua's # gives: t[n] is not nil and t[n+1] is.
+-- The hint holds the highest whole key ever set, so t[hint+1] is nil, and a
+-- walk down from it finds the border; the walk stores what it found.
+-- REVIEW: # walks down from the highest whole key ever set. Alternative: Lua 5.2's array part and binary search, which pico8 has and which differs only for sparse tables.
 ('tl9 let [1] tl9 _t3 cat 'lhk let lhk hget 'lh let LN-I lh mset
- (LN-I mget 'l1 let tl9 l1 1 plus 65536 mul _num _hkey 'lk6 let lk6 hget 0 eq not) (LN-I mget 1 plus 'l2 let LN-I l2 mset) while
  (LN-I mget 'l3 let l3 0 gt (tl9 l3 65536 mul _num _hkey 'lk7 let lk7 hget 0 eq) (0) if) (LN-I mget 1 sub 'l4 let LN-I l4 mset) while
  LN-I mget 'ln5 let lhk ln5 hset ln5) '_tlen let
 
@@ -919,6 +935,7 @@ FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
 -- with nil, or all n for nres -1, which MRET then counts.
 ('rr let 'rn let 'ra let
  rr 0 lt (MRET-I rn mset SP-I ra rn plus mset) (
+   ra rr plus STK-B STK-N plus gt ("stack overflow: more than 16384 values" _rfail) () if
    rn rr lt (ra rn plus rr rn sub _mnil) () if SP-I ra rr plus mset) if) '_results let
 
 -- ===== builtins =====
@@ -1235,11 +1252,12 @@ FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
      xa xb ya rc _hline xa xb yb rc _hline
      ya 1 plus yb lt (xa ya 1 plus yb 1 sub rc _vline xb ya 1 plus yb 1 sub rc _vline) () if) if) if) '_rect let
 
--- _spr: (n x y w8 h8 fx fy -- )
+(32768 plus 65535 band 32768 sub) '_w16 let
+-- _spr: (n x y w8 h8 fx fy -- ).  It walks only the rows and columns on the screen.
 ('fy let 'fx let 'h8 let 'w8 let 'sy0 let 'sx0 let 'sn let _cam 'ky let 'kx let sx0 kx sub 'x let sy0 ky sub 'y let
  x w8 plus 0 le x 128 ge or y h8 plus 0 le or y 128 ge or () (
-   0 (dup h8 lt) ('j let
-     0 (dup w8 lt) ('i let fx (w8 1 sub i sub) (i) if 'di let fy (h8 1 sub j sub) (j) if 'dj let
+   0 y sub 0 max (dup h8 128 y sub min lt) ('j let
+     0 x sub 0 max (dup w8 128 x sub min lt) ('i let fx (w8 1 sub i sub) (i) if 'di let fy (h8 1 sub j sub) (j) if 'dj let
        sn 16 mod 8 mul di plus sn 16 div 8 mul dj plus _sget 'col let x i plus y j plus col _spx i 1 plus) while drop
      j 1 plus) while drop) if) '_spr let
 
@@ -1269,7 +1287,7 @@ FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
 -- _scroll: (rows -- ).  Moves the screen up, blank rows below.  It cuts the
 -- machine into three lists, which costs a few copies of it, where a cell at a
 -- time costs two dips per pixel.
-('sr let ((dup SCREEN-B take-n swap SCREEN-B drop-n dup 16384 take-n swap 16384 drop-n
+('sr0 let sr0 128 min 'sr let ((dup SCREEN-B take-n swap SCREEN-B drop-n dup 16384 take-n swap 16384 drop-n
    (sr 128 mul drop-n [] sr 128 mul (0 push) repeat cat) dip (cat) dip cat) dip) dip) '_scroll let
 -- _cls: (c -- ).  The whole screen one color, cut in as _scroll does.
 ('cc0 let ((dup SCREEN-B take-n swap SCREEN-B 16384 plus drop-n [] 16384 (cc0 push) repeat swap cat cat) dip) dip) '_cls let
@@ -1302,9 +1320,6 @@ FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
  tt 0 eq ("[nil]") (tt 1 eq (tv 9 eq ("true") ("false") if) (tt 2 eq (tv _raw _numstr) (tt 3 eq (tv _sbytes) (
    "[" tv _tname cat "]" cat) if) if) if) if) '_p8str let
 ('h4 let [] h4 12 shr 15 band push h4 8 shr 15 band push h4 4 shr 15 band push h4 15 band push ("0123456789abcdef" swap get must) each) '_hex4 let
--- _tdig: (c base -- d).  The digit's value, or -1.
-('db let 'dc let dc 48 ge dc 57 le and (dc 48 sub) (dc 97 ge dc 102 le and (dc 87 sub) (dc 65 ge dc 70 le and (dc 55 sub) (-1) if) if) if
- 'dv let dv db lt (dv) (-1) if) '_tdig let
 -- _tonum: (bytes -- raw 1), or 0 0 for text that is not a number: an optional
 -- -, then decimal digits or 0x and hex digits, then an optional point and fraction.
 ('tb let tb len 'tl let
@@ -1318,63 +1333,70 @@ FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
    fv2 65536 mul fs2 div p3) (0 p2) if 'p4 let 'fr let
  p4 tl eq p2 p1 gt p4 p2 1 plus gt or and ip 1099511627776 lt and (
    ip 65536 mul fr plus isneg (0 swap sub) () if _wrap 1) (0 0) if) '_tonum let
+-- _strtol10: (bytes -- n).  C's strtol in base 10: an optional -, then the digits up to the first other byte.
+('lb let lb len 'lbn let lbn 0 gt (0 'lb nth must 45 eq) (0) if 'lneg let
+ 0 lneg (1) (0) if
+ (dup lbn lt (dup 'lb nth must 10 _tdig 0 ge) (0) if)
+ ('lp let dup 1099511627776 lt (10 mul lp 'lb nth must 48 sub plus) () if lp 1 plus) while drop lneg (0 swap sub) () if) '_strtol10 let
 -- _sbtn: (i -- held frames)
 ('bi let BTNH-B bi plus 'ba let ba mget) '_sbtn let
 
--- The API's builtins, numbered after the core ones.  Each is (callee nargs -- nresults).
+-- The API's builtins, numbered after the core ones, each a name and a body (callee nargs -- nresults).
+-- sfx and music do nothing: lua.slap has no audio.
 ('n let 'f let SP-I f mset n) '_ret0 let
 ('rv let 'f let SP-I f mset rv vpush 1) '_ret1 let
-[ ('nn let 'nf let nf nn 0 _ia 15 band _cls                                                  -- cls
-   CURX-I 0 mset CURY-I 0 mset PSX-I 0 mset CLIPX0-I 0 mset CLIPY0-I 0 mset CLIPX1-I 128 mset CLIPY1-I 128 mset nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _arg _pen 'c let         -- pset
-   _cam 'ky let 'kx let x kx sub y ky sub c _px nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let _cam 'ky let 'kx let x kx sub 'gx let y ky sub 'gy let   -- pget
+[
+  {'name "cls" 'body ('nn let 'nf let nf nn 0 _ia 15 band _cls
+   CURX-I 0 mset CURY-I 0 mset PSX-I 0 mset CLIPX0-I 0 mset CLIPY0-I 0 mset CLIPX1-I 128 mset CLIPY1-I 128 mset nf 0 _ret0)}
+  {'name "pset" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _arg _pen 'c let
+   _cam 'ky let 'kx let x kx sub y ky sub c _px nf 0 _ret0)}
+  {'name "pget" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let _cam 'ky let 'kx let x kx sub 'gx let y ky sub 'gy let
    _clip 'k3 let 'k2 let 'k1 let 'k0 let
-   gx k0 ge gx k2 lt and gy k1 ge and gy k3 lt and (SCREEN-B gy 128 mul plus gx plus 'ga let ga mget) (0) if _inum 'r let nf r _ret1)
-  ('nn let 'nf let nf nn 0 _ia 'x0 let nf nn 1 _ia 'y0 let nf nn 2 _ia 'x1 let nf nn 3 _ia 'y1 let     -- rectfill
-   nf nn 4 _arg _pen 'c let x0 y0 x1 y1 c 1 _rect nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _ia 'x0 let nf nn 1 _ia 'y0 let nf nn 2 _ia 'x1 let nf nn 3 _ia 'y1 let     -- rect
-   nf nn 4 _arg _pen 'c let x0 y0 x1 y1 c 0 _rect nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _ia 'r let nf nn 3 _arg _pen 'c let   -- circfill
-   x y r c 1 _circle nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _ia 'r let nf nn 3 _arg _pen 'c let   -- circ
-   x y r c 0 _circle nf 0 _ret0)
-  ('nn let 'nf let nf nn 3 _has not ("line with fewer than 4 coordinates (polyline) is not supported" _rfail) () if   -- line
+   gx k0 ge gx k2 lt and gy k1 ge and gy k3 lt and (SCREEN-B gy 128 mul plus gx plus 'ga let ga mget) (0) if _inum 'r let nf r _ret1)}
+  {'name "rectfill" 'body ('nn let 'nf let nf nn 0 _ia 'x0 let nf nn 1 _ia 'y0 let nf nn 2 _ia 'x1 let nf nn 3 _ia 'y1 let
+   nf nn 4 _arg _pen 'c let x0 y0 x1 y1 c 1 _rect nf 0 _ret0)}
+  {'name "rect" 'body ('nn let 'nf let nf nn 0 _ia 'x0 let nf nn 1 _ia 'y0 let nf nn 2 _ia 'x1 let nf nn 3 _ia 'y1 let
+   nf nn 4 _arg _pen 'c let x0 y0 x1 y1 c 0 _rect nf 0 _ret0)}
+  {'name "circfill" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _ia 'r let nf nn 3 _arg _pen 'c let
+   x y r c 1 _circle nf 0 _ret0)}
+  {'name "circ" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _ia 'r let nf nn 3 _arg _pen 'c let
+   x y r c 0 _circle nf 0 _ret0)}
+  {'name "line" 'body ('nn let 'nf let nf nn 3 _has not ("line with fewer than 4 coordinates (polyline) is not supported" _rfail) () if
    nf nn 0 _ia 'x0 let nf nn 1 _ia 'y0 let nf nn 2 _ia 'x1 let nf nn 3 _ia 'y1 let nf nn 4 _arg _pen 'c let
-   x0 y0 x1 y1 c _line nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _ia 'n let nf nn 1 _ia 'x let nf nn 2 _ia 'y let                    -- spr
-   nf nn 3 _has (nf nn 3 _arg _num0 8 mul 65536 _fdiv) (8) if 'w8 let
-   nf nn 4 _has (nf nn 4 _arg _num0 8 mul 65536 _fdiv) (8) if 'h8 let
+   x0 y0 x1 y1 c _line nf 0 _ret0)}
+  {'name "spr" 'body ('nn let 'nf let nf nn 0 _ia 'n let nf nn 1 _ia 'x let nf nn 2 _ia 'y let
+   nf nn 3 _has (nf nn 3 _arg _num0 8 mul 65536 _fdiv _w16) (8) if 'w8 let
+   nf nn 4 _has (nf nn 4 _arg _num0 8 mul 65536 _fdiv _w16) (8) if 'h8 let
    nf nn 5 _arg _falsy not 'fx let nf nn 6 _arg _falsy not 'fy let
-   n x y w8 h8 fx fy _spr nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _ia 'ssx let nf nn 1 _ia 'ssy let nf nn 2 _ia 'sw let nf nn 3 _ia 'sh let   -- sspr
+   n x y w8 h8 fx fy _spr nf 0 _ret0)}
+  {'name "sspr" 'body ('nn let 'nf let nf nn 0 _ia 'ssx let nf nn 1 _ia 'ssy let nf nn 2 _ia 'sw let nf nn 3 _ia 'sh let
    nf nn 4 _ia 'dx0 let nf nn 5 _ia 'dy0 let
    nf nn 6 _has (nf nn 6 _ia) (sw) if 'dw0 let nf nn 7 _has (nf nn 7 _ia) (sh) if 'dh0 let
    nf nn 8 _arg _falsy not 'fx0 let nf nn 9 _arg _falsy not 'fy0 let _cam 'ky let 'kx let
    dw0 0 lt (0 dw0 sub dx0 kx sub 0 dw0 sub 1 sub sub fx0 not) (dw0 dx0 kx sub fx0) if 'fx let 'dx let 'dw let
    dh0 0 lt (0 dh0 sub dy0 ky sub 0 dh0 sub 1 sub sub fy0 not) (dh0 dy0 ky sub fy0) if 'fy let 'dy let 'dh let
    dx dw plus 0 le dx 128 ge or dy dh plus 0 le or dy 128 ge or () (
-     0 (dup dh lt) ('j let
-       0 (dup dw lt) ('i let fx (dw 1 sub i sub) (i) if 'di let fy (dh 1 sub j sub) (j) if 'dj let
+     0 dy sub 0 max (dup dh 128 dy sub min lt) ('j let
+       0 dx sub 0 max (dup dw 128 dx sub min lt) ('i let fx (dw 1 sub i sub) (i) if 'di let fy (dh 1 sub j sub) (j) if 'dj let
          ssx sw di mul dw div plus ssy sh dj mul dh div plus _sget 'col let dx i plus dy j plus col _spx i 1 plus) while drop
-       j 1 plus) while drop) if nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _ia 'cx let nf nn 1 _ia 'cy let nf nn 2 _ia 'sx let nf nn 3 _ia 'sy let     -- map
+       j 1 plus) while drop) if nf 0 _ret0)}
+  {'name "map" 'body ('nn let 'nf let nf nn 0 _ia 'cx let nf nn 1 _ia 'cy let nf nn 2 _ia 'sx let nf nn 3 _ia 'sy let
    nf nn 4 _has 'h4 let nf nn 5 _has 'h5 let nf nn 4 _ia 'cw0 let nf nn 5 _ia 'ch0 let nf nn 6 _ia 'ly let
    h4 h5 or (cw0 ch0) (-1 -1) if 'ch let 'cw let
-   cx cy sx sy cw ch ly _map nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let                                       -- mget
-   x 0 ge x 128 lt and y 0 ge and y 64 lt and (MAP-B y 128 mul plus x plus 'ma let ma mget) (0) if _inum 'r let nf r _ret1)
-  ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _ia 255 band 'v let          -- mset
-   x 0 ge x 128 lt and y 0 ge and y 64 lt and (MAP-B y 128 mul plus x plus 'ma let ma v mset) () if nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _has not (nf 0 _ret0) (                                            -- fget
+   cx cy sx sy cw ch ly _map nf 0 _ret0)}
+  {'name "mget" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let
+   x 0 ge x 128 lt and y 0 ge and y 64 lt and (MAP-B y 128 mul plus x plus 'ma let ma mget) (0) if _inum 'r let nf r _ret1)}
+  {'name "mset" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _ia 255 band 'v let
+   x 0 ge x 128 lt and y 0 ge and y 64 lt and (MAP-B y 128 mul plus x plus 'ma let ma v mset) () if nf 0 _ret0)}
+  {'name "fget" 'body ('nn let 'nf let nf nn 0 _has not (nf 0 _ret0) (
    nf nn 0 _ia 'n let n 0 ge n 256 lt and (FLAGS-B n plus 'fa let fa mget) (0) if 'bits let
-   nf nn 1 _has (nf nn 1 _ia 'f let bits 1 f 15 band shl band 0 eq (1) (9) if 'r let nf r _ret1) (bits _inum 'r2 let nf r2 _ret1) if) if)
-  ('nn let 'nf let nf nn 0 _ia 'n let nf nn 1 _ia 'f let                                       -- fset
+   nf nn 1 _has (nf nn 1 _ia 'f let f 0 ge f 8 lt and (bits 1 f shl band 0 eq not) (0) if (9) (1) if 'r let nf r _ret1) (bits _inum 'r2 let nf r2 _ret1) if) if)}
+  {'name "fset" 'body ('nn let 'nf let nf nn 0 _ia 'n let nf nn 1 _ia 'f let
    nf nn 0 _has 'hn let nf nn 1 _has 'hf let hn hf and n 0 ge and n 256 lt and (
      FLAGS-B n plus 'fa let nf nn 2 _arg 'b let
-     b 0 eq (f 255 band) (fa mget 'old let b 9 eq (old 1 f 15 band shl bor) (old 1 f 15 band shl -1 bxor band) if) if 'nv let fa nv mset) () if
-   nf 0 _ret0)
-  ('nn let 'nf let nf nn 0 _has 'h0 let nf nn 1 _has 'h1 let                                  -- __pal
+     b 0 eq (f 255 band) (fa mget 'old let b _falsy (old 1 f 15 band shl -1 bxor band) (old 1 f 15 band shl bor) if) if 'nv let fa nv mset) () if
+   nf 0 _ret0)}
+  {'name "__pal" 'body ('nn let 'nf let nf nn 0 _has 'h0 let nf nn 1 _has 'h1 let
    h0 h1 and not (
      nf nn 0 _ia 'a0 let h0 a0 0 eq not and () (
        0 (dup 16 lt) ('i let DPAL-B i plus 'da let da i i 0 eq (16) (0) if bor mset SPAL-B i plus 'sa let sa i mset i 1 plus) while drop) if
@@ -1382,75 +1404,83 @@ FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
      nf nn 0 _ia 15 band 'c0 let nf nn 1 _ia 'c1 let nf nn 2 _ia 'p let
      p 2 eq ("pal's raster palette (p = 2) is not supported" _rfail) () if
      p 1 eq (SPAL-B c0 plus) (DPAL-B c0 plus) if 'pa let pa mget 'prev let
-     p 1 eq (c1 255 band) (prev 16 band c1 15 band bor) if 'nv let pa nv mset prev 15 band _inum 'r let nf r _ret1) if)
-  ('nn let 'nf let nf nn 1 _has (                                                              -- palt
+     p 1 eq (c1 255 band) (prev 16 band c1 15 band bor) if 'nv let pa nv mset prev 15 band _inum 'r let nf r _ret1) if)}
+  {'name "palt" 'body ('nn let 'nf let nf nn 1 _has (
      nf nn 0 _ia 15 band 'c let DPAL-B c plus 'pa let pa mget 'old let nf nn 1 _arg _falsy not 't let
      pa old 15 band t (16) (0) if bor mset old 16 band 0 eq (1) (9) if 'r let nf r _ret1) (
      nf nn 0 _has 'hc let nf nn 0 _ia 'cbits let
      0 0 (dup 16 lt) ('i let 'acc let DPAL-B i plus 'pa let pa mget 'old let
        hc (cbits 1 15 i sub shl band 0 eq not) (i 0 eq) if 'tr let pa old 15 band tr (16) (0) if bor mset
-       acc old 240 band 0 eq not (1 15 i sub shl) (0) if bor i 1 plus) while drop _inum 'r let nf r _ret1) if)
-  ('nn let 'nf let COLOR-I mget 'prev let nf nn 0 _has (nf nn 0 _ia) (6) if 255 band 'c let COLOR-I c mset   -- color
-   prev _inum 'r let nf r _ret1)
-  ('nn let 'nf let _cam 'py let 'px let nf nn 0 _ia 'x let nf nn 1 _ia 'y let CAMX-I x mset CAMY-I y mset   -- camera
-   SP-I nf mset px _inum vpush py _inum vpush 2)
-  ('nn let 'nf let _clip 'p3 let 'p2 let 'p1 let 'p0 let nf nn 4 _arg _falsy not 'isect let        -- clip
+       acc old 240 band 0 eq not (1 15 i sub shl) (0) if bor i 1 plus) while drop _inum 'r let nf r _ret1) if)}
+  {'name "color" 'body ('nn let 'nf let COLOR-I mget 'prev let nf nn 0 _has (nf nn 0 _ia) (6) if 255 band 'c let COLOR-I c mset
+   prev _inum 'r let nf r _ret1)}
+  {'name "camera" 'body ('nn let 'nf let _cam 'py let 'px let nf nn 0 _ia 'x let nf nn 1 _ia 'y let CAMX-I x mset CAMY-I y mset
+   SP-I nf mset px _inum vpush py _inum vpush 2)}
+  {'name "clip" 'body ('nn let 'nf let _clip 'p3 let 'p2 let 'p1 let 'p0 let nf nn 4 _arg _falsy not 'isect let
    isect (p0 p1 p2 p3) (0 0 128 128) if 'y2 let 'x2 let 'y1 let 'x1 let
    nf nn 3 _has (nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _ia 'w let nf nn 3 _ia 'h let
      x1 x max x2 x w 0 max plus min y1 y max y2 y h 0 max plus min) (x1 x2 y1 y2) if
    'ny2 let 'ny1 let 'nx2 let 'nx1 let
-   CLIPX0-I nx1 255 band mset CLIPY0-I ny1 255 band mset CLIPX1-I nx2 255 band mset CLIPY1-I ny2 255 band mset
-   SP-I nf mset p0 _inum vpush p1 _inum vpush p2 _inum vpush p3 _inum vpush 4)
-  ('nn let 'nf let CURX-I mget 'ox let CURY-I mget 'oy let COLOR-I mget 'oc let                 -- cursor
+   -- zepto8 keeps the bounds in bytes, so they wrap; here they also stay on the screen, past which drawing would land in the sprite sheet.
+   CLIPX0-I nx1 255 band 128 min mset CLIPY0-I ny1 255 band 128 min mset CLIPX1-I nx2 255 band 128 min mset CLIPY1-I ny2 255 band 128 min mset
+   SP-I nf mset p0 _inum vpush p1 _inum vpush p2 _inum vpush p3 _inum vpush 4)}
+  {'name "cursor" 'body ('nn let 'nf let CURX-I mget 'ox let CURY-I mget 'oy let COLOR-I mget 'oc let
    nf nn 0 _ia 255 band 'x let nf nn 1 _ia 255 band 'y let CURX-I x mset CURY-I y mset PSX-I x mset
    nf nn 2 _has (nf nn 2 _ia 255 band 'c let COLOR-I c mset) () if
-   SP-I nf mset ox _inum vpush oy _inum vpush oc _inum vpush 3)
-  ('nn let 'nf let nn 0 eq (nf 0 _ret0) (                                                       -- print (the screen's)
+   SP-I nf mset ox _inum vpush oy _inum vpush oc _inum vpush 3)}
+  {'name "print" 'body ('nn let 'nf let nn 0 eq (nf 0 _ret0) (
    nf nn 0 _arg _p8str 'pb let nf nn 2 _has 'co let
    co (nf nn 1 _ia 'x1 let nf nn 2 _ia 'y1 let nf nn 3 _arg 'c1 let x1 y1 c1) (CURX-I mget 'kx0 let CURY-I mget 'ky0 let nf nn 1 _arg 'c2 let kx0 ky0 c2) if
-   'cv let 'y let 'x let cv _pen 'c let pb x y c co _print _inum 'r let nf r _ret1) if)
-  ('nn let 'nf let nf nn 0 _has (                                                              -- btn
+   'cv let 'y let 'x let cv _pen 'c let pb x y c co _print _inum 'r let nf r _ret1) if)}
+  {'name "btn" 'body ('nn let 'nf let nf nn 0 _has (
      nf nn 0 _ia 'b let nf nn 1 _ia 'p let b 0 ge b 8 lt and p 0 eq and (b _sbtn 0 gt) (0) if (9) (1) if 'r let nf r _ret1) (
-     0 0 (dup 8 lt) ('i let 'acc let i _sbtn 0 gt (acc 1 i shl bor) (acc) if i 1 plus) while drop _inum 'r2 let nf r2 _ret1) if)
-  ('nn let 'nf let nf nn 0 _has (                                                              -- btnp
+     0 0 (dup 8 lt) ('i let 'acc let i _sbtn 0 gt (acc 1 i shl bor) (acc) if i 1 plus) while drop _inum 'r2 let nf r2 _ret1) if)}
+  {'name "btnp" 'body ('nn let 'nf let nf nn 0 _has (
      nf nn 0 _ia 'b let nf nn 1 _ia 'p let b 0 ge b 8 lt and p 0 eq and (b _sbtn 'h let h 1 eq h 15 gt h 16 sub 4 mod 0 eq and or) (0) if (9) (1) if 'r let nf r _ret1) (
-     0 0 (dup 8 lt) ('i let 'acc let i _sbtn 'h let h 1 eq h 15 gt h 16 sub 4 mod 0 eq and or (acc 1 i shl bor) (acc) if i 1 plus) while drop _inum 'r2 let nf r2 _ret1) if)
-  ('nn let 'nf let nf nn 0 _has 'hr let nf nn 0 _arg _num0 'rb let                              -- __rnd
+     0 0 (dup 8 lt) ('i let 'acc let i _sbtn 'h let h 1 eq h 15 gt h 16 sub 4 mod 0 eq and or (acc 1 i shl bor) (acc) if i 1 plus) while drop _inum 'r2 let nf r2 _ret1) if)}
+  {'name "__rnd" 'body ('nn let 'nf let nf nn 0 _has 'hr let nf nn 0 _arg _num0 'rb let
    hr rb 0 eq and (0) (_prng RNGA-I mget 'a let hr (rb 4294967295 band) (65536) if 'rrange let rrange 0 gt (a rrange mod) (0) if) if
-   _wrap _num 'r let nf r _ret1)
-  ('nn let 'nf let nf nn 0 _arg _srand nf 0 _ret0)                                              -- srand
-  ('nn let 'nf let nf nn 0 _arg _num0 _sin _wrap _num 'r let nf r _ret1)                         -- sin
-  ('nn let 'nf let nf nn 0 _arg _num0 16384 sub _sin _wrap _num 'r let nf r _ret1)               -- cos
-  ('nn let 'nf let nf nn 0 _arg _num0 'ax0 let nf nn 1 _arg _num0 'ay0 let ax0 ay0 _atan2 _num 'r let nf r _ret1)          -- atan2
-  ('nn let 'nf let nf nn 0 _arg _num0 _sqrt _wrap _num 'r let nf r _ret1)                        -- sqrt
-  ('nn let 'nf let FRAME-I mget 65536 mul 30 div _wrap _num 'r let nf r _ret1)                   -- time
-  ('nn let 'nf let nn 0 eq ("") (nf nn 0 _arg 'v let nf nn 1 _arg 'fl let                        -- tostr
+   _wrap _num 'r let nf r _ret1)}
+  {'name "srand" 'body ('nn let 'nf let nf nn 0 _arg _srand nf 0 _ret0)}
+  {'name "sin" 'body ('nn let 'nf let nf nn 0 _arg _num0 _sin _wrap _num 'r let nf r _ret1)}
+  {'name "cos" 'body ('nn let 'nf let nf nn 0 _arg _num0 16384 sub _sin _wrap _num 'r let nf r _ret1)}
+  {'name "atan2" 'body ('nn let 'nf let nf nn 0 _arg _num0 'ax0 let nf nn 1 _arg _num0 'ay0 let ax0 ay0 _atan2 _num 'r let nf r _ret1)}
+  {'name "sqrt" 'body ('nn let 'nf let nf nn 0 _arg _num0 _sqrt _wrap _num 'r let nf r _ret1)}
+  {'name "time" 'body ('nn let 'nf let TICK-I mget 65536 mul 60 div _wrap _num 'r let nf r _ret1)}
+  {'name "tostr" 'body ('nn let 'nf let nn 0 eq ("") (nf nn 0 _arg 'v let nf nn 1 _arg 'fl let
      fl 1 eq fl 0 eq or (0) (fl 9 eq (1) (fl _int0) if) if 'flags let
      v _isnum flags 0 gt and (v _raw 4294967295 band 'b let
        flags 3 band 3 eq ("0x" b 16 shr _hex4 cat b 65535 band _hex4 cat) (
        flags 2 band 2 eq (b 2147483648 plus 4294967295 band 2147483648 sub int-str) (
-         "0x" b 16 shr _hex4 cat "." cat b 65535 band _hex4 cat) if) if) (v _p8str) if) if _snew 'r let nf r _ret1)
-  ('nn let 'nf let nf nn 0 _arg 'v let                                                          -- tonum
+         "0x" b 16 shr _hex4 cat "." cat b 65535 band _hex4 cat) if) if) (v _p8str) if) if _snew 'r let nf r _ret1)}
+  {'name "tonum" 'body ('nn let 'nf let nf nn 0 _arg 'v let nf nn 1 _ia 'fl let
    v _isnum (nf v _ret1) (v 7 band 1 eq (v 9 eq (65536) (0) if _num 'r let nf r _ret1) (
-   v _isstr (v _sbytes _tonum 'tok let 'tn let tok (tn _num 'r let nf r _ret1) (nf 0 _ret0) if) (nf 0 _ret0) if) if) if)
-  ('nn let 'nf let nf nn 0 _arg 'sv let sv _isstr not ("bad argument #1 to 'sub' (string expected, got " sv _tname cat ")" cat _rfail) () if   -- sub
-   sv _sbytes 'sb let sb len 'sl let nf nn 1 _has (nf nn 1 _ia) (1) if 'i0 let nf nn 2 _has (nf nn 2 _ia) (-1) if 'j0 let
+   v _isstr (
+     v _sbytes 'tb let
+     -- With flags, zepto8 reads hex (1), with any other character as 0, or decimal (2), and
+     -- 2 then keeps the top 16 bits: the result is that integer.
+     fl 3 band 0 eq (tb _tonum 'tok let 'tn let tok (tn _num 'r let nf r _ret1) (nf 0 _ret0) if) (
+       fl 1 band 0 eq not (tb 8 take-n 0 ('c let 16 mul c _hexv 0 max plus) fold) (tb _strtol10) if 4294967295 band
+       fl 2 band 0 eq not (16 shr) () if 65536 mul _wrap _num 'r2 let nf r2 _ret1) if) (nf 0 _ret0) if) if) if)}
+  {'name "sub" 'body ('nn let 'nf let nf nn 0 _arg 'sv let
+   sv _isstr sv _isnum or not ("bad argument #1 to 'sub' (string expected, got " sv _tname cat ")" cat _rfail) () if
+   sv _p8str 'sb let sb len 'sl let nf nn 1 _has (nf nn 1 _ia) (1) if 'i0 let nf nn 2 _has (nf nn 2 _ia) (-1) if 'j0 let
    i0 0 lt (sl i0 plus 1 plus 1 max) (i0 0 eq (1) (i0) if) if 'i let j0 0 lt (sl j0 plus 1 plus) (j0 sl min) if 'j let
-   i j gt ("") (sb i 1 sub drop-n j i sub 1 plus take-n) if _snew 'r let nf r _ret1)
-  ('nn let 'nf let nf nn 0 _ia 255 band 'cb let [] cb push _snew 'r let nf r _ret1)                       -- chr
-  ('nn let 'nf let nf nn 0 _arg 'sv let sv _isstr (sv _sbytes 'sb let nf nn 1 _has (nf nn 1 _ia) (1) if 'i let   -- ord
-     i 1 ge i sb len le and (i 1 sub 'sb nth must _inum 'r let nf r _ret1) (nf 0 _ret0) if) (nf 0 _ret0) if)
-  ('nn let 'nf let nf nn 0 _arg _p8str "\n" cat stdout-write nf 0 _ret0)                         -- printh
-  ('nn let 'nf let nf 0 _ret0)                                                                   -- sfx: no audio
-  ('nn let 'nf let nf 0 _ret0)                                                                   -- music: no audio
-  ('nn let 'nf let nf nn 0 _ia 'gx0 let nf nn 1 _ia 'gy0 let gx0 gy0 _sget _inum 'r let nf r _ret1)                        -- sget
-  ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _has (nf nn 2 _ia) (COLOR-I mget) if 15 band 'c let  -- sset
+   i j gt ("") (sb i 1 sub drop-n j i sub 1 plus take-n) if _snew 'r let nf r _ret1)}
+  {'name "chr" 'body ('nn let 'nf let [] 0 (dup nn lt) ('ci let 'cl let nf nn ci _ia 255 band 'cb let cl cb push ci 1 plus) while drop
+   _snew 'r let nf r _ret1)}
+  {'name "ord" 'body ('nn let 'nf let nf nn 0 _arg 'sv let
+   sv _isstr (sv _sbytes) ([]) if 'sb let nf nn 1 _has (nf nn 1 _ia) (1) if 'i let nf nn 2 _has (nf nn 2 _ia) (1) if 'n let
+   SP-I nf mset 0 (dup n lt) ('k let i k plus 'p let p 1 ge p sb len le and (p 1 sub 'sb nth must _inum vpush) () if k 1 plus) while drop
+   0 n range (i plus 'p let p 1 ge p sb len le and) filter len)}
+  {'name "printh" 'body ('nn let 'nf let nf nn 0 _arg _p8str "\n" cat stdout-write nf 0 _ret0)}
+  {'name "sfx" 'body ('nn let 'nf let nf 0 _ret0)}
+  {'name "music" 'body ('nn let 'nf let nf 0 _ret0)}
+  {'name "sget" 'body ('nn let 'nf let nf nn 0 _ia 'gx0 let nf nn 1 _ia 'gy0 let gx0 gy0 _sget _inum 'r let nf r _ret1)}
+  {'name "sset" 'body ('nn let 'nf let nf nn 0 _ia 'x let nf nn 1 _ia 'y let nf nn 2 _has (nf nn 2 _ia) (COLOR-I mget) if 15 band 'c let
    DPAL-B c plus 'pa let pa mget 15 band 'pc let
-   x 0 ge x 128 lt and y 0 ge and y 128 lt and (GFX-B y 128 mul plus x plus 'ga let ga pc mset) () if nf 0 _ret0)
+   x 0 ge x 128 lt and y 0 ge and y 128 lt and (GFX-B y 128 mul plus x plus 'ga let ga pc mset) () if nf 0 _ret0)}
 ] 'API let
-["cls" "pset" "pget" "rectfill" "rect" "circfill" "circ" "line" "spr" "sspr" "map" "mget" "mset" "fget" "fset"
- "__pal" "palt" "color" "camera" "clip" "cursor" "print" "btn" "btnp" "__rnd" "srand" "sin" "cos" "atan2" "sqrt"
- "time" "tostr" "tonum" "sub" "chr" "ord" "printh" "sfx" "music" "sget" "sset"] 'API-NAMES let
 -- pico8 functions lua.slap leaves out: a call dies naming it.
 ["peek" "poke" "peek2" "poke2" "peek4" "poke4" "memcpy" "memset" "reload" "cstore" "fillp" "tline" "oval" "ovalfill"
  "stat" "cartdata" "dget" "dset" "menuitem" "extcmd" "serial" "setmetatable" "getmetatable" "rawset" "rawget"
@@ -1471,7 +1501,7 @@ FLAGS-B 256 plus 'DPAL-B let  DPAL-B 16 plus 'STATE-N let
    it ii _hkey 'ik let ik hget 'iv let SP-I nf mset iv 0 eq (0 vpush 1) (ii vpush iv vpush 2) if)
   ('nn let 'nf let nf nn 0 _arg _tname _snew 'tv let SP-I nf mset tv vpush 1)  -- 6 type
   ('nn let 'nf let nf nn 0 _arg _tostr _snew 'tv let SP-I nf mset tv vpush 1)  -- 7 tostring
-] API cat UNSUPPORTED ('un let ('nn let 'nf let "pico8's '" un cat "' is not supported" cat _rfail)) each cat 'BUILTINS let
+] API ('body at) each cat UNSUPPORTED ('un let ('nn let 'nf let "pico8's '" un cat "' is not supported" cat _rfail)) each cat 'BUILTINS let
 -- The globals that hold builtins, with their ids: the core ones, then the API from 8, then the unsupported ones.
 [{'name "next" 'id 2} {'name "pairs" 'id 3} {'name "ipairs" 'id 4}
  {'name "type" 'id 6} {'name "tostring" 'id 7}] 'BUILTIN-NAMES let
@@ -1620,28 +1650,34 @@ OPTAB len OPS len eq () ("OPTAB and OPS differ in length" fail) if
 
 MAIN-NL STK-N gt ("lua: the main chunk needs more than 16384 local slots" fail) () if
 -- The map's rows 32-63 are the bytes of the sprite rows 64-127, two pixels a byte, the left one low.
-CART 'gfx at dup len 16384 swap sub (0 push) repeat 'CGFX let
-CART 'map at dup len 4096 swap sub (0 push) repeat
+CART 'gfx at 'CGFX let
+CART 'map at
  0 4096 range ('b let 4096 b plus 2 mul 'pa let pa 'CGFX nth must pa 1 plus 'CGFX nth must 16 mul plus) each cat 'CMAP let
-CART 'flags at dup len 256 swap sub (0 push) repeat 'CFLAGS let
+CART 'flags at 'CFLAGS let
 [] SCREEN-B (0 push) repeat [] 16384 (0 push) repeat cat CGFX cat CMAP cat CFLAGS cat [16] 1 16 range cat cat
  0 16 range swap ('i let SPAL-B i plus i set must) fold
  BASE-I STK-B set must FTOP-I STK-B MAIN-NL plus set must SP-I STK-B MAIN-NL plus set must
  CSP-I CS-B set must RUN-I 1 set must TABN-I GLOBALS set must
  COLOR-I 6 set must CLIPX1-I 128 set must CLIPY1-I 128 set must
-BUILTIN-NAMES dict ('b let [0 0 0 1 3] b 'name at cat b 'id at 8 mul 6 plus insert) fold
- 0 API-NAMES len range swap ('i let [0 0 0 1 3] i 'API-NAMES nth must cat i 8 plus 8 mul 6 plus insert) fold
- 0 UNSUPPORTED len range swap ('i let [0 0 0 1 3] i 'UNSUPPORTED nth must cat i API-NAMES len 8 plus plus 8 mul 6 plus insert) fold
+-- _gkey: (name -- key).  The heap key of a global: GLOBALS' entry for that string, as _hkey makes it.
+-- _bval: (id -- v).  A builtin's value.
+([0] GLOBALS _t3 cat [3] cat swap cat) '_gkey let
+(8 mul 6 plus) '_bval let
+BUILTIN-NAMES dict ('b let b 'name at _gkey b 'id at _bval insert) fold
+ 0 API len range swap ('i let i 'API nth must 'name at _gkey i 8 plus _bval insert) fold
+ 0 UNSUPPORTED len range swap ('i let i 'UNSUPPORTED nth must _gkey i API len 8 plus plus _bval insert) fold
  -- print writes to stdout in a .lua program and to the screen in a cart.
- [0 0 0 1 3] "print" cat IS-CART (API-NAMES "print" index-of must 8 plus) (1) if 8 mul 6 plus insert
+ "print" _gkey IS-CART (API ('name at) each "print" index-of must 8 plus) (1) if _bval insert
 dict
 -- REVIEW: The PRNG starts from srand(0), so every run is the same. Alternative: pico8's clock seed, which makes runs differ and cannot be tested.
 0 _srand
 -- lua-run: steps until the machine stops.  lua-frame: one frame of a cart.
 ((RUN-I mget) (step) while) 'lua-run let
 lua-run
-[0 0 0 1 3] "__frame" cat hget 'FRAME-FN let
-(0 (dup 8 lt) ('bi let BTN-I mget 'bm let BTNH-B bi plus 'ba let ba mget 'bh let
+"__frame" _gkey hget 'FRAME-FN let
+-- A frame is 1/60 s with _update60 and 1/30 s without, as TICK-I counts for time().
+(STEPS-I 0 mset "_update60" _gkey hget 0 eq (2) (1) if 'dt let TICK-I mget dt plus 'tk let TICK-I tk mset
+ 0 (dup 8 lt) ('bi let BTN-I mget 'bm let BTNH-B bi plus 'ba let ba mget 'bh let
    bm 1 bi shl band 0 eq (0) (bh 1 plus) if 'bn let ba bn mset bi 1 plus) while drop
  FTOP-I mget 'ft let SP-I ft mset FRAME-FN vpush PC-I TRAMP mset RUN-I 1 mset lua-run
  FRAME-I mget 1 plus 'fr let FRAME-I fr mset) 'lua-frame let

@@ -65,6 +65,17 @@ PICO8 = [
     ("one-line if", "local x = 3\nif (x > 2) print('big') x = 0\nif (x > 2) print('no') else print('else')\nprint(x)", "big\nelse\n0\n"),
     ("one-line while", "local n = 0\nwhile (n < 3) n += 1\nprint(n)", "3\n"),
     ("compound field assignment", "local q = {}\nq.v = 1 q.v += 4 q['v'] *= 2\nprint(q.v)", "10\n"),
+    ("clip keeps writes on the screen", "clip(0, -300, 128, 10) pset(0, 200, 7) print(sget(0, 72))", "0\n"),
+    ("fset takes any truthy value", "fset(0, 0, 1) print(fget(0))", "1\n"),
+    ("fget past bit 7", "fset(0, 0, true) print(fget(0, 16), fget(0, 8))", "false\tfalse\n"),
+    ("length past a hole", "local t = {1, 2, 3, nil, 5} print(#t) local u = {} for i = 1, 5 do u[i] = i end u[3] = nil print(#u) u[5] = nil print(#u)", "5\n5\n4\n"),
+    ("chr and ord take several", "print(chr(72, 105), chr() == '', ord('abc', 1, 3))", "Hi\ttrue\t97\t98\t99\n"),
+    ("tonum flags", "print(tonum('ff', 1), tonum('1234', 2), tonum('0x10'))", "255\t0\t16\n"),
+    ("sub of a number", "print(sub(12345, 2, 3))", "23\n"),
+    ("rotate assignment", "local x = 1 x <<>= 1 x >><= 1 print(x)", "1\n"),
+    ("prelude tables", "local t = {} add(t, 1) add(t, 2) add(t, 3, 1) del(t, 2) deli(t) foreach(t, print) print(#t, count(t), mid(5, 1, 3), mid(nil, 2, 1))", "3\n1\t1\t3\t1\n"),
+    ("foreach deletes", "local t = {1, 2, 3, 4} foreach(t, function(v) print(v) if v == 2 then del(t, v) end end)", "1\n2\n3\n4\n"),
+    ("huge sprite", "spr(0, 0, 0, 2000, 2000) sspr(0, 0, 8, 8, 0, 0, 30000, 30000) print('drawn')", "drawn\n"),
     ("question print", "?1, 'two'\n? 3", "1\ttwo\n3\n"),
 ]
 # Each program is a separate ./slap; they run in parallel and are checked in order.
@@ -133,6 +144,8 @@ ERRORS = [
     ("bad long bracket", "print([=x)", "lua: line 1: expected [ after [= to start a long string"),
     ("break outside a loop", "break", "lua: line 1: break outside a loop"),
     ("goto", "goto x", "lua: line 1: goto and labels are not supported"),
+    ("unsupported", "print(stat(1))", "lua: line 1: pico8's 'stat' is not supported"),
+    ("too many results", "local function f() return 1 end local " + ", ".join(f"a{i}" for i in range(260)) + " = f()", "lua: line 1: a call expects more than 254 results"),
     ("vararg parameter", "function f(...) end", "lua: line 1: varargs (...) are not supported"),
     ("missing end", "if x then print(1)", "lua: line 1: expected 'end' to close 'if', found the end of the input"),
     ("return not last", "return 1 print(2)", "lua: line 1: expected the end of the block after 'return', found 'print'"),
@@ -149,7 +162,6 @@ ERRORS = [
     ("method on nil", "local o = {}\no:m()", "lua: line 2: attempt to call a nil value"),
     ("for in needs in", "for k, v do end", "lua: line 1: expected '=' or 'in' after the for's names, found 'do'"),
     ("unclosed table", "local t = {1, 2", "lua: line 1: expected ',' or '}' in the table, found the end of the input"),
-    ("varargs", "print(...)", "lua: line 1: varargs (...) are not supported"),
     (
         "deep nesting",
         "print(" + "(" * 300 + "1" + ")" * 300 + ")",
@@ -169,6 +181,7 @@ HEAD = "pico-8 cartridge // http://www.pico-8.com\nversion 42\n"
 CARTS = [
     ("bad hex", "__lua__\n__gfx__\n" + "0g" + "0" * 126 + "\n", "lua: cart line 5: __gfx__ has a digit that is not hex"),
     ("short row", "__lua__\n__map__\n0102\n", "lua: cart line 5: a __map__ row has 4 digits, not 256"),
+    ("no lua", "__gfx__\n", "lua: the cart has no __lua__ section"),
     ("cart error line", "__lua__\nx = 1\nx = x + nil\n", "lua: line 5: attempt to perform arithmetic on a nil value"),
     ("frame loop error", "__lua__\n_update = 5\n", "lua: the frame loop's line 2: attempt to call a number value"),
 ]
@@ -181,21 +194,39 @@ for name, text, want in CARTS:
     check(f"cart {name}", r.returncode == 1 and want in err, f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}")
 path = os.path.join(tmp, "frames.p8")
 with open(path, "w") as f:
-    f.write(HEAD + "__lua__\nn = 0\nfunction _update() n = n + 1 end\nfunction _draw() assert_n = n end\n")
+    f.write(HEAD + "__lua__\nn = 0\nfunction _update() n = n + 1 end\nfunction _draw() pset(n, 100, 7) ?'hi' end\n")
 r = subprocess.run(["./slap", path, "3"], input=SRC, capture_output=True, timeout=60)
-check("cart dump", r.returncode == 0 and r.stdout == (b"0" * 128 + b"\n") * 128, r.stderr.decode()[-600:])
+rows = r.stdout.split()
+check("cart dump", r.returncode == 0 and len(rows) == 128 and rows[100][:4] == b"0777" and b"7" in rows[0], r.stdout[:300] + r.stderr[-600:])
+# A print far below the screen scrolls it and leaves the sprite sheet alone.
+path = os.path.join(tmp, "scroll.p8")
+with open(path, "w") as f:
+    f.write(HEAD + "__lua__\nfunction _draw() local s = '' for i = 1, 50 do s = s .. '\\n' end print(s .. 'x') printh(sget(0, 0)) end\n__gfx__\n5" + "0" * 127 + "\n")
+r = subprocess.run(["./slap", path, "1"], input=SRC, capture_output=True, timeout=60)
+check("print scrolls only the screen", r.returncode == 0 and r.stdout.startswith(b"5\n"), r.stdout[:200] + r.stderr[-600:])
+for arg in ["abc", "-1", "", "123456"]:
+    r = subprocess.run(["./slap", path, arg], input=SRC, capture_output=True, timeout=60)
+    check(f"frame count {arg!r}", r.returncode == 1 and b"lua: the frame count must be 1 to 5 digits up to 32767" in r.stderr, r.stderr.decode()[-600:])
 # Each tests/pico8 cart draws what zepto8 drew: tests/pico8/refs.sh made the .ref
 # files with it, after the frames the cart's "-- frames: N" line names.
 def cart_diff(path):
-    n = re.search(r"^-- frames: (\d+)$", open(path).read(), re.M).group(1)
+    m = re.search(r"^-- frames: (\d+)$", open(path).read(), re.M)
+    if not m:
+        sys.exit(f"lua: {path} has no '-- frames: N' line")
+    n = m.group(1)
     r = subprocess.run(["./slap", path, n], input=SRC, capture_output=True, timeout=60)
-    want = open(path[:-3] + ".ref", "rb").read().split()
-    got = r.stdout.split()
+    want = open(path[:-3] + ".ref", "rb").read().split(b"\n")
+    got = r.stdout.split(b"\n")
+    if want[:-129] != got[:-129]:
+        return r, False, f"printh lines differ: want {want[:-129][:5]} got {got[:-129][:5]}"
+    want, got = want[-129:-1], got[-129:-1]
     bad = [(y, x) for y in range(min(len(want), len(got))) for x in range(128) if want[y][x : x + 1] != got[y][x : x + 1]]
-    return r, len(want) == len(got) == 128 and not bad, f"{len(bad)} pixels differ, first at (x, y) = {bad[0][::-1] if bad else None}"
+    same = len(want) == len(got) == 128 and all(len(row) == 128 for row in want + got) and not bad
+    return r, same, f"{len(bad)} pixels differ, first at (x, y) = {bad[0][::-1] if bad else None}"
 
 
-for path, (r, same, why) in zip(sorted(glob.glob("tests/pico8/*.p8")), POOL.map(cart_diff, sorted(glob.glob("tests/pico8/*.p8")))):
+CARTS_P8 = sorted(glob.glob("tests/pico8/*.p8"))
+for path, (r, same, why) in zip(CARTS_P8, POOL.map(cart_diff, CARTS_P8)):
     check(f"{path} matches zepto8", r.returncode == 0 and same, f"exit {r.returncode}: {why}\n{r.stderr.decode()[-600:]}")
 # The SDL shell, headless: a held left arrow reaches btn(0), and the view the
 # render body draws holds the cart's screen.
@@ -212,7 +243,7 @@ if os.path.exists("./slap-sdl"):
     r = subprocess.run(["./slap-sdl", "--headless", path], input=SRC + sdl.encode() + b"(render)" + driver.encode(), capture_output=True, timeout=60)
     check("lua-sdl headless", r.returncode == 1 and r.stdout == b"8\n1\n" and b"test-done" in r.stderr, f"exit {r.returncode} {r.stdout!r}\n{r.stderr.decode()[-600:]}")
 
-r = run_text("frames-need-a-cart", "print(1)")
+run_text("frames-need-a-cart", "print(1)")
 r = subprocess.run(["./slap", os.path.join(tmp, "frames-need-a-cart.lua"), "3"], input=SRC, capture_output=True, timeout=60)
 check("frames need a cart", r.returncode == 1 and b"lua: a frame count needs a .p8 cart" in r.stderr, r.stderr.decode()[-600:])
 

@@ -16,3 +16,6 @@ print(2 + 3 .. "", 1 + 2 == 3 and "yes" or "no", 3 > 2 == true)
 print()
 print(((((((((((1)))))))))))
 print("multi", "args", 3, nil, false)
+print('a\
+b', 'c\z
+     d')
