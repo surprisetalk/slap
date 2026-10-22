@@ -61,6 +61,10 @@ PICO8 = [
     ("leveled long string", "print([==[a]]b]=]c]==])", "a]]b]=]c\n"),
     ("long string folds CR LF", "print(#[[a\r\nb]], #[[a\rb]])", "3\t3\n"),
     ("string call", 'print "hi"', "hi\n"),
+    ("compound assignment", "local a = 5 a += 2 a *= 3 a -= 1 a ..= '!' print(a) b = 7 b \\= 2 b ^^= 1 print(b)", "20!\n2\n"),
+    ("one-line if", "local x = 3\nif (x > 2) print('big') x = 0\nif (x > 2) print('no') else print('else')\nprint(x)", "big\nelse\n0\n"),
+    ("one-line while", "local n = 0\nwhile (n < 3) n += 1\nprint(n)", "3\n"),
+    ("question print", "?1, 'two'\n? 3", "1\ttwo\n3\n"),
 ]
 for name, text, want in PICO8:
     r = run_text(name.replace(" ", "-"), text)
@@ -119,6 +123,18 @@ ERRORS = [
     ("NUL byte", "print(1)\0print(2)", "lua: line 1: unexpected character 0"),
     ("unfinished leveled comment", "print(1) --[==[ x\n]=]", "lua: line 1: unfinished long string or comment"),
     ("bad long bracket", "print([=x)", "lua: line 1: expected [ after [= to start a long string"),
+    ("break outside a loop", "break", "lua: line 1: break outside a loop"),
+    ("goto", "goto x", "lua: line 1: goto and labels are not supported"),
+    ("vararg parameter", "function f(...) end", "lua: line 1: varargs (...) are not supported"),
+    ("generic for", "for k in x do end", "lua: line 1: generic for (in) is not supported yet"),
+    ("missing end", "if x then print(1)", "lua: line 1: expected 'end' to close 'if', found the end of the input"),
+    ("return not last", "return 1 print(2)", "lua: line 1: expected the end of the block after 'return', found 'print'"),
+    ("assign to a call", "f() = 1", "lua: line 1: expected a name before '=', found 'f'"),
+    ("parameters need commas", "function f(a b) end", "lua: line 1: expected ')' to close the parameters, found 'b'"),
+    ("deep recursion", "local function f(n) return f(n + 1) end f(1)", "lua: line 1: stack overflow: more than 1000 nested calls"),
+    ("for step zero", "for i = 1, 2, 0 do end", "lua: line 1: 'for' step is zero"),
+    ("for start", "for i = nil, 2 do end", "lua: line 1: 'for' start must be a number"),
+    ("call a number", "local x = 5\nx()", "lua: line 2: attempt to call a number value"),
     ("varargs", "print(...)", "lua: line 1: varargs (...) are not supported"),
     (
         "deep nesting",

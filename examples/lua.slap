@@ -179,11 +179,19 @@
 -- REVIEW: Relative jumps. Alternative: absolute targets, as the design said. They need a fix-up pass once fragments are joined.
 ["RET" "POP" "PUSHK" "GETG" "SETG" "CALL" "JMP" "JF" "JFK" "JTK"
  "ADD" "SUB" "MUL" "DIV" "IDIV" "MOD" "POW" "CONCAT" "EQ" "NE" "LT" "LE" "GT" "GE"
- "BAND" "BOR" "BXOR" "SHL" "SHR" "LSHR" "ROTL" "ROTR" "NEG" "NOT" "LEN" "BNOT"] 'OPS let
+ "BAND" "BOR" "BXOR" "SHL" "SHR" "LSHR" "ROTL" "ROTR" "NEG" "NOT" "LEN" "BNOT"
+ "GETL" "SETL" "CLOSURE" "BREAK" "FORPREP" "FORCHK" "FORINC"
+ "FUNC" "GETU" "SETU" "CAPTL" "CAPTU" "DECL" "PARAM" "GETLC" "SETLC" "DECLC" "BOXL"] 'OPS let
 ('s let OPS s index-of must) 'op-id let
 "RET" op-id 'O-RET let  "POP" op-id 'O-POP let  "PUSHK" op-id 'O-PUSHK let
 "GETG" op-id 'O-GETG let  "SETG" op-id 'O-SETG let  "CALL" op-id 'O-CALL let
 "JMP" op-id 'O-JMP let  "JF" op-id 'O-JF let  "JFK" op-id 'O-JFK let  "JTK" op-id 'O-JTK let
+"GETL" op-id 'O-GETL let  "SETL" op-id 'O-SETL let  "CLOSURE" op-id 'O-CLOSURE let  "BREAK" op-id 'O-BREAK let
+"FORPREP" op-id 'O-FORPREP let  "FORCHK" op-id 'O-FORCHK let  "FORINC" op-id 'O-FORINC let
+"FUNC" op-id 'O-FUNC let  "GETU" op-id 'O-GETU let  "SETU" op-id 'O-SETU let  "CAPTL" op-id 'O-CAPTL let
+"CAPTU" op-id 'O-CAPTU let  "DECL" op-id 'O-DECL let  "PARAM" op-id 'O-PARAM let  "GETLC" op-id 'O-GETLC let
+"SETLC" op-id 'O-SETLC let  "DECLC" op-id 'O-DECLC let  "BOXL" op-id 'O-BOXL let
+(8 mul 2 plus) '_num let
 
 -- BIN[kind] packs a binary operator as op*256 + left*16 + right, its op and
 -- Lua's precedences; 0 is no binary operator.  UN[kind] is a unary op, or -1.
@@ -226,6 +234,8 @@ toks lua-index 'tix let
 (_tb 2 plus 'toks nth must) '_ta let
 -- _tbytes: (t -- bytes).  A name's or string's text.
 (_tb 'tsb let 0 tsb 2 plus 'toks nth must range (tsb 3 plus plus 'toks nth must) each) '_tbytes let
+-- _tstr: (t -- v).  A name or string token as a Lua string; its text stays in toks.
+(_tb 2 plus 8 mul 3 plus) '_tstr let
 -- _tdesc: (t -- str).  The token, as an error message names it.
 ('dt let dt _tk 'dk let
  dk T-NAME eq ("'" dt _tbytes cat "'" cat) (
@@ -240,62 +250,306 @@ toks lua-index 'tix let
 ('sw let 'sk let 'st let st _tk sk eq (st 1 plus) (sw st _cwant) if) '_cskip let
 -- _cins: (op arg line -- code).  One instruction.
 ('il let 'ia let 'io let [] io push ia push il push) '_cins let
+-- _crep: (op n line -- code).  The instruction [op 0 line], n times.
+('rl let 'rn let 'ro let [] rn (ro 0 rl _cins cat) repeat) '_crep let
+-- _clastcall: (code -- 1 or 0).  Does the code end in a call?
+('cc let cc len 3 lt (0) (cc len 3 sub 'cc nth must O-CALL eq) if) '_clastcall let
+-- _cnres: (code n -- code).  The call that ends the code leaves n results, or all for -1.
+('sn let 'scc let scc len 2 sub 'si let scc si si 'scc nth must 256 div 256 mul sn 1 plus plus set must) '_cnres let
+-- _cresolve: (body after -- body).  Each break in the loop body jumps to the
+-- loop's end, `after` ints past the body.  Inner loops resolved their own.
+('rx let 'rb let rb len 'rn let rb 0
+ (dup rn lt)
+ ('rp let rp peek must O-BREAK eq (rp O-JMP set must rp 1 plus rn rx plus rp 3 plus sub set must) () if rp 3 plus) while drop) '_cresolve let
 
-'_cexp [int int int] [int 'list tag int] effect
+-- A compile context is a flat int list, [nl loop lvl na] and then a triple
+-- [name-token slot level] per local in scope, innermost last.  nl is the most
+-- slots the function has needed, loop is 1 inside a loop, lvl counts the
+-- functions around the code, na the function's locals in scope.  A hidden
+-- local (a for loop's counters) has name-token 0, which never declares a name.
+--
+-- Closures: a local that a nested function uses lives in a cell, made each
+-- time its declaration runs, so a loop makes a fresh one per pass.  While a
+-- function compiles, a local's instructions carry slot + 65536*token, and an
+-- outer local's carry 65536*token: GETL, SETL, DECL (a declaration), PARAM, and
+-- GETU, SETU, CAPTU (an outer local a nested closure takes), CAPTL (a local of
+-- this function it takes).  When the function ends, _cfin reads which of its
+-- locals a CAPTL names, makes those cell instructions, and numbers its outer
+-- locals.  A nested function's body sits between FUNC, which jumps over it, and
+-- its CLOSURE, and the scans skip it: it was finished on its own.
+0 'C-NL let  1 'C-LOOP let  2 'C-LVL let  3 'C-NA let  4 'C-SCOPE let
+-- _teq: (t1 t2 -- 1 or 0).  Do two name tokens spell one name?
+('eb let 'ea let ea _tb 'ba let eb _tb 'bb let ba 2 plus 'toks nth must 'la let
+ bb 2 plus 'toks nth must la eq (0 la range 1 ('k let ba 3 plus k plus 'toks nth must bb 3 plus k plus 'toks nth must eq and) fold) (0) if) '_teq let
+-- _clookup: (t ctx -- slot level token), the local the name at t means, or -1 -1 0 for a global.
+('lc let 'lt0 let lc len 3 sub
+ (dup C-SCOPE ge (dup 'lc nth must 'le9 let le9 0 gt (le9 lt0 _teq) (0) if not) (0) if) (3 sub) while 'li let
+ li C-SCOPE ge (li 1 plus 'lc nth must li 2 plus 'lc nth must li 'lc nth must) (-1 -1 0) if) '_clookup let
+-- _cfindtok: (ctx token -- slot level).  The local that token declared.
+('ft2 let 'fc2 let fc2 len 3 sub (dup 'fc2 nth must ft2 eq not) (3 sub) while 'fi2 let
+ fi2 1 plus 'fc2 nth must fi2 2 plus 'fc2 nth must) '_cfindtok let
+-- _cdeclare: (ctx t -- ctx' slot).  A new local named by token t.
+('dt let 'dc let C-NA 'dc nth must 'ds let
+ dc dt push ds push C-LVL 'dc nth must push
+ C-NA ds 1 plus set must C-NL C-NL 'dc nth must ds 1 plus max set must ds) '_cdeclare let
+-- _ckeep: (ctx inner -- ctx).  Back to ctx's scope, keeping the slots inner needed.
+('ki let C-NL C-NL 'ki nth must set must) '_ckeep let
+-- _cvar: (t ctx get -- code).  Reads (get 1) or writes (get 0) the name at t.
+('vg let 'vc let 'vt let vt vc _clookup 'vtk let 'vlv let 'vsl let
+ vsl 0 lt (vg (O-GETG) (O-SETG) if vt _tstr vt _tl _cins) (
+ vlv C-LVL 'vc nth must eq (vg (O-GETL) (O-SETL) if vsl vtk 65536 mul plus vt _tl _cins) (
+   vg (O-GETU) (O-SETU) if vtk 65536 mul vt _tl _cins) if) if) '_cvar let
 
--- _cargs: (t depth -- code nargs t').  t is at `(`.  Compiles the arguments.
-('ad let 'gt0 let
+-- _cscan: (code ops -- tokens).  The tokens the instructions with those ops
+-- name, each once, in order; nested functions skipped.
+('so let 'sc let sc len 'sn let [] 0
+ (dup sn lt)
+ ('sp let sp 'sc nth must 'sop let
+  sop O-FUNC eq (sp 3 plus sp 1 plus 'sc nth must plus) (
+    so sop index-of {'ok (drop sp 1 plus 'sc nth must 65536 div 'stk let dup stk index-of {'ok (drop) 'no (drop stk push)} case) 'no (drop)} case
+    sp 3 plus) if) while drop) '_cscan let
+-- _crewrite: (code ups capt -- code).  Locals in capt become cells; outer
+-- locals become indices into ups; slots lose their tokens.
+('wc let 'wu let 'wb let wb len 'wn let wb 0
+ (dup wn lt)
+ ('wp let wp peek must 'wop let wp 1 plus peek must 'warg let
+  warg 65536 div 'wtk let warg 65536 mod 'wsl let wtk 0 gt wc wtk index-of {'ok (drop 1) 'no (drop 0)} case and 'wcap let
+  wop O-FUNC eq (wp 3 plus warg plus) (
+  wop O-GETL eq (wp wcap (O-GETLC) (O-GETL) if set must wp 1 plus wsl set must wp 3 plus) (
+  wop O-SETL eq (wp wcap (O-SETLC) (O-SETL) if set must wp 1 plus wsl set must wp 3 plus) (
+  wop O-DECL eq (wp wcap (O-DECLC) (O-SETL) if set must wp 1 plus wsl set must wp 3 plus) (
+  wop O-PARAM eq (wp wcap (O-BOXL) (O-JMP) if set must wp 1 plus wcap (wsl) (0) if set must wp 3 plus) (
+  wop O-CAPTL eq (wp 1 plus wsl set must wp 3 plus) (
+  wop O-GETU eq wop O-SETU eq or wop O-CAPTU eq or (wp 1 plus wu wtk index-of must set must wp 3 plus) (
+    wp 3 plus) if) if) if) if) if) if) if) while drop) '_crewrite let
+-- _cfin: (code -- code ups).  Finishes a function's code; ups are the outer locals it uses.
+('fz let fz [O-GETU O-SETU O-CAPTU] _cscan 'fu let fz [O-CAPTL] _cscan 'fcap let
+ fu len 254 gt ("a function uses more than 254 outer locals" fz 2 'fz nth must _cfail-at) () if
+ fz fu fcap _crewrite fu) '_cfin let
+
+-- CMPD[kind] is the op of a compound assignment such as +=, or 0.
+('co let 'ck let ck co set must) '_cmpd! let
+0 100 range (drop 0) each
+ "+=" sy-id "ADD" op-id _cmpd!  "-=" sy-id "SUB" op-id _cmpd!  "*=" sy-id "MUL" op-id _cmpd!
+ "/=" sy-id "DIV" op-id _cmpd!  "%=" sy-id "MOD" op-id _cmpd!  "\\=" sy-id "IDIV" op-id _cmpd!
+ "^=" sy-id "POW" op-id _cmpd!  "|=" sy-id "BOR" op-id _cmpd!  "&=" sy-id "BAND" op-id _cmpd!
+ "^^=" sy-id "BXOR" op-id _cmpd!  "<<=" sy-id "SHL" op-id _cmpd!  ">>=" sy-id "SHR" op-id _cmpd!
+ ">>>=" sy-id "LSHR" op-id _cmpd!  "..=" sy-id "CONCAT" op-id _cmpd!
+'CMPD let
+
+'_cexp [int int int int 'list tag] [int 'list tag int] effect
+'_cblock [int int 'list tag] [int 'list tag int int 'list tag] effect
+
+-- _cexplist: (t ctx want depth -- code k dyn t').  Expressions separated by
+-- commas, adjusted to want values as Lua adjusts them.  With want -1 a call at
+-- the end leaves all its results: dyn is 1, and k counts the values before it.
+('ed let 'ew let 'ec let 'et let
+ et 0 ed ec _cexp 'e1 let 1 e1
+ (dup _tk "," sy-id eq) ('e3 let 'e2 let e3 1 plus 0 ed ec _cexp 'e4 let cat e2 1 plus e4) while
+ 'ef let 'em let 'ecode let et _tl 'el let
+ ecode _clastcall (
+   ew 0 lt (ecode -1 _cnres em 1 sub 1) (
+     ew em 1 sub sub 0 max 'en let
+     ecode en _cnres O-POP em 1 sub en plus ew sub 0 max el _crep cat ew 0) if) (
+   ew 0 lt (ecode em 0) (
+     ecode O-PUSHK ew em sub 0 max el _crep cat O-POP em ew sub 0 max el _crep cat ew 0) if) if ef) '_cexplist let
+
+-- _cargs: (t depth ctx -- code nargs t').  t is at `(`.  nargs is fixed*2 + dyn.
+('ac let 'ad let 'gt0 let
  gt0 1 plus _tk ")" sy-id eq ([] 0 gt0 2 plus) (
-   gt0 1 plus 0 ad 1 plus _cexp 'a0 let 1 a0
-   (dup _tk "," sy-id eq)
-   ('a3 let 'a2 let a3 1 plus 0 ad 1 plus _cexp 'a5 let cat a2 1 plus a5) while
+   gt0 1 plus ac -1 ad 1 plus _cexplist 'a3 let swap 2 mul plus a3
    ")" sy-id "')' to close the arguments" _cskip) if) '_cargs let
 
--- _csuffix: (code t depth -- code t').  Calls after a prefix expression.  A call
--- compiles for one result; a call statement changes its count to none.
-('sd let
- (dup _tk 'sk let sk "(" sy-id eq sk T-STR eq or sk "{" sy-id eq or sk "." sy-id eq or sk "[" sy-id eq or sk ":" sy-id eq or)
+'_cfunc [int int 'list tag] [int 'list tag int] effect
+
+-- _csuffix: (code t depth ctx -- code t').  Calls after a prefix expression.  A
+-- call compiles for one result; a call statement changes its count to none.
+('xc let 'xd let
+ (dup _tk 'xk0 let xk0 "(" sy-id eq xk0 T-STR eq or xk0 "{" sy-id eq or xk0 "." sy-id eq or xk0 "[" sy-id eq or xk0 ":" sy-id eq or)
  ('xt let xt _tk 'xk let xt _tl 'xl let
-  xk "(" sy-id eq (xt sd _cargs 'xt2 let 'xn let cat O-CALL xn 256 mul 2 plus xl _cins cat xt2) (
-  xk T-STR eq (O-PUSHK xt _tb 2 plus 8 mul 3 plus xl _cins cat O-CALL 256 2 plus xl _cins cat xt 1 plus) (
+  xk "(" sy-id eq (xt xd xc _cargs 'xt2 let 'xn let cat O-CALL xn 256 mul 2 plus xl _cins cat xt2) (
+  xk T-STR eq (O-PUSHK xt _tstr xl _cins cat O-CALL 2 256 mul 2 plus xl _cins cat xt 1 plus) (
     "tables are not supported yet" xl _cfail-at) if) if) while) '_csuffix let
 
--- _cprimary: (t depth -- code t')
-('pd let 'pt let pt _tk 'pk let pt _tl 'pl let
+-- _cprimary: (t depth ctx -- code t')
+('pc let 'pd let 'pt let pt _tk 'pk let pt _tl 'pl let
  pk T-NUM eq (O-PUSHK pt _ta 8 mul 2 plus pl _cins pt 1 plus) (
- pk T-STR eq (O-PUSHK pt _tb 2 plus 8 mul 3 plus pl _cins pt 1 plus) (
+ pk T-STR eq (O-PUSHK pt _tstr pl _cins pt 1 plus) (
  pk "nil" kw-id eq (O-PUSHK 0 pl _cins pt 1 plus) (
  pk "false" kw-id eq (O-PUSHK 1 pl _cins pt 1 plus) (
  pk "true" kw-id eq (O-PUSHK 9 pl _cins pt 1 plus) (
- pk T-NAME eq (O-GETG pt _tb 2 plus 8 mul 3 plus pl _cins pt 1 plus pd _csuffix) (
- pk "(" sy-id eq (pt 1 plus 0 pd 1 plus _cexp ")" sy-id "')' to close the parenthesis" _cskip pd _csuffix) (
+ pk T-NAME eq (pt pc 1 _cvar pt 1 plus pd pc _csuffix) (
+ -- A parenthesized call leaves one result: the no-op jump after it keeps
+ -- _clastcall from widening it.
+ pk "(" sy-id eq (pt 1 plus 0 pd 1 plus pc _cexp ")" sy-id "')' to close the parenthesis" _cskip 'pt2 let
+   dup _clastcall (O-JMP 0 pl _cins cat) () if pt2 pd pc _csuffix) (
  pk "..." sy-id eq ("varargs (...) are not supported" pl _cfail-at) (
- pk "function" kw-id eq ("function expressions are not supported yet" pl _cfail-at) (
+ pk "function" kw-id eq (pt 1 plus pc _cfunc) (
  pk "{" sy-id eq ("tables are not supported yet" pl _cfail-at) (
    "an expression" pt _cwant) if) if) if) if) if) if) if) if) if) if) '_cprimary let
 
--- _cexp: (t limit depth -- code t').  Precedence climbing: it takes binary
+-- _cexp: (t limit depth ctx -- code t').  Precedence climbing: it takes binary
 -- operators whose left precedence is above limit.  It recurses once per nesting
 -- level, so depth bounds the C stack.
-('cd let 'cl let 'ct let
+('cc let 'cd let 'cl let 'ct let
  cd 200 gt ("an expression nests deeper than 200 levels" ct _tl _cfail-at) () if
  ct _tk 'UN nth must 'cu let
- cu 0 ge (ct 1 plus UNARY-PREC cd 1 plus _cexp 'cut let cu 0 ct _tl _cins cat cut) (ct cd _cprimary) if
+ cu 0 ge (ct 1 plus UNARY-PREC cd 1 plus cc _cexp 'cut let cu 0 ct _tl _cins cat cut) (ct cd cc _cprimary) if
  (dup _tk 'BIN nth must 'cb let cb 0 gt cb 16 div 15 band cl gt and)
  ('bt let bt _tk 'BIN nth must 'bb let bb 256 div 'bo let bb 15 band 'br let
-  bt 1 plus br cd 1 plus _cexp 'rt let 'rc let
+  bt 1 plus br cd 1 plus cc _cexp 'rt let 'rc let
   bo O-JFK eq bo O-JTK eq or (bo rc len bt _tl _cins cat rc cat) (rc cat bo 0 bt _tl _cins cat) if rt) while) '_cexp let
 
--- _cstat: (t -- code t').  One statement.
-('s0 let s0 _tk 's0k let
- s0k ";" sy-id eq ([] s0 1 plus) (
- s0k T-NAME eq s0k "(" sy-id eq or (
-   s0 0 _cprimary 's1 let 'sc let
-   sc len 3 sub 'sc nth must O-CALL eq (sc len 2 sub 'si let sc si si 'sc nth must 1 sub set must s1) ("a statement" s0 _cwant) if) (
-   "a statement" s0 _cwant) if) if) '_cstat let
+-- _cfunc: (t ctx -- code t').  t is at the parameters' `(`.  The code jumps
+-- over the function's body, whose first instruction is its header
+-- [nparams nslots nups], then makes a closure of it.
+-- The closure's descriptors follow CLOSURE: CAPTL for a local of this
+-- function, CAPTU for one of its own outer locals, one per outer local the new
+-- function uses, in its order.
+('fc let 'ft let
+ ft "(" sy-id "'(' to start the parameters" _cskip 'fp let
+ [0 0] C-LVL 'fc nth must 1 plus push 0 push fc C-SCOPE drop-n cat 'fc0 let
+ fp _tk T-NAME eq (
+   fc0 fp _cdeclare drop fp 1 plus 1
+   (over _tk "," sy-id eq) ('fnn let 'fp1 let fp1 1 plus T-NAME "a parameter name after ','" _cskip 'fp2 let fp2 1 sub _cdeclare drop fp2 fnn 1 plus) while)
+   (fc0 fp 0) if
+ 'np let 'fp3 let 'fc1 let
+ fp3 _tk "..." sy-id eq ("varargs (...) are not supported" fp3 _tl _cfail-at) () if
+ fp3 ")" sy-id "')' to close the parameters" _cskip fc1 _cblock 'fc2 let 'fb let 'body let
+ fb "end" kw-id "'end' to close the function" _cskip 'fe let
+ fc1 len np 3 mul sub 'pb let
+ 0 np range [] ('k let pb k 3 mul plus 'pe let O-PARAM pe 1 plus 'fc1 nth must pe 'fc1 nth must 65536 mul plus ft _tl _cins cat) fold
+ body cat O-RET 0 fb _tl _cins cat _cfin 'fups let 'full let
+ [] np push C-NL 'fc2 nth must push fups len push full cat 'fcode let
+ C-LVL 'fc nth must 'flv let
+ O-FUNC fcode len ft _tl _cins fcode cat O-CLOSURE 0 fcode len 3 plus sub ft _tl _cins cat
+ fups [] ('fk let fc fk _cfindtok 'dlv let 'dsl let
+   dlv flv eq (O-CAPTL dsl fk 65536 mul plus) (O-CAPTU fk 65536 mul) if ft _tl _cins cat) fold cat fe) '_cfunc let
 
-[] 0 (dup _tk T-EOF eq not) ('c0 let c0 _cstat 'c1 let cat c1) while
-'cend let O-RET 0 cend _tl _cins cat 'code let
+
+-- ===== statements =====
+-- Each takes `t ctx` and leaves `code t' ctx'`.
+('k let k "end" kw-id eq k "else" kw-id eq or k "elseif" kw-id eq or k "until" kw-id eq or k T-EOF eq or) '_cbend let
+
+-- _cstats: statements up to the end of the block, in the block's own scope.
+'_cstat [int int 'list tag] [int 'list tag int int 'list tag] effect
+('bc let 'bt let [] bt bc
+ (over _tk _cbend not)
+ ('bc2 let 'bt2 let bt2 bc2 _cstat 'bc3 let 'bt3 let cat bt3 bc3) while) '_cstats let
+('kc let 'kt let kt kc _cstats 'kc2 let kc kc2 _ckeep) '_cblock let
+-- _cline: (t ctx line -- code t' ctx').  pico8's one-line bodies: statements while they start on that line.
+('ll let 'lc let 'lt5 let [] lt5 lc
+ (over 'lt9 let lt9 _tk _cbend not lt9 _tl ll eq and)
+ ('lc2 let 'lt2 let lt2 lc2 _cstat 'lc3 let 'lt3 let cat lt3 lc3) while 'lc4 let lc lc4 _ckeep) '_cline let
+
+('rc let 'rt let rt 1 plus _tk 'rk let
+ rk _cbend rk ";" sy-id eq or ([] rt 1 plus) (rt 1 plus rc -1 0 _cexplist 'rt2 let drop drop rt2) if 'rt3 let 'rcode let
+ rt3 _tk ";" sy-id eq (rt3 1 plus) (rt3) if 'rt4 let
+ rt4 _tk _cbend not ("the end of the block after 'return'" rt4 _cwant) () if
+ rcode O-RET 0 rt _tl _cins cat rt4 rc) '_creturn let
+
+('lc let 'lt5 let lt5 1 plus 'l1 let
+ l1 _tk "function" kw-id eq (
+   l1 1 plus 'ln1 let ln1 T-NAME "a name after 'local function'" _cskip drop
+   lc ln1 _cdeclare 'lsl let 'lc2 let
+   lsl ln1 65536 mul plus 'lsa let
+   O-PUSHK 0 ln1 _tl _cins O-DECL lsa ln1 _tl _cins cat
+   ln1 1 plus lc2 _cfunc 'lt2 let cat O-SETL lsa ln1 _tl _cins cat lt2 lc2) (
+   l1 T-NAME "a name after 'local'" _cskip 'l2 let [] l1 push l2
+   (dup _tk "," sy-id eq) ('n1 let n1 1 plus T-NAME "a name after ','" _cskip 'n3 let n3 1 sub push n3) while
+   'tn let 'names let names len 'nn let
+   tn _tk "<" sy-id eq ("local attributes (<const>, <close>) are not supported" tn _tl _cfail-at) () if
+   tn _tk "=" sy-id eq (tn 1 plus lc nn 0 _cexplist 'lt3 let drop drop lt3) (O-PUSHK nn tn _tl _crep tn) if 'lt4 let 'lcode let
+   C-NA 'lc nth must 'ls0 let
+   lcode 0 nn range reverse [] ('k let O-DECL ls0 k plus k 'names nth must 65536 mul plus l1 _tl _cins cat) fold cat lt4
+   names lc (_cdeclare drop) fold) if) '_clocal let
+
+('fc let 'ft let ft 1 plus 'fnm let fnm T-NAME "a name after 'function'" _cskip 'fn2 let
+ fn2 _tk "." sy-id eq fn2 _tk ":" sy-id eq or ("functions in tables are not supported yet" fn2 _tl _cfail-at) () if
+ fn2 fc _cfunc 'fn3 let fnm fc 0 _cvar cat fn3 fc) '_cfuncstat let
+
+-- while: cond JF body JMP; a break jumps past the JMP.
+('wc let 'wt let wt _tl 'wl let wt 1 plus 0 0 wc _cexp 'wt2 let 'cond let
+ wc C-LOOP 1 set must 'wcl let
+ wt2 _tk "do" kw-id eq (
+   wt2 1 plus wcl _cblock 'wc2 let "end" kw-id "'end' to close 'while'" _cskip wc2) (
+   wt 1 plus _tk "(" sy-id eq not ("'do' after the condition" wt2 _cwant) () if
+   wt2 wcl wl _cline) if 'wc3 let 'wt3 let 3 _cresolve 'body let
+ cond O-JF body len 3 plus wl _cins cat body cat O-JMP 0 cond len body len plus 6 plus sub wl _cins cat
+ wt3 wc wc3 _ckeep) '_cwhile let
+
+-- repeat: body cond JF back; until sees the body's locals.
+('pc let 'pt let pt _tl 'pl let pt 1 plus pc C-LOOP 1 set must _cstats 'pc2 let 'pt2 let 'body let
+ pt2 "until" kw-id "'until' to close 'repeat'" _cskip 0 0 pc2 _cexp 'pt3 let 'cond let
+ body cond len 3 plus _cresolve cond cat O-JF 0 body len cond len plus 3 plus sub pl _cins cat pt3 pc pc2 _ckeep) '_crepeat let
+
+-- if: cond JF then-block [JMP rest] rest.  elseif recurses, once per clause.
+'_cif [int int 'list tag] [int 'list tag int int 'list tag] effect
+('ic let 'it let it _tl 'il0 let it 1 plus 0 0 ic _cexp 'it2 let 'cond let
+ it2 _tk "then" kw-id eq (
+   it2 1 plus ic _cblock 'ic2 let 'it3 let
+   it3 _tk 'ik let
+   ik "elseif" kw-id eq (it3 ic2 _cif) (
+   ik "else" kw-id eq (it3 1 plus ic2 _cblock 'ic3 let "end" kw-id "'end' to close 'if'" _cskip ic3) (
+     [] it3 "end" kw-id "'end' to close 'if'" _cskip ic2) if) if) (
+   it 1 plus _tk "(" sy-id eq not ("'then' after the condition" it2 _cwant) () if
+   it2 ic il0 _cline 'ic2 let 'it3 let
+   it3 _tk "else" kw-id eq it3 _tl il0 eq and (it3 1 plus ic2 il0 _cline) ([] it3 ic2) if) if
+ 'ic4 let 'it4 let 'rcode2 let 'tcode let
+ tcode rcode2 len 0 eq () (O-JMP rcode2 len il0 _cins cat) if 'tcode2 let
+ cond O-JF tcode2 len il0 _cins cat tcode2 cat rcode2 cat it4 ic ic4 _ckeep) '_cif let
+
+-- for v = a, b, c: three hidden slots (counter, limit, step), then v.
+--   a b c FORPREP s; top: FORCHK s; JF end; GETL s; SETL v; body; FORINC s; JF end; JMP top; end:
+('oc let 'ot let ot _tl 'ol let ot 1 plus 'ov let ov T-NAME "a name after 'for'" _cskip 'oe let
+ oe _tk "=" sy-id eq not ("generic for (in) is not supported yet" ol _cfail-at) () if
+ oe 1 plus 0 0 oc _cexp "," sy-id "',' after the for's start" _cskip 0 0 oc _cexp 'o2 let cat
+ o2 _tk "," sy-id eq (o2 1 plus 0 0 oc _cexp 'o3 let cat o3) (O-PUSHK 65536 _num ol _cins cat o2) if 'ot2 let 'init let
+ ot2 _tk "do" kw-id eq not ("'do' after the for's bounds" ot2 _cwant) () if
+ oc C-LOOP 1 set must 0 _cdeclare 'os let 0 _cdeclare drop 0 _cdeclare drop ov _cdeclare 'vs let 'oc1 let
+ ot2 1 plus oc1 _cblock 'oc2 let "end" kw-id "'end' to close 'for'" _cskip 'ot3 let 9 _cresolve 'body let
+ init O-FORPREP os ol _cins cat O-FORCHK os ol _cins cat O-JF body len 15 plus ol _cins cat
+ O-GETL os ol _cins cat O-DECL vs ov 65536 mul plus ol _cins cat body cat O-FORINC os ol _cins cat O-JF 3 ol _cins cat
+ O-JMP 0 body len 21 plus sub ol _cins cat ot3 oc oc2 _ckeep) '_cfor let
+
+-- An expression statement: a call, an assignment, or pico8's `a += b`.
+-- An assignment's targets are names, each compiled as its one GET instruction.
+('ec let 'et let et 0 ec _cprimary 'et2 let 'ecode let et2 _tk 'ek let et _tl 'el let
+ ek "=" sy-id eq ek "," sy-id eq or (
+   et _tk T-NAME eq ecode len 3 eq and not ("a name before '='" et _cwant) () if
+   [] et push et2
+   (dup _tk "," sy-id eq) ('a1 let a1 1 plus 'a2 let a2 0 ec _cprimary 'a3 let len 3 eq a2 _tk T-NAME eq and not ("a name after ','" a2 _cwant) () if a2 push a3) while
+   'a4 let 'ts let ts len 'tn let
+   a4 "=" sy-id "'=' in the assignment" _cskip ec tn 0 _cexplist 'a5 let drop drop
+   ts reverse [] ('k let k ec 0 _cvar cat) fold cat a5 ec) (
+ ek 'CMPD nth must 'co let co 0 gt (
+   et _tk T-NAME eq ecode len 3 eq and not ("a name before " et2 _tdesc cat et _cwant) () if
+   ecode et2 1 plus 0 0 ec _cexp 'a6 let cat co 0 el _cins cat et ec 0 _cvar cat a6 ec) (
+ ecode _clastcall (ecode 0 _cnres et2 ec) ("a statement" et _cwant) if) if) if) '_cexpstat let
+
+('sc let 'st let st _tk 'sk let st _tl 'sl let
+ sk ";" sy-id eq ([] st 1 plus sc) (
+ sk "local" kw-id eq (st sc _clocal) (
+ sk "function" kw-id eq (st sc _cfuncstat) (
+ sk "return" kw-id eq (st sc _creturn) (
+ sk "break" kw-id eq (C-LOOP 'sc nth must 0 eq ("break outside a loop" sl _cfail-at) () if O-BREAK 0 sl _cins st 1 plus sc) (
+ sk "do" kw-id eq (st 1 plus sc _cblock 'dc let "end" kw-id "'end' to close 'do'" _cskip dc) (
+ sk "while" kw-id eq (st sc _cwhile) (
+ sk "repeat" kw-id eq (st sc _crepeat) (
+ sk "if" kw-id eq (st sc _cif) (
+ sk "for" kw-id eq (st sc _cfor) (
+ sk "goto" kw-id eq sk "::" sy-id eq or ("goto and labels are not supported" sl _cfail-at) (
+ -- pico8's `?a, b` is print(a, b), the builtin.
+ sk "?" sy-id eq (O-PUSHK 14 sl _cins st 1 plus sc -1 0 _cexplist 'qt let swap 2 mul plus 'qn let cat O-CALL qn 256 mul 1 plus sl _cins cat qt sc) (
+   st sc _cexpstat) if) if) if) if) if) if) if) if) if) if) if) if) '_cstat let
+
+
+-- The main chunk is a function's body with no parameters.
+0 [0 0 0 0] _cstats 'mc let 'mt let 'mcode let
+mt _tk T-EOF eq not ("the end of the input" mt _cwant) () if
+mcode O-RET 0 mt _tl _cins cat _cfin len 0 eq () ("the main chunk uses an outer local" fail) if 'code let
+code len 16777216 ge ("lua: the program compiles to more than 16777216 ints" fail) () if
+C-NL 'mc nth must 'MAIN-NL let
 
 -- ===== machine =====
 0 'PC-I let     -- index of the next instruction in code
@@ -303,11 +557,26 @@ toks lua-index 'tix let
 2 'RUN-I let    -- 1 until RET leaves the main chunk
 3 'STRN-I let   -- runtime strings made so far
 4 'STEPS-I let  -- instructions run
-16 'STK-B let  4096 'STK-N let
-STK-B STK-N plus 'STATE-N let
+5 'ARGI-I let   -- scratch: the argument print is at
+6 'BASE-I let   -- the running function's slot 0
+7 'FTOP-I let   -- past its slots: a statement's values start here
+8 'CSP-I let    -- next free call record
+9 'MRET-I let   -- how many results the last all-results call left
+10 'CA-I let  11 'CB-I let  12 'CN-I let   -- scratch for _mcopy and _mnil
+13 'CLOS-I let  -- the running closure's id, 0 when it takes no outer locals
+14 'CLOSN-I let -- closure ids made so far
+15 'CELLN-I let -- cells made so far
+16 'UI-I let    -- scratch: CLOSURE's descriptor
+32 'STK-B let  16384 'STK-N let
+-- A call record is [return-pc base ftop callee nres+1 closure].
+STK-B STK-N plus 'CS-B let  6 'CS-W let  1000 'CS-MAX let
+CS-B CS-W CS-MAX mul plus 'STATE-N let
 -- REVIEW: A run stops after 100,000,000 instructions. Alternative: no bound; a cart that loops forever then hangs make test.
 100000000 'MAX-STEPS let
 1000000 'MAX-STRS let
+-- REVIEW: No garbage collector, so cells and closures that take outer locals count against a bound. Alternative: mark and sweep the heap, about as much code again as the VM.
+1000000 'MAX-CELLS let  1000000 'MAX-CLOS let
+16777216 'PROTO-SPAN let   -- a closure's payload is id*PROTO-SPAN + its header's index in code
 
 -- The stack is `machine heap strs` from here on: heap is a dict of ints (globals,
 -- and later tables), strs a dict of runtime strings keyed by their 4-byte number.
@@ -318,7 +587,7 @@ STK-B STK-N plus 'STATE-N let
 -- _rfail: (msg -- ).  Dies naming the line of the instruction that runs.
 ('rm let PC-I mget 1 sub 'code nth must 'rl let "lua: line " rl int-str cat ": " cat rm cat fail) '_rfail let
 
-('pv let SP-I mget 'ps let ps STK-B STK-N plus ge ("stack overflow: more than 4096 values" _rfail) () if
+('pv let SP-I mget 'ps let ps STK-B STK-N plus ge ("stack overflow: more than 16384 values" _rfail) () if
  ps pv mset SP-I ps 1 plus mset) 'vpush let
 (SP-I mget 1 sub 'qs let SP-I qs mset qs mget) 'vpop let
 
@@ -326,7 +595,6 @@ STK-B STK-N plus 'STATE-N let
 ('v let v 7 band 2 eq) '_isnum let
 ('v let v 7 band 3 eq) '_isstr let
 (2 sub 8 div) '_raw let
-(8 mul 2 plus) '_num let
 ('v let v 0 eq v 1 eq or) '_falsy let
 (2147483648 plus 4294967295 band 2147483648 sub) '_wrap let
 -- _fdiv: (x d -- q).  Floor division; slap's div truncates.
@@ -374,11 +642,16 @@ STK-B STK-N plus 'STATE-N let
 ('gk let (gk of {'ok () 'no (drop 0)} case) dip swap) 'hget let
 ('sv2 let 'sk2 let (sk2 sv2 insert) dip) 'hset let
 1 'GLOBALS let
+-- A cell's value lives at heap key [7 id]; a closure's i-th outer cell at [5 id i].
+('ci let [7] ci _ikey cat) '_cellkey let
+('cv0 let CELLN-I mget 1 plus 'cn0 let cn0 MAX-CELLS gt ("more than 1000000 cells made" _rfail) () if
+ CELLN-I cn0 mset cn0 _cellkey cv0 hset cn0 8 mul 7 plus) '_cellnew let
+(7 sub 8 div _cellkey hget) '_cellget let
+('cw let 7 sub 8 div _cellkey cw hset) '_cellset let
+('ui0 let 'uc0 let [5] uc0 _ikey cat ui0 push) '_upkey let
 
 -- ===== instructions =====
 -- Each takes its arg; the stack below is `machine heap strs`.
-5 'ARGI-I let   -- scratch: the argument print is at
-('nn let nn 0 gt (0 vpush nn 1 sub _nils) () if) '_nils let
 (vpop 'nb let vpop 'na let
  na _isnum not ("attempt to perform arithmetic on a " na _tname cat " value" cat _rfail) () if
  nb _isnum not ("attempt to perform arithmetic on a " nb _tname cat " value" cat _rfail) () if
@@ -399,18 +672,79 @@ STK-B STK-N plus 'STATE-N let
 (65536 _fdiv) '_int let
 ('ja let PC-I mget ja plus 'jt let PC-I jt mset) '_jump let
 
--- CALL's arg is nargs*256 + nres+1.  print is builtin 1.
-('ca let ca 256 div 'cn let ca 255 band 1 sub 'cr let
+-- _mcopy: (src dst n -- ).  Copies n cells upward; dst <= src.
+('cn let 'cd let 'cs let CA-I cs mset CB-I cd mset CN-I cn mset
+ (CN-I mget 0 gt)
+ (CA-I mget 'ca let CB-I mget 'cb let ca mget 'cv let cb cv mset
+  CA-I ca 1 plus mset CB-I cb 1 plus mset CN-I mget 1 sub 'cn2 let CN-I cn2 mset) while) '_mcopy let
+-- _mnil: (a n -- ).  Sets n cells from a to nil.
+('nn let 'na let CA-I na mset CN-I nn mset
+ (CN-I mget 0 gt)
+ (CA-I mget 'ca let ca 0 mset CA-I ca 1 plus mset CN-I mget 1 sub 'cn2 let CN-I cn2 mset) while) '_mnil let
+-- _results: (at n nres -- ).  n results sit at `at`; leave nres of them, padding
+-- with nil, or all n for nres -1, which MRET then counts.
+('rr let 'rn let 'ra let
+ rr 0 lt (MRET-I rn mset SP-I ra rn plus mset) (
+   rn rr lt (ra rn plus rr rn sub _mnil) () if SP-I ra rr plus mset) if) '_results let
+
+-- CALL's arg is nargs*256 + nres+1, where nargs is fixed*2 + dyn: with dyn 1
+-- the last argument was a call that left MRET values.  print is builtin 1.
+('ca let ca 256 div 'cx let ca 255 band 1 sub 'cr let
+ cx 2 div 'ck let cx 1 band (MRET-I mget ck plus) (ck) if 'cn let
  SP-I mget cn sub 1 sub 'cf let cf mget 'fv let
  fv 7 band 6 eq (
    ARGI-I 0 mset
    (ARGI-I mget cn lt)
    (ARGI-I mget 'ai let ai 0 gt ("\t" stdout-write) () if cf 1 plus ai plus mget _tostr stdout-write ARGI-I ai 1 plus mset) while
    "\n" stdout-write
-   SP-I cf mset cr _nils)
-   ("attempt to call a " fv _tname cat " value" cat _rfail) if) '_call let
+   cf 0 cr _results) (
+ fv 7 band 5 eq (
+   fv 5 sub 8 div 'fpay let fpay PROTO-SPAN mod 'fa let fpay PROTO-SPAN div 'fcl let
+   fa 'code nth must 'np let fa 1 plus 'code nth must 'nl let
+   CSP-I mget 'cp let cp CS-B CS-W CS-MAX mul plus ge ("stack overflow: more than 1000 nested calls" _rfail) () if
+   PC-I mget 'rpc let BASE-I mget 'rbase let FTOP-I mget 'rftop let CLOS-I mget 'rcl let
+   cp rpc mset cp 1 plus rbase mset cp 2 plus rftop mset cp 3 plus cf mset cp 4 plus cr 1 plus mset cp 5 plus rcl mset
+   CSP-I cp CS-W plus mset
+   cf 1 plus 'nb let
+   cn np lt (nb cn plus np cn sub _mnil) () if
+   nb nl plus STK-B STK-N plus gt ("stack overflow: more than 16384 values" _rfail) () if
+   BASE-I nb mset FTOP-I nb nl plus mset SP-I nb nl plus mset PC-I fa 3 plus mset CLOS-I fcl mset)
+   ("attempt to call a " fv _tname cat " value" cat _rfail) if) if) '_call let
 
-[ (drop RUN-I 0 mset)                                                           -- RET
+-- RET: the results are the values above the function's slots.
+(drop FTOP-I mget 'rf let SP-I mget rf sub 'rn let CSP-I mget 'cp let
+ cp CS-B eq (RUN-I 0 mset) (
+   cp CS-W sub 'crec let CSP-I crec mset
+   crec mget 'rpc let crec 1 plus mget 'rbase let crec 2 plus mget 'rftop let crec 3 plus mget 'rcf let crec 4 plus mget 1 sub 'rnres let crec 5 plus mget 'rcl let
+   rf rcf rn _mcopy rcf rn rnres _results
+   PC-I rpc mset BASE-I rbase mset FTOP-I rftop mset CLOS-I rcl mset) if) '_ret let
+
+-- CLOSURE: arg is the header's offset; one descriptor per outer local follows.
+('cl let PC-I mget 'cpc let cpc cl plus 'fa let fa 2 plus 'code nth must 'nu let
+ nu 0 eq (fa) (
+   CLOSN-I mget 1 plus 'cid let cid MAX-CLOS gt ("more than 1000000 closures made" _rfail) () if CLOSN-I cid mset
+   UI-I 0 mset
+   (UI-I mget nu lt)
+   (UI-I mget 'ui let cpc ui 3 mul plus 'dp let dp 'code nth must 'dop let dp 1 plus 'code nth must 'darg let
+    dop O-CAPTL eq (BASE-I mget darg plus 'dsl let dsl mget) (CLOS-I mget 'pcl let pcl darg _upkey hget) if 'cell let
+    cid ui _upkey cell hset UI-I ui 1 plus mset) while
+   PC-I cpc nu 3 mul plus mset
+   cid PROTO-SPAN mul fa plus) if 8 mul 5 plus vpush) '_closure let
+
+-- FORPREP pops step, limit and start into slots s..s+2, which must hold numbers.
+('fs let BASE-I mget fs plus 'fb let vpop 'fst let vpop 'flim let vpop 'fi let
+ fi _isnum not ("'for' start must be a number" _rfail) () if
+ flim _isnum not ("'for' limit must be a number" _rfail) () if
+ fst _isnum not ("'for' step must be a number" _rfail) () if
+ fst _raw 0 eq ("'for' step is zero" _rfail) () if
+ fb fi mset fb 1 plus flim mset fb 2 plus fst mset) '_forprep let
+('fs let BASE-I mget fs plus 'fb let fb mget _raw 'fi let fb 1 plus mget _raw 'fl let fb 2 plus mget _raw 'fst let
+ fst 0 gt (fi fl le) (fi fl ge) if (9) (1) if vpush) '_forchk let
+-- FORINC leaves false when the counter would pass 32767 or -32768: pico8's numbers wrap.
+('fs let BASE-I mget fs plus 'fb let fb mget _raw 'fi let fb 2 plus mget _raw 'fst let fi fst plus 'fnx let
+ fnx fnx _wrap eq (fnx _num 'fv let fb fv mset 9) (1) if vpush) '_forinc let
+
+[ (_ret)                                                                        -- RET
   (drop vpop drop)                                                               -- POP
   (vpush)                                                                        -- PUSHK
   ('ga let GLOBALS ga _hkey hget vpush)                                          -- GETG
@@ -455,6 +789,24 @@ STK-B STK-N plus 'STATE-N let
   (drop vpop 'lv let lv _isstr (lv _sbytes len 65536 mul _num vpush) (
      "attempt to get the length of a " lv _tname cat " value" cat _rfail) if)   -- LEN
   (drop _num1 -1 bxor _num vpush)                                                -- BNOT
+  ('gl let BASE-I mget gl plus 'ga let ga mget vpush)                            -- GETL
+  ('sl let vpop 'sv let BASE-I mget sl plus 'sa let sa sv mset)                 -- SETL
+  (_closure)                                                                     -- CLOSURE
+  (drop "a break outside a loop reached the machine" _rfail)                     -- BREAK
+  (_forprep)                                                                     -- FORPREP
+  (_forchk)                                                                      -- FORCHK
+  (_forinc)                                                                      -- FORINC
+  (_jump)                                                                        -- FUNC
+  ('gu let CLOS-I mget 'gc let gc gu _upkey hget _cellget vpush)                -- GETU
+  ('su let vpop 'sv let CLOS-I mget 'sc let sc su _upkey hget sv _cellset)     -- SETU
+  (drop "a closure's descriptor reached the machine" _rfail)                     -- CAPTL
+  (drop "a closure's descriptor reached the machine" _rfail)                     -- CAPTU
+  (drop "a declaration was not finished by _cfin" _rfail)                       -- DECL
+  (drop "a parameter was not finished by _cfin" _rfail)                         -- PARAM
+  ('gl let BASE-I mget gl plus 'ga let ga mget _cellget vpush)                   -- GETLC
+  ('sl let vpop 'sv let BASE-I mget sl plus 'sa let sa mget sv _cellset)        -- SETLC
+  ('sl let vpop _cellnew 'sv let BASE-I mget sl plus 'sa let sa sv mset)        -- DECLC
+  ('sl let BASE-I mget sl plus 'sa let sa mget _cellnew 'sv let sa sv mset)     -- BOXL
 ] 'OPTAB let
 OPTAB len OPS len eq () ("OPTAB and OPS differ in length" fail) if
 
@@ -465,7 +817,10 @@ OPTAB len OPS len eq () ("OPTAB and OPS differ in length" fail) if
  STEPS-I ns 1 plus mset
  arg op 'OPTAB nth must apply) 'step let
 
-[] STATE-N (0 push) repeat SP-I STK-B set must RUN-I 1 set must
+MAIN-NL STK-N gt ("lua: the main chunk needs more than 16384 local slots" fail) () if
+[] STATE-N (0 push) repeat
+ BASE-I STK-B set must FTOP-I STK-B MAIN-NL plus set must SP-I STK-B MAIN-NL plus set must
+ CSP-I CS-B set must RUN-I 1 set must
 dict [0 0 0 1 3] "print" cat 14 insert
 dict
 (RUN-I mget) (step) while
