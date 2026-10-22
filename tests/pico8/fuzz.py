@@ -5,7 +5,8 @@ test, since it needs pc.
 
     python3 tests/pico8/fuzz.py [carts] [seed]
 
-Each cart printh()s random expressions over edge operands in tostr's hex form,
+Each cart printh()s random expressions over edge operands, in tostr's hex form
+and in decimal,
 then draws with random arguments for one frame (clip stays on the screen:
 zepto8 keeps clip bounds in bytes, which wrap and then fill past a row's end); the output is the printh lines,
 then the screen. Differing carts stay in the scratch directory it prints."""
@@ -134,7 +135,7 @@ def cart(rng):
         "".join(rng.choice(["00", "01", "02", "03"]) for _ in range(8)) + "00" * 120
         for _ in range(4)
     )
-    lines = [f"printh(tostr({expr(rng)}, 1))" for _ in range(40)]
+    lines = [f"printh(tostr({expr(rng)}, 1))" if k % 2 else f"printh({expr(rng)})" for k in range(40)]
     draws = [draw(rng) for _ in range(30)]
     return (
         "pico-8 cartridge // http://www.pico-8.com\nversion 42\n__lua__\n"

@@ -824,12 +824,13 @@ FLAGS-B 256 plus 'DPAL-B let
 ('nb let STRN-I mget 'nn let nn MAX-STRS ge ("more than 1000000 strings made" _rfail) () if
  STRN-I nn 1 plus mset nn _ikey nb insert -1 nn sub 8 mul 3 plus) '_snew let
 
--- _numstr: (raw -- bytes).  pico8's tostr: the integer part, then up to 4 decimals.
--- REVIEW: Decimals round to the nearest 1/10000. Alternative: truncate. It needs checking against pico8 itself.
+-- _numstr: (raw -- bytes).  As z8lua prints a number: C's %1.4f, which rounds a
+-- tie to even and keeps the sign of a negative, then without trailing zeros or point.
 ('nr let nr 0 lt (0 nr sub) (nr) if 'na let
- na 65535 band 10000 mul 32768 plus 65536 div 'nf let
+ na 65535 band 10000 mul 'nm let nm 65536 div 'nq let nm 65536 mod 'nrem let
+ nrem 32768 gt nrem 32768 eq nq 2 mod 1 eq and or (nq 1 plus) (nq) if 'nf let
  na 65536 div nf 10000 eq (1 plus 0) (nf) if 'nf2 let 'ni let
- nr 0 lt nf2 0 gt ni 0 gt or and ("-") ("") if ni int-str cat
+ nr 0 lt ("-") ("") if ni int-str cat
  nf2 0 eq () (
    "." cat nf2 10000 plus int-str 1 drop-n
    (dup len 0 gt (dup len 1 sub peek must 48 eq) (0) if) (pop must drop) while cat) if) '_numstr let

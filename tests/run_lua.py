@@ -87,6 +87,7 @@ PICO8 = [
     ("flags are bytes", "fset(5, 8, true) print(fget(5))", "0\n"),
     ("coordinates wrap at int16", "camera(-17, -25) rectfill(128, 32767, 53, 114, 1) print(pget(60, 60))", "1\n"),
     ("api numbers read like lua_tonumber", "print(band(true, 3), flr('2.5'), min(nil, '7'))", "0\t2\t0\n"),
+    ("numbers print as %1.4f does", "print(0x0.08, -0x0.0003, 3.03125, 0x0.0001)", "0.0312\t-0\t3.0312\t0\n"),
     ("question print", "?1, 'two'\n? 3", "1\ttwo\n3\n"),
 ]
 # Each program is a separate ./slap; they run in parallel and are checked in order.
