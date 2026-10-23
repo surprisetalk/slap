@@ -36,21 +36,29 @@
       opens a general thing. A file app opens one specific thing, as viewer
       and editor; with no subject it opens the last file; it saves by tags
       only.
-  1. music, then shell (the slap REPL), home (launcher, search), ware
-     (registries; decide later whether you publish your own).
-  2. Then, unsorted: stuff (files by tag, libraries; SQL or FQL), config,
+  1. music: a primitive `play` (bytes of 16-bit stereo PCM at 44.1 kHz)
+     over SDL_QueueAudio, a no-op sink under `--headless`, and a
+     `queued` word for the bytes still waiting. Decode WAV in slap
+     (examples/lib/wav.slap, as tga.slap); MP3 and FLAC through vendored
+     dr_mp3 and dr_flac (public domain, one header each) as primitives.
+     The app lists a directory's tracks and plays them in order; the
+     CBOR state keeps the track and offset.
+  2. shell (the slap REPL in a window, typed through 'text), home
+     (launcher, search), ware (registries; decide later whether you
+     publish your own).
+  3. Then, unsorted: stuff (files by tag, libraries; SQL or FQL), config,
      web (html/css), code, slides, prose (markdown, vim/leap, minimap,
      image preview, linters, AI editing), sheet, email, phone, chat, video,
      photo, camera, print, map, steno, cast. Unplaced: query, debug, talk,
      claude, hypercard.
-  3. Batteries to choose from as apps need them: sized ints and floats,
+  4. Batteries to choose from as apps need them: sized ints and floats,
      slices, `dice`, sets, SIMD, GPU, go-like threads with input queues, a
      charm-like UI framework with a WYSIWYG editor, a graphics stack
      language, a query language. Each: expect.slap, then TYPES, then readme.
-  4. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
+  5. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
      deep keyframes, and every pass is data-parallel. Time the ticks
      first, then cut the tricks that no longer pay.
-  5. Move the blog and all projects into sauce. taylor.town serves its
+  6. Move the blog and all projects into sauce. taylor.town serves its
      pages (indexed) and assets (not indexed) from sauce.
 
 ## Blocked on you
