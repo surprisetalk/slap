@@ -1411,7 +1411,8 @@ static void ty_undefined(int from) {
 
 /* ---- inference ---- */
 static int ty_cur, ty_errors;
-static int ty_on[16], ty_on_line[16], ty_on_mouse[16], ty_on_n, ty_shown;
+/* ty_on_kind: what a handler takes: 0 an int, 1 x and y, 2 w and h, 3 a str. */
+static int ty_on[16], ty_on_line[16], ty_on_kind[16], ty_on_n, ty_shown;
 static void ty_err(int line, const char *fmt, ...) {
     ty_errors++; int fid = LOC_FID(current_loc); const char *f = src_files[fid];
     va_list ap; va_start(ap, fmt);
@@ -1797,25 +1798,28 @@ static void ty_range(Token *toks, int i, int end) {
                 int ev = ty_pop(), h = ty_pop(), l = ty_sym_name(ev);
                 if (l < 0) { ty_err(line, "on needs its event written right before it, as in `(…) 'tick on`."); break; }
                 const char *en = sym_name(l);
-                if (strcmp(en, "tick") && strcmp(en, "keydown") && strcmp(en, "keyup") && strcmp(en, "mousedown") && strcmp(en, "mouseup") && strcmp(en, "mousemove") && strcmp(en, "resize")) {
-                    ty_err(line, "on has no event '%s. The events are 'tick 'keydown 'keyup 'mousedown 'mouseup 'mousemove 'resize.", en); break; }
+                if (strcmp(en, "tick") && strcmp(en, "keydown") && strcmp(en, "keyup") && strcmp(en, "text") && strcmp(en, "mousedown") && strcmp(en, "mouseup") && strcmp(en, "mousemove") && strcmp(en, "resize")) {
+                    ty_err(line, "on has no event '%s. The events are 'tick 'keydown 'keyup 'text 'mousedown 'mouseup 'mousemove 'resize.", en); break; }
                 if (ty_body_depth) { ty_err(line, "on registers a handler for the whole program, so it runs at the top level, not inside a body."); break; }
                 if (ty_shown) { ty_err(line, "this handler is registered after show starts the event loop, so it never runs. Register it before show."); break; }
                 if (ty_on_n == 16) die("type checker: more than 16 'on' handlers");
-                ty_on[ty_on_n] = h; ty_on_line[ty_on_n] = line; ty_on_mouse[ty_on_n++] = !strcmp(en, "resize") ? 2 : strncmp(en, "mouse", 5) == 0; break;
+                ty_on[ty_on_n] = h; ty_on_line[ty_on_n] = line; ty_on_kind[ty_on_n++] = !strcmp(en, "text") ? 3 : !strcmp(en, "resize") ? 2 : strncmp(en, "mouse", 5) == 0; break;
             }
             if (w == S_SHOW) {
-                /* Every handler and render run on the stack below show: a handler takes the event's ints
-                   and leaves the stack as it found it; render takes a copy of the top value. show never returns. */
+                /* Every handler and render run on the stack below show: a handler takes the event's ints,
+                   or 'text's str, and leaves the stack as it found it; render takes a copy of the top value.
+                   show never returns. */
                 if (ty_body_depth) ty_err(line, "show starts the event loop and never returns, so it runs at the top level, after every handler.");
                 ty_runs("show", line); ty_shown = 1;
                 int render = ty_pop(), below = ty_cur, top = ty_pop(); ty_cur = below;
                 for (int x = ty_find(below), hops = -ty_n; ty[x].kind == K_SCONS; x = ty_rest(x, &hops))
                     if (ty_need(ty[x].a, P_COPY)) { ty_err(line, "show ends the program when its window closes, so a value it leaves on the stack is never freed: %s.", ty_why); break; }
                 for (int k = 0; k < ty_on_n; k++) {
-                    int in = ty_new(K_SCONS, ty_new(K_INT, 0, 0, 0), below, 0);
-                    if (ty_on_mouse[k]) in = ty_new(K_SCONS, ty_new(K_INT, 0, 0, 0), in, 0);
-                    if (ty_unify(ty_on[k], ty_new(K_FN, in, below, 0))) ty_err(ty_on_line[k], "this handler must take the event's %s and leave the stack below show as it was: %s.", ty_on_mouse[k] ? (ty_on_mouse[k] == 2 ? "w and h" : "x and y") : "int", ty_why);
+                    int ev = ty_new(K_INT, 0, 0, 0);
+                    if (ty_on_kind[k] == 3) { ev = ty_new(K_LIST, ev, 0, 0); ty[ev].sym = 1; }
+                    int in = ty_new(K_SCONS, ev, below, 0);
+                    if (ty_on_kind[k] == 1 || ty_on_kind[k] == 2) in = ty_new(K_SCONS, ty_new(K_INT, 0, 0, 0), in, 0);
+                    if (ty_unify(ty_on[k], ty_new(K_FN, in, below, 0))) ty_err(ty_on_line[k], "this handler must take the event's %s and leave the stack below show as it was: %s.", ty_on_kind[k] == 3 ? "str" : ty_on_kind[k] == 2 ? "w and h" : ty_on_kind[k] ? "x and y" : "int", ty_why);
                 }
                 if (ty_unify(render, ty_new(K_FN, ty_new(K_SCONS, top, below, 0), below, 0))) ty_err(line, "show's render body takes a copy of the top value and leaves the stack as it was: %s.", ty_why);
                 ty_cur = ty_new(K_SVAR, 0, 0, 0); break;
@@ -2904,6 +2908,8 @@ static void sdl_init(void) {
     SDL_Rect ub; if(SDL_GetDisplayUsableBounds(0,&ub)<0) die("SDL_GetDisplayUsableBounds: %s",SDL_GetError());
     sdl_window=SDL_CreateWindow("slap",ub.x,ub.y,ub.w,ub.h,SDL_WINDOW_BORDERLESS|SDL_WINDOW_RESIZABLE);
     if(!sdl_window) die("SDL_CreateWindow: %s",SDL_GetError());
+    /* SDL2 starts text input on desktop, but sdl2-compat over SDL3 does not. */
+    SDL_StartTextInput();
 #ifdef __APPLE__
     SDL_SysWMinfo wminfo; SDL_VERSION(&wminfo.version);
     if(SDL_GetWindowWMInfo(sdl_window,&wminfo)){
@@ -2935,9 +2941,9 @@ static void prim_fill_rect(Frame *e){(void)e;int64_t c=pop_color("fill-rect"),h=
     if(__builtin_add_overflow(y,h,&ye)) ye=INT64_MAX;
     int64_t x0=x<0?0:x, x1=xe<canvas_w?xe:canvas_w, y0=y<0?0:y, y1=ye<canvas_h?ye:canvas_h;
     for(int64_t r=y0;r<y1&&x0<x1;r++) memset(&canvas[r*canvas_w+x0],(int)c,(size_t)(x1-x0));}
-static uint32_t sym_tick=0,sym_keydown=0,sym_keyup=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0,sym_resize=0;
+static uint32_t sym_tick=0,sym_keydown=0,sym_keyup=0,sym_text=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0,sym_resize=0;
 static void show_intern_syms(void) {
-    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_keyup=sym_intern("keyup");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");sym_resize=sym_intern("resize");}
+    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_keyup=sym_intern("keyup");sym_text=sym_intern("text");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");sym_resize=sym_intern("resize");}
 }
 static void prim_on(Frame *e) {
     (void)e; uint32_t ev=pop_sym(); Value fn_top=speek();
@@ -2945,8 +2951,8 @@ static void prim_on(Frame *e) {
     Value *hb=malloc((size_t)fn_s*sizeof(Value)); if(!hb) die("on: out of memory"); VCPY(hb,&stack[sp-fn_s],fn_s); event_handlers[handler_count].handler_body=hb;
     event_handlers[handler_count].handler_slots=fn_s; sp-=fn_s;
     show_intern_syms();
-    if(ev!=sym_tick&&ev!=sym_keydown&&ev!=sym_keyup&&ev!=sym_mousedown&&ev!=sym_mouseup&&ev!=sym_mousemove&&ev!=sym_resize)
-        die("on: unknown event '%s; the events are 'tick 'keydown 'keyup 'mousedown 'mouseup 'mousemove 'resize",sym_name(ev));
+    if(ev!=sym_tick&&ev!=sym_keydown&&ev!=sym_keyup&&ev!=sym_text&&ev!=sym_mousedown&&ev!=sym_mouseup&&ev!=sym_mousemove&&ev!=sym_resize)
+        die("on: unknown event '%s; the events are 'tick 'keydown 'keyup 'text 'mousedown 'mouseup 'mousemove 'resize",sym_name(ev));
     event_handlers[handler_count].event_sym=ev; handler_count++;
 }
 static void run_resize(int64_t w,int64_t h,Frame *env){for(int k=0;k<handler_count;k++)if(event_handlers[k].event_sym==sym_resize){spush(val_int(w));spush(val_int(h));eval_body(event_handlers[k].handler_body,event_handlers[k].handler_slots,env);}}
@@ -2956,6 +2962,8 @@ static void show_dispatch_event(SDL_Event *ev, Frame *env) {
         if(w!=canvas_w||h!=canvas_h){canvas_alloc(w,h);run_resize(w,h,env);}
         return;}
     if(ev->type==SDL_KEYDOWN||ev->type==SDL_KEYUP){uint32_t ksym=ev->type==SDL_KEYDOWN?sym_keydown:sym_keyup;for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==ksym){spush(val_int((int64_t)ev->key.keysym.sym));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}}
+    /* SDL gives typed text as UTF-8 with the keyboard layout and shift applied, which keycodes lack. */
+    if(ev->type==SDL_TEXTINPUT)for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==sym_text){push_c_string(ev->text.text);eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
     int is_mouse=0;
     if(ev->type==SDL_MOUSEBUTTONDOWN||ev->type==SDL_MOUSEBUTTONUP||ev->type==SDL_MOUSEMOTION) is_mouse=1;
     if(is_mouse){

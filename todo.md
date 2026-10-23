@@ -15,6 +15,15 @@
   4. Write the verdict in readme.md under `## Pending design`: the choice,
      then the alternative and its cost in checker size and messages.
 
+- [ ] You load a CBOR file whose text string is not UTF-8, and `cd-str`
+      refuses it with its byte offset, as RFC 8949 requires. Today
+      cal-app.slap and feed-app.slap accept such text and draw it as `?`.
+  1. Add a primitive that checks UTF-8, over libc's `mbrtowc` in a UTF-8
+     locale, since the house rules forbid hand-rolled unicode. Refuse
+     overlong forms, surrogates and code points past U+10FFFF.
+  2. Call it in cbor.slap's text-string path; add the failing case to
+     cbor.slap's tests first.
+
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps
       only, a launcher like iOS's; later, apps take partial width (full
@@ -27,27 +36,23 @@
       opens a general thing. A file app opens one specific thing, as viewer
       and editor; with no subject it opens the last file; it saves by tags
       only.
-  1. cal events: a 'text event (SDL_TEXTINPUT, a UTF-8 string) in
-     slap.c, for typing; shell needs it too. Then cal keeps events in a
-     CBOR file, marks their days in the grid, lists the chosen day's events
-     under it, and adds one with the typed text.
-  2. book: read a text file a screen at a time; the CBOR state keeps the
+  1. book: read a text file a screen at a time; the CBOR state keeps the
      page.
-  3. music, then shell (the slap REPL), home (launcher, search), ware
+  2. music, then shell (the slap REPL), home (launcher, search), ware
      (registries; decide later whether you publish your own).
-  4. Then, unsorted: stuff (files by tag, libraries; SQL or FQL), config,
+  3. Then, unsorted: stuff (files by tag, libraries; SQL or FQL), config,
      web (html/css), code, slides, prose (markdown, vim/leap, minimap,
      image preview, linters, AI editing), sheet, email, phone, chat, video,
      photo, camera, print, map, steno, cast. Unplaced: query, debug, talk,
      claude, hypercard.
-  5. Batteries to choose from as apps need them: sized ints and floats,
+  4. Batteries to choose from as apps need them: sized ints and floats,
      slices, `dice`, sets, SIMD, GPU, go-like threads with input queues, a
      charm-like UI framework with a WYSIWYG editor, a graphics stack
      language, a query language. Each: expect.slap, then TYPES, then readme.
-  6. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
+  5. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
      deep keyframes, and every pass is data-parallel. Time the ticks
      first, then cut the tricks that no longer pay.
-  7. Move the blog and all projects into sauce. taylor.town serves its
+  6. Move the blog and all projects into sauce. taylor.town serves its
      pages (indexed) and assets (not indexed) from sauce.
 
 ## Blocked on you

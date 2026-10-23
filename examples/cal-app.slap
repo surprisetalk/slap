@@ -1,8 +1,8 @@
--- cal-app.slap: the calendar's month grid and keys. The window is
--- cal-app-sdl.slap; this file holds no SDL word, so its self-test runs in the
--- terminal build:
+-- cal-app.slap: the calendar's month grid, events, keys and events file. The
+-- window is cal-app-sdl.slap; this file holds no SDL word, so its self-test
+-- runs in the terminal build:
 --
---   cat examples/lib/{strings,icn,ufx,ui}.slap examples/cal-app.slap \
+--   cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/cal-app.slap \
 --     | ./slap --headless
 
 ["January" "February" "March" "April" "May" "June" "July" "August" "September"
@@ -14,11 +14,31 @@
  cc-y cc-m 1 plus 0 calendar 2 get must 'cc-n let
  0 42 range (cc-first sub 1 plus dup 1 lt over cc-n gt or (drop 0) () if) each) 'cal-cells let
 
+-- ===== events file =====
+-- {"events": [{"y": 2026, "m": 10, "d": 23, "text": "..."}, ...]}, a CBOR
+-- map. The file counts months 1-12; an event in the app counts them 0-11, as
+-- datetime does.
+('ee-l let [{'name "events" 'value ee-l ('ee let [
+   {'name "y" 'value ee 'y at ce-int} {'name "m" 'value ee 'm at 1 plus ce-int}
+   {'name "d" 'value ee 'd at ce-int} {'name "text" 'value ee 'text at ce-str}] ce-map) each ce-list}] ce-map) 'events-encode let
+
+-- events-decode: (bytes -- events ok | msg no).  A date calendar cannot
+-- count, or that it would carry into another month, is refused. The app keeps
+-- no other key, so a save drops any.
+("events" ('ed-cv let ed-cv "y" cd-int cd-field apply ('ed-y let ed-cv "m" cd-int cd-field apply ('ed-m let
+ ed-cv "d" cd-int cd-field apply ('ed-d let ed-cv "text" cd-str cd-field apply ('ed-t let
+   ": expected a day in the years 1900 to 9999, got " ed-y int-str cat "-" cat ed-m int-str cat "-" cat ed-d int-str cat 'ed-bad let
+   ed-y 1900 lt ed-y 9999 gt or ed-m 1 lt or ed-m 12 gt or ed-d 1 lt or ed-d 31 gt or (ed-bad no) (
+     ed-y ed-m 1 sub ed-d calendar 3 take-n [ed-y ed-m 1 sub ed-d] eq
+       ({'y ed-y 'm ed-m 1 sub 'd ed-d 'text ed-t} ok) (ed-bad no) if) if) then) then) then) then) cd-list cd-field cd-run) 'events-decode let
+
 -- ===== model and keys =====
--- A model: {'w 'h 'y 'm 'd 'shown}. 'y 'm 'd is the chosen day, month 0-11.
--- 'shown holds the view last drawn, [] after a resize, so a frame draws only
--- after a change.
-('cm-t let {'w 0 'h 0 'y 0 'cm-t nth must 'm 1 'cm-t nth must 'd 2 'cm-t nth must 'shown []}) 'cal-model let
+-- A model: {'w 'h 'y 'm 'd 'events 'mode 'shown}. 'y 'm 'd is the chosen day,
+-- month 0-11. An event is {'y 'm 'd 'text}. 'mode is 'grid, or 'typing with
+-- the new event's text so far. 'shown holds the view last drawn, in a list
+-- that is empty after a resize, so a frame draws only after a change.
+('cm-e let 'cm-t let {'w 0 'h 0 'y 0 'cm-t nth must 'm 1 'cm-t nth must 'd 2 'cm-t nth must
+ 'events cm-e 'mode 0 'grid tag 'shown []}) 'cal-model let
 
 -- go: (m y m d -- m).  Choose that day; calendar carries a day or month past
 -- either end of its month or year.
@@ -40,20 +60,51 @@
    bm-k 12 div 'bm-y let bm-k 12 mod 'bm-m let
    bm bm-y bm-m bm-y bm-m 1 plus 0 calendar 2 get must bm 'd at min go) if) 'by-months let
 
--- cal-key: (m keycode datetime -- m).  h l or left right move a day, j k or
--- down up a week, n p a month, t back to today.
-('ck-t let 'ck-k let
+-- grid-key: (m keycode datetime -- m).  h l or left right move a day, j k or
+-- down up a week, n p a month, t back to today. Enter starts a new event on
+-- the chosen day; x deletes the day's last event.
+-- A fold body that looked up the model would copy every event per event.
+('ck-t let 'ck-k let 'ck-m let ck-m 'y at 'ck-y let ck-m 'm at 'ck-mo let ck-m 'd at 'ck-d let ck-m
+ ck-k 13 eq ("" 'typing tag 'mode into) (
+ ck-k 120 eq (dup 'events at reverse {'out [] 'done 0} ('xe let 'xa let
+     xa 'done at 0 eq xe 'y at ck-y eq and xe 'm at ck-mo eq and xe 'd at ck-d eq and
+       (xa 1 'done into) (xa xa 'out at xe push 'out into) if) fold
+   'out at reverse 'events into) (
  ck-k 104 eq ck-k 1073741904 eq or (-1 by-days) (
  ck-k 108 eq ck-k 1073741903 eq or (1 by-days) (
  ck-k 106 eq ck-k 1073741905 eq or (7 by-days) (
  ck-k 107 eq ck-k 1073741906 eq or (-7 by-days) (
  ck-k 110 eq (1 by-months) (
  ck-k 112 eq (-1 by-months) (
- ck-k 116 eq (0 'ck-t nth must 1 'ck-t nth must 2 'ck-t nth must go) () if) if) if) if) if) if) if) 'cal-key let
+ ck-k 116 eq (0 'ck-t nth must 1 'ck-t nth must 2 'ck-t nth must go) () if) if) if) if) if) if) if) if) if) 'grid-key let
 
--- cal-view: (m datetime -- view).  What the window shows: the chosen day and
--- today, each as y m d.
-('cv-t let 'cv-m let [cv-m 'y at cv-m 'm at cv-m 'd at 0 'cv-t nth must 1 'cv-t nth must 2 'cv-t nth must]) 'cal-view let
+-- backspace: (str -- str).  Drop the last UTF-8 character: its continuation
+-- bytes (0x80-0xBF), then its lead byte.
+((dup len 0 gt (dup pop must nip 'bk-c let bk-c 128 ge bk-c 192 lt and) (0) if) (pop must drop) while
+ dup len 0 gt (pop must drop) () if) 'backspace let
+
+-- cal-key: (m keycode datetime -- m).  While typing, enter adds the event if
+-- it has text, backspace deletes a character, and escape drops the event.
+('ky-t let 'ky-k let 'ky-m let ky-m 'mode at {
+  'typing ('ky-dr let ky-m
+    ky-k 13 eq (ky-dr len 0 gt (dup 'events at {'y ky-m 'y at 'm ky-m 'm at 'd ky-m 'd at 'text ky-dr} push 'events into) () if
+      0 'grid tag 'mode into) (
+    ky-k 27 eq (0 'grid tag 'mode into) (
+    ky-k 8 eq (ky-dr backspace 'typing tag 'mode into) () if) if) if)
+  'grid (drop ky-m ky-k ky-t grid-key)} case) 'cal-key let
+
+-- cal-text: (m str -- m).  Typed text joins the new event; in the grid it does
+-- nothing, since every key there is a keydown.
+('tx-s let dup 'mode at {'typing (tx-s cat 'typing tag 'mode into) 'grid (drop)} case) 'cal-text let
+
+-- cal-view: (m datetime -- view).  What the window shows: the chosen day, today,
+-- the month's days with events, the chosen day's events, and 'mode.
+-- It runs each frame, so its filters compare against ints, not the model.
+('cv-t let 'cv-m let cv-m 'events at 'cv-e let cv-m 'y at 'cv-y let cv-m 'm at 'cv-mo let cv-m 'd at 'cv-d let
+ {'y cv-y 'm cv-mo 'd cv-d 'ty 0 'cv-t nth must 'tm 1 'cv-t nth must 'td 2 'cv-t nth must
+  'marks cv-e ('cve let cve 'y at cv-y eq cve 'm at cv-mo eq and) filter ('d at) each
+  'items cv-e ('cvi let cvi 'y at cv-y eq cvi 'm at cv-mo eq and cvi 'd at cv-d eq and) filter ('text at) each
+  'mode cv-m 'mode at}) 'cal-view let
 
 -- ===== self-test =====
 isheadless (
@@ -70,32 +121,59 @@ isheadless (
   -- a month that starts on Sunday fills the first cell
   2026 1 cal-cells 0 get must 1 eq assert
   [2026 9 31 9 5 0 6 303 0] 'ts-dt let
-  ts-dt cal-model 'ts-m let
+  ts-dt [] cal-model 'ts-m let
   -- l past the month's end goes to the next month; h before its start goes back
   ts-m 108 ts-dt cal-key 'ts-m1 let
   [ts-m1 'y at ts-m1 'm at ts-m1 'd at] [2026 10 1] eq assert
   ts-m1 104 ts-dt cal-key 'd at 31 eq assert
   -- k a week back; j a week on across the year's end
   ts-m 107 ts-dt cal-key 'd at 24 eq assert
-  [2026 11 28 0 0 0 1 361 0] cal-model 106 ts-dt cal-key 'ts-m2 let
+  [2026 11 28 0 0 0 1 361 0] [] cal-model 106 ts-dt cal-key 'ts-m2 let
   [ts-m2 'y at ts-m2 'm at ts-m2 'd at] [2027 0 4] eq assert
   -- n from 31 January lands on 28 February; p from 31 March 2024 on 29 February
-  [2026 0 31 0 0 0 6 30 0] cal-model 110 ts-dt cal-key 'ts-m3 let
+  [2026 0 31 0 0 0 6 30 0] [] cal-model 110 ts-dt cal-key 'ts-m3 let
   [ts-m3 'y at ts-m3 'm at ts-m3 'd at] [2026 1 28] eq assert
-  [2024 2 31 0 0 0 0 90 0] cal-model 112 ts-dt cal-key 'ts-m4 let
+  [2024 2 31 0 0 0 0 90 0] [] cal-model 112 ts-dt cal-key 'ts-m4 let
   [ts-m4 'y at ts-m4 'm at ts-m4 'd at] [2024 1 29] eq assert
   -- p from January goes to December of the year before
-  [2026 0 15 0 0 0 4 14 0] cal-model 112 ts-dt cal-key 'm at 11 eq assert
+  [2026 0 15 0 0 0 4 14 0] [] cal-model 112 ts-dt cal-key 'm at 11 eq assert
   -- t comes back to today; another key changes nothing
   ts-m3 116 ts-dt cal-key 'd at 31 eq assert
   ts-m3 120 ts-dt cal-key 'd at 28 eq assert
-  ts-m1 ts-dt cal-view [2026 10 1 2026 9 31] eq assert
+  ts-m1 ts-dt cal-view 'ts-v let
+  [ts-v 'y at ts-v 'm at ts-v 'd at ts-v 'ty at ts-v 'tm at ts-v 'td at] [2026 10 1 2026 9 31] eq assert
+  -- enter, typed text, backspace over a two-byte character, enter: one event
+  ts-m 13 ts-dt cal-key "Lunch" cal-text "é" cal-text 8 ts-dt cal-key " w/ Al" cal-text 13 ts-dt cal-key 'ts-e1 let
+  ts-e1 'events at [{'y 2026 'm 9 'd 31 'text "Lunch w/ Al"}] eq assert
+  ts-e1 'mode at {'grid (drop 1) 'typing (drop 0)} case assert
+  -- text in the grid does nothing; enter on no text adds nothing; escape drops the event
+  ts-m "x" cal-text 'mode at {'grid (drop 1) 'typing (drop 0)} case assert
+  ts-m 13 ts-dt cal-key 13 ts-dt cal-key 'events at [] eq assert
+  ts-m 13 ts-dt cal-key "Gym" cal-text 27 ts-dt cal-key 'events at [] eq assert
+  -- the view marks the event's day and lists it on that day only
+  ts-e1 13 ts-dt cal-key "Tea" cal-text 13 ts-dt cal-key 'ts-e2 let
+  ts-e2 ts-dt cal-view 'ts-v2 let
+  ts-v2 'marks at [31 31] eq assert
+  ts-v2 'items at ["Lunch w/ Al" "Tea"] eq assert
+  ts-e2 108 ts-dt cal-key ts-dt cal-view 'items at [] eq assert
+  -- x deletes the chosen day's last event, and only on that day
+  ts-e2 120 ts-dt cal-key 'events at ('text at) each ["Lunch w/ Al"] eq assert
+  ts-e2 108 ts-dt cal-key 120 ts-dt cal-key 'events at len 2 eq assert
+  ts-m 120 ts-dt cal-key 'events at [] eq assert
+  "aé" backspace "a" eq assert "" backspace "" eq assert [128 128] backspace [] eq assert
+  -- the events file round-trips, months 1-12 inside it
+  ts-e2 'events at events-encode events-decode must ts-e2 'events at eq assert
+  [] events-encode events-decode must [] eq assert
+  [{'name "events" 'value [[{'name "y" 'value 2026 ce-int} {'name "m" 'value 2 ce-int} {'name "d" 'value 30 ce-int}
+    {'name "text" 'value "x" ce-str}] ce-map] ce-list}] ce-map 'ts-feb30 let
+  ts-feb30 events-decode {'ok (drop "") 'no ()} case "$.events[0]: expected a day in the years 1900 to 9999, got 2026-2-30" eq assert
+  [] ce-map events-decode {'ok (drop "") 'no ()} case "$: missing field \"events\"" eq assert
   -- a move past 1900 or 9999, which calendar cannot count, stays put
-  [1900 0 1 0 0 0 1 0 0] cal-model 'ts-lo let
+  [1900 0 1 0 0 0 1 0 0] [] cal-model 'ts-lo let
   ts-lo 104 ts-dt cal-key 'd at 1 eq assert
   ts-lo 107 ts-dt cal-key 'd at 1 eq assert
   ts-lo 112 ts-dt cal-key 'm at 0 eq assert
-  [9999 11 31 0 0 0 5 364 0] cal-model 'ts-hi let
+  [9999 11 31 0 0 0 5 364 0] [] cal-model 'ts-hi let
   ts-hi 108 ts-dt cal-key 'd at 31 eq assert
   ts-hi 106 ts-dt cal-key 'd at 31 eq assert
   ts-hi 110 ts-dt cal-key 'm at 11 eq assert

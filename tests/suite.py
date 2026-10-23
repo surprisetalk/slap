@@ -63,7 +63,7 @@ HEADLESS = (
 # probe each frame, and
 # calls test-resize with 0 0 at frame 5 and 1920 1080 at frame 10, so a demo that divides by
 # its size dies. The canvas stays 640x480, and pixel and fill-rect clip.
-def drive_demo(files, probe=""):
+def drive_demo(files, probe="", args=()):
     src = "".join(open(f).read() for f in files)
     end = re.search(r"\bshow\s*\Z", src)
     head = src[: end.start()] if end else src
@@ -73,7 +73,7 @@ def drive_demo(files, probe=""):
             None,
             f"{files[-1]} must register one 'resize handler (found {n}) and end with show",
         )
-    for ev in ["resize", "keydown", "keyup", "mousedown", "mouseup", "mousemove"]:
+    for ev in ["resize", "keydown", "keyup", "text", "mousedown", "mouseup", "mousemove"]:
         if head.count(f"'{ev} on") == 1:
             head = head.replace(f"'{ev} on", f"'test-{ev} let (test-{ev}) '{ev} on")
     driver = (
@@ -84,7 +84,7 @@ def drive_demo(files, probe=""):
     )
     try:
         r = subprocess.run(
-            ["./slap-sdl", "--headless"],
+            ["./slap-sdl", "--headless", *args],
             input=head + driver + "show\n",
             capture_output=True,
             text=True,
@@ -104,9 +104,9 @@ def drive_demo(files, probe=""):
 FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml rss cbor icn ufx ui".split())
 
 
-def headless_demo(files, ok, probe=""):
+def headless_demo(files, ok, probe="", args=()):
     def check():
-        out, err = drive_demo(files, probe)
+        out, err = drive_demo(files, probe, args)
         return (False, err) if err else (ok is None or ok(out), out[-2000:])
 
     check.__name__ = f"headless_demo({' '.join(files)})"
@@ -823,16 +823,21 @@ def steps(slow):
         )
     for n in ["cal", "clock"]:
         demos[f"{n}-app"] = (
-            [*lib("strings", "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
+            [*lib("strings", "cbor", "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
-    # Space at frame 2 starts the stopwatch, so its line shows from then on. n at frame 2 moves cal
-    # a month on from today.
+    # Space at frame 2 starts the stopwatch, so its line shows from then on. In cal, n at frame 2
+    # moves a month on from today, and enter, "Hi" and enter add an event, which the file then holds.
+    cal_events = os.path.join(SCRATCH, "cal-events.cbor")
+    demo_args = {"cal-app": [cal_events]}
     probes = {
         "cal-app": (
-            "test-frame 2 eq (110 test-keydown) () if"
-            " test-frame 14 eq (dup 'shown at 1 get must datetime 1 get must sub 12 plus 12 mod print) () if",
-            lambda o: "cal-selftest-ok" in o and o.split()[-1] == "1",
+            "test-frame 2 eq (110 test-keydown) () if test-frame 3 eq (13 test-keydown) () if"
+            ' test-frame 4 eq ("Hi" test-text) () if test-frame 6 eq (13 test-keydown) () if'
+            " test-frame 14 eq (dup 'shown at 0 get must 'm at datetime 1 get must sub 12 plus 12 mod print) () if",
+            lambda o: "cal-selftest-ok" in o
+            and o.split()[-1] == "1"
+            and b"Hi" in open(cal_events, "rb").read(),
         ),
         "clock-app": (
             "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'shown at len print) () if",
@@ -852,7 +857,7 @@ def steps(slow):
             out[name] = (raycast_keys, None)
         elif name in probes:
             probe, pok = probes[name]
-            out[name] = (headless_demo(files, pok, probe), None)
+            out[name] = (headless_demo(files, pok, probe, demo_args.get(name, ())), None)
         else:
             out[name] = (headless_demo(files, ok), None)
     # The pool starts steps in this order. The run_*.py scripts and the demos take seconds each, so they go

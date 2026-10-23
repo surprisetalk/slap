@@ -1,26 +1,45 @@
 -- The window for cal-app.slap: a month as a grid of weeks, today and the
--- chosen day marked. Run from the repo root with:
+-- chosen day marked, and the chosen day's events under it. Run from the repo
+-- root with:
 --
---   cat examples/lib/{strings,icn,ufx,ui}.slap examples/cal-app.slap \
---       examples/lib/ui-sdl.slap examples/cal-app-sdl.slap | ./slap-sdl
+--   cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/cal-app.slap \
+--       examples/lib/ui-sdl.slap examples/cal-app-sdl.slap | ./slap-sdl events.cbor
 --
 -- h l or left right move a day, j k or down up a week, n p a month, t goes
--- back to today. Closing the window quits.
+-- back to today. Enter starts an event on the chosen day: type its text, then
+-- enter adds it and escape drops it. x deletes the day's last event. Each
+-- change writes the events file at once. Closing the window quits.
 
--- centred: (str x span y color scale --).  Centred in span pixels from x.
-('ce-s let 'ce-col let 'ce-y let 'ce-span let 'ce-x let 'ce-str let
- ce-str ce-x ce-span ce-str text-width ce-s mul sub 2 div plus ce-y ce-col ce-s ce-x ce-span plus text) 'centred let
+args len 1 eq () ("cal: usage: ./slap-sdl EVENTS.cbor" fail) if
+args 0 get must 'EVENTS let
+
+-- A missing events file is a first run, and gets written now, so a path that
+-- cannot be written stops the app before the first event.
+('sv-e let EVENTS sv-e events-encode write {'ok (drop) 'no ("cal: " swap cat fail)} case) 'save let
+EVENTS read {
+  'ok (events-decode {'ok () 'no ("cal: " EVENTS cat ": " cat swap cat ". Fix or delete it." cat fail)} case)
+  'no ('rd-err let rd-err EVENTS is-missing ([] save []) ("cal: " rd-err cat fail) if)
+} case 'START let
+
+-- centred: (str x span y color scale --).  Centred in span pixels from x. Its
+-- names start cn-, since cbor.slap's start ce-.
+('cn-s let 'cn-col let 'cn-y let 'cn-span let 'cn-x let 'cn-str let
+ cn-str cn-x cn-span cn-str text-width cn-s mul sub 2 div plus cn-y cn-col cn-s cn-x cn-span plus text) 'centred let
 
 ["Su" "Mo" "Tu" "We" "Th" "Fr" "Sa"] 'WEEKDAYS let
 
 -- draw: (w h view --).  Eight rows: the month, the weekdays, six weeks. The
 -- scale fits the month's name, and a cell 24 pixels wide, since the widest
 -- weekday label is 20. A glyph cell is 16 pixels high. The chosen day shows
--- inverted, and today on dark grey.
+-- inverted, today on dark grey, and a day with events has a bar under its
+-- number. The chosen day's events and the one being typed take the bottom
+-- quarter; with none, the grid takes the whole window.
 ('dv let 'dh let 'dw let 0 clear
- 0 'dv nth must 'dy let 1 'dv nth must 'dm let 2 'dv nth must 'dd let
- 3 'dv nth must 'ty let 4 'dv nth must 'tm let 5 'dv nth must 'td let
- dw 7 div 1 max 'cw let dh 8 div 1 max 'ch let dw cw 7 mul sub 2 div 'ox let
+ dv 'y at 'dy let dv 'm at 'dm let dv 'd at 'dd let
+ dv 'mode at {'typing ("> " swap cat "_" cat [] swap push) 'grid (drop [])} case 'draft let
+ dv 'items at draft cat 'lines let
+ lines len 0 gt (dh 3 mul 4 div) (dh) if 'gh let
+ dw 7 div 1 max 'cw let gh 8 div 1 max 'ch let dw cw 7 mul sub 2 div 'ox let
  dm 'MONTHS nth must " " cat dy int-str cat 'title let
  cw 3 mul 4 div 24 div  ch 3 mul 4 div 16 div min  dw 9 mul 10 div title text-width div min 1 max 's let
  ch 16 s mul sub 2 div 'oy let
@@ -31,15 +50,21 @@
      ci 7 mod cw mul ox plus 'cx let ci 7 div 2 plus ch mul 'cy let
      cd int-str cx cw cy oy plus
      cd dd eq (cx 1 plus cy 1 plus cw 2 sub ch 2 sub 3 fill-rect 0) (
-       dy ty eq dm tm eq and cd td eq and (cx 1 plus cy 1 plus cw 2 sub ch 2 sub 1 fill-rect 3) (2) if) if
-     s centred) () if
-   ci 1 plus) fold drop) 'draw let
+       dy dv 'ty at eq dm dv 'tm at eq and cd dv 'td at eq and (cx 1 plus cy 1 plus cw 2 sub ch 2 sub 1 fill-rect 3) (2) if) if
+     s centred
+     dv 'marks at cd member (cx cw 3 div plus cy ch plus ch 6 div sub cw 3 div s cd dd eq (0) (3) if fill-rect) () if) () if
+   ci 1 plus) fold drop
+ dv 'items at len 'nitems let
+ lines 0 ('ll let 'li let ll ox cw 4 div plus gh li 18 mul s mul plus li nitems lt (2) (3) if s dw ox sub text li 1 plus) fold drop) 'draw let
 
-datetime cal-model
+datetime START cal-model
 
 ('rh let 'rw let rw 'w into rh 'h into [] 'shown into) 'resize on
-('kk let 'km let km kk datetime cal-key) 'keydown on
-('tf let 'tm let tm datetime cal-view 'tv let
- tv tm 'shown at eq (tm) (tm 'w at tm 'h at tv draw tm tv 'shown into) if) 'tick on
+-- A change to the events writes the file at once, so an event is never lost.
+('kk let 'km let km kk datetime cal-key 'kn let
+ kn 'events at km 'events at eq () (kn 'events at save) if kn) 'keydown on
+(cal-text) 'text on
+('tf let 'tm let [tm datetime cal-view] 'tv let
+ tv tm 'shown at eq (tm) (tm 'w at tm 'h at 0 'tv nth must draw tm tv 'shown into) if) 'tick on
 
 (drop) show

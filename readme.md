@@ -615,6 +615,7 @@ Build with `make slap-sdl`. Opens a borderless window at the size of the screen,
 | `tick` | frame-count |
 | `keydown` | SDL keycode |
 | `keyup` | SDL keycode |
+| `text` | str: typed text as UTF-8, with shift and the keyboard layout applied. A typed key sends `keydown` too, so a text field reads characters from `text` and enter, backspace and escape from `keydown`. A headless run sends none. |
 | `mousedown` | x y |
 | `mouseup` | x y |
 | `mousemove` | x y |
@@ -731,7 +732,7 @@ App demos (terminal build):
 | `feed.slap` | RSS 2.0 and Atom reader — the consumer for `xml.slap` and `rss.slap` |
 | `feed-app.slap` | Fullscreen feed reader, sauce's first app: fetches each feed with `https-get`; j/k or the arrows move and scroll, enter opens an item and marks it read in a CBOR state file (merged with the file on each write), escape goes back, closing the window quits. Run it from the repo root (it reads `fonts/chicago12.uf2`). A feed or state file that cannot be read stops it at startup. It keeps the first 4 KiB of each summary, whose HTML tags show as text |
 | `clock-app.slap` | Fullscreen clock, sauce's second app: the local time as large as the window allows, the date under it, and a stopwatch that space starts and stops and r sets to zero. The stopwatch line shows once it runs. Run it from the repo root: `cat examples/lib/{strings,icn,ufx,ui}.slap examples/clock-app.slap examples/lib/ui-sdl.slap examples/clock-app-sdl.slap \| ./slap-sdl` |
-| `cal-app.slap` | Fullscreen calendar: a month as six weeks from Sunday, today on dark grey and the chosen day inverted. h l or the left and right arrows move a day, j k or down and up a week, n p a month (to the same day, or the month's last), and t goes back to today. Run it from the repo root: `cat examples/lib/{strings,icn,ufx,ui}.slap examples/cal-app.slap examples/lib/ui-sdl.slap examples/cal-app-sdl.slap \| ./slap-sdl` |
+| `cal-app.slap` | Fullscreen calendar: a month as six weeks from Sunday, today on dark grey, the chosen day inverted, and a bar under each day with events. The chosen day's events list under the grid. h l or the left and right arrows move a day, j k or down and up a week, n p a month (to the same day, or the month's last), and t goes back to today. Enter starts an event: type its text, then enter adds it and escape drops it. x deletes the chosen day's last event. Each change rewrites the events file, a CBOR map `{"events": [{"y", "m" (1-12), "d", "text"}]}`; a missing file starts empty, a file that does not decode stops the app, and a save drops any key the app does not read. Run it from the repo root: `cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/cal-app.slap examples/lib/ui-sdl.slap examples/cal-app-sdl.slap \| ./slap-sdl events.cbor` |
 | `todo.slap` | Todo list in a JSON file, decoded with `jd-*` and written with `je-*` |
 | `banner.slap` | Text as ASCII art from a real `.uf1` bitmap font, via `icn.slap` |
 | `plasma.slap` | Writes a 24-bit TGA. Float-only: there is no `sin`, so it builds one |
