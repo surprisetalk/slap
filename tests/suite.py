@@ -821,7 +821,7 @@ def steps(slow):
             [f"examples/{n}.slap", f"examples/{n}-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
-    for n in ["cal", "clock"]:
+    for n in ["book", "cal", "clock"]:
         demos[f"{n}-app"] = (
             [*lib("strings", "cbor", "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
@@ -829,8 +829,16 @@ def steps(slow):
     # Space at frame 2 starts the stopwatch, so its line shows from then on. In cal, n at frame 2
     # moves a month on from today, and enter, "Hi" and enter add an event, which the file then holds.
     cal_events = os.path.join(SCRATCH, "cal-events.cbor")
-    demo_args = {"cal-app": [cal_events]}
+    # In book, space at frame 2 turns a page of readme.md, and the state file then names the book.
+    book_state = os.path.join(SCRATCH, "book-state.cbor")
+    demo_args = {"cal-app": [cal_events], "book-app": [book_state, "readme.md"]}
     probes = {
+        "book-app": (
+            "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'at at 'p at print) () if",
+            lambda o: "book-selftest-ok" in o
+            and int(o.split()[-1]) > 0
+            and b"readme.md" in open(book_state, "rb").read(),
+        ),
         "cal-app": (
             "test-frame 2 eq (110 test-keydown) () if test-frame 3 eq (13 test-keydown) () if"
             ' test-frame 4 eq ("Hi" test-text) () if test-frame 6 eq (13 test-keydown) () if'

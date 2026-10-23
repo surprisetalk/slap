@@ -1,0 +1,160 @@
+-- book-app.slap: the reader's paragraphs, pages, keys and state file. The
+-- window is book-app-sdl.slap; this file holds no SDL word, so its self-test
+-- runs in the terminal build:
+--
+--   cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/book-app.slap \
+--     | ./slap --headless
+
+-- ===== paragraphs and pages =====
+-- book-paras: (bytes -- paras).  A paragraph is a line of the file, as a list
+-- of its words. A tab or carriage return counts as a space. The newline that
+-- ends the file ends its last paragraph.
+(dup len 0 gt (dup pop must nip 10 eq) (0) if (pop must drop) () if
+ (dup 9 eq over 13 eq or (drop 32) () if) each "\n" str-split
+ (" " str-split (len 0 gt) filter) each) 'book-paras let
+
+-- wrap-words: (words maxw cap -- lines).  Greedy, as wrap-text, but each line
+-- keeps 'n, its count of words, so a page can say where it ends. No words make
+-- one blank line. It stops at cap lines, so a page of a long paragraph wraps
+-- only what it shows. The lines stay on the stack: in a bound name, each
+-- lookup would copy them all.
+('ww-cap let 'ww-max let 'ww-ws let ww-ws len 'ww-n let
+ [] "" 0 0 (dup ww-n lt) ('ww-i let 'ww-c let 'ww-cur let
+   ww-i 'ww-ws nth must 'ww-w let
+   ww-cur len 0 eq (ww-w) (ww-cur " " cat ww-w cat) if 'ww-try let
+   ww-try text-width ww-max le ww-c 0 eq or (ww-try ww-c 1 plus ww-i 1 plus) (
+     {'text ww-cur 'n ww-c} push
+     dup len ww-cap ge ("" 0 ww-n) (ww-w 1 ww-i 1 plus) if) if) while
+ drop 'ww-c let 'ww-cur let dup len 'ww-k let
+ ww-k ww-cap lt ww-c 0 gt ww-k 0 eq or and ({'text ww-cur 'n ww-c} push) () if) 'wrap-words let
+
+-- A place is {'p 'w}: paragraph p, word w, the first word on a page.
+-- page: (paras place rows maxw -- page).  A page is {'lines 'next}: up to
+-- rows lines from place, and the place after them.
+('pg-max let 'pg-rows let 'pg-at let 'pg-ps let pg-ps len 'pg-np let
+ {'lines [] 'p pg-at 'p at 'w pg-at 'w at}
+ (dup 'lines at len pg-rows lt over 'p at pg-np lt and) ('pa let
+   pg-rows pa 'lines at len sub 'room let
+   pa 'p at 'pg-ps nth must 'pw let
+   pw pa 'w at drop-n pg-max room wrap-words 'took let
+   pa pa 'lines at took ('text at) each cat 'lines into
+   pa 'w at took 0 ('n at plus) fold plus pw len ge (pa 'p at 1 plus 'p into 0 'w into)
+     (dup 'w at took 0 ('n at plus) fold plus 'w into) if) while
+ 'pe let {'lines pe 'lines at 'next {'p pe 'p at 'w pe 'w at}}) 'page let
+
+-- page-back: (paras place rows maxw -- place).  Where the page before place
+-- starts: the last rows lines before it, each paragraph wrapped from its
+-- start.
+('pb-max let 'pb-rows let 'pb-at let 'pb-ps let
+ -- 'lines holds the starts of the lines before place, as places, nearest last
+ {'lines [] 'p pb-at 'p at 'w pb-at 'w at}
+ (dup 'bc let bc 'lines at len pb-rows lt bc 'p at 0 gt bc 'w at 0 gt or and) ('bb let
+   bb 'w at 0 gt (bb 'p at bb 'w at) (bb 'p at 1 sub dup 'pb-ps nth must len) if 'bn let 'bq let
+   bq 'pb-ps nth must bn take-n pb-max bn 1 plus wrap-words
+   {'i 0 'out []} ('bwl let 'bwa let {'i bwa 'i at bwl 'n at plus 'out bwa 'out at {'p bq 'w bwa 'i at} push}) fold
+   'out at bb 'lines at cat 'bl let {'lines bl 'p bq 'w 0}) while
+ 'lines at dup len pb-rows sub 0 max drop-n
+ dup len 0 eq (drop pb-at) (0 get must) if) 'page-back let
+
+-- ===== model and keys =====
+-- A model: {'w 'h 'at 'shown}. 'at is the place on screen; 'shown holds the
+-- place last drawn, in a list that is empty after a resize.
+({'w 0 'h 0 'at {'p 0 'w 0} 'shown []}) 'book-model let
+
+-- book-layout: (w h -- layout).  The text scale grows with the window; the
+-- column keeps about 70 characters and a margin of a line height. A line is
+-- 18 pixels at scale 1.
+('bl-h let 'bl-w let bl-w 640 div bl-h 360 div min 1 max 'bl-s let
+ 18 bl-s mul 'bl-lh let
+ bl-w bl-lh 2 mul sub 480 bl-s mul min 1 max 'bl-cw let
+ {'s bl-s 'lh bl-lh 'cw bl-cw 'x bl-w bl-cw sub 2 div 'y bl-lh
+  -- the last row holds how far through the book the page is
+  'rows bl-h bl-lh 3 mul sub bl-lh div 1 max}) 'book-layout let
+
+-- book-key: (m paras keycode -- m).  Space, l, j, the right and down arrows
+-- and page down turn a page on; b, h, k, left, up and page up turn back; g
+-- goes to the start. The last page does not turn on.
+('bk-k let 'bk-ps let 'bk-m let bk-m 'w at bk-m 'h at book-layout 'bk-l let
+ bk-l 'cw at bk-l 's at div 'bk-max let
+ bk-k 32 eq bk-k 108 eq or bk-k 106 eq or bk-k 1073741903 eq or bk-k 1073741905 eq or bk-k 1073741902 eq or (
+   bk-ps bk-m 'at at bk-l 'rows at bk-max page 'next at 'bk-n let
+   bk-n 'p at bk-ps len lt (bk-m bk-n 'at into) (bk-m) if) (
+ bk-k 98 eq bk-k 104 eq or bk-k 107 eq or bk-k 1073741904 eq or bk-k 1073741906 eq or bk-k 1073741899 eq or (
+   bk-m bk-ps bk-m 'at at bk-l 'rows at bk-max page-back 'at into) (
+ bk-k 103 eq (bk-m {'p 0 'w 0} 'at into) (bk-m) if) if) if) 'book-key let
+
+-- ===== state.cbor =====
+-- {"last": path, "books": [{"path": str, "p": int, "w": int}, ...]}, a CBOR
+-- map: the book read last, and the place in each book read.
+('se-s let [{'name "last" 'value se-s 'last at ce-str}
+ {'name "books" 'value se-s 'books at ('seb let [{'name "path" 'value seb 'path at ce-str}
+   {'name "p" 'value seb 'p at ce-int} {'name "w" 'value seb 'w at ce-int}] ce-map) each ce-list}] ce-map) 'state-encode let
+(('sd-cv let sd-cv "last" cd-str cd-field apply ('sd-last let
+  sd-cv "books" ('sd-b let sd-b "path" cd-str cd-field apply ('sd-path let sd-b "p" cd-int cd-field apply ('sd-p let
+    sd-b "w" cd-int cd-field apply ('sd-w let {'path sd-path 'p sd-p 'w sd-w} ok) then) then) then) cd-list cd-field apply
+  ('sd-books let {'last sd-last 'books sd-books} ok) then) then) cd-run) 'state-decode let
+
+-- place-of: (state path -- place).  Where the state left the book, or its
+-- start for a book never read.
+('po-path let 'books at ('path at po-path eq) filter
+ dup len 0 eq (drop {'p 0 'w 0}) (0 get must 'po-b let {'p po-b 'p at 'w po-b 'w at}) if) 'place-of let
+
+-- with-place: (state path place -- state).  The state with path read last, at place.
+('wp-at let 'wp-path let 'wp-s let
+ {'last wp-path
+  'books wp-s 'books at ('path at wp-path eq not) filter {'path wp-path 'p wp-at 'p at 'w wp-at 'w at} push}) 'with-place let
+
+-- ===== self-test =====
+isheadless (
+  "one two\tthree" 13 push "\n\nfour  five" cat book-paras 'ts-ps let
+  ts-ps [["one" "two" "three"] [] ["four" "five"]] eq assert
+  -- the newline that ends a file ends its last paragraph, and adds none
+  "a b\n" book-paras [["a" "b"]] eq assert
+  "a\n\n" book-paras [["a"] []] eq assert
+  -- a page of one long paragraph wraps only what it shows: 20,000 words in
+  -- well under a second, where wrapping all of them took minutes
+  [0 20000 range ("word" swap drop) each] 'ts-long let
+  millis 'ts-t0 let
+  ts-long {'p 0 'w 10000} 2 "word word" text-width page 'lines at ["word word" "word word"] eq assert
+  millis ts-t0 sub 1000 lt assert
+  " " text-width 'ts-sp let
+  "one two" text-width 'ts-w2 let
+  ["one" "two" "three"] ts-w2 9 wrap-words [{'text "one two" 'n 2} {'text "three" 'n 1}] eq assert
+  ["one" "two" "three"] ts-w2 1 wrap-words [{'text "one two" 'n 2}] eq assert
+  [] 100 9 wrap-words [{'text "" 'n 0}] eq assert
+  ["toolongforaline"] 1 9 wrap-words [{'text "toolongforaline" 'n 1}] eq assert
+  -- two rows from the start: "one two", "three"; then the blank line and "four five"
+  ts-ps {'p 0 'w 0} 2 ts-w2 page 'ts-p1 let
+  ts-p1 'lines at ["one two" "three"] eq assert
+  ts-p1 'next at {'p 1 'w 0} eq assert
+  ts-ps ts-p1 'next at 2 10000 page 'ts-p2 let
+  ts-p2 'lines at ["" "four five"] eq assert
+  ts-p2 'next at {'p 3 'w 0} eq assert
+  -- a page that ends inside a paragraph says which word comes next
+  ts-ps {'p 0 'w 0} 1 ts-w2 page 'next at {'p 0 'w 2} eq assert
+  ts-ps {'p 0 'w 2} 1 ts-w2 page 'lines at ["three"] eq assert
+  -- back from the blank line by two rows is the start; from the start it stays
+  ts-ps {'p 1 'w 0} 2 ts-w2 page-back {'p 0 'w 0} eq assert
+  ts-ps {'p 2 'w 0} 1 ts-w2 page-back {'p 1 'w 0} eq assert
+  ts-ps {'p 0 'w 2} 5 ts-w2 page-back {'p 0 'w 0} eq assert
+  ts-ps {'p 0 'w 0} 5 ts-w2 page-back {'p 0 'w 0} eq assert
+  -- keys: a window three rows high turns one row a page
+  book-model 100000 'w into 18 4 mul 'h into 'ts-m let
+  100000 18 4 mul book-layout 'rows at 1 eq assert
+  ts-m ts-ps 32 book-key 'at at {'p 1 'w 0} eq assert
+  ts-m ts-ps 32 book-key ts-ps 32 book-key ts-ps 32 book-key 'at at {'p 2 'w 0} eq assert
+  ts-m ts-ps 32 book-key ts-ps 98 book-key 'at at {'p 0 'w 0} eq assert
+  ts-m ts-ps 32 book-key ts-ps 103 book-key 'at at {'p 0 'w 0} eq assert
+  ts-m ts-ps 120 book-key 'at at {'p 0 'w 0} eq assert
+  -- the state file round-trips, and places are per book
+  {'last "a.txt" 'books []} "a.txt" {'p 3 'w 4} with-place "b.txt" {'p 1 'w 0} with-place
+    "a.txt" {'p 5 'w 0} with-place 'ts-s let
+  ts-s 'last at "a.txt" eq assert
+  ts-s "a.txt" place-of {'p 5 'w 0} eq assert
+  ts-s "b.txt" place-of {'p 1 'w 0} eq assert
+  ts-s "c.txt" place-of {'p 0 'w 0} eq assert
+  ts-s 'books at len 2 eq assert
+  ts-s state-encode state-decode must ts-s eq assert
+  [] ce-map state-decode {'ok (drop "") 'no ()} case "$: missing field \"last\"" eq assert
+  "book-selftest-ok" print
+) () if

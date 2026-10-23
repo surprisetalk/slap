@@ -36,23 +36,21 @@
       opens a general thing. A file app opens one specific thing, as viewer
       and editor; with no subject it opens the last file; it saves by tags
       only.
-  1. book: read a text file a screen at a time; the CBOR state keeps the
-     page.
-  2. music, then shell (the slap REPL), home (launcher, search), ware
+  1. music, then shell (the slap REPL), home (launcher, search), ware
      (registries; decide later whether you publish your own).
-  3. Then, unsorted: stuff (files by tag, libraries; SQL or FQL), config,
+  2. Then, unsorted: stuff (files by tag, libraries; SQL or FQL), config,
      web (html/css), code, slides, prose (markdown, vim/leap, minimap,
      image preview, linters, AI editing), sheet, email, phone, chat, video,
      photo, camera, print, map, steno, cast. Unplaced: query, debug, talk,
      claude, hypercard.
-  4. Batteries to choose from as apps need them: sized ints and floats,
+  3. Batteries to choose from as apps need them: sized ints and floats,
      slices, `dice`, sets, SIMD, GPU, go-like threads with input queues, a
      charm-like UI framework with a WYSIWYG editor, a graphics stack
      language, a query language. Each: expect.slap, then TYPES, then readme.
-  5. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
+  4. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
      deep keyframes, and every pass is data-parallel. Time the ticks
      first, then cut the tricks that no longer pay.
-  6. Move the blog and all projects into sauce. taylor.town serves its
+  5. Move the blog and all projects into sauce. taylor.town serves its
      pages (indexed) and assets (not indexed) from sauce.
 
 ## Blocked on you

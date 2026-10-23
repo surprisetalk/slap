@@ -1,0 +1,62 @@
+-- The window for book-app.slap: a text file a page at a time. Run from the
+-- repo root with:
+--
+--   cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/book-app.slap \
+--       examples/lib/ui-sdl.slap examples/book-app-sdl.slap \
+--     | ./slap-sdl state.cbor book.txt
+--
+-- With no book named, it opens the book read last. Space, l, j, the right and
+-- down arrows and page down turn a page on; b, h, k, left, up and page up turn
+-- back; g goes to the start. Each turn writes the place to the state file.
+-- Closing the window quits.
+
+args len 1 lt args len 2 gt or ("book: usage: ./slap-sdl STATE.cbor [BOOK.txt]" fail) () if
+args 0 get must 'STATE let
+
+-- A missing state file is a first run. A path inside a plain file counts as
+-- missing too; the save at startup then stops the app.
+STATE read {
+  'ok (state-decode {'ok () 'no ("book: " STATE cat ": " cat swap cat ". Fix or delete it." cat fail)} case)
+  'no ('rd-err let rd-err STATE is-missing ({'last "" 'books []}) ("book: " rd-err cat fail) if)
+} case 'STATE0 let
+-- Two entries for one book would leave its place ambiguous.
+STATE0 'books at [] ('db-b let 'db-seen let
+  db-seen db-b 'path at member ("book: " STATE cat " has two entries for " cat db-b 'path at cat ". Delete one." cat fail) () if
+  db-seen db-b 'path at push) fold drop
+args len 2 eq (args 1 get must) (STATE0 'last at) if 'BOOK let
+BOOK len 0 eq ("book: no book named, and " STATE cat " names none read before. Usage: ./slap-sdl STATE.cbor [BOOK.txt]" cat fail) () if
+BOOK read {'ok () 'no ('br-err let
+  args len 2 eq ("book: " br-err cat) ("book: " STATE cat " names " cat BOOK cat " as read last, relative to the directory it ran in: " cat br-err cat) if fail)} case
+  book-paras 'PARAS let
+
+-- A place past the book's end means the file changed since it was read.
+STATE0 BOOK place-of 'START let
+START 'p at 'st-p let START 'w at 'st-w let
+("book: " STATE cat " places " cat BOOK cat " at paragraph " cat st-p int-str cat ", word " cat st-w int-str cat) 'st-where let
+st-p 0 lt st-w 0 lt or (st-where ", but a place counts from 0. Fix or delete the state file." cat fail) () if
+st-p PARAS len ge (1) (st-w 0 gt st-w st-p 'PARAS nth must len ge and) if
+  (st-where ", past its end, so the book changed. Remove its entry from the state file to start over." cat fail) () if
+
+-- save: (place --).  The state file now names this book, at place. It is
+-- written at startup too, so a path that cannot be written stops the app
+-- before the first turn.
+('sv-at let STATE STATE0 BOOK sv-at with-place state-encode write {'ok (drop) 'no ("book: " swap cat fail)} case) 'save let
+START save
+
+-- draw: (w h place --).  The page's lines, then how far through the book it
+-- starts, as a percent of paragraphs, on the last row.
+('dp let 'dh let 'dw let 0 clear dw dh book-layout 'dl let dl 's at 'ds let
+ PARAS dp dl 'rows at dl 'cw at ds div page 'lines at
+ 0 ('ln let 'li let ln dl 'x at dl 'y at li dl 'lh at mul plus 3 ds dl 'x at dl 'cw at plus text li 1 plus) fold drop
+ dp 'p at 100 mul PARAS len div int-str "%" cat 'pc let
+ pc dw pc text-width ds mul sub 2 div dh dl 'lh at 2 mul sub 1 ds dw text) 'draw let
+
+book-model START 'at into
+
+('rh let 'rw let rw 'w into rh 'h into [] 'shown into) 'resize on
+('kk let 'km let km PARAS kk book-key 'kn let
+ kn 'at at km 'at at eq () (kn 'at at save) if kn) 'keydown on
+('tf let 'tm let tm 'at at 'tp let
+ [tp] tm 'shown at eq (tm) (tm 'w at tm 'h at tp draw tm [tp] 'shown into) if) 'tick on
+
+(drop) show

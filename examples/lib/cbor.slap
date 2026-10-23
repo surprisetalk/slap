@@ -76,7 +76,8 @@
               1 sub 'ckk let
               dup {'ok () 'no (drop 0)} case 'ckp let
               ('cki let cki _cc 0 lt ("cbor: unexpected end of input; expected a value" cki _cpos no) (cki _cc 5 shr 3 eq (cki ok) ("cbor: map key is not a text string" cki _cat no) if) if) then
-              "" ('cki let cki cd 1 plus _cv-at swap {'str () '_ (drop "cbor: map key is not a text string" fail)} case swap) pthen swap 'cks let
+              -- the head above is a text string's, so a key that is no 'str failed to parse, and its 'no passes on
+              "" ('cki let cki cd 1 plus _cv-at swap {'str () '_ (drop "")} case swap) pthen swap 'cks let
               (cks of {'ok (drop 1) 'no (drop 0)} case 'cdf let cks 0 insert cdf) dip swap 'cdp let
               ('cki let cdp ("cbor: duplicate key \"" cks cat "\"" cat ckp _cpos no) (cki ok) if) then
               {} 'null tag (cd 1 plus _cv-at) pthen swap 'cv let
@@ -369,6 +370,8 @@
 "6161" _hx cbor-len-or-int cd-run 1 ok eq assert
 "f5" _hx cbor-len-or-int cd-run cerr "$: oneOf: [0] : expected string, got bool; [1] : expected int, got bool" eq assert
 "61" _hx cd-int cd-run cerr "cbor: length past the end of the input at byte 0, found byte 97" eq assert
+-- a map key cut short fails with its own offset, not a death
+"a16361" _hx cd-value cd-run cerr "cbor: length past the end of the input at byte 1, found byte 99" eq assert
 "6161" _hx cd-int cd-run cerr "$: expected int, got string" eq assert
 "4161" _hx cd-str cd-run cerr "$: expected string, got bytes" eq assert
 "6161" _hx cd-bytes cd-run cerr "$: expected bytes, got string" eq assert
