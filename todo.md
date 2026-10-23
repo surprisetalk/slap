@@ -24,6 +24,26 @@
   2. Call it in cbor.slap's text-string path; add the failing case to
      cbor.slap's tests first.
 
+- [ ] You run a program that needs libraries without typing them in their
+      order: a verdict on how slap composes files, with no `import
+      "./foo"` inside a file. Today each app's readme row spells out
+      `cat examples/lib/{strings,icn,ufx,ui}.slap examples/clock-app.slap
+      examples/lib/ui-sdl.slap examples/clock-app-sdl.slap | ./slap-sdl`.
+  1. List every multi-file program in examples/ and tests/suite.py with its
+     cat line. Count how often a library joins only for another library
+     (ui needs icn and ufx; cbor needs strings).
+  2. Weigh three options, each with its cost in slap.c, tooling and
+     messages:
+     - Better errors: an unknown word that a file in examples/lib/
+       defines names the file and the cat line to fix it.
+     - A package registry and qualified calls (`strings.int-str`), which
+       may fold into the ware app.
+     - Bundles: a make target per program cats its files into
+       `bin/clock.slap`, so a run is `./slap-sdl < bin/clock.slap`.
+  3. Write the verdict in readme.md under `## Pending design`: the choice,
+     then the alternatives and their costs. Better errors may land
+     whatever the choice.
+
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps
       only, a launcher like iOS's; later, apps take partial width (full
