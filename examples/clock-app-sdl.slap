@@ -1,0 +1,42 @@
+-- The window for clock-app.slap: the time, big, with the date and the
+-- stopwatch under it. Run from the repo root with:
+--
+--   cat examples/lib/{strings,icn,ufx,ui}.slap examples/clock-app.slap \
+--       examples/clock-app-sdl.slap | ./slap-sdl
+--
+-- Space starts and stops the stopwatch, r sets it to zero. Closing the window
+-- quits.
+
+-- text: (str y color scale w --).  Centred in a window w wide. Each glyph
+-- draws one fill-rect per run of lit pixels, each pixel scale by scale.
+('t-w let 't-s let 't-col let 't-y let
+ ascii dup text-width t-s mul t-w swap sub 2 div
+ ('tc let 'tx let tc 1 plus 'OFF nth must 'te let
+  tc 'OFF nth must (dup te lt) ('ti let
+    ti 'RUNS nth must t-s mul tx plus  ti 1 plus 'RUNS nth must t-s mul t-y plus
+    ti 2 plus 'RUNS nth must t-s mul t-s t-col fill-rect
+    ti 3 plus) while drop
+  tx tc 'FW nth must t-s mul plus) fold drop) 'text let
+
+-- draw: (w h lines --).  The first line fills 9/10 of the width or half the
+-- height. Each other line is a third of its size, or less to fit that width.
+-- A gap of a quarter line goes above each other line. A glyph cell is 16
+-- pixels high.
+('dl let 'dh let 'dw let 0 clear
+ 0 'dl nth must 'd0 let dw 9 mul 10 div 'dfit let
+ dfit d0 text-width 1 max div dh 2 div 16 div min 1 max 'ds0 let
+ dl 1 drop-n 'drest let
+ drest ds0 3 div (text-width 1 max dfit swap div min) fold 1 max 'ds1 let
+ 16 ds0 mul drest len 20 ds1 mul mul plus 'dtall let
+ dh dtall sub 2 div 'dy let
+ d0 dy 3 ds0 dw text
+ drest dy 16 ds0 mul plus 4 ds1 mul plus ('rl let 'ry let rl ry 2 ds1 dw text ry 20 ds1 mul plus) fold drop) 'draw let
+
+clock-model
+
+('rh let 'rw let rw 'w into rh 'h into [] 'shown into) 'resize on
+('kk let 'km let km kk millis clock-key) 'keydown on
+('tf let 'tm let tm datetime millis clock-lines 'tl let
+ tl tm 'shown at eq (tm) (tm 'w at tm 'h at tl draw tm tl 'shown into) if) 'tick on
+
+(drop) show

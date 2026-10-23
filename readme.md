@@ -568,6 +568,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/gly.slap` | ASCII-inline 1-bit glyphs |
 | `examples/lib/ufx.slap` | Proportional bitmap fonts (requires `icn.slap`) |
 | `examples/lib/ulz.slap` | LZ-compressed byte stream (decode only) |
+| `examples/lib/ui.slap` | The sauce apps' font (`fonts/chicago12.uf2`) as runs of lit pixels per glyph (`RUNS`, `OFF`, widths `FW`), with `ascii`, `text-width` and `wrap-text` (requires `icn.slap` and `ufx.slap`) |
 | `examples/lib/parse.slap` | `parse-int`/`parse-float`/`parse-exact`/`parse-spaces`/`parse-while`/`parse-until` |
 | `examples/lib/xml.slap` | Elm-style XML decoder (requires `strings.slap` for `int-str`) |
 | `examples/lib/rss.slap` | RSS/Atom feed parser (requires `xml.slap`) |
@@ -725,6 +726,7 @@ App demos (terminal build):
 | `fetch.slap` | A small curl. Builds the request with `http-request` and reads the reply with `parse-http` |
 | `feed.slap` | RSS 2.0 and Atom reader — the consumer for `xml.slap` and `rss.slap` |
 | `feed-app.slap` | Fullscreen feed reader, sauce's first app: fetches each feed with `https-get`; j/k or the arrows move and scroll, enter opens an item and marks it read in a CBOR state file (merged with the file on each write), escape goes back, closing the window quits. Run it from the repo root (it reads `fonts/chicago12.uf2`). A feed or state file that cannot be read stops it at startup. It keeps the first 4 KiB of each summary, whose HTML tags show as text |
+| `clock-app.slap` | Fullscreen clock, sauce's second app: the local time as large as the window allows, the date under it, and a stopwatch that space starts and stops and r sets to zero. The stopwatch line shows once it runs. Run it from the repo root: `cat examples/lib/{strings,icn,ufx,ui}.slap examples/clock-app.slap examples/clock-app-sdl.slap \| ./slap-sdl` |
 | `todo.slap` | Todo list in a JSON file, decoded with `jd-*` and written with `je-*` |
 | `banner.slap` | Text as ASCII art from a real `.uf1` bitmap font, via `icn.slap` |
 | `plasma.slap` | Writes a 24-bit TGA. Float-only: there is no `sin`, so it builds one |
@@ -854,3 +856,7 @@ make clean         # remove binaries and generated pages
 `slap-wasm` writes `<name>.html`, `<name>.js`, and `<name>.wasm`, wrapping the program in `shell.html` (a canvas the size of the browser viewport; `SLAP_NAME` is substituted with the program name). It needs `emcc` on `PATH` — `brew install emscripten`, or install [emsdk](https://emscripten.org/docs/getting_started/downloads.html).
 
 The build passes `-sGROWABLE_ARRAYBUFFERS=0`. With `ALLOW_MEMORY_GROWTH`, emscripten ≥6 backs the heap with a resizable `ArrayBuffer`, and browsers' `TextDecoder.decode()` rejects those — startup throws and the canvas stays blank.
+
+## Pending design
+
+- `examples/lib/ui.slap` holds the font that feed and clock share, split out at its second use. Drawing stays in each window file, since `fill-rect` would stop ui.slap's self-test in the terminal build. Alternative: copy the font code into clock-app.slap until cal, the third use. It costs a second copy of the font tables to keep in step.

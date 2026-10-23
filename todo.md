@@ -15,15 +15,6 @@
   4. Write the verdict in readme.md under `## Pending design`: the choice,
      then the alternative and its cost in checker size and messages.
 
-## Blocked on you
-
-- [ ] You run a tic80 cart with lua.slap, and its screen matches tic80's.
-      Blocked: approve a design.
-  1. Design: tic80's API (240x136 screen, 16-colour palette in RAM, `TIC()`
-     each frame) as a second API table beside pico8's, chosen by the cart
-     format; its reference renderer, as zepto8 is pico8's.
-  2. Then duskos and decker.
-
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps
       only, a launcher like iOS's; later, apps take partial width (full
@@ -35,24 +26,35 @@
       (examples/lib/cbor.slap) and share a charmbracelet-like UI. A dir app
       opens a general thing. A file app opens one specific thing, as viewer
       and editor; with no subject it opens the last file; it saves by tags
-      only. First app: feed (examples/feed-app.slap), done.
-      Blocked: sort the app list in step 1 by priority. Decide later
-      whether you publish your own ware registry.
-  1. Apps, unsorted: home (launcher, search), stuff (files by tag,
-     libraries; SQL or FQL), shell (the slap REPL), ware (registries),
-     config, web (html/css), book, code, slides, prose (markdown, vim/leap,
-     minimap, image preview, linters, AI editing), sheet, email, cal,
-     phone, chat, video, music, photo, camera, print, clock, map, steno,
-     cast. Unplaced: query, debug, talk, claude, hypercard.
-  2. Batteries to choose from as apps need them: sized ints and floats,
+      only.
+  1. cal: a month grid from `datetime`; events in a CBOR file.
+  2. book: read a text file a screen at a time; the CBOR state keeps the
+     page.
+  3. music, then shell (the slap REPL), home (launcher, search), ware
+     (registries; decide later whether you publish your own).
+  4. Then, unsorted: stuff (files by tag, libraries; SQL or FQL), config,
+     web (html/css), code, slides, prose (markdown, vim/leap, minimap,
+     image preview, linters, AI editing), sheet, email, phone, chat, video,
+     photo, camera, print, map, steno, cast. Unplaced: query, debug, talk,
+     claude, hypercard.
+  5. Batteries to choose from as apps need them: sized ints and floats,
      slices, `dice`, sets, SIMD, GPU, go-like threads with input queues, a
      charm-like UI framework with a WYSIWYG editor, a graphics stack
      language, a query language. Each: expect.slap, then TYPES, then readme.
-  3. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
+  6. When SIMD, GPU or threads land, revisit zoom.slap: `escape` dominates
      deep keyframes, and every pass is data-parallel. Time the ticks
      first, then cut the tricks that no longer pay.
-  4. Move the blog and all projects into sauce. taylor.town serves its
+  7. Move the blog and all projects into sauce. taylor.town serves its
      pages (indexed) and assets (not indexed) from sauce.
+
+## Blocked on you
+
+- [ ] You run a tic80 cart with lua.slap, and its screen matches tic80's.
+      Blocked: approve a design.
+  1. Design: tic80's API (240x136 screen, 16-colour palette in RAM, `TIC()`
+     each frame) as a second API table beside pico8's, chosen by the cart
+     format; its reference renderer, as zepto8 is pico8's.
+  2. Then duskos and decker.
 
 - [ ] You read a post series on slap: 001 why I built it; 002 API,
       patterns and idioms (DSLs, Elm-like decoders); 003 tags, 'ok/'no,

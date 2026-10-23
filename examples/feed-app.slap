@@ -1,51 +1,9 @@
--- feed-app.slap: the feed reader's model, keys, font and state file. The window
--- is feed-app-sdl.slap; this file holds no SDL word, so its self-test runs in
--- the terminal build:
+-- feed-app.slap: the feed reader's model, keys and state file. The window is
+-- feed-app-sdl.slap; this file holds no SDL word, so its self-test runs in the
+-- terminal build:
 --
---   cat examples/lib/{strings,parse,http,xml,rss,cbor,icn,ufx}.slap \
+--   cat examples/lib/{strings,parse,http,xml,rss,cbor,icn,ufx,ui}.slap \
 --       examples/feed-app.slap | ./slap --headless
---
--- Run it from the repo root: it reads fonts/chicago12.uf2.
-
--- ===== font =====
--- A uf2 glyph is 16x16: four 8x8 tiles, column first (top left, bottom left,
--- top right, bottom right), 256 glyphs after the 256-byte width table. Each
--- glyph becomes runs of lit pixels in one row, x y w triples in one flat list,
--- so a character draws as one fill-rect per run with no test per pixel.
--- OFF holds where each glyph's runs start, 257 entries.
-"fonts/chicago12.uf2" read must ufx-decode must 'FONT let
-FONT 'widths at 'FW let
-FONT 'glyphs at flatten 'GL let
-('px-c let 'px-y let 'px-x let
- px-c 4 mul px-x 8 div 2 mul plus px-y 8 div plus 64 mul
- px-y 8 mod 8 mul plus px-x 8 mod plus 'GL nth must) 'glyph-px let
-[] [] 0 (dup 256 lt) ('fr-c let 'fr-o let
-  dup len 'fr-n let fr-o fr-n push swap
-  0 (dup 16 lt) ('fr-y let
-    -- a run's start x, or -1 outside a run; column 16 ends the last run
-    -1 0 (dup 17 lt) ('fr-x let 'fr-s let
-      fr-x 16 lt (fr-x fr-y fr-c glyph-px) (0) if
-        (fr-s 0 lt (fr-x) (fr-s) if)
-        (fr-s 0 ge (fr-s push fr-y push fr-x fr-s sub push -1) (-1) if) if
-      fr-x 1 plus) while drop drop
-    fr-y 1 plus) while drop
-  swap fr-c 1 plus) while drop
-over len push 'OFF let 'RUNS let
-
--- Feed text is UTF-8, and the font has one glyph per byte: a character past
--- ASCII shows as ?, and a control byte as a space.
-(('asc-c let asc-c 128 ge asc-c 192 lt and not) filter (dup 192 ge (drop 63) (dup 32 lt (drop 32) () if) if) each) 'ascii let
-(ascii 0 ('FW nth must plus) fold) 'text-width let
-
--- wrap-text: (str maxw -- lines).  Greedy: a word joins the line while it fits; a
--- word wider than the line gets a line of its own.
-('wr-max let ascii " " str-split (len 0 gt) filter 'wr-ws let wr-ws len 'wr-n let
- [] "" 0 (dup wr-n lt) ('wr-i let 'wr-cur let
-   wr-i 'wr-ws nth must 'wr-w let
-   wr-cur len 0 eq (wr-w) (wr-cur " " cat wr-w cat) if 'wr-try let
-   wr-try text-width wr-max le wr-cur len 0 eq or (wr-try) (wr-cur push wr-w) if
-   wr-i 1 plus) while drop
- dup len 0 gt (push) (drop) if) 'wrap-text let
 
 -- ===== items =====
 -- Titles and summaries are markup from xml-render, so each entity decodes.
@@ -114,17 +72,6 @@ over len push 'OFF let 'RUNS let
 
 -- ===== self-test =====
 isheadless (
-  OFF len 257 eq assert
-  -- A has lit pixels; a space has none
-  65 1 plus 'OFF nth must 65 'OFF nth must gt assert
-  33 'OFF nth must 32 'OFF nth must eq assert
-  "" text-width 0 eq assert
-  "ab" text-width 97 'FW nth must 98 'FW nth must plus eq assert
-  [104 195 169 1 105] ascii [104 63 32 105] eq assert
-  "one two three" 10000 wrap-text ["one two three"] eq assert
-  "one two three" 1 wrap-text ["one" "two" "three"] eq assert
-  "  " 100 wrap-text [] eq assert
-
   "examples/feeds/sample.xml" read must rss-parse must "sample" "local/sample.xml" feed-items 'st-items let
   st-items len 2 gt assert
   st-items ('id at) each 'st-ids let

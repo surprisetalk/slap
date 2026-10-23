@@ -1,0 +1,78 @@
+-- clock-app.slap: the clock's text, stopwatch and keys. The window is
+-- clock-app-sdl.slap; this file holds no SDL word, so its self-test runs in the
+-- terminal build:
+--
+--   cat examples/lib/{strings,icn,ufx,ui}.slap examples/clock-app.slap \
+--     | ./slap --headless
+
+-- ===== text =====
+["Sunday" "Monday" "Tuesday" "Wednesday" "Thursday" "Friday" "Saturday"] 'DAYS let
+["January" "February" "March" "April" "May" "June" "July" "August" "September"
+ "October" "November" "December"] 'MONTHS let
+
+-- two: (n -- str).  At least two digits.
+(dup 10 lt ("0" swap int-str cat) (int-str) if) 'two let
+
+-- clock-time: (datetime -- str), as "09:05:00".  A leap second shows as 60.
+('ct let 3 'ct nth must two ":" cat 4 'ct nth must two cat ":" cat 5 'ct nth must two cat) 'clock-time let
+
+-- clock-date: (datetime -- str), as "Friday 23 October 2026".
+('cd let 6 'cd nth must 'DAYS nth must " " cat 2 'cd nth must int-str cat " " cat
+ 1 'cd nth must 'MONTHS nth must cat " " cat 0 'cd nth must int-str cat) 'clock-date let
+
+-- ===== stopwatch =====
+-- A stopwatch is 'stopped with the milliseconds it counted, or 'running with
+-- the `millis` it started at and what it counted before that start.
+-- sw-ms: (sw now -- ms).
+('sm-now let {'stopped () 'running ('sm-r let sm-r 'acc at sm-now plus sm-r 'start at sub)} case) 'sw-ms let
+
+-- sw-text: (ms -- str), as "01:02.34", or "1:01:02.34" from an hour up.
+('st-ms let st-ms 1000 div 'st-s let st-s 3600 div 'st-h let
+ st-h 0 gt (st-h int-str ":" cat) ("") if
+ st-s 60 div 60 mod two cat ":" cat st-s 60 mod two cat "." cat st-ms 1000 mod 10 div two cat) 'sw-text let
+
+-- ===== model and keys =====
+-- A model: {'w 'h 'sw 'shown}. 'shown holds the lines last drawn, [] after a
+-- resize, so a frame draws only after a change.
+({'w 0 'h 0 'sw 0 'stopped tag 'shown []}) 'clock-model let
+
+-- clock-key: (m keycode now -- m).  Space starts and stops the stopwatch; r
+-- stops it and sets it to zero.
+('ck-now let 'ck-k let
+ ck-k 32 eq (dup 'sw at dup ck-now sw-ms 'ck-ms let
+   {'stopped (drop {'start ck-now 'acc ck-ms} 'running tag) 'running (drop ck-ms 'stopped tag)} case 'sw into)
+   (ck-k 114 eq (0 'stopped tag 'sw into) () if) if) 'clock-key let
+
+-- clock-lines: (m datetime now -- lines).  The time, the date, and the
+-- stopwatch while it runs or holds a count.
+('cl-now let 'cl-dt let 'sw at 'cl-sw let
+ [cl-dt clock-time cl-dt clock-date]
+ cl-sw {'stopped (0 gt) 'running (drop 1)} case (cl-sw cl-now sw-ms sw-text push) () if) 'clock-lines let
+
+-- ===== self-test =====
+isheadless (
+  [2026 9 23 9 5 0 5 295 1] 'ts-dt let
+  ts-dt clock-time "09:05:00" eq assert
+  [2026 0 1 23 59 60 4 0 0] clock-time "23:59:60" eq assert
+  ts-dt clock-date "Friday 23 October 2026" eq assert
+  [1999 11 31 0 0 0 0 364 0] clock-date "Sunday 31 December 1999" eq assert
+  0 sw-text "00:00.00" eq assert
+  62345 sw-text "01:02.34" eq assert
+  3662345 sw-text "1:01:02.34" eq assert
+  360000000 sw-text "100:00:00.00" eq assert
+  -- start at 1000, stop at 3500, start at 10000: 2500 counted, then more
+  clock-model 'ts-m let
+  ts-m 32 1000 clock-key 'ts-m1 let
+  ts-m1 'sw at 1700 sw-ms 700 eq assert
+  ts-m1 32 3500 clock-key 'ts-m2 let
+  ts-m2 'sw at 9999 sw-ms 2500 eq assert
+  ts-m2 32 10000 clock-key 'sw at 10250 sw-ms 2750 eq assert
+  -- r stops and zeroes; another key changes nothing
+  ts-m1 114 2000 clock-key 'sw at 5000 sw-ms 0 eq assert
+  ts-m1 106 2000 clock-key 'sw at 1700 sw-ms 700 eq assert
+  -- the stopwatch line shows only once it has counted
+  ts-m ts-dt 5000 clock-lines ["09:05:00" "Friday 23 October 2026"] eq assert
+  ts-m2 ts-dt 5000 clock-lines ["09:05:00" "Friday 23 October 2026" "00:02.50"] eq assert
+  ts-m1 ts-dt 1000 clock-lines ["09:05:00" "Friday 23 October 2026" "00:00.00"] eq assert
+  "clock-selftest-ok" print
+) () if

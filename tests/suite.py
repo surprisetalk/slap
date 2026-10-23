@@ -101,7 +101,7 @@ def drive_demo(files, probe=""):
     return r.stdout, None
 
 
-FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml rss cbor icn ufx".split())
+FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml rss cbor icn ufx ui".split())
 
 
 def headless_demo(files, ok, probe=""):
@@ -821,7 +821,16 @@ def steps(slow):
             [f"examples/{n}.slap", f"examples/{n}-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
+    demos["clock-app"] = (
+        [*lib("strings", "icn", "ufx", "ui").split(), "examples/clock-app.slap", "examples/clock-app-sdl.slap"],
+        lambda o: "clock-selftest-ok" in o,
+    )
+    # Space at frame 2 starts the stopwatch, so its line shows from then on.
     probes = {
+        "clock-app": (
+            "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'shown at len print) () if",
+            lambda o: "clock-selftest-ok" in o and o.split()[-1] == "3",
+        ),
         "life": (LIFE_PROBE, lambda o: o.split() == LIFE_OUT),
         "flock": (FLOCK_PROBE, lambda o: o.split() == FLOCK_OUT),
     }
@@ -829,7 +838,7 @@ def steps(slow):
         if not HAS_SDL:
             out[name] = (
                 f"cat {' '.join(files)} | ./slap --check"
-                + (f" && ./slap --headless < {files[0]}" if ok else ""),
+                + (f" && cat {' '.join(files[:-1])} | ./slap --headless" if ok else ""),
                 ok,
             )
         elif name == "raycast":

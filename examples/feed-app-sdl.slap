@@ -1,7 +1,7 @@
 -- The window for feed-app.slap: fetch the feeds, then read them fullscreen.
 -- Run from the repo root with:
 --
---   cat examples/lib/{strings,parse,http,xml,rss,cbor,icn,ufx}.slap \
+--   cat examples/lib/{strings,parse,http,xml,rss,cbor,icn,ufx,ui}.slap \
 --       examples/feed-app.slap examples/feed-app-sdl.slap \
 --     | ./slap-sdl state.cbor github.com /surprisetalk/slap/commits/main.atom
 --
