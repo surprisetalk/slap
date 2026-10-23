@@ -755,7 +755,7 @@ def steps(slow):
             "serve": ("python3 tests/run_serve.py", None),
             "feed-app": (
                 f"cat {FEED_LIBS} examples/feed-app.slap | ./slap --headless"
-                f" && cat {FEED_LIBS} examples/feed-app.slap examples/feed-app-sdl.slap | ./slap --check",
+                f" && cat {FEED_LIBS} examples/feed-app.slap examples/lib/ui-sdl.slap examples/feed-app-sdl.slap | ./slap --check",
                 lambda out: "feed-selftest-ok" in out,
             ),
             "codec": ("python3 tests/run_codec.py", None),
@@ -821,12 +821,19 @@ def steps(slow):
             [f"examples/{n}.slap", f"examples/{n}-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
-    demos["clock-app"] = (
-        [*lib("strings", "icn", "ufx", "ui").split(), "examples/clock-app.slap", "examples/clock-app-sdl.slap"],
-        lambda o: "clock-selftest-ok" in o,
-    )
-    # Space at frame 2 starts the stopwatch, so its line shows from then on.
+    for n in ["cal", "clock"]:
+        demos[f"{n}-app"] = (
+            [*lib("strings", "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
+            lambda o, n=n: f"{n}-selftest-ok" in o,
+        )
+    # Space at frame 2 starts the stopwatch, so its line shows from then on. n at frame 2 moves cal
+    # a month on from today.
     probes = {
+        "cal-app": (
+            "test-frame 2 eq (110 test-keydown) () if"
+            " test-frame 14 eq (dup 'shown at 1 get must datetime 1 get must sub 12 plus 12 mod print) () if",
+            lambda o: "cal-selftest-ok" in o and o.split()[-1] == "1",
+        ),
         "clock-app": (
             "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'shown at len print) () if",
             lambda o: "clock-selftest-ok" in o and o.split()[-1] == "3",
@@ -838,7 +845,7 @@ def steps(slow):
         if not HAS_SDL:
             out[name] = (
                 f"cat {' '.join(files)} | ./slap --check"
-                + (f" && cat {' '.join(files[:-1])} | ./slap --headless" if ok else ""),
+                + (f" && cat {' '.join(f for f in files if not f.endswith('-sdl.slap'))} | ./slap --headless" if ok else ""),
                 ok,
             )
         elif name == "raycast":
@@ -987,7 +994,7 @@ def status():
     score["https-get fetches https://example.com with status 200."] = 1.0 if https_ok else 0.0
     # The feed app end to end: fetch a real https feed, press j and enter, and find the item's id in
     # state.cbor. The driver's tick handler ends the headless run.
-    src = "".join(open(f).read() for f in FEED_LIBS.split() + ["examples/feed-app.slap", "examples/feed-app-sdl.slap"])
+    src = "".join(open(f).read() for f in FEED_LIBS.split() + ["examples/feed-app.slap", "examples/lib/ui-sdl.slap", "examples/feed-app-sdl.slap"])
     head = re.sub(r"\bshow\s*\Z", "", src).replace("'keydown on", "'test-keydown let (test-keydown) 'keydown on")
     driver = "('tf let tf 3 eq (106 test-keydown 13 test-keydown) () if tf 6 eq (\"test-done\" fail) () if) 'tick on\nshow\n"
     state = os.path.join(SCRATCH, "feed-state.cbor")

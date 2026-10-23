@@ -1,3 +1,7 @@
+/* timegm is outside POSIX: glibc and musl declare it under _DEFAULT_SOURCE,
+   macOS under _DARWIN_C_SOURCE. */
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1142,7 +1146,7 @@ static const char *TYPES =
     "'eq ['a var 'a var] [int] 'lt [int int] [int] 'flt [float float] [int]\n"
     "'itof [int] [float] 'ftoi [float] [int] 'float-str [float] [str] 'float-bits [float] [int] 'bits-float [int] [float] 'fsqrt [float] [float] 'ffloor [float] [float] 'fround [float] [float]\n"
     "'fexp [float] [float] 'flog [float] [float] 'fpow [float float] [float] 'fatan2 [float float] [float]\n"
-    "'print ['a var] [] 'assert [int] [] 'millis [] [int] 'datetime [] [int 'list tag] 'random [int] [int] 'isheadless [] [int]\n"
+    "'print ['a var] [] 'assert [int] [] 'millis [] [int] 'datetime [] [int 'list tag] 'calendar [int int int] [int 'list tag] 'random [int] [int] 'isheadless [] [int]\n"
     "'apply ['s rest ['s rest] ['t rest] fn] ['t rest] 'dip ['s rest 'x var ['s rest] ['t rest] fn] ['t rest 'x var]\n"
     "'if ['s rest int ['s rest] ['t rest] fn ['s rest] ['t rest] fn] ['t rest] 'while ['a rest ['a rest] ['b rest int] fn ['b rest] ['a rest] fn] ['b rest]\n"
     "'each ['s rest 'a var 'list tag ['r sealed 'a var] ['r sealed 'b var] fn] ['s rest 'b var 'list tag] 'fold ['s rest 'a var 'list tag 'b var ['r sealed 'b var 'a var] ['r sealed 'b var] fn] ['s rest 'b var]\n"
@@ -2792,6 +2796,24 @@ static void prim_datetime(Frame *e){
     for(int i=0;i<9;i++) spush(val_int(f[i]));
     spush(val_compound(VAL_LIST,9,10));
 }
+/* A civil date's fields at midnight UTC, in datetime's order. timegm
+   normalizes month and day, so a calendar needs no date arithmetic of its own.
+   macOS's timegm refuses years before 1900 and glibc's does not, so every
+   result outside 1900-9999 is an error. The input bound keeps each field
+   inside struct tm's int. */
+static void prim_calendar(Frame *e){
+    (void)e; int64_t d=pop_int(),m=pop_int(),y=pop_int();
+    if(y<-10000000||y>10000000||m<-10000000||m>10000000||d<-10000000||d>10000000)
+        die("calendar: expected a year, month and day each within -10000000 to 10000000, got %lld %lld %lld.",(long long)y,(long long)m,(long long)d);
+    struct tm in={0},out; in.tm_year=(int)(y-1900); in.tm_mon=(int)m; in.tm_mday=(int)d;
+    time_t t=timegm(&in);
+    if(t==(time_t)-1||!gmtime_r(&t,&out)||out.tm_year<0||out.tm_year>8099)
+        die("calendar: %lld %lld %lld falls outside the years 1900 to 9999.\n"
+            "  macOS counts no year before 1900, so no platform does. Pass a date inside that range.",(long long)y,(long long)m,(long long)d);
+    int64_t f[9]={(int64_t)out.tm_year+1900,out.tm_mon,out.tm_mday,0,0,0,out.tm_wday,out.tm_yday,0};
+    for(int i=0;i<9;i++) spush(val_int(f[i]));
+    spush(val_compound(VAL_LIST,9,10));
+}
 static const char *PRELUDE =
     "(swap drop) 'nip let\n"
     "(0 eq) 'not let\n"
@@ -3361,7 +3383,7 @@ static void register_prims(void) {
         R(reverse,reverse),R(zip,zip),{"take-n",prim_take_n,NULL},{"drop-n",prim_drop_n,NULL},R(range,range),
         R(fold,fold),R(each,each),R(filter,filter),R(sort,sort),M("index-of",indexof),
         R(at,at),R(into,into),R(edit,edit),
-        R(millis,millis),R(datetime,datetime),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),
+        R(millis,millis),R(datetime,datetime),R(calendar,calendar),R(box,box),R(free,free),R(lend,lend),R(mutate,mutate),
         R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),
         {"dict-entries",prim_entries,NULL},
         R(tag,tag),R(must,must),R(pthen,pthen),

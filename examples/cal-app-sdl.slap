@@ -1,0 +1,45 @@
+-- The window for cal-app.slap: a month as a grid of weeks, today and the
+-- chosen day marked. Run from the repo root with:
+--
+--   cat examples/lib/{strings,icn,ufx,ui}.slap examples/cal-app.slap \
+--       examples/lib/ui-sdl.slap examples/cal-app-sdl.slap | ./slap-sdl
+--
+-- h l or left right move a day, j k or down up a week, n p a month, t goes
+-- back to today. Closing the window quits.
+
+-- centred: (str x span y color scale --).  Centred in span pixels from x.
+('ce-s let 'ce-col let 'ce-y let 'ce-span let 'ce-x let 'ce-str let
+ ce-str ce-x ce-span ce-str text-width ce-s mul sub 2 div plus ce-y ce-col ce-s ce-x ce-span plus text) 'centred let
+
+["Su" "Mo" "Tu" "We" "Th" "Fr" "Sa"] 'WEEKDAYS let
+
+-- draw: (w h view --).  Eight rows: the month, the weekdays, six weeks. The
+-- scale fits the month's name, and a cell 24 pixels wide, since the widest
+-- weekday label is 20. A glyph cell is 16 pixels high. The chosen day shows
+-- inverted, and today on dark grey.
+('dv let 'dh let 'dw let 0 clear
+ 0 'dv nth must 'dy let 1 'dv nth must 'dm let 2 'dv nth must 'dd let
+ 3 'dv nth must 'ty let 4 'dv nth must 'tm let 5 'dv nth must 'td let
+ dw 7 div 1 max 'cw let dh 8 div 1 max 'ch let dw cw 7 mul sub 2 div 'ox let
+ dm 'MONTHS nth must " " cat dy int-str cat 'title let
+ cw 3 mul 4 div 24 div  ch 3 mul 4 div 16 div min  dw 9 mul 10 div title text-width div min 1 max 's let
+ ch 16 s mul sub 2 div 'oy let
+ title 0 dw oy 3 s centred
+ WEEKDAYS 0 ('wl let 'wi let wl wi cw mul ox plus cw ch oy plus 2 s centred wi 1 plus) fold drop
+ dy dm cal-cells 0 ('cd let 'ci let
+   cd 0 gt (
+     ci 7 mod cw mul ox plus 'cx let ci 7 div 2 plus ch mul 'cy let
+     cd int-str cx cw cy oy plus
+     cd dd eq (cx 1 plus cy 1 plus cw 2 sub ch 2 sub 3 fill-rect 0) (
+       dy ty eq dm tm eq and cd td eq and (cx 1 plus cy 1 plus cw 2 sub ch 2 sub 1 fill-rect 3) (2) if) if
+     s centred) () if
+   ci 1 plus) fold drop) 'draw let
+
+datetime cal-model
+
+('rh let 'rw let rw 'w into rh 'h into [] 'shown into) 'resize on
+('kk let 'km let km kk datetime cal-key) 'keydown on
+('tf let 'tm let tm datetime cal-view 'tv let
+ tv tm 'shown at eq (tm) (tm 'w at tm 'h at tv draw tm tv 'shown into) if) 'tick on
+
+(drop) show

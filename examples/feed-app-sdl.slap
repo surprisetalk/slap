@@ -2,7 +2,7 @@
 -- Run from the repo root with:
 --
 --   cat examples/lib/{strings,parse,http,xml,rss,cbor,icn,ufx,ui}.slap \
---       examples/feed-app.slap examples/feed-app-sdl.slap \
+--       examples/feed-app.slap examples/lib/ui-sdl.slap examples/feed-app-sdl.slap \
 --     | ./slap-sdl state.cbor github.com /surprisetalk/slap/commits/main.atom
 --
 -- j k or the arrows move and scroll, enter opens an item and marks it read,
@@ -43,34 +43,21 @@ ITEMS ('id at) each 'IDS let
  sv-ids ('svi let dup svi member () (svi push) if) fold write-state) 'save let
 
 -- ===== drawing =====
--- glyph: (x y c color --).  One fill-rect per run of lit pixels.
-('g-col let 'g-c let 'g-y let 'g-x let
- g-c 1 plus 'OFF nth must 'g-e let
- g-c 'OFF nth must (dup g-e lt) ('g-i let
-   g-i 'RUNS nth must g-x plus  g-i 1 plus 'RUNS nth must g-y plus
-   g-i 2 plus 'RUNS nth must 1 g-col fill-rect
-   g-i 3 plus) while drop) 'glyph let
-
--- text: (str x y color xmax --).  Characters past xmax are not drawn.
-('t-max let 't-col let 't-y let 't-x let
- ascii t-x ('tc let 'tx let tx tc 'FW nth must plus 'tn let
-   tn t-max le (tx t-y tc t-col glyph) () if tn) fold drop) 'text let
-
 -- The list: the chosen row inverted, a read item dim. Items are read by
 -- index, so a redraw copies only the rows on screen.
 ('dl let dl 'w at 'dl-w let dl 'h at LH div 1 max 'dl-rows let dl 'top at 'dl-top let dl 'marks at 'dl-marks let
- dl 'n at 0 eq ("no items" 8 4 3 dl-w text) (
+ dl 'n at 0 eq ("no items" 8 4 3 1 dl-w text) (
    0 dl-rows dl 'n at dl-top sub min range 0 ('rr let
      rr dl-top plus 'ri let rr LH mul 'ry let
      ri dl 'at at eq (0 ry dl-w LH 3 fill-rect 0) (ri 'dl-marks nth must 1 eq (1) (3) if) if 'rc let
      ri 'ITEMS nth must 'rit let
-     rit 'feed at ": " cat rit 'title at cat 8 ry 1 plus rc dl-w 8 sub text) fold drop) if) 'draw-list let
+     rit 'feed at ": " cat rit 'title at cat 8 ry 1 plus rc 1 dl-w 8 sub text) fold drop) if) 'draw-list let
 
 -- An item: its title, then its wrapped summary from line 'scroll down.
 ('di let di 'w at 16 sub 'di-w let di 'h at 'di-h let
- di 'at at 'ITEMS nth must 'title at di-w wrap-text 4 ('tl let 'ty let tl 8 ty 3 di-w 8 plus text ty LH plus) fold LH plus 'di-y let
+ di 'at at 'ITEMS nth must 'title at di-w wrap-text 4 ('tl let 'ty let tl 8 ty 3 1 di-w 8 plus text ty LH plus) fold LH plus 'di-y let
  di 'lines at di 'scroll at drop-n di-h di-y sub LH div 0 max take-n
-   di-y ('sl let 'sy let sl 8 sy 2 di-w 8 plus text sy LH plus) fold drop) 'draw-item let
+   di-y ('sl let 'sy let sl 8 sy 2 1 di-w 8 plus text sy LH plus) fold drop) 'draw-item let
 
 ('dm let 0 clear dm 'view at 'list eq (dm draw-list) (dm draw-item) if) 'draw let
 

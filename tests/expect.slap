@@ -1228,6 +1228,22 @@ dy eq assert
 datetime 0 1234 set must 0 get must 1234 eq assert
 datetime 0 get must y eq assert
 
+-- ===== calendar =====
+-- y m d calendar: that day's fields at midnight, in datetime's order. libc
+-- normalizes the date, so month 12 is January next year and day 0 is the last
+-- day of the month before.
+2026 9 23 calendar [2026 9 23 0 0 0 5 295 0] eq assert
+2026 12 1 calendar 3 take-n [2027 0 1] eq assert
+2024 2 0 calendar 3 take-n [2024 1 29] eq assert
+2100 2 0 calendar 2 get must 28 eq assert
+1970 0 0 calendar 3 take-n [1969 11 31] eq assert
+1900 0 1 calendar 6 get must 1 eq assert
+9999 11 31 calendar 6 get must 5 eq assert
+-- today's weekday and day of the year agree with datetime's
+datetime 'cal-dt let
+0 'cal-dt nth must 1 'cal-dt nth must 2 'cal-dt nth must calendar 6 drop-n 2 take-n
+cal-dt 6 drop-n 2 take-n eq assert
+
 -- ===== Adversarial: str-split / str-find / int-str edge cases =====
 
 -- str-split: consecutive delimiters produce empty middle segment

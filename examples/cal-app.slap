@@ -1,0 +1,104 @@
+-- cal-app.slap: the calendar's month grid and keys. The window is
+-- cal-app-sdl.slap; this file holds no SDL word, so its self-test runs in the
+-- terminal build:
+--
+--   cat examples/lib/{strings,icn,ufx,ui}.slap examples/cal-app.slap \
+--     | ./slap --headless
+
+["January" "February" "March" "April" "May" "June" "July" "August" "September"
+ "October" "November" "December"] 'MONTHS let
+
+-- cal-cells: (y m -- days).  42 cells, six weeks from Sunday: each the day of
+-- the month it shows, or 0 outside the month.
+('cc-m let 'cc-y let cc-y cc-m 1 calendar 6 get must 'cc-first let
+ cc-y cc-m 1 plus 0 calendar 2 get must 'cc-n let
+ 0 42 range (cc-first sub 1 plus dup 1 lt over cc-n gt or (drop 0) () if) each) 'cal-cells let
+
+-- ===== model and keys =====
+-- A model: {'w 'h 'y 'm 'd 'shown}. 'y 'm 'd is the chosen day, month 0-11.
+-- 'shown holds the view last drawn, [] after a resize, so a frame draws only
+-- after a change.
+('cm-t let {'w 0 'h 0 'y 0 'cm-t nth must 'm 1 'cm-t nth must 'd 2 'cm-t nth must 'shown []}) 'cal-model let
+
+-- go: (m y m d -- m).  Choose that day; calendar carries a day or month past
+-- either end of its month or year.
+('go-d let 'go-mo let 'go-y let go-y go-mo go-d calendar 'go-c let
+ 0 'go-c nth must 'y into 1 'go-c nth must 'm into 2 'go-c nth must 'd into) 'go let
+
+-- by-days: (m n -- m).  Move the chosen day n days. A move of at most a month
+-- leaves calendar's years 1900 to 9999 only from January 1900 or December
+-- 9999, and such a move stays put.
+('bd-n let 'bd let bd 'd at bd-n plus 'bd-d let
+ bd 'y at 1900 eq bd 'm at 0 eq and bd-d 1 lt and
+ bd 'y at 9999 eq bd 'm at 11 eq and bd-d 31 gt and or
+ (bd) (bd bd 'y at bd 'm at bd-d go) if) 'by-days let
+
+-- by-months: (m n -- m).  Move n months, to the same day or the month's last.
+-- A move past calendar's years 1900 to 9999 stays put.
+('bm-n let 'bm let bm 'y at 12 mul bm 'm at plus bm-n plus 'bm-k let
+ bm-k 1900 12 mul lt bm-k 9999 12 mul 11 plus gt or (bm) (
+   bm-k 12 div 'bm-y let bm-k 12 mod 'bm-m let
+   bm bm-y bm-m bm-y bm-m 1 plus 0 calendar 2 get must bm 'd at min go) if) 'by-months let
+
+-- cal-key: (m keycode datetime -- m).  h l or left right move a day, j k or
+-- down up a week, n p a month, t back to today.
+('ck-t let 'ck-k let
+ ck-k 104 eq ck-k 1073741904 eq or (-1 by-days) (
+ ck-k 108 eq ck-k 1073741903 eq or (1 by-days) (
+ ck-k 106 eq ck-k 1073741905 eq or (7 by-days) (
+ ck-k 107 eq ck-k 1073741906 eq or (-7 by-days) (
+ ck-k 110 eq (1 by-months) (
+ ck-k 112 eq (-1 by-months) (
+ ck-k 116 eq (0 'ck-t nth must 1 'ck-t nth must 2 'ck-t nth must go) () if) if) if) if) if) if) if) 'cal-key let
+
+-- cal-view: (m datetime -- view).  What the window shows: the chosen day and
+-- today, each as y m d.
+('cv-t let 'cv-m let [cv-m 'y at cv-m 'm at cv-m 'd at 0 'cv-t nth must 1 'cv-t nth must 2 'cv-t nth must]) 'cal-view let
+
+-- ===== self-test =====
+isheadless (
+  -- October 2026 starts on a Thursday and has 31 days
+  2026 9 cal-cells 'ts-oct let
+  ts-oct len 42 eq assert
+  ts-oct 4 take-n [0 0 0 0] eq assert
+  4 'ts-oct nth must 1 eq assert
+  34 'ts-oct nth must 31 eq assert
+  35 'ts-oct nth must 0 eq assert
+  -- February 2024 has 29 days and starts on a Thursday
+  2024 1 cal-cells 'ts-feb let
+  32 'ts-feb nth must 29 eq assert 33 'ts-feb nth must 0 eq assert
+  -- a month that starts on Sunday fills the first cell
+  2026 1 cal-cells 0 get must 1 eq assert
+  [2026 9 31 9 5 0 6 303 0] 'ts-dt let
+  ts-dt cal-model 'ts-m let
+  -- l past the month's end goes to the next month; h before its start goes back
+  ts-m 108 ts-dt cal-key 'ts-m1 let
+  [ts-m1 'y at ts-m1 'm at ts-m1 'd at] [2026 10 1] eq assert
+  ts-m1 104 ts-dt cal-key 'd at 31 eq assert
+  -- k a week back; j a week on across the year's end
+  ts-m 107 ts-dt cal-key 'd at 24 eq assert
+  [2026 11 28 0 0 0 1 361 0] cal-model 106 ts-dt cal-key 'ts-m2 let
+  [ts-m2 'y at ts-m2 'm at ts-m2 'd at] [2027 0 4] eq assert
+  -- n from 31 January lands on 28 February; p from 31 March 2024 on 29 February
+  [2026 0 31 0 0 0 6 30 0] cal-model 110 ts-dt cal-key 'ts-m3 let
+  [ts-m3 'y at ts-m3 'm at ts-m3 'd at] [2026 1 28] eq assert
+  [2024 2 31 0 0 0 0 90 0] cal-model 112 ts-dt cal-key 'ts-m4 let
+  [ts-m4 'y at ts-m4 'm at ts-m4 'd at] [2024 1 29] eq assert
+  -- p from January goes to December of the year before
+  [2026 0 15 0 0 0 4 14 0] cal-model 112 ts-dt cal-key 'm at 11 eq assert
+  -- t comes back to today; another key changes nothing
+  ts-m3 116 ts-dt cal-key 'd at 31 eq assert
+  ts-m3 120 ts-dt cal-key 'd at 28 eq assert
+  ts-m1 ts-dt cal-view [2026 10 1 2026 9 31] eq assert
+  -- a move past 1900 or 9999, which calendar cannot count, stays put
+  [1900 0 1 0 0 0 1 0 0] cal-model 'ts-lo let
+  ts-lo 104 ts-dt cal-key 'd at 1 eq assert
+  ts-lo 107 ts-dt cal-key 'd at 1 eq assert
+  ts-lo 112 ts-dt cal-key 'm at 0 eq assert
+  [9999 11 31 0 0 0 5 364 0] cal-model 'ts-hi let
+  ts-hi 108 ts-dt cal-key 'd at 31 eq assert
+  ts-hi 106 ts-dt cal-key 'd at 31 eq assert
+  ts-hi 110 ts-dt cal-key 'm at 11 eq assert
+  ts-hi 104 ts-dt cal-key 'd at 30 eq assert
+  "cal-selftest-ok" print
+) () if

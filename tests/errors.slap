@@ -2139,3 +2139,12 @@ list
 
 -- EXPECT: 'ff' takes 'a rest int ['a rest] ['a rest] fn
 (repeat) 'ff let 1 2 ff
+
+-- EXPECT: calendar: expected a year, month and day each within -10000000 to 10000000, got 2026 0 -20000000.
+2026 0 -20000000 calendar drop
+
+-- EXPECT: calendar: 1900 0 0 falls outside the years 1900 to 9999
+1900 0 0 calendar drop
+
+-- EXPECT: calendar: 9999 12 1 falls outside the years 1900 to 9999
+9999 12 1 calendar drop

@@ -1,0 +1,15 @@
+-- ui-sdl.slap: draw text in the sauce apps' font. Requires ui.slap and an SDL
+-- build.
+
+-- text: (str x y color scale xmax --).  Each glyph draws one fill-rect per run
+-- of lit pixels, each pixel scale by scale. Characters past xmax are not
+-- drawn.
+('t-max let 't-s let 't-col let 't-y let 't-x let
+ ascii t-x ('tc let 'tx let tx tc 'FW nth must t-s mul plus 'tn let
+  tn t-max le (
+    tc 1 plus 'OFF nth must 'te let
+    tc 'OFF nth must (dup te lt) ('ti let
+      ti 'RUNS nth must t-s mul tx plus  ti 1 plus 'RUNS nth must t-s mul t-y plus
+      ti 2 plus 'RUNS nth must t-s mul t-s t-col fill-rect
+      ti 3 plus) while drop) () if
+  tn) fold drop) 'text let

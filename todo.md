@@ -27,7 +27,10 @@
       opens a general thing. A file app opens one specific thing, as viewer
       and editor; with no subject it opens the last file; it saves by tags
       only.
-  1. cal: a month grid from `datetime`; events in a CBOR file.
+  1. cal events: a 'text event (SDL_TEXTINPUT, a UTF-8 string) in
+     slap.c, for typing; shell needs it too. Then cal keeps events in a
+     CBOR file, marks their days in the grid, lists the chosen day's events
+     under it, and adds one with the typed text.
   2. book: read a text file a screen at a time; the CBOR state keeps the
      page.
   3. music, then shell (the slap REPL), home (launcher, search), ware

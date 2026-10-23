@@ -509,6 +509,7 @@ Two clocks, because they answer different questions and neither substitutes for 
 |------|--------|---------|
 | `millis` | → milliseconds | `millis` → `1837402` |
 | `datetime` | → 9-element list | `datetime` → `[2026 6 25 19 59 9 6 205 1]` |
+| `calendar` | y m d → 9-element list | `2026 9 23 calendar` → `[2026 9 23 0 0 0 5 295 0]` |
 
 `millis` is monotonic and has no epoch — only differences between two reads mean anything. Use it for timing.
 
@@ -525,6 +526,8 @@ Two clocks, because they answer different questions and neither substitutes for 
 | 6 | day of week | `0`–`6`, `0` = Sunday |
 | 7 | day of year | `0`–`365` |
 | 8 | is DST | `0` or `1` |
+
+`calendar` gives datetime's fields for a date at midnight. It has no timezone, so hour, minute, second and DST are 0. libc's `timegm` normalizes the date. Month 12 is January of the next year, and day 0 is the last day of the month before. So `y m 1 plus 0 calendar 2 get must` counts the days in a month. A result outside the years 1900 to 9999 is an error: macOS's `timegm` refuses years before 1900, and four digits end at 9999. An input outside -10000000 to 10000000 is an error too.
 
 Fields are broken down in C because day-of-week and DST need the timezone database, which a Slap program cannot reach. The order is exactly Varvara's Datetime ports, which is what `examples/uxn.slap` indexes it as.
 
@@ -569,6 +572,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/ufx.slap` | Proportional bitmap fonts (requires `icn.slap`) |
 | `examples/lib/ulz.slap` | LZ-compressed byte stream (decode only) |
 | `examples/lib/ui.slap` | The sauce apps' font (`fonts/chicago12.uf2`) as runs of lit pixels per glyph (`RUNS`, `OFF`, widths `FW`), with `ascii`, `text-width` and `wrap-text` (requires `icn.slap` and `ufx.slap`) |
+| `examples/lib/ui-sdl.slap` | `text` (`str x y color scale xmax --`) draws in ui.slap's font at an integer scale (requires `ui.slap` and `./slap-sdl`) |
 | `examples/lib/parse.slap` | `parse-int`/`parse-float`/`parse-exact`/`parse-spaces`/`parse-while`/`parse-until` |
 | `examples/lib/xml.slap` | Elm-style XML decoder (requires `strings.slap` for `int-str`) |
 | `examples/lib/rss.slap` | RSS/Atom feed parser (requires `xml.slap`) |
@@ -726,7 +730,8 @@ App demos (terminal build):
 | `fetch.slap` | A small curl. Builds the request with `http-request` and reads the reply with `parse-http` |
 | `feed.slap` | RSS 2.0 and Atom reader — the consumer for `xml.slap` and `rss.slap` |
 | `feed-app.slap` | Fullscreen feed reader, sauce's first app: fetches each feed with `https-get`; j/k or the arrows move and scroll, enter opens an item and marks it read in a CBOR state file (merged with the file on each write), escape goes back, closing the window quits. Run it from the repo root (it reads `fonts/chicago12.uf2`). A feed or state file that cannot be read stops it at startup. It keeps the first 4 KiB of each summary, whose HTML tags show as text |
-| `clock-app.slap` | Fullscreen clock, sauce's second app: the local time as large as the window allows, the date under it, and a stopwatch that space starts and stops and r sets to zero. The stopwatch line shows once it runs. Run it from the repo root: `cat examples/lib/{strings,icn,ufx,ui}.slap examples/clock-app.slap examples/clock-app-sdl.slap \| ./slap-sdl` |
+| `clock-app.slap` | Fullscreen clock, sauce's second app: the local time as large as the window allows, the date under it, and a stopwatch that space starts and stops and r sets to zero. The stopwatch line shows once it runs. Run it from the repo root: `cat examples/lib/{strings,icn,ufx,ui}.slap examples/clock-app.slap examples/lib/ui-sdl.slap examples/clock-app-sdl.slap \| ./slap-sdl` |
+| `cal-app.slap` | Fullscreen calendar: a month as six weeks from Sunday, today on dark grey and the chosen day inverted. h l or the left and right arrows move a day, j k or down and up a week, n p a month (to the same day, or the month's last), and t goes back to today. Run it from the repo root: `cat examples/lib/{strings,icn,ufx,ui}.slap examples/cal-app.slap examples/lib/ui-sdl.slap examples/cal-app-sdl.slap \| ./slap-sdl` |
 | `todo.slap` | Todo list in a JSON file, decoded with `jd-*` and written with `je-*` |
 | `banner.slap` | Text as ASCII art from a real `.uf1` bitmap font, via `icn.slap` |
 | `plasma.slap` | Writes a 24-bit TGA. Float-only: there is no `sin`, so it builds one |
@@ -859,4 +864,5 @@ The build passes `-sGROWABLE_ARRAYBUFFERS=0`. With `ALLOW_MEMORY_GROWTH`, emscri
 
 ## Pending design
 
-- `examples/lib/ui.slap` holds the font that feed and clock share, split out at its second use. Drawing stays in each window file, since `fill-rect` would stop ui.slap's self-test in the terminal build. Alternative: copy the font code into clock-app.slap until cal, the third use. It costs a second copy of the font tables to keep in step.
+- The apps' font is two libraries: `ui.slap` measures and wraps text, and `ui-sdl.slap` draws it. `fill-rect` in ui.slap would stop its self-test and the apps' self-tests in the terminal build. Alternative: one library, with the self-tests run only in `./slap-sdl --headless`. It costs the self-tests on machines without SDL2.
+- `calendar` is a primitive over libc's `timegm`, so the language core grows by one word and two feature macros (`_DEFAULT_SOURCE`, `_DARWIN_C_SOURCE`) for cal. It counts only the years 1900 to 9999, since macOS's `timegm` refuses earlier years. Alternative: Hinnant's `days_from_civil` written in slap, with no core change and any year. It costs date arithmetic written by hand, where `timegm` is the established routine.
