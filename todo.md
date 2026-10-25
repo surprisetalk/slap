@@ -15,6 +15,22 @@
   4. Write the verdict in readme.md under `## Pending design`: the choice,
      then the alternative and its cost in checker size and messages.
 
+- [ ] You read a brainstorm on Goose's array types
+      (https://aardappel.github.io/goose/) for slap: which ideas fit, and
+      what each costs.
+  1. Read the page. Its idea: the brackets name the length kind. `T[k]`
+     fixed, `T[]` frozen at construction, `T[..k]` inline capacity,
+     `T[>..]` grow-only, `T[>..<]` grow-shrink, `T[:]` a slice over any
+     kind. Arrays sit inline as `[metadata][elements...]` on a scoped data
+     stack, never the heap. Strings are `u8` arrays of each kind.
+  2. Map it onto slap: flat runs on the operand stack, `VAL_BYTES`, the
+     deep copy on a lookup of a bound list, `take-n`/`drop-n` copies, and
+     the "slices" and "sized ints" batteries in sauce step 4.
+  3. Note which kinds the checker could prove (fixed length, grow-only,
+     slice lifetime) and which loops in examples/ they would make O(n).
+  4. Write the brainstorm in readme.md under `## Pending design`: each
+     adopted idea, then the alternative and its cost.
+
 - [ ] You load a CBOR file whose text string is not UTF-8, and `cd-str`
       refuses it with its byte offset, as RFC 8949 requires. Today
       cal-app.slap and feed-app.slap accept such text and draw it as `?`.
