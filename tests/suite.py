@@ -48,6 +48,20 @@ BAD_COLOR = (
     ' out=$(echo "0 (drop ${c%%:*}) \'tick on (drop) show" | ./slap-sdl --headless 2>&1);'
     ' test $? -eq 1 && grep -qF "${c#*:}" <<<"$out" || exit 1; done'
 )
+# play: headless, it takes the record and queues nothing. On SDL's dummy driver, which drains
+# silently at the rate, a second of silence stays mostly queued until an empty pcm clears it. A rate
+# outside 8000-384000, a pcm cut inside a frame and a byte past 255 die, headless too.
+PLAY = (
+    "test -x ./slap-sdl || { echo 'no ./slap-sdl: run make slap-sdl' >&2; exit 1; };"
+    " test \"$(echo \"{'rate 44100 'pcm [1 2 3 4]} play queued print\" | ./slap-sdl --headless)\" = 0 || exit 1;"
+    " echo \"{'rate 44100 'pcm 0 176400 range (drop 0) each} play queued 100000 gt assert"
+    " {'rate 0 'pcm []} play queued 0 eq assert\" | SDL_AUDIODRIVER=dummy SDL_AUDIO_DRIVER=dummy ./slap-sdl || exit 1;"
+    " for c in \"{'rate 4 'pcm [1 2 3 4]}:the rate is 4 Hz; expected 8000 to 384000\""
+    " \"{'rate 44100 'pcm [1 2 3]}:the pcm holds 3 bytes, which is not a whole number of frames\""
+    " \"{'rate 44100 'pcm [1 2 999 4]}:byte 2 of the pcm is 999, outside 0-255\"; do"
+    ' out=$(echo "${c%%:*} play" | ./slap-sdl --headless 2>&1);'
+    ' test $? -eq 1 && grep -qF "${c#*:}" <<<"$out" || exit 1; done'
+)
 # A headless run sends 'resize 640 480 once, then runs the tick handlers and the render body
 # each frame until a handler fails.
 HEADLESS = (
@@ -766,6 +780,7 @@ def steps(slow):
     if HAS_SDL:
         out["fill-rect clips a huge rect"] = (FILL_RECT, None)
         out["a color outside 0-3 dies"] = (BAD_COLOR, None)
+        out["play replaces what plays, and a bad rate or frame dies"] = (PLAY, None)
         out["drawing before show dies"] = (NO_CANVAS, None)
         out["headless runs 'resize 640 480 first, then tick and render"] = (
             HEADLESS,
@@ -784,6 +799,7 @@ def steps(slow):
         ("icn", "ufx"),
         ("strings", "parse", "json"),
         ("strings", "cbor"),
+        ("strings", "wav"),
         ("strings", "http"),
         ("strings", "parse", "xml", "rss"),
     ]:
@@ -821,9 +837,9 @@ def steps(slow):
             [f"examples/{n}.slap", f"examples/{n}-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
-    for n in ["book", "cal", "clock"]:
+    for n in ["book", "cal", "clock", "music"]:
         demos[f"{n}-app"] = (
-            [*lib("strings", "cbor", "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
+            [*lib("strings", "cbor", *(["wav"] if n == "music" else []), "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
     # Space at frame 2 starts the stopwatch, so its line shows from then on. In cal, n at frame 2
@@ -831,7 +847,10 @@ def steps(slow):
     cal_events = os.path.join(SCRATCH, "cal-events.cbor")
     # In book, space at frame 2 turns a page of readme.md, and the state file then names the book.
     book_state = os.path.join(SCRATCH, "book-state.cbor")
-    demo_args = {"cal-app": [cal_events], "book-app": [book_state, "readme.md"]}
+    # In music, j and enter at frame 2 play tests/audio's second track. Headless, play takes nothing
+    # and queued stays 0, so each tick ends a track: after the last, music stops at the first.
+    music_state = os.path.join(SCRATCH, "music-state.cbor")
+    demo_args = {"cal-app": [cal_events], "book-app": [book_state, "readme.md"], "music-app": [music_state, "tests/audio"]}
     probes = {
         "book-app": (
             "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'at at 'p at print) () if",
@@ -846,6 +865,13 @@ def steps(slow):
             lambda o: "cal-selftest-ok" in o
             and o.split()[-1] == "1"
             and b"Hi" in open(cal_events, "rb").read(),
+        ),
+        "music-app": (
+            "test-frame 2 eq (106 test-keydown 13 test-keydown dup 'at at print dup 'run at len print) () if"
+            " test-frame 14 eq (dup 'at at print dup 'run at len print) () if",
+            lambda o: "music-selftest-ok" in o
+            and o.split()[-4:] == ["1", "1", "0", "0"]
+            and b"mono48.flac" in open(music_state, "rb").read(),
         ),
         "clock-app": (
             "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'shown at len print) () if",

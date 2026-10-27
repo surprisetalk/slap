@@ -30,6 +30,11 @@
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
 #endif
+/* mackron/dr_libs, public domain: vendor/readme.md names the commit. */
+#define DR_MP3_IMPLEMENTATION
+#define DR_FLAC_IMPLEMENTATION
+#include "vendor/dr_mp3.h"
+#include "vendor/dr_flac.h"
 #define STACK_MAX  2097152
 #define SYM_MAX   4096
 #define TOK_MAX   65536
@@ -1164,12 +1169,14 @@ static const char *TYPES =
     "'remove ['a var 'dict tag str] ['a var 'dict tag] 'dict-entries ['a var 'dict tag] ['a var 'dict tag dict \"key\" str insert \"value\" 'a var insert rec 'list tag]\n"
     "'read [str] [dict \"ok\" str insert \"no\" str insert either] 'write [str str] [dict \"ok\" int insert \"no\" str insert either] 'ls [str] [dict \"ok\" str 'list tag insert \"no\" str insert either]\n"
     "'args [] [str 'list tag]\n"
+    "'read-mp3 [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either] 'read-flac [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either]\n"
     /* a socket is its own type: the runtime keeps it as a plain int fd, but free, lend and mutate must not reach it */
     "'tcp-connect [str int] [dict \"ok\" socket insert \"no\" str insert either] 'tcp-send [socket str] [socket dict \"ok\" int insert \"no\" str insert either]\n"
     "'tcp-recv [socket int] [socket dict \"ok\" str insert \"no\" str insert either] 'tcp-close [socket] [] 'tcp-listen [int] [dict \"ok\" socket insert \"no\" str insert either]\n"
     "'tcp-accept [socket] [socket dict \"ok\" socket insert \"no\" str insert either]\n"
     "'tls-connect [str int] [dict \"ok\" socket insert \"no\" str insert either]\n"
-    "'clear [int] [] 'pixel [int int int] [] 'fill-rect [int int int int int] []\n";
+    "'clear [int] [] 'pixel [int int int] [] 'fill-rect [int int int int int] []\n"
+    "'play [dict \"rate\" int insert \"pcm\" str insert rec] [] 'queued [] [int]\n";
 
 /* ---- signatures ----
    A signature is two lists of types, ins then outs, bottom first: `[int] [int] effect`. A type is postfix
@@ -2955,6 +2962,40 @@ static void prim_on(Frame *e) {
         die("on: unknown event '%s; the events are 'tick 'keydown 'keyup 'text 'mousedown 'mouseup 'mousemove 'resize",sym_name(ev));
     event_handlers[handler_count].event_sym=ev; handler_count++;
 }
+/* REVIEW: play replaces what the speakers play; an empty 'pcm stops them, whatever its 'rate. A rate
+   other than the open device's reopens it, and SDL converts to the hardware's rate. Alternative: play appends, as
+   SDL_QueueAudio does, which plays tracks without a gap. It costs a word to stop, and an app that
+   feeds chunks copies the bound pcm on each feed. */
+static SDL_AudioDeviceID audio_dev=0; static int64_t audio_rate=0;
+static void prim_play(Frame *e) {
+    (void)e; Value top=speek(); int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s,found;
+    ElemRef r=record_field(&stack[base],s,len,sym_intern("rate"),&found); int64_t rate=stack[base+r.base].as.i;
+    ElemRef pr=record_field(&stack[base],s,len,sym_intern("pcm"),&found); Value pv=stack[base+pr.base+pr.slots-1];
+    int n=pv.tag==VAL_BYTES?BYTES(pv)->len:(int)pv.as.compound.len;
+    /* SDL takes rates far outside this, but no audio file holds one. */
+    if(n&&(rate<8000||rate>384000)) die("play: the rate is %lld Hz; expected 8000 to 384000",(long long)rate);
+    if(n%4) die("play: the pcm holds %d bytes, which is not a whole number of frames; a frame is 4 bytes, a 16-bit left then right sample",n);
+    unsigned char *pcm=NULL;
+    if(n&&pv.tag!=VAL_BYTES){pcm=malloc((size_t)n); if(!pcm) die("play: out of memory for %d bytes",n);
+        for(int i=0;i<n;i++){int64_t c=stack[base+pr.base+i].as.i;
+            if(c<0||c>255){free(pcm); die("play: byte %d of the pcm is %lld, outside 0-255",i,(long long)c);} pcm[i]=(unsigned char)c;}}
+    if(headless_mode) ;
+    else if(!n){if(audio_dev) SDL_ClearQueuedAudio(audio_dev);}
+    else {
+        if(audio_dev&&audio_rate!=rate){SDL_CloseAudioDevice(audio_dev);audio_dev=0;}
+        if(!audio_dev){
+            if(!SDL_WasInit(SDL_INIT_AUDIO)&&SDL_InitSubSystem(SDL_INIT_AUDIO)<0) die("play: SDL_InitSubSystem(SDL_INIT_AUDIO): %s",SDL_GetError());
+            SDL_AudioSpec want={0}; want.freq=(int)rate; want.format=AUDIO_S16LSB; want.channels=2; want.samples=2048;
+            if(!(audio_dev=SDL_OpenAudioDevice(NULL,0,&want,NULL,0))) die("play: no audio output at %lld Hz: %s",(long long)rate,SDL_GetError());
+            audio_rate=rate; SDL_PauseAudioDevice(audio_dev,0);}
+        SDL_ClearQueuedAudio(audio_dev);
+        if(SDL_QueueAudio(audio_dev,pcm?pcm:BYTES(pv)->b,(Uint32)n)<0) die("play: SDL_QueueAudio of %d bytes: %s",n,SDL_GetError());}
+    free(pcm); deep_free_values(&stack[base],s); sp=base;
+}
+/* Bytes play has not yet handed to the device: 0 before the first play, and always 0 headless. The
+   device's own buffer, 2048 frames, counts as played, so a place taken from it runs up to 46 ms
+   ahead of the sound at 44.1 kHz. */
+static void prim_queued(Frame *e){(void)e; spush(val_int(audio_dev?(int64_t)SDL_GetQueuedAudioSize(audio_dev):0));}
 static void run_resize(int64_t w,int64_t h,Frame *env){for(int k=0;k<handler_count;k++)if(event_handlers[k].event_sym==sym_resize){spush(val_int(w));spush(val_int(h));eval_body(event_handlers[k].handler_body,event_handlers[k].handler_slots,env);}}
 static void show_dispatch_event(SDL_Event *ev, Frame *env) {
     if(ev->type==SDL_WINDOWEVENT&&ev->window.event==SDL_WINDOWEVENT_SIZE_CHANGED){
@@ -3051,6 +3092,38 @@ static void prim_read(Frame *e) {
     if(bad) { free(buf); push_path_fail(path,plen,er?strerror(er):"the read did not finish"); free(path); return; }
     push_byte_list(buf,n);free(buf);free(path); push_ok();
 }
+/* read-mp3 and read-flac decode a whole file to an audio record, {'rate 'pcm}: 'pcm holds 16-bit
+   little-endian stereo frames, as play takes them, and mono plays on both sides. The decoders stream
+   from the file, so read's 64 MiB limit does not apply; the pcm stops at BYTES_MAX, about 100 minutes
+   at 44.1 kHz. */
+static void read_audio(int flac) {
+    const char *who=flac?"read-flac":"read-mp3";
+    int plen; char *path=pop_string_path(who,&plen);
+    if(path_has_nul(path,plen)){free(path);return;}
+    /* The decoders say only that a file did not open, so fopen first names a missing or unreadable file. */
+    FILE *f=fopen(path,"rb"); if(!f){push_path_fail(path,plen,strerror(errno));free(path);return;} fclose(f);
+    drmp3 mp3; drflac *fl=NULL; unsigned ch, rate; uint64_t total=0; char why[96]="";
+    if(flac?!(fl=drflac_open_file(path,NULL)):!drmp3_init_file(&mp3,path,NULL)){
+        push_path_fail(path,plen,flac?"not a FLAC stream":"not an MP3 stream"); free(path); return;}
+    if(flac){ch=fl->channels; rate=fl->sampleRate; total=fl->totalPCMFrameCount;} else {ch=mp3.channels; rate=mp3.sampleRate;}
+    int16_t buf[4096*2]; Bytes *p=bytes_alloc(1<<16); p->len=0; uint64_t got, frames=0;
+    if(ch<1||ch>2) snprintf(why,sizeof why,"%u channels; music plays mono or stereo",ch);
+    else while((got=flac?drflac_read_pcm_frames_s16(fl,4096,buf):drmp3_read_pcm_frames_s16(&mp3,4096,buf))>0){
+        if((uint64_t)p->len+got*4>BYTES_MAX){snprintf(why,sizeof why,"decodes to more than %d bytes of audio, the most a string holds",BYTES_MAX); break;}
+        p=bytes_grow(p,p->len+(int)got*4); unsigned char *o=p->b+p->len;
+        for(uint64_t i=0;i<got;i++) for(unsigned c=0;c<2;c++){
+            uint16_t s=(uint16_t)buf[i*ch+(ch==2?c:0)]; *o++=(unsigned char)(s&255); *o++=(unsigned char)(s>>8);}
+        p->len+=(int)got*4; frames+=got;}
+    if(flac) drflac_close(fl); else drmp3_uninit(&mp3);
+    if(!why[0]&&total&&frames<total) snprintf(why,sizeof why,"cut short: %llu of %llu frames",(unsigned long long)frames,(unsigned long long)total);
+    if(!why[0]&&!frames) snprintf(why,sizeof why,"holds no audio");
+    if(why[0]){free(p); push_path_fail(path,plen,why); free(path); return;}
+    free(path);
+    int base=sp; spush(val_sym(sym_intern("rate"))); spush(val_int(rate)); spush(val_sym(sym_intern("pcm"))); spush(bytes_value(p));
+    spush(val_compound(VAL_RECORD,2,sp-base+1)); push_ok();
+}
+static void prim_read_mp3(Frame *e){(void)e; read_audio(0);}
+static void prim_read_flac(Frame *e){(void)e; read_audio(1);}
 /* Linux's own limit on symlinks met while resolving one path. */
 #define LINK_HOPS_MAX 40
 /* Read once in main: reading the umask means setting it, which races with SDL's threads. */
@@ -3395,7 +3468,7 @@ static void register_prims(void) {
         R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),
         {"dict-entries",prim_entries,NULL},
         R(tag,tag),R(must,must),R(pthen,pthen),
-        R(read,read),R(write,write),R(ls,ls),
+        R(read,read),R(write,write),R(ls,ls),{"read-mp3",prim_read_mp3,NULL},{"read-flac",prim_read_flac,NULL},
         M("str-find",strfind),{"str-split",prim_str_split,NULL},
         R(args,args),R(fail,fail),R(isheadless,isheadless),
 #ifndef SLAP_WASM
@@ -3404,7 +3477,7 @@ static void register_prims(void) {
         {"tls-connect",prim_tls_connect,NULL},
 #endif
 #ifdef SLAP_SDL
-        R(clear,clear),R(pixel,pixel),{"fill-rect",prim_fill_rect,NULL},R(on,on),R(show,show),
+        R(clear,clear),R(pixel,pixel),{"fill-rect",prim_fill_rect,NULL},R(on,on),R(show,show),R(play,play),R(queued,queued),
 #endif
         {NULL,NULL,NULL}};
     for(int i=0;t[i].n;i++){uint32_t s=sym_intern(t[i].n);prim_fns[s]=t[i].f;prim_must_fns[s]=t[i].m;}

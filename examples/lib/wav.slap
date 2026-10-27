@@ -1,0 +1,57 @@
+-- wav.slap: WAV (RIFF) files of 16-bit stereo PCM, the audio play takes.
+
+-- wav-decode: (bytes -- {'rate 'pcm} ok | msg no).  A WAV file is "RIFF",
+-- a size, "WAVE", then chunks: a 4-byte id, a 32-bit little-endian size, and
+-- the data, padded to an even size. "fmt " says the format; "data" holds the
+-- frames.
+('wb let wb len 'wn let
+ (dup 'wb nth must swap 1 plus 'wb nth must 8 shl bor) 'w16 let
+ (dup w16 swap 2 plus w16 16 shl bor) 'w32 let
+ (dup 4 plus range ('wb nth must) each) 'w-id let
+ wn 12 lt ("wav: shorter than the 12-byte RIFF header" no) (
+ 0 w-id "RIFF" eq 8 w-id "WAVE" eq and not ("wav: not a RIFF WAVE file" no) (
+   -- 'fmt and 'data hold the chunks' data offsets, in a list that is empty
+   -- until the chunk is found, and 'fn and 'dn their sizes; each step moves
+   -- at least 8 bytes on
+   {'fmt [] 'fn 0 'data [] 'dn 0} 12 (dup 8 plus wn le) ('ci let
+     ci 4 plus w32 'cn let ci 8 plus 'cd let
+     ci w-id "fmt " eq ([cd] 'fmt into cn 'fn into) () if
+     ci w-id "data" eq ([cd] 'data into cn 'dn into) () if
+     cd cn plus cn 1 band plus) while drop 'wc let
+   wc 'fmt at len 0 eq ("wav: no fmt chunk" no) (
+   wc 'data at len 0 eq ("wav: no data chunk" no) (
+     wc 'fmt at 0 get must 'wf let wc 'fn at 'wfn let wc 'data at 0 get must 'wd let wc 'dn at 'wdn let
+     -- a chunk's size may pass the file's end, so each read is checked here
+     wf wfn plus wn gt ("wav: the fmt chunk says " wfn int-str cat " bytes, but " cat wn wf sub int-str cat " follow it" cat no) (
+     wfn 16 lt ("wav: the fmt chunk holds " wfn int-str cat " bytes; PCM needs 16" cat no) (
+     -- format 1 is PCM; 65534 is WAVE_FORMAT_EXTENSIBLE, whose subformat
+     -- GUID starts with the format at byte 24
+     wf w16 'wt let
+     wt 65534 eq wfn 26 lt and ("wav: the fmt chunk holds " wfn int-str cat " bytes; WAVE_FORMAT_EXTENSIBLE needs 26" cat no) (
+     wt 65534 eq (wf 24 plus w16) (wt) if 1 eq not ("wav: format " wt int-str cat " is not PCM" cat no) (
+     wf 2 plus w16 2 eq wf 14 plus w16 16 eq and not
+       ("wav: 16-bit stereo only; this file has " wf 2 plus w16 int-str cat " channel(s) of " cat wf 14 plus w16 int-str cat " bits" cat no) (
+     wd wdn plus wn gt ("wav: the data chunk says " wdn int-str cat " bytes, but " cat wn wd sub int-str cat " follow it" cat no) (
+     wdn 4 mod 0 eq not ("wav: the data chunk holds " wdn int-str cat " bytes, which is not a whole number of 4-byte frames" cat no) (
+       {'rate wf 4 plus w32 'pcm wb wd drop-n wdn take-n} ok) if) if) if) if) if) if) if) if) if) if) if) 'wav-decode let
+
+-- ===== tests =====
+-- A 44-byte header and two frames: 44100 Hz, 16-bit stereo.
+"RIFF" [44 0 0 0] cat "WAVE" cat "fmt " cat [16 0 0 0 1 0 2 0 68 172 0 0 16 177 2 0 4 0 16 0] cat
+  "data" cat [8 0 0 0 1 0 2 0 3 0 4 0] cat 'wav-t let
+wav-t wav-decode must {'rate 44100 'pcm [1 0 2 0 3 0 4 0]} eq assert
+-- a chunk before fmt, of odd size, is skipped with its pad byte
+wav-t 12 take-n "LIST" cat [3 0 0 0 9 9 9 0] cat wav-t 12 drop-n cat wav-decode must 'pcm at [1 0 2 0 3 0 4 0] eq assert
+(wav-decode {'ok (drop "") 'no ()} case) 'wav-err let
+"RIFF" wav-err "wav: shorter than the 12-byte RIFF header" eq assert
+wav-t 8 take-n "AVI " cat wav-err "wav: not a RIFF WAVE file" eq assert
+wav-t 36 take-n wav-err "wav: no data chunk" eq assert
+wav-t 12 take-n wav-t 36 drop-n cat wav-err "wav: no fmt chunk" eq assert
+-- a fmt chunk too short for its fields, or past the file's end
+wav-t 12 take-n "data" cat [0 0 0 0] cat "fmt " cat [16 0 0 0 1 0 2 0] cat wav-err "wav: the fmt chunk says 16 bytes, but 4 follow it" eq assert
+wav-t 12 take-n "data" cat [0 0 0 0] cat "fmt " cat [4 0 0 0 1 0 2 0] cat wav-err "wav: the fmt chunk holds 4 bytes; PCM needs 16" eq assert
+wav-t 16 take-n [18 0 0 0 254 255] cat wav-t 22 drop-n 14 take-n cat [0 0] cat wav-t 36 drop-n cat wav-err "wav: the fmt chunk holds 18 bytes; WAVE_FORMAT_EXTENSIBLE needs 26" eq assert
+wav-t 20 take-n [3 0] cat wav-t 22 drop-n cat wav-err "wav: format 3 is not PCM" eq assert
+wav-t 22 take-n [1 0] cat wav-t 24 drop-n cat wav-err "wav: 16-bit stereo only; this file has 1 channel(s) of 16 bits" eq assert
+wav-t 50 take-n wav-err "wav: the data chunk says 8 bytes, but 6 follow it" eq assert
+wav-t 40 take-n [6 0 0 0 1 0 2 0 3 0] cat wav-err "wav: the data chunk holds 6 bytes, which is not a whole number of 4-byte frames" eq assert

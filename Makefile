@@ -1,19 +1,20 @@
 CC = cc
 CFLAGS = -std=c99 -Wall -Wextra -O3 -flto -D_POSIX_C_SOURCE=200809L
 TLS := $(shell pkg-config --cflags --libs openssl 2>/dev/null || echo "-lssl -lcrypto")
-slap: slap.c
+VENDOR = vendor/dr_mp3.h vendor/dr_flac.h
+slap: slap.c $(VENDOR)
 	$(CC) $(CFLAGS) -o slap slap.c -lm $(TLS)
 UNAME_S := $(shell uname -s)
 SDL_EXTRA :=
 ifeq ($(UNAME_S),Darwin)
 SDL_EXTRA := -lobjc
 endif
-slap-sdl: slap.c
+slap-sdl: slap.c $(VENDOR)
 	$(CC) $(CFLAGS) -DSLAP_SDL -o slap-sdl slap.c -lm $(TLS) $(SDL_EXTRA) $(shell sdl2-config --cflags --libs 2>/dev/null || echo "-lSDL2")
 # GROWABLE_ARRAYBUFFERS=0: with ALLOW_MEMORY_GROWTH, emscripten >=6 backs the
 # heap with a *resizable* ArrayBuffer, and TextDecoder.decode() refuses those.
 # Startup throws before the main loop runs and the canvas stays blank.
-slap-wasm: slap.c shell.html
+slap-wasm: slap.c $(VENDOR) shell.html
 	@if [ -z "$(FILE)" ]; then echo "usage: make slap-wasm FILE=program.slap"; exit 1; fi
 	@if [ ! -f "$(FILE)" ]; then echo "slap-wasm: no such program: $(FILE)" >&2; exit 1; fi
 	@command -v emcc > /dev/null || { \

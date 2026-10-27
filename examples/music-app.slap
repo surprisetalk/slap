@@ -1,0 +1,140 @@
+-- music-app.slap: the player's tracks, places, keys and state file. The
+-- window and the speakers are music-app-sdl.slap; this file holds no SDL
+-- word, so its self-test runs in the terminal build:
+--
+--   cat examples/lib/{strings,cbor,wav,icn,ufx,ui}.slap examples/music-app.slap \
+--     | ./slap --headless
+
+-- ===== tracks =====
+-- str-lt: (a b -- int).  1 when a sorts before b, byte by byte.
+('sl-b let 'sl-a let sl-a len sl-b len min 'sl-n let
+ 0 (dup sl-n lt (dup 'sl-a nth must over 'sl-b nth must eq) (0) if) (1 plus) while 'sl-i let
+ sl-i sl-n lt (sl-i 'sl-a nth must sl-i 'sl-b nth must lt) (sl-a len sl-b len lt) if) 'str-lt let
+
+-- sort-strs: (strs -- strs).  An insertion sort: quadratic, but a
+-- directory of tracks holds tens of names, not thousands.
+([] ('ss-x let 'ss-acc let ss-acc (ss-x str-lt) filter ss-x push ss-acc (ss-x str-lt not) filter cat) fold) 'sort-strs let
+
+-- track-ext: (name -- ext).  The name after its last dot, in lower case;
+-- "" for a name with no dot.
+("." str-split dup len 2 lt (drop "") (dup len 1 sub get must (dup 65 ge over 90 le and (32 plus) () if) each) if) 'track-ext let
+
+-- music-tracks: (names -- tracks).  The names a directory lists that music
+-- plays, in byte order.
+((track-ext 'tx-e let tx-e "mp3" eq tx-e "flac" eq or tx-e "wav" eq or) filter sort-strs) 'music-tracks let
+
+-- load-track: (path -- {'rate 'pcm} ok | msg no).  By the extension. A
+-- rate play refuses is refused here, so the app shows it and keeps running.
+('lt-p let lt-p track-ext 'lt-e let
+ lt-e "mp3" eq (lt-p read-mp3) (lt-e "flac" eq (lt-p read-flac) (
+   lt-p read (wav-decode {'ok (ok) 'no (lt-p ": " cat swap cat no)} case) then) if) if
+ ('lt-a let lt-a 'rate at 'lt-r let lt-r 8000 lt lt-r 384000 gt or
+   (lt-p ": " cat lt-r int-str cat " Hz; play takes 8000 to 384000" cat no) (lt-a ok) if) then) 'load-track let
+
+-- ===== model, places and keys =====
+-- A model: {'w 'h 'tracks 'sel 'at 'ms 'run 'total 'err 'saved 'shown}.
+-- 'sel is the highlighted row and 'at the track that plays. 'ms is where
+-- the track last started or paused. 'run is [] while paused, or
+-- [{'rate 'sent}] while playing: the rate and the bytes play took. 'total
+-- holds the track's length in ms once it loaded, 'err the message of a track
+-- that would not load, and 'saved the place last written.
+('mm-ms let 'mm-at let 'mm-tracks let
+ {'w 0 'h 0 'tracks mm-tracks 'sel mm-at 'at mm-at 'ms mm-ms 'run [] 'total [] 'err [] 'saved mm-ms 'shown []}) 'music-model let
+
+-- music-pos: (m queued -- ms).  Where the track is: while playing, the bytes
+-- play took less those still queued, at 4 bytes a frame.
+('mp-q let 'mp-m let mp-m 'ms at
+ mp-m 'run at dup len 0 eq (drop) (0 get must 'mp-r let mp-r 'sent at mp-q sub 1000 mul mp-r 'rate at 4 mul div plus) if) 'music-pos let
+
+-- music-started: (m rate bytes from -- m).  The model once play took a
+-- track of bytes from byte from: playing, with the track's length known.
+('ms-from let 'ms-n let 'ms-r let
+ [{'rate ms-r 'sent ms-n ms-from sub}] 'run into
+ [ms-n 1000 mul ms-r 4 mul div] 'total into [] 'err into) 'music-started let
+
+-- from-byte: (rate bytes ms -- byte).  The first byte of the frame at ms
+-- in a track of bytes, or bytes for a place at or past its end. The test
+-- comes first, since rate times a place from a state file can overflow.
+('fb-ms let 'fb-n let 'fb-r let
+ fb-ms fb-n 1000 mul fb-r 4 mul div ge (fb-n) (fb-r fb-ms mul 1000 div 4 mul) if) 'from-byte let
+
+-- music-key: (m keycode -- m).  j and down move the highlight down, k and
+-- up move it up; it stops at the ends.
+('mk-k let 'mk-m let mk-m 'sel at
+ mk-k 106 eq mk-k 1073741905 eq or (1 plus) () if
+ mk-k 107 eq mk-k 1073741906 eq or (1 sub) () if
+ mk-m 'tracks at len 1 sub min 0 max 'mk-s let mk-m mk-s 'sel into) 'music-key let
+
+-- clock: (ms -- str).  m:ss.
+(1000 div 'ck-s let ck-s 60 div int-str ":" cat ck-s 60 mod 10 lt ("0") ("") if cat ck-s 60 mod int-str cat) 'clock let
+
+-- music-layout: (w h -- layout).  The text scale grows with the window. A
+-- line is 18 pixels at scale 1. The last row holds the status.
+('ml-h let 'ml-w let ml-w 640 div ml-h 360 div min 1 max 'ml-s let 18 ml-s mul 'ml-lh let
+ {'s ml-s 'lh ml-lh 'x ml-lh 'rows ml-h ml-lh 3 mul sub ml-lh div 1 max}) 'music-layout let
+
+-- music-view: (m pos -- view).  What the window shows: the rows of the page
+-- that holds the highlight, each with whether it is the highlight or the
+-- track that plays, and the status line.
+('mv-pos let 'mv-m let mv-m 'w at 'mv-w let mv-m 'h at 'mv-h let mv-w mv-h music-layout 'rows at 'mv-rows let
+ mv-m 'sel at mv-rows div mv-rows mul 'mv-top let mv-m 'tracks at 'mv-tr let
+ mv-m 'err at dup len 0 gt (0 get must) (drop
+   mv-m 'run at len 0 eq ("paused ") ("playing ") if mv-pos clock cat
+   mv-m 'total at dup len 0 eq (drop "") (0 get must clock " / " swap cat) if cat) if 'mv-status let
+ {'w mv-w 'h mv-h 'status mv-status
+  'rows mv-top mv-top mv-rows plus mv-tr len min range ('vr-i let
+    {'text vr-i 'mv-tr nth must 'sel vr-i mv-m 'sel at eq 'at vr-i mv-m 'at at eq}) each})'music-view let
+
+-- ===== state.cbor =====
+-- {"dir": path, "track": name, "ms": int}, a CBOR map: the directory played
+-- last, its track, and where in it.
+('se-s let [{'name "dir" 'value se-s 'dir at ce-str} {'name "track" 'value se-s 'track at ce-str}
+ {'name "ms" 'value se-s 'ms at ce-int}] ce-map) 'state-encode let
+(('sd-cv let sd-cv "dir" cd-str cd-field apply ('sd-dir let sd-cv "track" cd-str cd-field apply ('sd-track let
+  sd-cv "ms" cd-int cd-field apply ('sd-ms let {'dir sd-dir 'track sd-track 'ms sd-ms} ok) then) then) then) cd-run) 'state-decode let
+
+-- ===== self-test =====
+isheadless (
+  "a" "b" str-lt assert  "b" "a" str-lt not assert  "a" "ab" str-lt assert  "ab" "ab" str-lt not assert
+  "" "a" str-lt assert  "a" "" str-lt not assert
+  ["b.mp3" "notes.txt" "A.FLAC" "a.wav" "mp3" "c.Mp3" "cover.jpg"] music-tracks ["A.FLAC" "a.wav" "b.mp3" "c.Mp3"] eq assert
+  [] sort-strs [] eq assert
+  "x.tar.gz" track-ext "gz" eq assert  "README" track-ext "" eq assert
+  -- each format loads; the FLAC and the WAV hold the same tone
+  "tests/audio/tone.flac" load-track must 'ts-fl let
+  ts-fl "tests/audio/tone.wav" load-track must eq assert
+  ts-fl 'rate at 44100 eq assert  ts-fl 'pcm at len 17640 eq assert
+  "tests/audio/tone.mp3" load-track must 'rate at 44100 eq assert
+  "tests/audio/mono48.flac" load-track must 'rate at 48000 eq assert
+  "tests/audio/nope.wav" load-track {'ok (drop "") 'no ()} case "tests/audio/nope.wav: No such file or directory" eq assert
+  "tests/audio/bad/rate4k.wav" load-track {'ok (drop "") 'no ()} case "tests/audio/bad/rate4k.wav: 4000 Hz; play takes 8000 to 384000" eq assert
+  "readme.md" load-track {'ok (drop "") 'no ()} case "readme.md: wav: not a RIFF WAVE file" eq assert
+  -- a place: 50 ms into a 100 ms track at 44100 Hz is frame 2205
+  44100 17640 50 from-byte 8820 eq assert
+  -- a place past the end, however far, is the end
+  44100 17640 100 from-byte 17640 eq assert  44100 17640 4611686018427387904 from-byte 17640 eq assert
+  ["a.mp3" "b.mp3" "c.mp3"] 1 0 music-model 'ts-m let
+  ts-m 0 music-pos 0 eq assert
+  ts-m 44100 17640 8820 music-started 'ts-p let
+  ts-p 'run at [{'rate 44100 'sent 8820}] eq assert  ts-p 'total at [100] eq assert
+  -- all 8820 bytes queued is the place play started; none queued is the end
+  ts-p 8820 music-pos 0 eq assert  ts-p 0 music-pos 50 eq assert
+  ts-m 44100 17640 17640 music-started 'run at [{'rate 44100 'sent 0}] eq assert
+  ts-m 106 music-key 'sel at 2 eq assert  ts-m 106 music-key 106 music-key 'sel at 2 eq assert
+  ts-m 107 music-key 107 music-key 'sel at 0 eq assert  ts-m 120 music-key 'sel at 1 eq assert
+  61000 clock "1:01" eq assert  0 clock "0:00" eq assert  600000 clock "10:00" eq assert
+  -- a window three rows high pages by three
+  ts-m 640 'w into 18 6 mul 'h into 'ts-v let
+  ts-v 0 music-view 'status at "paused 0:00" eq assert
+  ts-v 0 music-view 'rows at [{'text "a.mp3" 'sel 0 'at 0} {'text "b.mp3" 'sel 1 'at 1} {'text "c.mp3" 'sel 0 'at 0}] eq assert
+  ["a" "b" "c" "d" "e"] 0 61000 music-model 640 'w into 18 6 mul 'h into 4 'sel into 0 music-view 'rows at
+    [{'text "d" 'sel 0 'at 0} {'text "e" 'sel 1 'at 0}] eq assert
+  ts-p 640 'w into 18 6 mul 'h into 4410 music-pos 'ts-q let ts-q 25 eq assert
+  ts-p 640 'w into 18 6 mul 'h into ts-q music-view 'status at "playing 0:00 / 0:00" eq assert
+  ts-v [ "a.mp3: not an MP3 stream" ] 'err into 0 music-view 'status at "a.mp3: not an MP3 stream" eq assert
+  -- the state file round-trips
+  {'dir "m" 'track "b.mp3" 'ms 1234} 'ts-s let
+  ts-s state-encode state-decode must ts-s eq assert
+  [] ce-map state-decode {'ok (drop "") 'no ()} case "$: missing field \"dir\"" eq assert
+  "music-selftest-ok" print
+) () if

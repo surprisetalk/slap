@@ -1,0 +1,90 @@
+-- The window and speakers for music-app.slap: a directory's tracks, played
+-- in order. Run from the repo root with:
+--
+--   cat examples/lib/{strings,cbor,wav,icn,ufx,ui}.slap examples/music-app.slap \
+--       examples/lib/ui-sdl.slap examples/music-app-sdl.slap \
+--     | ./slap-sdl state.cbor ~/Music/album
+--
+-- With no directory named, it opens the directory played last, at its track
+-- and place. j k or down up move the highlight; enter plays the highlighted
+-- track from its start; space pauses and plays. A track plays to its end,
+-- then the next; after the last, it stops at the first. Each pause and track
+-- writes the place to the state file, and so does each 10 s of play. Closing
+-- the window quits.
+
+args len 1 lt args len 2 gt or ("music: usage: ./slap-sdl STATE.cbor [DIR]" fail) () if
+args 0 get must 'STATE let
+
+-- A missing state file is a first run. A path inside a plain file counts as
+-- missing too; the save at startup then stops the app.
+STATE read {
+  'ok (state-decode {'ok () 'no ("music: " STATE cat ": " cat swap cat ". Fix or delete it." cat fail)} case)
+  'no ('rd-err let rd-err STATE is-missing ({'dir "" 'track "" 'ms 0}) ("music: " rd-err cat fail) if)
+} case 'STATE0 let
+args len 2 eq (args 1 get must) (STATE0 'dir at) if 'DIR let
+DIR len 0 eq ("music: no directory named, and " STATE cat " names none played before. Usage: ./slap-sdl STATE.cbor [DIR]" cat fail) () if
+DIR ls {'ok () 'no ("music: " swap cat fail)} case music-tracks 'TRACKS let
+TRACKS len 0 eq ("music: " DIR cat " holds no .mp3, .flac or .wav file" cat fail) () if
+
+-- The state's place, in the directory it names; another directory starts at
+-- its first track. A track the directory no longer holds stops the app.
+STATE0 'dir at DIR eq (
+  TRACKS STATE0 'track at index-of {'ok () 'no (drop
+    "music: " STATE cat " places " cat STATE0 'track at cat ", which " cat DIR cat
+    " no longer holds. Delete " cat STATE cat " to start from the first track." cat fail)} case
+  STATE0 'ms at) (0 0) if 'START-MS let 'START-AT let
+START-MS 0 lt ("music: " STATE cat " places " cat STATE0 'track at cat " at " cat START-MS int-str cat
+  " ms, but a place counts from 0. Fix or delete the state file." cat fail) () if
+
+-- keep: (m ms -- m).  The state file now names the track m plays, at ms. It
+-- is written at startup too, so a path that cannot be written stops the app
+-- before the first track.
+('kp-ms let 'kp-m let
+ STATE {'dir DIR 'track kp-m 'at at 'TRACKS nth must 'ms kp-ms} state-encode write {'ok (drop) 'no ("music: " swap cat fail)} case
+ kp-m kp-ms 'saved into) 'keep let
+
+-- play-at: (m -- m).  Play m's track from its 'ms. A track that does not
+-- load shows its message and stays paused, and an empty pcm stops the
+-- speakers.
+('pa-m let DIR "/" cat pa-m 'at at 'TRACKS nth must cat load-track {
+  'ok ('pa-a let pa-a 'rate at 'pa-r let pa-a 'pcm at len 'pa-n let pa-r pa-n pa-m 'ms at from-byte 'pa-from let
+    pa-a (pa-from drop-n) 'pcm edit play
+    pa-m pa-r pa-n pa-from music-started)
+  'no ('pa-e let {'rate 44100 'pcm ""} play pa-m [pa-e] 'err into [] 'run into [] 'total into)} case) 'play-at let
+
+-- pause: (m -- m).  An empty pcm stops the speakers.
+('pz-m let pz-m queued music-pos 'pz-pos let
+ {'rate 44100 'pcm ""} play
+ pz-m pz-pos 'ms into [] 'run into pz-pos keep) 'pause let
+
+-- advance: (m -- m).  The next track from its start, or after the last, the
+-- first track, paused. The highlight follows unless it was moved away.
+('av-m let av-m 'at at 1 plus 'av-at let av-m 'sel at av-m 'at at eq 'av-follow let
+ av-at TRACKS len lt (av-m av-at 'at into 0 'ms into play-at) (av-m 0 'at into 0 'ms into [] 'run into [] 'total into) if
+ av-follow (dup 'at at 'sel into) () if 0 keep) 'advance let
+
+-- draw: (view --).  The highlight shows inverted and the playing track on
+-- dark grey; the status takes the last row.
+('dv let 0 clear dv 'w at 'dw let dv 'h at 'dh let dw dh music-layout 'dl let
+ dl 's at 'ds let dl 'lh at 'dlh let dl 'x at 'dx let
+ dv 'rows at 0 ('dr let 'di let dlh di dlh mul plus 'dy let
+   dr 'sel at (dx ds sub dy dw dx 2 mul sub ds 2 mul plus dlh 3 fill-rect 0) (
+     dr 'at at (dx ds sub dy dw dx 2 mul sub ds 2 mul plus dlh 1 fill-rect 3) (3) if) if 'dc let
+   dr 'text at dx dy ds plus dc ds dw dx sub text di 1 plus) fold drop
+ dv 'status at dx dh dlh 2 mul sub 2 ds dw dx sub text) 'draw let
+
+TRACKS START-AT START-MS music-model START-MS keep
+
+('rh let 'rw let rw 'w into rh 'h into [] 'shown into) 'resize on
+('kk let 'km let
+ kk 13 eq (km km 'sel at 'at into 0 'ms into play-at 0 keep) (
+ kk 32 eq (km 'run at len 0 gt (km pause) (km play-at) if) (km kk music-key) if) if) 'keydown on
+-- A track ends when play has nothing left queued.
+('tf let 'tm let
+ tm 'run at len 0 gt queued 0 eq and (tm advance) (tm) if 'tk let
+ tk queued music-pos 'tp let
+ tk 'run at len 0 gt tp tk 'saved at sub 10000 ge and (tk tp keep) (tk) if 'tq let
+ [tq tp music-view] 'tv let
+ tv tq 'shown at eq (tq) (0 'tv nth must draw tq tv 'shown into) if) 'tick on
+
+(drop) show

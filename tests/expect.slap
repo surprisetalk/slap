@@ -671,6 +671,22 @@ fs-path read must [42] eq assert
 -- ===== Filesystem: ls =====
 "." ls must len 0 lt not assert
 
+-- ===== Audio: read-mp3 and read-flac =====
+(read-mp3 {'ok (drop "") 'no ()} case) 'mp3-err let
+(read-flac {'ok (drop "") 'no ()} case) 'flac-err let
+"tests/audio/tone.flac" read-flac must dup 'rate at 44100 eq assert 'pcm at len 17640 eq assert
+"tests/audio/tone.mp3" read-mp3 must dup 'rate at 44100 eq assert 'pcm at len 4 mod 0 eq assert
+-- mono plays on both sides
+"tests/audio/mono48.flac" read-flac must dup 'rate at 48000 eq assert 'pcm at 8 take-n [0 0 0 0 235 0 235 0] eq assert
+"readme.md" mp3-err "readme.md: not an MP3 stream" eq assert
+"readme.md" flac-err "readme.md: not a FLAC stream" eq assert
+"tests/audio/nope.flac" flac-err "tests/audio/nope.flac: No such file or directory" eq assert
+"a\0b" mp3-err "a\0b: contains a NUL byte" eq assert
+fs-path "tests/audio/tone.flac" read must 1300 take-n write must drop
+fs-path flac-err fs-path ": cut short: 4096 of 4410 frames" cat eq assert
+fs-path [] write must drop
+fs-path mp3-err fs-path ": not an MP3 stream" cat eq assert
+
 -- cleanup test file
 fs-path [] write must drop
 

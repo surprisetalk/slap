@@ -72,6 +72,7 @@ flamegraph.pl --countname=ns prog.folded > prog.svg
 System primitives:
 - `args` — pushes list of CLI positional args (strings)
 - `isheadless` — pushes 1 if `--headless`, else 0
+- `read-mp3`, `read-flac` (`path -- {'rate 'pcm} ok | msg no`) — decode a whole file to the audio record `play` takes: 16-bit little-endian stereo, mono on both sides. They read the file as they decode, so `read`'s 64 MiB limit does not apply; the pcm stops at 1 GiB, about 100 minutes at 44.1 kHz. A failure is `"path: reason" no`: the C library's reason, `not an MP3 stream`, `not a FLAC stream`, `6 channels; music plays mono or stereo`, `cut short: 4096 of 4410 frames` (a FLAC whose header gives its length) or `holds no audio`. An MP3 gives no length, so a cut MP3 decodes to the frames it holds. [dr_mp3 and dr_flac](vendor/readme.md) decode
 
 ## language tour
 
@@ -568,6 +569,7 @@ Decoders/encoders for compact binary formats. These live in `examples/lib/` as l
 | `examples/lib/chr.slap` | 2-bit 8×8 tiles (two planes) |
 | `examples/lib/nmt.slap` | Nametable cells (addr + color per 3 bytes) |
 | `examples/lib/tga.slap` | Uncompressed true-color TGA images |
+| `examples/lib/wav.slap` | `wav-decode` (`bytes -- {'rate 'pcm} ok \| msg no`): a WAV file of 16-bit stereo PCM, as `play` takes it (decode only) |
 | `examples/lib/gly.slap` | ASCII-inline 1-bit glyphs |
 | `examples/lib/ufx.slap` | Proportional bitmap fonts (requires `icn.slap`) |
 | `examples/lib/ulz.slap` | LZ-compressed byte stream (decode only) |
@@ -602,6 +604,8 @@ Build with `make slap-sdl`. Opens a borderless window at the size of the screen,
 
 | Word | Effect |
 |------|--------|
+| `play` | `{'rate 'pcm} play` — replace what the speakers play with `'pcm`, 16-bit little-endian stereo frames at `'rate` Hz (8000-384000). An empty `'pcm` stops them, whatever its `'rate`. Headless, it plays nothing |
+| `queued` | `queued` — the bytes of `'pcm` the speakers have not yet taken; 0 once it has played, and always 0 headless |
 | `clear` | Fill canvas with color (0-3); another color is an error |
 | `pixel` | `x y color pixel` — set one pixel; color 0-3, a pixel off the canvas is clipped |
 | `fill-rect` | `x y w h color fill-rect` — fill a rectangle; color 0-3, clipped to the canvas |
@@ -734,6 +738,7 @@ App demos (terminal build):
 | `clock-app.slap` | Fullscreen clock, sauce's second app: the local time as large as the window allows, the date under it, and a stopwatch that space starts and stops and r sets to zero. The stopwatch line shows once it runs. Run it from the repo root: `cat examples/lib/{strings,icn,ufx,ui}.slap examples/clock-app.slap examples/lib/ui-sdl.slap examples/clock-app-sdl.slap \| ./slap-sdl` |
 | `cal-app.slap` | Fullscreen calendar: a month as six weeks from Sunday, today on dark grey, the chosen day inverted, and a bar under each day with events. The chosen day's events list under the grid. h l or the left and right arrows move a day, j k or down and up a week, n p a month (to the same day, or the month's last), and t goes back to today. Enter starts an event: type its text, then enter adds it and escape drops it. x deletes the chosen day's last event. Each change rewrites the events file, a CBOR map `{"events": [{"y", "m" (1-12), "d", "text"}]}`; a missing file starts empty, a file that does not decode stops the app, and a save drops any key the app does not read. Run it from the repo root: `cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/cal-app.slap examples/lib/ui-sdl.slap examples/cal-app-sdl.slap \| ./slap-sdl events.cbor` |
 | `book-app.slap` | Fullscreen reader for a text file: a page at a time in a centred column, with how far through the book the page starts. Each line of the file is a paragraph. Space, l, j, the right and down arrows and page down turn a page on; b, h, k, left, up and page up turn back; g goes to the start. The state file keeps the book read last and the place in each book, as a paragraph and a word, so a resized window keeps the place. With no book named, it opens the book read last. A place past the book's end stops the app, since the book changed. A save drops any key the app does not read, and two windows on one state file each keep only their own book's place. Run it from the repo root: `cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/book-app.slap examples/lib/ui-sdl.slap examples/book-app-sdl.slap \| ./slap-sdl state.cbor book.txt` |
+| `music-app.slap` | Fullscreen music player for a directory: its `.mp3`, `.flac` and `.wav` files in byte order, the highlight inverted and the playing track on dark grey, and the place under them. j k or down and up move the highlight, enter plays it from its start, and space pauses and plays. A track plays to its end, then the next; after the last, it stops at the first. With no directory named, it opens the directory played last, at its track and place. The state file, a CBOR map `{"dir", "track", "ms"}`, is written on each pause and track and each 10 s of play; a track the directory no longer holds stops the app. A track that does not load shows its message and stays paused. Each track decodes whole when it starts, and resuming decodes it again. Run it from the repo root: `cat examples/lib/{strings,cbor,wav,icn,ufx,ui}.slap examples/music-app.slap examples/lib/ui-sdl.slap examples/music-app-sdl.slap \| ./slap-sdl state.cbor ~/Music/album` |
 | `todo.slap` | Todo list in a JSON file, decoded with `jd-*` and written with `je-*` |
 | `banner.slap` | Text as ASCII art from a real `.uf1` bitmap font, via `icn.slap` |
 | `plasma.slap` | Writes a 24-bit TGA. Float-only: there is no `sin`, so it builds one |
@@ -865,6 +870,10 @@ make clean         # remove binaries and generated pages
 The build passes `-sGROWABLE_ARRAYBUFFERS=0`. With `ALLOW_MEMORY_GROWTH`, emscripten ≥6 backs the heap with a resizable `ArrayBuffer`, and browsers' `TextDecoder.decode()` rejects those — startup throws and the canvas stays blank.
 
 ## Pending design
+
+- music decodes a track whole, and `play` replaces what the speakers play. Resume decodes the track again, and a track change leaves a gap of one frame plus the decode. Alternative: `play` appends, and the app feeds a second at a time from a decoder kept open, which plays albums without a gap. It costs a decoder handle, a linear value like a socket, and a word to stop.
+- `play` takes any rate in its record, and SDL converts it. Alternative: 44.1 kHz only, as the first plan said. It costs a resampler in each decoder, or tracks at 48 kHz refused.
+- MP3 and FLAC decode in C through vendored dr_mp3 and dr_flac, about 18,000 lines that build in every binary: `make slap` takes over twice as long. Alternative: an object file built once from `vendor/`. It costs a second compile step in the Makefile, the ASan line and the wasm build.
 
 - The apps' font is two libraries: `ui.slap` measures and wraps text, and `ui-sdl.slap` draws it. `fill-rect` in ui.slap would stop its self-test and the apps' self-tests in the terminal build. Alternative: one library, with the self-tests run only in `./slap-sdl --headless`. It costs the self-tests on machines without SDL2.
 - `calendar` is a primitive over libc's `timegm`, so the language core grows by one word and two feature macros (`_DEFAULT_SOURCE`, `_DARWIN_C_SOURCE`) for cal. It counts only the years 1900 to 9999, since macOS's `timegm` refuses earlier years. Alternative: Hinnant's `days_from_civil` written in slap, with no core change and any year. It costs date arithmetic written by hand, where `timegm` is the established routine.
