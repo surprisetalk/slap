@@ -130,7 +130,11 @@
      a quartet sits on one line. Weigh seating presets (orchestra, quartet,
      organ loft), distance as reverb send plus a low-pass, and whether
      headphones want HRTF.
-  9. Then the editor: a parts view (track, font, preset name, gain) with
+  9. Add humanization: a score typed in note by note (Mutopia, OpenScore)
+     plays every note on the grid at one velocity. Weigh small random
+     shifts of timing and velocity, a seed kept with the work so a bounce
+     repeats, and rubato from phrase shape; piano-midi.de shows the target.
+ 10. Then the editor: a parts view (track, font, preset name, gain) with
      keys to change them, which rewrites the work's events.
 
 ## Blocked on you
