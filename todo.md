@@ -134,7 +134,12 @@
      plays every note on the grid at one velocity. Weigh small random
      shifts of timing and velocity, a seed kept with the work so a bounce
      repeats, and rubato from phrase shape; piano-midi.de shows the target.
- 10. Then the editor: a parts view (track, font, preset name, gain) with
+ 10. Decode piano-roll expression: scanned rolls (kunstderfuge's
+     "(nc)smythe", ~/Music/midi/kunstderfuge/piano-rolls) encode dynamics
+     and pedal as notes outside the keyboard; 9 play key 1, which
+     render-midi refuses. Identify each roll's system (Ampico, Duo-Art,
+     Welte) and map its codes to velocity and CC64.
+ 11. Then the editor: a parts view (track, font, preset name, gain) with
      keys to change them, which rewrites the work's events.
 
 ## Blocked on you
