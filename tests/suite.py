@@ -794,6 +794,13 @@ def steps(slow):
             ),
             "codec": ("python3 tests/run_codec.py", None),
             "a WAV past read's 64 MiB limit loads": (big_wav, None),
+            # midi.slap's tests cannot open a font: it loads from any directory. Here a decoded file
+            # plays: middle C on Florestan Pizzicato for half a second, then its release.
+            "a MIDI file decodes and renders": (
+                f"echo \"[0 192 45  0 144 60 100  131 96 128 60 64] md-smf midi-decode must [{{'channel 0 'font \\\"tests/audio/pizzicato.sf2\\\"}}] render-midi must 'pcm at len print\""
+                f" | cat {lib('strings', 'midi')} - | ./slap",
+                lambda o: o.split() == ["94208"],
+            ),
             "utils": ("python3 tests/run_utils.py", None),
             "lua": ("python3 tests/run_lua.py", None),
         }

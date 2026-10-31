@@ -142,6 +142,3 @@
 "MThd" [0 0 0 6 0 0 0 1 0 0] cat md-err "midi: the time division is 0 ticks a quarter note" eq assert
 "MThd" [0 0 0 6 0 0 0 2 1 224] cat md-err "midi: format 0 holds one track, but the header says 2" eq assert
 "MThd" [0 0 0 6 0 1 0 2 1 224] cat "MTrk" cat [0 0 0 4 0 255 47 0] cat md-err "midi: the header says 2 tracks, but the file holds 1" eq assert
--- decoded, a file plays: middle C on Florestan Pizzicato for half a second, then its decay
-[0 192 45  0 144 60 100  131 96 128 60 64] md-smf midi-decode must [{'channel 0 'font "tests/audio/pizzicato.sf2"}] render-midi must
-  'pcm at len 94208 eq assert
