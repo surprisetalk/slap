@@ -1,0 +1,147 @@
+-- midi.slap: Standard MIDI Files, format 0 and 1, as the events render-midi
+-- plays. Requires strings.slap.
+
+-- midi-decode: (bytes -- {'division 'events} ok | msg no).  'division is the
+-- ticks in a quarter note. 'events is a string of 10-byte events, track after
+-- track, each track's ticks counted from the file's start: tick (4 bytes),
+-- status, channel, a (3 bytes), b, each number big-endian. A string is one
+-- value however long, where a list takes a stack slot a number, and an
+-- orchestral movement's events pass the stack's 2,097,152 slots. The statuses:
+--   128 note off and 144 note on (a the key, b the velocity), 176 control
+--   change (a the controller, b the value), 192 program change (a the
+--   program), 224 pitch bend (a the 14-bit value), and 81 tempo (channel 0, a
+--   the microseconds in a quarter note).
+-- Key and channel pressure, sysex and the other meta events are read and
+-- passed over: render-midi has no use for them. A refusal names the byte:
+-- "midi: a data byte at byte 23 has no running status".
+('md-b let md-b len 'md-n let
+ -- md-u: (i k -- n).  k bytes from i, big-endian; the caller checked they are there.
+ ('mu-k let 'mu-i let mu-i mu-i mu-k plus range 0 ('mu-j let 8 shl mu-j 'md-b nth must bor) fold) 'md-u let
+ (dup 4 plus range ('md-b nth must) each) 'md-id let
+ -- md-vlq: (i end -- n j ok).  A variable-length number from i: seven bits a
+ -- byte, the high bit set on all but the last, at most four bytes before end.
+ ('vq-end let 'vq-i let
+  -- the state is n j k fin: fin is 0 while reading, 1 when done, 2 when cut short or too long
+  0 vq-i 0 0 (dup 0 eq) ('vq-f let 'vq-k let 'vq-j let 'vq-n let
+    vq-j vq-end ge vq-k 4 ge or (vq-n vq-j vq-k 2) (
+      vq-j 'md-b nth must 'vq-b let
+      vq-n 7 shl vq-b 127 band bor vq-j 1 plus vq-k 1 plus vq-b 128 lt (1) (0) if) if) while
+  'vq-fin let drop vq-fin 1 eq) 'md-vlq let
+ (int-str) 'md-s let
+ -- md-put: (ev tick status channel a b -- ev).  One event, as midi-events writes it.
+ ('mp-b let 'mp-a let 'mp-c let 'mp-st let 'mp-t let
+  mp-t 24 shr push mp-t 16 shr 255 band push mp-t 8 shr 255 band push mp-t 255 band push
+  mp-st push mp-c push mp-a 16 shr push mp-a 8 shr 255 band push mp-a 255 band push mp-b push) 'md-put let
+ -- md-event: (ev i tick run end -- ev i run done err).  The event whose
+ -- status byte, or first data byte under running status, is at i. err is []
+ -- or [msg]; done is 1 after the end-of-track event.
+ ('me-end let 'me-run let 'me-t let 'me-i let
+  me-i 'md-b nth must 'me-s let
+  me-s 128 lt (me-run me-i) (me-s me-i 1 plus) if 'me-j let 'me-st let
+  me-s 128 lt me-run 0 eq and (me-i me-run 0 ["midi: a data byte at byte " me-i md-s cat " has no running status" cat]) (
+  me-st 240 lt (
+    -- a channel message: one data byte for program change and channel pressure, two for the rest
+    me-st 240 band 'me-ty let me-st 15 band 'me-ch let
+    me-ty 192 eq me-ty 208 eq or (1) (2) if 'me-k let
+    me-j me-k plus me-end gt (me-i me-st 0 ["midi: the event at byte " me-i md-s cat " runs past its track" cat]) (
+    me-j 'md-b nth must 'me-a let me-k 2 eq (me-j 1 plus 'md-b nth must) (0) if 'me-d let
+    me-a 127 gt me-d 127 gt or (me-i me-st 0 ["midi: the event at byte " me-i md-s cat " holds a data byte past 127" cat]) (
+      me-ty 128 eq me-ty 144 eq or me-ty 176 eq or (me-t me-ty me-ch me-a me-d md-put) () if
+      me-ty 192 eq (me-t 192 me-ch me-a 0 md-put) () if
+      me-ty 224 eq (me-t 224 me-ch me-d 7 shl me-a bor 0 md-put) () if
+      me-j me-k plus me-st 0 []) if) if) (
+  -- sysex and meta events cancel running status
+  me-st 255 eq me-st 240 eq or me-st 247 eq or not
+    (me-i 0 0 ["midi: byte " me-i md-s cat " holds status " cat me-st md-s cat ", which starts no event in a MIDI file" cat]) (
+  me-st 255 eq (me-j 1 plus) (me-j) if 'me-lj let
+  me-lj me-end ge (me-i 0 0 ["midi: the event at byte " me-i md-s cat " runs past its track" cat]) (
+  me-lj me-end md-vlq 'me-ok let 'me-dj let 'me-len let
+  me-ok not (me-i 0 0 ["midi: the length at byte " me-lj md-s cat " runs past its track or past 4 bytes" cat]) (
+  me-dj me-len plus me-end gt (me-i 0 0 ["midi: the event at byte " me-i md-s cat " says " cat me-len md-s cat " bytes, but " cat me-end me-dj sub md-s cat " remain in its track" cat]) (
+  me-st 255 eq (me-j 'md-b nth must) (0) if 'me-mt let
+  me-st 255 eq me-mt 47 eq and (
+    me-dj me-len plus me-end eq (me-end 0 1 []) (me-i 0 0 ["midi: the track goes on after its end-of-track event at byte " me-i md-s cat] ) if) (
+  me-st 255 eq me-mt 81 eq and (
+    me-len 3 eq not (me-i 0 0 ["midi: the tempo at byte " me-i md-s cat " holds " cat me-len md-s cat " bytes, not 3" cat]) (
+    me-dj 3 md-u 'me-tempo let
+    me-tempo 0 eq (me-i 0 0 ["midi: the tempo at byte " me-i md-s cat " is 0; a tempo is 1 to 16777215 microseconds a quarter note" cat]) (
+      me-t 81 0 me-tempo 0 md-put me-dj 3 plus 0 0 []) if) if) (
+  me-dj me-len plus 0 0 []) if) if) if) if) if) if) if) if) 'md-event let
+ -- md-track: (ev start end k -- ev err).  Track k's events, from start up to end.
+ ('mt-k let 'mt-end let 'mt-start let
+  mt-start 0 0 0 [] ('mc-e let 'mc-d let mc-d mc-e mc-d 0 eq mc-e len 0 eq and) ('tb-e let 'tb-d let 'tb-r let 'tb-t let 'tb-i let
+    tb-i mt-end ge (tb-i tb-t tb-r 0 ["midi: track " mt-k md-s cat " ends at byte " cat mt-end md-s cat " without an end-of-track event" cat]) (
+    tb-i mt-end md-vlq 'tv-ok let 'tv-j let 'tv-n let
+    tv-ok not (tb-i tb-t tb-r 0 ["midi: the delta time at byte " tb-i md-s cat " runs past its track or past 4 bytes" cat]) (
+    tb-t tv-n plus 'tv-t let
+    -- render-midi times a tick at up to 2^24 microseconds; past 2^32 ticks that leaves int64
+    tv-t 4294967295 gt (tb-i tb-t tb-r 0 ["midi: track " mt-k md-s cat " runs past 2^32 ticks at byte " cat tb-i md-s cat]) (
+    tv-j mt-end ge (tb-i tb-t tb-r 0 ["midi: track " mt-k md-s cat " ends at byte " cat mt-end md-s cat " inside an event" cat]) (
+    tv-j tv-t tb-r mt-end md-event 'te-e let 'te-d let 'te-r let 'te-i let
+    te-i tv-t te-r te-d te-e) if) if) if) if) while
+  'tk-e let drop drop drop drop tk-e) 'md-track let
+ md-n 14 lt ("midi: shorter than the 14-byte header" no) (
+ 0 md-id "MThd" eq not ("midi: not a MIDI file: it does not start with MThd" no) (
+ 4 4 md-u 'md-hl let 8 2 md-u 'md-fmt let 10 2 md-u 'md-nt let 12 2 md-u 'md-div let
+ md-hl 6 lt 8 md-hl plus md-n gt or ("midi: the header says " md-hl md-s cat " bytes; it holds 6 or more, within the file" cat no) (
+ md-fmt 1 gt ("midi: format " md-fmt md-s cat " holds independent songs; render-midi plays format 0 and 1" cat no) (
+ md-div 32768 band 0 eq not ("midi: SMPTE time division is not supported" no) (
+ md-div 0 eq ("midi: the time division is 0 ticks a quarter note" no) (
+ md-fmt 0 eq md-nt 1 eq not and ("midi: format 0 holds one track, but the header says " md-nt md-s cat no) (
+   -- chunks after the header: MTrk chunks are tracks, other chunks are passed over
+   "" md-hl 8 plus 0 [] ('cc-e let 'cc-k let 'cc-p let cc-p cc-k cc-e cc-p md-n lt cc-e len 0 eq and) ('cb-e let 'cb-k let 'cb-p let
+     cb-p 8 plus md-n gt (cb-p cb-k ["midi: the " md-n cb-p sub md-s cat " bytes at byte " cat cb-p md-s cat " are too few for a chunk header" cat]) (
+     cb-p 4 plus 4 md-u 'cb-l let cb-p 8 plus cb-l plus 'cb-q let
+     cb-q md-n gt (cb-p cb-k ["midi: the chunk at byte " cb-p md-s cat " says " cat cb-l md-s cat " bytes, but " cat md-n cb-p 8 plus sub md-s cat " remain" cat]) (
+     cb-p md-id "MTrk" eq (cb-p 8 plus cb-q cb-k md-track 'cb-te let cb-q cb-k 1 plus cb-te) (cb-q cb-k []) if) if) if) while
+   'dk-e let 'dk-k let drop 'md-ev let
+   dk-e len 0 gt (dk-e 0 get must no) (
+   dk-k md-nt eq not ("midi: the header says " md-nt md-s cat " tracks, but the file holds " cat dk-k md-s cat no) (
+   {'division md-div 'events md-ev} ok) if) if) if) if) if) if) if) if) if) 'midi-decode let
+
+-- midi-events: (ints -- events).  Five ints an event, tick status channel a
+-- b, as the 10-byte events midi-decode gives: for events a program writes.
+(5 chunks "" ('mv-e let mv-e 0 get must mv-e 1 get must mv-e 2 get must mv-e 3 get must mv-e 4 get must
+  'mv-b let 'mv-a let 'mv-c let 'mv-s let 'mv-t let
+  mv-t 24 shr push mv-t 16 shr 255 band push mv-t 8 shr 255 band push mv-t 255 band push
+  mv-s push mv-c push mv-a 16 shr push mv-a 8 shr 255 band push mv-a 255 band push mv-b push) fold) 'midi-events let
+
+-- ===== tests =====
+-- smf: (events -- bytes).  One format 0 track, 480 ticks a quarter note.
+('se let "MThd" [0 0 0 6 0 0 0 1 1 224] cat "MTrk" cat [0 0 0 se len 4 plus] cat se cat [0 255 47 0] cat) 'md-smf let
+(midi-decode {'ok (drop "") 'no ()} case) 'md-err let
+-- program 45, middle C on, 480 ticks later off with running status as a note on of velocity 0
+[0 192 45  0 144 60 100  131 96 60 0] md-smf midi-decode must
+  {'division 480 'events [0 192 0 45 0  0 144 0 60 100  480 144 0 60 0] midi-events} eq assert
+-- tempo, control change, pitch bend on channel 3; key pressure and sysex are passed over
+[0 255 81 3 7 161 32  0 179 7 100  10 227 0 64  0 163 60 50  0 240 2 1 247] md-smf midi-decode must 'events at
+  [0 81 0 500000 0  0 176 3 7 100  10 224 3 8192 0] midi-events eq assert
+-- two tracks, the second skips an unknown chunk before it
+"MThd" [0 0 0 6 0 1 0 2 0 96] cat "MTrk" cat [0 0 0 8 0 144 60 1 0 255 47 0] cat "XFIH" cat [0 0 0 1 9] cat
+  "MTrk" cat [0 0 0 8 5 145 61 2 0 255 47 0] cat midi-decode must
+  {'division 96 'events [0 144 0 60 1  5 144 1 61 2] midi-events} eq assert
+"MThd" md-err "midi: shorter than the 14-byte header" eq assert
+"MThx" [0 0 0 6 0 0 0 1 1 224] cat md-err "midi: not a MIDI file: it does not start with MThd" eq assert
+[60 100] md-smf md-err "midi: a data byte at byte 23 has no running status" eq assert
+[0 144 60 200] md-smf md-err "midi: the event at byte 23 holds a data byte past 127" eq assert
+-- the end-of-track bytes md-smf adds become the velocity and a delta time, so the next event is cut
+[0 144 60] md-smf md-err "midi: the event at byte 28 runs past its track" eq assert
+[0 249] md-smf md-err "midi: byte 23 holds status 249, which starts no event in a MIDI file" eq assert
+[255 255 255 255 0] md-smf md-err "midi: the delta time at byte 22 runs past its track or past 4 bytes" eq assert
+[0 255 81 2 1 1] md-smf md-err "midi: the tempo at byte 23 holds 2 bytes, not 3" eq assert
+[0 255 81 3 0 0 0] md-smf md-err "midi: the tempo at byte 23 is 0; a tempo is 1 to 16777215 microseconds a quarter note" eq assert
+[0 255 1 9 65] md-smf md-err "midi: the event at byte 23 says 9 bytes, but 5 remain in its track" eq assert
+[0 255 47 0  0 144 60 1] md-smf md-err "midi: the track goes on after its end-of-track event at byte 23" eq assert
+-- 2^28 - 1 ticks seventeen times passes 2^32; each event is 7 bytes
+0 17 range (drop [255 255 255 127 144 60 1]) each flatten md-smf md-err "midi: track 0 runs past 2^32 ticks at byte 134" eq assert
+"MThd" [0 0 0 6 0 0 0 1 1 224] cat "MTrk" cat [0 0 0 4 0 144 60 1] cat md-err "midi: track 0 ends at byte 26 without an end-of-track event" eq assert
+"MThd" [0 0 0 6 0 0 0 1 1 224] cat "MTrk" cat [0 0 0 9 0 144 60 1 0 255 47 0] cat md-err "midi: the chunk at byte 14 says 9 bytes, but 8 remain" eq assert
+"MThd" [0 0 0 6 0 0 0 1 1 224] cat "MTrk" cat [0 0 0 8 0 144 60 1 0 255 47 0 0] cat md-err "midi: the 1 bytes at byte 30 are too few for a chunk header" eq assert
+"MThd" [0 0 0 6 0 2 0 1 1 224] cat md-err "midi: format 2 holds independent songs; render-midi plays format 0 and 1" eq assert
+"MThd" [0 0 0 6 0 0 0 1 231 40] cat md-err "midi: SMPTE time division is not supported" eq assert
+"MThd" [0 0 0 6 0 0 0 1 0 0] cat md-err "midi: the time division is 0 ticks a quarter note" eq assert
+"MThd" [0 0 0 6 0 0 0 2 1 224] cat md-err "midi: format 0 holds one track, but the header says 2" eq assert
+"MThd" [0 0 0 6 0 1 0 2 1 224] cat "MTrk" cat [0 0 0 4 0 255 47 0] cat md-err "midi: the header says 2 tracks, but the file holds 1" eq assert
+-- decoded, a file plays: middle C on Florestan Pizzicato for half a second, then its decay
+[0 192 45  0 144 60 100  131 96 128 60 64] md-smf midi-decode must [{'channel 0 'font "tests/audio/pizzicato.sf2"}] render-midi must
+  'pcm at len 94208 eq assert

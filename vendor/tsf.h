@@ -624,7 +624,7 @@ static void tsf_region_operator(struct tsf_region* region, tsf_u16 genOper, unio
 			case GEN_FLOAT:      ((       float*)region)[offset]  = amount->shortAmount;     return;
 			case GEN_INT:        ((         int*)region)[offset]  = amount->shortAmount;     return;
 			case GEN_UINT_ADD:   ((unsigned int*)region)[offset] += amount->shortAmount;     return;
-			case GEN_UINT_ADD15: ((unsigned int*)region)[offset] += amount->shortAmount<<15; return;
+			case GEN_UINT_ADD15: ((unsigned int*)region)[offset] += amount->shortAmount * 32768; return; // slap patch: <<15 of a negative short is undefined
 			case GEN_KEYRANGE:   region->lokey = amount->range.lo; region->hikey = amount->range.hi; return;
 			case GEN_VELRANGE:   region->lovel = amount->range.lo; region->hivel = amount->range.hi; return;
 			case GEN_LOOPMODE:   region->loop_mode       = ((amount->wordAmount&3) == 3 ? TSF_LOOPMODE_SUSTAIN : ((amount->wordAmount&3) == 1 ? TSF_LOOPMODE_CONTINUOUS : TSF_LOOPMODE_NONE)); return;
@@ -703,6 +703,28 @@ static void tsf_region_envtosecs(struct tsf_envelope* p, TSF_BOOL sustainIsGain)
 	if (p->sustain < 0.0f) p->sustain = 0.0f;
 	else if (sustainIsGain) p->sustain = tsf_decibelsToGain(-p->sustain / 10.0f);
 	else p->sustain = 1.0f - (p->sustain / 1000.0f);
+}
+
+/* slap patch (vendor/tsf.patch): tsf_load_presets follows each record's index into the next table,
+   and reads record [i+1] to find where record i ends. A font whose indices leave their table, or run
+   backwards, made it read outside the table. Each table ends in a terminal record, so it holds at
+   least one; the walks need two phdr, inst and shdr records. */
+static int tsf_hydra_valid(const struct tsf_hydra *h)
+{
+	enum { GenInstrument = 41, GenSampleID = 53 };
+	int i;
+	if (h->phdrNum < 2 || h->pbagNum < 1 || h->pgenNum < 1 || h->instNum < 2 || h->ibagNum < 1 || h->igenNum < 1 || h->shdrNum < 2) return 0;
+	for (i = 0; i + 1 < h->phdrNum; i++) if (h->phdrs[i].presetBagNdx > h->phdrs[i + 1].presetBagNdx) return 0;
+	if (h->phdrs[h->phdrNum - 1].presetBagNdx >= h->pbagNum) return 0;
+	for (i = 0; i + 1 < h->pbagNum; i++) if (h->pbags[i].genNdx > h->pbags[i + 1].genNdx) return 0;
+	if (h->pbags[h->pbagNum - 1].genNdx > h->pgenNum) return 0;
+	for (i = 0; i + 1 < h->instNum; i++) if (h->insts[i].instBagNdx > h->insts[i + 1].instBagNdx) return 0;
+	if (h->insts[h->instNum - 1].instBagNdx >= h->ibagNum) return 0;
+	for (i = 0; i + 1 < h->ibagNum; i++) if (h->ibags[i].instGenNdx > h->ibags[i + 1].instGenNdx) return 0;
+	if (h->ibags[h->ibagNum - 1].instGenNdx > h->igenNum) return 0;
+	for (i = 0; i < h->pgenNum; i++) if (h->pgens[i].genOper == GenInstrument && h->pgens[i].genAmount.wordAmount >= h->instNum - 1) return 0;
+	for (i = 0; i < h->igenNum; i++) if (h->igens[i].genOper == GenSampleID && h->igens[i].genAmount.wordAmount >= h->shdrNum - 1) return 0;
+	return 1;
 }
 
 static int tsf_load_presets(tsf* res, struct tsf_hydra *hydra, unsigned int fontSampleCount)
@@ -833,6 +855,11 @@ static int tsf_load_presets(tsf* res, struct tsf_hydra *hydra, unsigned int font
 								zoneRegion.sample_rate = pshdr->sampleRate;
 								if (zoneRegion.end && zoneRegion.end < fontSampleCount) zoneRegion.end++;
 								else zoneRegion.end = fontSampleCount;
+								// slap patch: rendering reads the sample at a position and the one after it, so the
+								// end and the loop end stop one short of the last sample. A font that keeps SF2's 46
+								// silent samples after each sample never meets this; a damaged one read past them.
+								if (zoneRegion.end > fontSampleCount - 1) zoneRegion.end = fontSampleCount - 1;
+								if (zoneRegion.loop_end > fontSampleCount - 1) zoneRegion.loop_end = fontSampleCount - 1;
 
 								preset->regions[region_index] = zoneRegion;
 								region_index++;
@@ -1428,6 +1455,10 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 	else if (!rawBuffer && !floatBuffer)
 	{
 		//if (e) *e = TSF_INVALID_NOSAMPLEDATA;
+	}
+	else if (!tsf_hydra_valid(&hydra))
+	{
+		// slap patch: an index outside its table
 	}
 	else
 	{

@@ -99,10 +99,10 @@
       for that work. Decided: TinySoundFont, MIDI first, settings inside
       the .mid, fonts outside the repo, a font per part, render a whole
       movement. Later: stream in chunks; far off, synthesize in slap.
-  1. Add `render-midi (bytes fontdir -- {'rate 'pcm} ok | msg no)` over
-     vendored TinySoundFont (`vendor/tsf.h`, `vendor/tml.h`): one tsf
-     per font the tracks name, mixed. It takes bytes, so what midi.slap
-     writes is what plays.
+  1. music plays a `.mid`: `midi-decode`, then `render-midi` with every
+     channel on one font that state.cbor names, until midi.slap reads
+     each track's font (step 3). A font that is not GM (Jeux, Aeolus)
+     numbers its own presets: GM's 19 plays Jeux's Gamba 8, unrefused.
   2. Per part, store settings as the standard events at tick 0 of the
      part's track, which every player obeys: bank select CC0/CC32 and
      program change (preset), CC7 (gain), CC10 (pan), CC91 (reverb send,
@@ -111,8 +111,8 @@
      at the start of the track: the font's file name, found in the font
      directory music's state.cbor names. A missing font stops the work
      with its name.
-  4. Add examples/lib/midi.slap: decode and encode SMF type 0 and 1, to
-     edit those tick-0 events. Type 0 holds one track, so one font:
+  4. Teach examples/lib/midi.slap to encode SMF, and to keep each track's
+     FF 09, to edit those tick-0 events. Type 0 holds one track, so one font:
      music splits it into a track per channel (type 1) on its first write.
   5. A channel that two tracks with different fonts share stops the work
      with both track names; tsf renders by channel.

@@ -695,6 +695,51 @@ fs-path read-wav must 'pcm at len 956 eq assert
 fs-path [] write must drop
 fs-path mp3-err fs-path ": not an MP3 stream" cat eq assert
 
+-- ===== Audio: render-midi =====
+-- a midi record: 480 ticks a quarter note, each event written as five ints, tick status channel
+-- a b, and stored as midi.slap stores it: 10 bytes, tick (4) status channel a (3) b
+(5 chunks "" ('me let me 0 get must me 1 get must me 2 get must me 3 get must me 4 get must 'mb let 'ma let 'mc let 'ms let 'mt let
+  mt 24 shr push mt 16 shr 255 band push mt 8 shr 255 band push mt 255 band push
+  ms push mc push ma 16 shr push ma 8 shr 255 band push ma 255 band push mb push) fold 'ev let {'division 480 'events ev}) 'mid let
+[{'channel 0 'font "tests/audio/pizzicato.sf2"}] 'pz let
+(render-midi {'ok (drop "") 'no ()} case) 'midi-err let
+-- program 45, then middle C for half a second (480 ticks at 120 bpm); the font holds only preset 45
+[0 192 0 45 0  0 144 0 60 100  480 128 0 60 64] 'one-note let
+one-note mid pz render-midi must 'pz-a let
+pz-a 'rate at 44100 eq assert
+-- the note, then its release until a block is silent with no note held, in whole 64-frame blocks
+pz-a 'pcm at len 94208 eq assert
+pz-a 'pcm at (0 eq not) filter len 0 gt assert
+-- a note never released still sounds when the 10 s tail ends: refused, not cut
+[0 192 0 45 0  0 144 0 60 100] mid pz midi-err "notes still sound 10 s after the last event at 0:00: a note on lacks its note off, or the sustain pedal stays down" eq assert
+-- a key the preset holds no sample for would play silence
+[0 192 0 45 0  0 144 0 127 100  480 128 0 127 64] mid pz midi-err "channel 0 plays key 127 at 0:00, but tests/audio/pizzicato.sf2's preset 45 in bank 0 holds no sample for that key" eq assert
+-- tracks arrive one after another, so the note off before its note on in the list sorts after it; a tempo of
+-- 1000000 doubles a 480-tick note to 1 s
+[0 81 0 1000000 0  0 192 0 45 0  480 128 0 60 64  0 144 0 60 100] mid pz render-midi must 'pcm at len 176384 eq assert
+one-note 5 drop-n mid pz midi-err "channel 0 plays a note at 0:00 before any program change, and tests/audio/pizzicato.sf2 has no preset 0" eq assert
+[0 192 0 19 0] one-note 5 drop-n cat mid pz midi-err "channel 0 asks for preset 19 in bank 0 at 0:00, which tests/audio/pizzicato.sf2 lacks" eq assert
+-- bank select 1 first: tsf alone would fall back to bank 0
+[0 176 0 0 1] one-note cat mid pz midi-err "channel 0 asks for preset 45 in bank 1 at 0:00, which tests/audio/pizzicato.sf2 lacks" eq assert
+[0 192 9 45 0  0 144 9 60 100] mid [{'channel 9 'font "tests/audio/pizzicato.sf2"}] midi-err "channel 9 asks for preset 45 in bank 128 at 0:00, which tests/audio/pizzicato.sf2 lacks" eq assert
+[0 192 1 45 0  960 144 1 60 100] mid pz midi-err "channel 1 plays a note at 0:01, but no part names its font" eq assert
+one-note mid [{'channel 0 'font "tests/audio/nope.sf2"}] midi-err "tests/audio/nope.sf2: No such file or directory" eq assert
+one-note mid [{'channel 0 'font "readme.md"}] midi-err "readme.md: not a SoundFont" eq assert
+one-note mid [{'channel 0 'font "a\0b"}] midi-err "channel 0's font path contains a NUL byte" eq assert
+one-note mid pz {'channel 0 'font "x"} push midi-err "channel 0 is named by two parts" eq assert
+one-note mid [{'channel 16 'font "x"}] midi-err "part 0 names channel 16; a channel is 0 to 15" eq assert
+[0 192 0 45 0] mid pz midi-err "holds no notes" eq assert
+-- at one tick, setup events sort before notes whatever their track: the note's track comes first
+-- in the list, its program change second
+[0 144 0 60 100  480 128 0 60 64  0 192 0 45 0] mid pz render-midi must 'pcm at len 94208 eq assert
+-- a note that ends at the tick it starts, then a held one released later: the first must still end
+[0 192 0 45 0  0 144 0 62 100  0 128 0 62 64  0 144 0 60 100  480 128 0 60 64] mid pz render-midi must 'pcm at len 0 gt assert
+"" 'empty-font let
+one-note mid [{'channel 0 'font empty-font}] midi-err "channel 0 names an empty font path" eq assert
+[0 144 9 60 100] mid [{'channel 9 'font "tests/audio/pizzicato.sf2"}] midi-err "channel 9 plays a note at 0:00 before any program change, and tests/audio/pizzicato.sf2 has no preset 0 in bank 128" eq assert
+-- 2^32 - 1 ticks at the slowest tempo is far past the 1 GiB of audio a string holds
+[0 81 0 16777215 0  0 192 0 45 0  4294967295 144 0 60 100] mid pz midi-err "lasts past 101:16, the most audio a string holds" eq assert
+
 -- cleanup test file
 fs-path [] write must drop
 

@@ -37,6 +37,18 @@
 #include "vendor/dr_mp3.h"
 #include "vendor/dr_flac.h"
 #include "vendor/dr_wav.h"
+/* schellingb/TinySoundFont, MIT, with a local patch: vendor/readme.md names the commit. */
+#define TSF_IMPLEMENTATION
+/* tsf.h computes its field offsets as (T*)&((struct tsf_region*)0)->field - (T*)0, a hand-made
+   offsetof that clang folds to a constant and warns about. */
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnull-pointer-subtraction"
+#endif
+#include "vendor/tsf.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#endif
 #define STACK_MAX  2097152
 #define SYM_MAX   4096
 #define TOK_MAX   65536
@@ -1172,6 +1184,7 @@ static const char *TYPES =
     "'read [str] [dict \"ok\" str insert \"no\" str insert either] 'write [str str] [dict \"ok\" int insert \"no\" str insert either] 'ls [str] [dict \"ok\" str 'list tag insert \"no\" str insert either]\n"
     "'args [] [str 'list tag]\n"
     "'read-mp3 [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either] 'read-flac [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either] 'read-wav [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either]\n"
+    "'render-midi [dict \"division\" int insert \"events\" str insert rec dict \"channel\" int insert \"font\" str insert rec 'list tag] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either]\n"
     /* a socket is its own type: the runtime keeps it as a plain int fd, but free, lend and mutate must not reach it */
     "'tcp-connect [str int] [dict \"ok\" socket insert \"no\" str insert either] 'tcp-send [socket str] [socket dict \"ok\" int insert \"no\" str insert either]\n"
     "'tcp-recv [socket int] [socket dict \"ok\" str insert \"no\" str insert either] 'tcp-close [socket] [] 'tcp-listen [int] [dict \"ok\" socket insert \"no\" str insert either]\n"
@@ -3147,6 +3160,180 @@ static void read_audio(AudioKind kind) {
 static void prim_read_mp3(Frame *e){(void)e; read_audio(AUDIO_MP3);}
 static void prim_read_flac(Frame *e){(void)e; read_audio(AUDIO_FLAC);}
 static void prim_read_wav(Frame *e){(void)e; read_audio(AUDIO_WAV);}
+/* render-midi plays a decoded MIDI file through SoundFonts. midi.slap reads the file into
+   {'division 'events}: 10 bytes an event, tick (4) status channel a (3) b, big-endian. Each part names the font for one
+   channel, so a work can put its strings and its organ on different fonts. The MIDI's own bank and
+   program changes pick each preset; a preset the font lacks is a refusal, not a fallback. The audio
+   is the record the decoders give: 44.1 kHz 16-bit stereo.
+   REVIEW: midi.slap parses MIDI, not TinySoundFont's tml.h. tml.h turned a gap of 2^20 ticks or more
+   into none, kept the start of a cut track without a word, and timed events as NaN for a division
+   of 0. Alternative: patch tml.h. It costs three patches to a parser we did not write, and midi.slap
+   is needed anyway to read and write each track's font. */
+#define MIDI_RATE 44100
+/* Past this many notes at once tsf steals the oldest voice; an organ plenum peaks near 120. */
+#define MIDI_VOICES 256
+/* After the last event, rendering goes on until a block is silent with every voice released, or this
+   long. tsf counts a voice whose release has faded below hearing as active, so its voice count
+   cannot say when to stop; and an attack starts silent, so silence alone cannot either. */
+#define MIDI_TAIL_MS 10000
+/* The tempo before a file's first tempo event, in microseconds a quarter note: 120 bpm. */
+#define MIDI_TEMPO 500000
+/* The longest audio a string holds, in microseconds, less the tail. */
+#define MIDI_MAX_US ((int64_t)(BYTES_MAX / 4) * 1000000 / MIDI_RATE - (int64_t)MIDI_TAIL_MS * 1000)
+typedef struct { int64_t tick, frame; int seq, status, ch, a, b; } MidiEvent;
+/* At one tick, a later track may hold the program change for an earlier track's note, so control,
+   program, pitch bend and tempo events come first, then notes in the order they came. Notes keep
+   that order because a track may end a note at the tick it starts it; sorting its note off first
+   left it sounding forever. */
+static int midi_rank(const MidiEvent *m) { return m->status == 128 || m->status == 144; }
+static int midi_order(const void *x, const void *y) {
+    const MidiEvent *p = x, *q = y;
+    if (p->tick != q->tick) return p->tick < q->tick ? -1 : 1;
+    if (midi_rank(p) != midi_rank(q)) return midi_rank(p) - midi_rank(q);
+    return p->seq - q->seq;
+}
+/* The preset at a channel's bank, or -1. tsf's own lookup falls back to bank 0, and on channel 9 to
+   drum kit 0; this one does not. Channel 9 is GM's drum channel, whose kits SF2 keeps in bank 128. */
+static int midi_preset(tsf *f, int ch, int program) {
+    int bank = tsf_channel_get_preset_bank(f, ch);
+    return tsf_get_presetindex(f, ch == 9 ? 128 | bank : bank, program);
+}
+/* A string value read in place: a packed one is a Bytes slot, an unpacked one a list of int slots. */
+/* Whether a preset holds a sample for a key. tsf_note_on plays nothing for a key outside every
+   region, and says so to no one: the part is on an instrument that cannot play it.
+   REVIEW: a key the preset covers, at a velocity no region takes, plays nothing, as the font
+   defines; MuseScore_General's piano starts above velocity 2, and 8 of 150 library files hold such
+   ghost notes. Alternative: refuse those too. It costs those 8 works, for notes meant inaudible. */
+static int midi_sounds(tsf *f, int preset, int key) {
+    struct tsf_preset *p = &f->presets[preset];
+    for (int i = 0; i < p->regionNum; i++) if (key >= p->regions[i].lokey && key <= p->regions[i].hikey) return 1;
+    return 0;
+}
+/* Whether a voice still sounds a note: started, and its envelope not yet in release. */
+static int midi_held(tsf *f) {
+    for (int i = 0; i < f->voiceNum; i++) if (f->voices[i].playingPreset != -1 && f->voices[i].ampenv.segment < TSF_SEGMENT_RELEASE) return 1;
+    return 0;
+}
+static char *string_at(Value *v, int slots, int *len) {
+    Value h = v[slots-1]; int n = *len = h.tag == VAL_BYTES ? BYTES(h)->len : (int)h.as.compound.len;
+    char *out = malloc((size_t)n + 1); if (!out) die("out of memory copying a %d-byte string", n);
+    if (h.tag == VAL_BYTES) memcpy(out, BYTES(h)->b, (size_t)n); else for (int i = 0; i < n; i++) out[i] = (char)v[i].as.i;
+    out[n] = 0; return out;
+}
+static void midi_clock(char *out, size_t cap, int64_t frame) { int64_t sec = frame / MIDI_RATE; snprintf(out, cap, "%lld:%02lld", (long long)(sec / 60), (long long)(sec % 60)); }
+static void prim_render_midi(Frame *e) {
+    (void)e; Value top = speek(); int ps = val_slots(top), plen = (int)top.as.compound.len, pbase = sp - ps;
+    /* The events come from midi.slap or the program itself, never from a file unread: a bad one is a
+       bug in that code, so it dies rather than giving 'no. They are checked in place, before
+       anything is allocated, since the shell goes on after a death. */
+    Value mtop = stack[pbase - 1]; int ms = val_slots(mtop), mlen = (int)mtop.as.compound.len, mbase = pbase - ms, found;
+    ElemRef dr = record_field(&stack[mbase], ms, mlen, sym_intern("division"), &found); int64_t division = stack[mbase + dr.base].as.i;
+    ElemRef er = record_field(&stack[mbase], ms, mlen, sym_intern("events"), &found);
+    Value *ev = &stack[mbase + er.base]; Value eh = ev[er.slots-1]; int en = eh.tag == VAL_BYTES ? BYTES(eh)->len : (int)eh.as.compound.len;
+    if (division < 1 || division > 32767) die("render-midi: the division is %lld; expected 1 to 32767 ticks a quarter note", (long long)division);
+    if (en % 10) die("render-midi: 'events holds %d bytes; expected 10 an event: tick (4) status channel a (3) b", en);
+    int n = en / 10;
+#define EVENT_FIELDS(i, f) do { int64_t by[10]; \
+        for (int k = 0; k < 10; k++) by[k] = eh.tag == VAL_BYTES ? BYTES(eh)->b[(i)*10+k] : ev[(i)*10+k].as.i; \
+        for (int k = 0; k < 10; k++) if (by[k] < 0 || by[k] > 255) die("render-midi: byte %d of event %d is %lld, outside 0-255", k, (i), (long long)by[k]); \
+        f[0] = by[0] << 24 | by[1] << 16 | by[2] << 8 | by[3]; f[1] = by[4]; f[2] = by[5]; f[3] = by[6] << 16 | by[7] << 8 | by[8]; f[4] = by[9]; } while (0)
+    for (int i = 0; i < n; i++) {
+        int64_t f[5]; EVENT_FIELDS(i, f);
+        int64_t st = f[1], amax = st == 224 ? 16383 : st == 81 ? 16777215 : 127, bmax = st == 192 || st == 224 || st == 81 ? 0 : 127;
+        if ((st != 128 && st != 144 && st != 176 && st != 192 && st != 224 && st != 81)
+            || f[2] > (st == 81 ? 0 : 15) || f[3] < (st == 81 ? 1 : 0) || f[3] > amax || f[4] > bmax)
+            die("render-midi: event %d is tick %lld status %lld channel %lld a %lld b %lld; expected status 128, 144 or 176 with a channel and two values under 128, 192 with a channel and a program, 224 with a channel and 0-16383, or 81 with channel 0 and a tempo of 1 to 2^24-1, and b 0 where it has no second value",
+                i, (long long)f[0], (long long)f[1], (long long)f[2], (long long)f[3], (long long)f[4]);
+    }
+    char *font_of[16] = {0}, why[512] = ""; uint32_t k_channel = sym_intern("channel"), k_font = sym_intern("font");
+    for (int i = 0; i < plen && !why[0]; i++) {
+        ElemRef r = compound_elem(&stack[pbase], ps, plen, i); Value *rec = &stack[pbase + r.base];
+        int rl = (int)rec[r.slots-1].as.compound.len;
+        ElemRef c = record_field(rec, r.slots, rl, k_channel, &found); int64_t ch = rec[c.base].as.i;
+        ElemRef fo = record_field(rec, r.slots, rl, k_font, &found);
+        if (ch < 0 || ch > 15) snprintf(why, sizeof why, "part %d names channel %lld; a channel is 0 to 15", i, (long long)ch);
+        else if (font_of[ch]) snprintf(why, sizeof why, "channel %lld is named by two parts", (long long)ch);
+        else { int fl; font_of[ch] = string_at(&rec[fo.base], fo.slots, &fl);
+            if ((int)strlen(font_of[ch]) != fl) snprintf(why, sizeof why, "channel %lld's font path contains a NUL byte", (long long)ch); }
+    }
+    MidiEvent *me = malloc(n ? (size_t)n * sizeof *me : 1); if (!me) die("render-midi: out of memory for %d events", n);
+    for (int i = 0; i < n; i++) { int64_t f[5]; EVENT_FIELDS(i, f); me[i] = (MidiEvent){f[0], 0, i, (int)f[1], (int)f[2], (int)f[3], (int)f[4]}; }
+#undef EVENT_FIELDS
+    deep_free_values(&stack[mbase], ms + ps); sp = mbase;
+    /* Tracks arrive one after another; the sort interleaves them. Then each tick becomes a time
+       through the tempos before it. */
+    qsort(me, (size_t)n, sizeof *me, midi_order);
+    int64_t tempo = MIDI_TEMPO, base_tick = 0, base_us = 0, end_frame = 0; int notes = 0;
+    for (int i = 0; i < n && !why[0]; i++) {
+        int64_t us = base_us + (me[i].tick - base_tick) * tempo / division;
+        if (us > MIDI_MAX_US) { char at[32]; midi_clock(at, sizeof at, MIDI_MAX_US / 1000000 * MIDI_RATE);
+            snprintf(why, sizeof why, "lasts past %s, the most audio a string holds", at); break; }
+        me[i].frame = end_frame = us * MIDI_RATE / 1000000;
+        if (me[i].status == 81) { base_us = us; base_tick = me[i].tick; tempo = me[i].a; }
+        if (me[i].status == 144 && me[i].b) notes++;
+    }
+    if (!why[0] && !notes) snprintf(why, sizeof why, "holds no notes");
+    tsf *fonts[16] = {0}, *tsf_of[16] = {0}; int nfonts = 0; Bytes *p = NULL;
+    for (int ch = 0; ch < 16 && !why[0]; ch++) {
+        if (!font_of[ch]) continue;
+        if (!font_of[ch][0]) { snprintf(why, sizeof why, "channel %d names an empty font path", ch); break; }
+        for (int c = 0; c < ch; c++) if (font_of[c] && !strcmp(font_of[c], font_of[ch])) tsf_of[ch] = tsf_of[c];
+        if (tsf_of[ch]) continue;
+        FILE *f = fopen(font_of[ch], "rb");
+        if (!f) { snprintf(why, sizeof why, "%s: %s", font_of[ch], strerror(errno)); break; }
+        fclose(f);
+        if (!(tsf_of[ch] = fonts[nfonts] = tsf_load_filename(font_of[ch]))) { snprintf(why, sizeof why, "%s: not a SoundFont", font_of[ch]); break; }
+        nfonts++; tsf_set_output(tsf_of[ch], TSF_STEREO_INTERLEAVED, MIDI_RATE, 0.0f); tsf_set_max_voices(tsf_of[ch], MIDI_VOICES);
+    }
+    /* GM starts each channel on preset 0, and channel 9 on drum kit 0. A font without one leaves the
+       channel unset until its first program change. */
+    int ready[16] = {0};
+    for (int ch = 0; ch < 16 && !why[0]; ch++) if (tsf_of[ch]) { int i = midi_preset(tsf_of[ch], ch, 0);
+        if ((ready[ch] = i >= 0)) tsf_channel_set_presetindex(tsf_of[ch], ch, i); }
+    /* The buffer holds whole 64-frame blocks, since the loop writes one at a time. */
+    int64_t cap = (end_frame + (int64_t)MIDI_TAIL_MS * MIDI_RATE / 1000 + 63) / 64 * 64;
+    if (!why[0]) {
+        p = bytes_alloc((int)(cap * 4)); p->len = 0;
+        float buf[64 * 2]; int j = 0;
+        for (int64_t at = 0; !why[0]; at += 64) {
+            if (at == cap) { char last[32]; midi_clock(last, sizeof last, end_frame);
+                snprintf(why, sizeof why, "notes still sound %d s after the last event at %s: a note on lacks its note off, or the sustain pedal stays down", MIDI_TAIL_MS / 1000, last); break; }
+            for (; j < n && me[j].frame < at + 64 && !why[0]; j++) {
+                MidiEvent *m = &me[j]; tsf *f = tsf_of[m->ch]; char when[32]; midi_clock(when, sizeof when, m->frame);
+                if (m->status == 144 && m->b) {
+                    if (!f) snprintf(why, sizeof why, "channel %d plays a note at %s, but no part names its font", m->ch, when);
+                    else if (!ready[m->ch]) snprintf(why, sizeof why, "channel %d plays a note at %s before any program change, and %s has no preset 0%s", m->ch, when, font_of[m->ch], m->ch == 9 ? " in bank 128" : "");
+                    else if (!midi_sounds(f, tsf_channel_get_preset_index(f, m->ch), m->a))
+                        snprintf(why, sizeof why, "channel %d plays key %d at %s, but %s's preset %d in bank %d holds no sample for that key",
+                                 m->ch, m->a, when, font_of[m->ch], tsf_channel_get_preset_number(f, m->ch), tsf_channel_get_preset_bank(f, m->ch));
+                    else if (!tsf_channel_note_on(f, m->ch, m->a, m->b / 127.0f)) die("render-midi: out of memory for a voice at %s", when);
+                } else if (!f || m->status == 81) continue;
+                else if (m->status == 128 || m->status == 144) tsf_channel_note_off(f, m->ch, m->a);
+                else if (m->status == 192) {
+                    int i = midi_preset(f, m->ch, m->a), bank = tsf_channel_get_preset_bank(f, m->ch);
+                    if ((ready[m->ch] = i >= 0)) tsf_channel_set_presetindex(f, m->ch, i);
+                    else snprintf(why, sizeof why, "channel %d asks for preset %d in bank %d at %s, which %s lacks", m->ch, m->a, m->ch == 9 ? 128 | bank : bank, when, font_of[m->ch]);
+                }
+                else if (m->status == 176) tsf_channel_midi_control(f, m->ch, m->a, m->b);
+                else tsf_channel_set_pitchwheel(f, m->ch, m->a);
+            }
+            for (int i = 0; i < 64 * 2; i++) buf[i] = 0;
+            for (int i = 0; i < nfonts; i++) tsf_render_float(fonts[i], buf, 64, 1);
+            unsigned char *o = p->b + p->len; int loud = 0;
+            for (int i = 0; i < 64 * 2; i++) { float x = buf[i] * 32767.0f; int16_t v = (int16_t)(x > 32767 ? 32767 : x < -32768 ? -32768 : x);
+                loud |= v; *o++ = (unsigned char)((uint16_t)v & 255); *o++ = (unsigned char)((uint16_t)v >> 8); }
+            int held = 0; for (int i = 0; i < nfonts; i++) held |= midi_held(fonts[i]);
+            if (j == n && !loud && !held) break;
+            p->len += 64 * 4;
+        }
+    }
+    for (int i = 0; i < nfonts; i++) tsf_close(fonts[i]);
+    for (int ch = 0; ch < 16; ch++) free(font_of[ch]);
+    free(me);
+    if (why[0]) { free(p); push_c_string(why); push_no(); return; }
+    int b0 = sp; spush(val_sym(sym_intern("rate"))); spush(val_int(MIDI_RATE)); spush(val_sym(sym_intern("pcm"))); spush(bytes_value(p));
+    spush(val_compound(VAL_RECORD, 2, sp - b0 + 1)); push_ok();
+}
 /* Linux's own limit on symlinks met while resolving one path. */
 #define LINK_HOPS_MAX 40
 /* Read once in main: reading the umask means setting it, which races with SDL's threads. */
@@ -3491,7 +3678,7 @@ static void register_prims(void) {
         R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),
         {"dict-entries",prim_entries,NULL},
         R(tag,tag),R(must,must),R(pthen,pthen),
-        R(read,read),R(write,write),R(ls,ls),{"read-mp3",prim_read_mp3,NULL},{"read-flac",prim_read_flac,NULL},{"read-wav",prim_read_wav,NULL},
+        R(read,read),R(write,write),R(ls,ls),{"read-mp3",prim_read_mp3,NULL},{"read-flac",prim_read_flac,NULL},{"read-wav",prim_read_wav,NULL},{"render-midi",prim_render_midi,NULL},
         M("str-find",strfind),{"str-split",prim_str_split,NULL},
         R(args,args),R(fail,fail),R(isheadless,isheadless),
 #ifndef SLAP_WASM

@@ -820,6 +820,7 @@ def steps(slow):
         ("icn", "ufx"),
         ("strings", "parse", "json"),
         ("strings", "cbor"),
+        ("strings", "midi"),
         ("strings", "http"),
         ("strings", "parse", "xml", "rss"),
     ]:
