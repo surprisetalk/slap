@@ -3142,7 +3142,7 @@ static void read_audio(AudioKind kind) {
     case AUDIO_FLAC: ch=fl->channels; rate=fl->sampleRate; total=fl->totalPCMFrameCount; break;
     default: ch=wav.channels; rate=wav.sampleRate; break;}
     int16_t buf[4096*2]; Bytes *p=bytes_alloc(1<<16); p->len=0; uint64_t got, frames=0;
-    if(ch<1||ch>2) snprintf(why,sizeof why,"%u channels; music plays mono or stereo",ch);
+    if(ch<1||ch>2) snprintf(why,sizeof why,"%u channels; %s reads mono or stereo",ch,who[kind]);
     else while((got=kind==AUDIO_MP3?drmp3_read_pcm_frames_s16(&mp3,4096,buf):kind==AUDIO_FLAC?drflac_read_pcm_frames_s16(fl,4096,buf):drwav_read_pcm_frames_s16(&wav,4096,buf))>0){
         if((uint64_t)p->len+got*4>BYTES_MAX){snprintf(why,sizeof why,"decodes to more than %d bytes of audio, the most a string holds",BYTES_MAX); break;}
         p=bytes_grow(p,p->len+(int)got*4); unsigned char *o=p->b+p->len;

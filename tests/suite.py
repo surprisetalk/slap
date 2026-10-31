@@ -118,7 +118,7 @@ def drive_demo(files, probe="", args=()):
 FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml rss cbor icn ufx ui".split())
 
 
-# A WAV past read's 64 MiB limit loads in the music app: read-wav streams the file. The file is
+# A WAV past read's 64 MiB limit loads in the audio app: read-wav streams the file. The file is
 # sparse, so its 64 MiB of silence costs no disk.
 def big_wav():
     path = os.path.join(SCRATCH, "big.wav")
@@ -130,7 +130,7 @@ def big_wav():
         f.truncate(44 + n)
     libs = " ".join(f"examples/lib/{x}.slap" for x in "strings cbor icn ufx ui".split())
     r = subprocess.run(
-        ["bash", "-o", "pipefail", "-c", f"cat {libs} examples/music-app.slap - | ./slap"],
+        ["bash", "-o", "pipefail", "-c", f"cat {libs} examples/audio-app.slap - | ./slap"],
         input=f'"{path}" load-track must \'pcm at len print\n',
         capture_output=True, text=True, timeout=TIMEOUT,
     )
@@ -858,7 +858,7 @@ def steps(slow):
             [f"examples/{n}.slap", f"examples/{n}-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
-    for n in ["book", "cal", "clock", "music"]:
+    for n in ["audio", "book", "cal", "clock"]:
         demos[f"{n}-app"] = (
             [*lib("strings", "cbor", "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
@@ -868,10 +868,10 @@ def steps(slow):
     cal_events = os.path.join(SCRATCH, "cal-events.cbor")
     # In book, space at frame 2 turns a page of readme.md, and the state file then names the book.
     book_state = os.path.join(SCRATCH, "book-state.cbor")
-    # In music, j and enter at frame 2 play tests/audio's second track. Headless, play takes nothing
-    # and queued stays 0, so each tick ends a track: after the last, music stops at the first.
-    music_state = os.path.join(SCRATCH, "music-state.cbor")
-    demo_args = {"cal-app": [cal_events], "book-app": [book_state, "readme.md"], "music-app": [music_state, "tests/audio"]}
+    # In audio, j and enter at frame 2 play tests/audio's second track. Headless, play takes nothing
+    # and queued stays 0, so each tick ends a track: after the last, audio stops at the first.
+    audio_state = os.path.join(SCRATCH, "audio-state.cbor")
+    demo_args = {"cal-app": [cal_events], "book-app": [book_state, "readme.md"], "audio-app": [audio_state, "tests/audio"]}
     probes = {
         "book-app": (
             "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'at at 'p at print) () if",
@@ -887,12 +887,12 @@ def steps(slow):
             and o.split()[-1] == "1"
             and b"Hi" in open(cal_events, "rb").read(),
         ),
-        "music-app": (
+        "audio-app": (
             "test-frame 2 eq (106 test-keydown 13 test-keydown dup 'at at print dup 'run at len print) () if"
             " test-frame 14 eq (dup 'at at print dup 'run at len print) () if",
-            lambda o: "music-selftest-ok" in o
+            lambda o: "audio-selftest-ok" in o
             and o.split()[-4:] == ["1", "1", "0", "0"]
-            and b"mono48.flac" in open(music_state, "rb").read(),
+            and b"mono48.flac" in open(audio_state, "rb").read(),
         ),
         "clock-app": (
             "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'shown at len print) () if",

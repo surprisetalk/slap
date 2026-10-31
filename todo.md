@@ -94,35 +94,38 @@
   5. Move the blog and all projects into sauce. taylor.town serves its
      pages (indexed) and assets (not indexed) from sauce.
 
-- [ ] You open a directory of MIDI files in music, and each work plays
-      through synthetic instruments, each part on the instrument you chose
-      for that work. Decided: TinySoundFont, MIDI first, settings inside
-      the .mid, fonts outside the repo, a font per part, render a whole
-      movement. Later: stream in chunks; far off, synthesize in slap.
-  1. music plays a `.mid`: `midi-decode`, then `render-midi` with every
-     channel on one font that state.cbor names, until midi.slap reads
-     each track's font (step 3). A font that is not GM (Jeux, Aeolus)
-     numbers its own presets: GM's 19 plays Jeux's Gamba 8, unrefused.
+- [ ] You open a MIDI file in midi, a sauce file app, and bounce it to a
+      WAV beside it, each part on the font you chose for that work; audio
+      plays the WAV. midi bounces now and becomes an editor later. Decided:
+      audio stays audio-only; TinySoundFont, settings inside the .mid, fonts
+      outside the repo, a font per part, render a whole movement. Later:
+      stream in chunks; far off, synthesize in slap.
+  1. midi app, first cut: open one .mid (with none, the last); list its
+     channels with each one's program; b bounces to NAME.wav beside it,
+     every channel on the font state.cbor names. ~/Music/renders/render.slap
+     holds the WAV header code to start from.
   2. Per part, store settings as the standard events at tick 0 of the
      part's track, which every player obeys: bank select CC0/CC32 and
      program change (preset), CC7 (gain), CC10 (pan), CC91 (reverb send,
-     GM2).
+     GM2). A font that is not GM (Jeux, Aeolus) numbers its own presets:
+     GM's 19 plays Jeux's Gamba 8, unrefused.
   3. Per part, store the font as RP-019's Device Name meta event (FF 09)
      at the start of the track: the font's file name, found in the font
-     directory music's state.cbor names. A missing font stops the work
+     directory midi's state.cbor names. A missing font stops the work
      with its name.
   4. Teach examples/lib/midi.slap to encode SMF, and to keep each track's
-     FF 09, to edit those tick-0 events. Type 0 holds one track, so one font:
-     music splits it into a track per channel (type 1) on its first write.
+     FF 09, to edit those tick-0 events. Type 0 holds one track, so one
+     font: midi splits it into a track per channel (type 1) on its first
+     write.
   5. A channel that two tracks with different fonts share stops the work
      with both track names; tsf renders by channel.
-  6. Render whole: BWV 582 (12 min, Jeux principal chorus, 104 voices)
-     took 4.1 s at load 31, 179x real time. Stream only if an orchestral
-     movement takes past 10 s; that needs `play` to append.
+  6. Render whole: BWV 582 (12 min) decodes in 59 ms and renders in 1.7 s
+     on MuseScore_General, 4.1 s on Jeux's principal chorus. Stream only
+     if a movement takes past 10 s; that needs `play` to append.
   7. Reverb: tsf has none. Freeverb in C, about 200 lines, public domain,
      driven by each channel's CC91.
-  8. Then a parts view in music: track, font, preset name, gain, with keys
-     to change them. The pick UI is undecided.
+  8. Then the editor: a parts view (track, font, preset name, gain) with
+     keys to change them, which rewrites the work's events.
 
 ## Blocked on you
 
