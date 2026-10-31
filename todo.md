@@ -122,9 +122,15 @@
   6. Render whole: BWV 582 (12 min) decodes in 59 ms and renders in 1.7 s
      on MuseScore_General, 4.1 s on Jeux's principal chorus. Stream only
      if a movement takes past 10 s; that needs `play` to append.
-  7. Reverb: tsf has none. Freeverb in C, about 200 lines, public domain,
-     driven by each channel's CC91.
-  8. Then the editor: a parts view (track, font, preset name, gain) with
+  7. Figure out reverb: tsf has none, and a dry orchestra or organ sounds
+     wrong. Candidates: Freeverb in C (about 200 lines, public domain),
+     driven by each channel's CC91; or convolution with a hall's impulse
+     response. Decide where the room lives: per work, or per font.
+  8. Figure out space and panning: tsf pans each channel by CC10 only, so
+     a quartet sits on one line. Weigh seating presets (orchestra, quartet,
+     organ loft), distance as reverb send plus a low-pass, and whether
+     headphones want HRTF.
+  9. Then the editor: a parts view (track, font, preset name, gain) with
      keys to change them, which rewrites the work's events.
 
 ## Blocked on you
