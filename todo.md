@@ -94,6 +94,31 @@
   5. Move the blog and all projects into sauce. taylor.town serves its
      pages (indexed) and assets (not indexed) from sauce.
 
+- [ ] You open a directory of MIDI files in music, and each work plays
+      through synthetic instruments, each part on the instrument you chose
+      for that work. Design rounds in progress; round 1 below.
+  1. Round 1, synth: SoundFonts (.sf2) through vendored TinySoundFont
+     (`tsf.h` MIT, `tml.h` zlib, 2,600 lines). A primitive renders a MIDI
+     file to the audio record `{'rate 'pcm}`, so `play` stays as it is.
+     Rejected: a synth written in slap, too slow per sample.
+  2. Round 1, score: MIDI first, since every score editor exports it and
+     most classical MIDI names a General MIDI program per channel.
+     MusicXML later through xml.slap, for dynamics and articulations.
+  3. Round 1, persistence: a CBOR file beside each work (`bwv1048-1.mid`,
+     `bwv1048-1.cbor`) holding the whole config: font, and per channel
+     bank, preset, gain, pan. Written on first open from the MIDI's own
+     program changes; music never lists `.cbor`.
+  4. Round 1, fonts: .sf2 files stay outside the repo (MuseScore_General,
+     about 200 MB, MIT). music's state.cbor names the font a new work's
+     config copies. A missing font stops the work with its path.
+  5. Open: render a whole movement on play, or stream chunks. Streaming
+     needs `play` to append, the gapless design in readme `## Pending
+     design`. Time tsf on a 10-minute orchestral movement first.
+  6. Open: reverb. tsf has none, and a dry orchestra sounds wrong. Freeverb
+     in C is about 200 lines, public domain; a `'reverb` field per work.
+  7. Then: a parts view in music (channel, instrument name, gain) with keys
+     to change the preset, which rewrites the work's config.
+
 ## Blocked on you
 
 - [ ] You run a tic80 cart with lua.slap, and its screen matches tic80's.
