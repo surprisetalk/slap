@@ -96,28 +96,32 @@
 
 - [ ] You open a directory of MIDI files in music, and each work plays
       through synthetic instruments, each part on the instrument you chose
-      for that work. Design rounds in progress; round 1 below.
-  1. Round 1, synth: SoundFonts (.sf2) through vendored TinySoundFont
-     (`tsf.h` MIT, `tml.h` zlib, 2,600 lines). A primitive renders a MIDI
-     file to the audio record `{'rate 'pcm}`, so `play` stays as it is.
-     Rejected: a synth written in slap, too slow per sample.
-  2. Round 1, score: MIDI first, since every score editor exports it and
-     most classical MIDI names a General MIDI program per channel.
-     MusicXML later through xml.slap, for dynamics and articulations.
-  3. Round 1, persistence: a CBOR file beside each work (`bwv1048-1.mid`,
-     `bwv1048-1.cbor`) holding the whole config: font, and per channel
-     bank, preset, gain, pan. Written on first open from the MIDI's own
-     program changes; music never lists `.cbor`.
-  4. Round 1, fonts: .sf2 files stay outside the repo (MuseScore_General,
-     about 200 MB, MIT). music's state.cbor names the font a new work's
-     config copies. A missing font stops the work with its path.
-  5. Open: render a whole movement on play, or stream chunks. Streaming
-     needs `play` to append, the gapless design in readme `## Pending
-     design`. Time tsf on a 10-minute orchestral movement first.
-  6. Open: reverb. tsf has none, and a dry orchestra sounds wrong. Freeverb
-     in C is about 200 lines, public domain; a `'reverb` field per work.
-  7. Then: a parts view in music (channel, instrument name, gain) with keys
-     to change the preset, which rewrites the work's config.
+      for that work. Decided: TinySoundFont, MIDI first, settings inside
+      the .mid, fonts outside the repo, a font per part, render a whole
+      movement. Later: stream in chunks; far off, synthesize in slap.
+  1. Vendor TinySoundFont (`tsf.h` MIT, `tml.h` zlib) at a pinned commit.
+     Add `render-midi (bytes fontdir -- {'rate 'pcm} ok | msg no)`: one tsf
+     per font the tracks name, mixed. It takes bytes, so what midi.slap
+     writes is what plays.
+  2. Per part, store settings as the standard events at tick 0 of the
+     part's track, which every player obeys: bank select CC0/CC32 and
+     program change (preset), CC7 (gain), CC10 (pan), CC91 (reverb send,
+     GM2).
+  3. Per part, store the font as RP-019's Device Name meta event (FF 09)
+     at the start of the track: the font's file name, found in the font
+     directory music's state.cbor names. A missing font stops the work
+     with its name.
+  4. Add examples/lib/midi.slap: decode and encode SMF type 0 and 1, to
+     edit those tick-0 events. Type 0 holds one track, so one font:
+     music splits it into a track per channel (type 1) on its first write.
+  5. A channel that two tracks with different fonts share stops the work
+     with both track names; tsf renders by channel.
+  6. Time tsf on a 10-minute orchestral movement. Past a few seconds,
+     stream: that needs `play` to append (readme `## Pending design`).
+  7. Reverb: tsf has none. Freeverb in C, about 200 lines, public domain,
+     driven by each channel's CC91.
+  8. Then a parts view in music: track, font, preset name, gain, with keys
+     to change them. The pick UI is undecided.
 
 ## Blocked on you
 
