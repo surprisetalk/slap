@@ -146,6 +146,19 @@
  12. Then the editor: a parts view (track, font, preset name, gain) with
      keys to change them, which rewrites the work's events.
 
+- [ ] You play a render and it moves at a tempo a pianist would take. Today
+      many feel too fast: chopin_chpn_op25_e11.mp3 lasts 3:09, and
+      recordings take about 3:30 to 3:45. render-midi follows the file:
+      its tempo map ends at 3:07 by an independent count.
+  1. List each render's length beside the median length of the work's
+     recordings on MusicBrainz (one request a second, 10 s timeout). Sort
+     by ratio. Find the sources and composers that run fast.
+  2. Render a sample of the fastest with fluidsynth too, to rule out a
+     slap timing bug: format 0 and 1, many tempo events, tempo events
+     outside track 0.
+  3. Per work, store a stretch inside the .mid: scale its own FF 51 tempo
+     events, as midi's editor will. Never a flag on render.sh.
+
 ## Blocked on you
 
 - [ ] You run a tic80 cart with lua.slap, and its screen matches tic80's.
