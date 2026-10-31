@@ -33,8 +33,10 @@
 /* mackron/dr_libs, public domain: vendor/readme.md names the commit. */
 #define DR_MP3_IMPLEMENTATION
 #define DR_FLAC_IMPLEMENTATION
+#define DR_WAV_IMPLEMENTATION
 #include "vendor/dr_mp3.h"
 #include "vendor/dr_flac.h"
+#include "vendor/dr_wav.h"
 #define STACK_MAX  2097152
 #define SYM_MAX   4096
 #define TOK_MAX   65536
@@ -1169,7 +1171,7 @@ static const char *TYPES =
     "'remove ['a var 'dict tag str] ['a var 'dict tag] 'dict-entries ['a var 'dict tag] ['a var 'dict tag dict \"key\" str insert \"value\" 'a var insert rec 'list tag]\n"
     "'read [str] [dict \"ok\" str insert \"no\" str insert either] 'write [str str] [dict \"ok\" int insert \"no\" str insert either] 'ls [str] [dict \"ok\" str 'list tag insert \"no\" str insert either]\n"
     "'args [] [str 'list tag]\n"
-    "'read-mp3 [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either] 'read-flac [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either]\n"
+    "'read-mp3 [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either] 'read-flac [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either] 'read-wav [str] [dict \"ok\" dict \"rate\" int insert \"pcm\" str insert rec insert \"no\" str insert either]\n"
     /* a socket is its own type: the runtime keeps it as a plain int fd, but free, lend and mutate must not reach it */
     "'tcp-connect [str int] [dict \"ok\" socket insert \"no\" str insert either] 'tcp-send [socket str] [socket dict \"ok\" int insert \"no\" str insert either]\n"
     "'tcp-recv [socket int] [socket dict \"ok\" str insert \"no\" str insert either] 'tcp-close [socket] [] 'tcp-listen [int] [dict \"ok\" socket insert \"no\" str insert either]\n"
@@ -3092,29 +3094,49 @@ static void prim_read(Frame *e) {
     if(bad) { free(buf); push_path_fail(path,plen,er?strerror(er):"the read did not finish"); free(path); return; }
     push_byte_list(buf,n);free(buf);free(path); push_ok();
 }
-/* read-mp3 and read-flac decode a whole file to an audio record, {'rate 'pcm}: 'pcm holds 16-bit
-   little-endian stereo frames, as play takes them, and mono plays on both sides. The decoders stream
-   from the file, so read's 64 MiB limit does not apply; the pcm stops at BYTES_MAX, about 100 minutes
-   at 44.1 kHz. */
-static void read_audio(int flac) {
-    const char *who=flac?"read-flac":"read-mp3";
-    int plen; char *path=pop_string_path(who,&plen);
+/* read-mp3, read-flac and read-wav decode a whole file to an audio record, {'rate 'pcm}: 'pcm holds
+   16-bit little-endian stereo frames, as play takes them, and mono plays on both sides. The decoders
+   stream from the file, so read's 64 MiB limit does not apply; the pcm stops at BYTES_MAX, about 100
+   minutes at 44.1 kHz. */
+typedef enum { AUDIO_MP3, AUDIO_FLAC, AUDIO_WAV } AudioKind;
+/* dr_wav skips a chunk in seeks of at most 2 GiB, and stdio seeks past a file's end, so a chunk that
+   claims 2^64 bytes kept it seeking for minutes. These callbacks refuse a seek past the end, which
+   ends its walk over the chunks. */
+typedef struct { FILE *f; off_t size; } WavFile;
+static size_t wav_read(void *u, void *buf, size_t n) { return fread(buf, 1, n, ((WavFile*)u)->f); }
+static drwav_bool32 wav_seek(void *u, int off, drwav_seek_origin o) {
+    WavFile *w = u; int whence = o == DRWAV_SEEK_SET ? SEEK_SET : o == DRWAV_SEEK_CUR ? SEEK_CUR : SEEK_END;
+    off_t to = (whence == SEEK_SET ? 0 : whence == SEEK_CUR ? ftello(w->f) : w->size) + off;
+    return to >= 0 && to <= w->size && fseeko(w->f, to, SEEK_SET) == 0;
+}
+static drwav_bool32 wav_tell(void *u, drwav_int64 *at) { off_t t = ftello(((WavFile*)u)->f); *at = t; return t >= 0; }
+static void read_audio(AudioKind kind) {
+    static const char *who[]={"read-mp3","read-flac","read-wav"}, *refusal[]={"not an MP3 stream","not a FLAC stream","not a WAV file"};
+    int plen; char *path=pop_string_path(who[kind],&plen);
     if(path_has_nul(path,plen)){free(path);return;}
     /* The decoders say only that a file did not open, so fopen first names a missing or unreadable file. */
-    FILE *f=fopen(path,"rb"); if(!f){push_path_fail(path,plen,strerror(errno));free(path);return;} fclose(f);
-    drmp3 mp3; drflac *fl=NULL; unsigned ch, rate; uint64_t total=0; char why[96]="";
-    if(flac?!(fl=drflac_open_file(path,NULL)):!drmp3_init_file(&mp3,path,NULL)){
-        push_path_fail(path,plen,flac?"not a FLAC stream":"not an MP3 stream"); free(path); return;}
-    if(flac){ch=fl->channels; rate=fl->sampleRate; total=fl->totalPCMFrameCount;} else {ch=mp3.channels; rate=mp3.sampleRate;}
+    FILE *f=fopen(path,"rb"); if(!f){push_path_fail(path,plen,strerror(errno));free(path);return;}
+    WavFile wf={f,0};
+    if(kind==AUDIO_WAV&&(fseeko(f,0,SEEK_END)||(wf.size=ftello(f))<0||fseeko(f,0,SEEK_SET))){
+        int er=errno; fclose(f); push_path_fail(path,plen,strerror(er)); free(path); return;}
+    if(kind!=AUDIO_WAV) fclose(f);
+    drmp3 mp3; drflac *fl=NULL; drwav wav; unsigned ch, rate; uint64_t total=0; char why[96]="";
+    int opened=kind==AUDIO_MP3?drmp3_init_file(&mp3,path,NULL):kind==AUDIO_FLAC?(fl=drflac_open_file(path,NULL))!=NULL:drwav_init(&wav,wav_read,wav_seek,wav_tell,&wf,NULL);
+    if(!opened){if(kind==AUDIO_WAV) fclose(f); push_path_fail(path,plen,refusal[kind]); free(path); return;}
+    /* Only a FLAC can be found cut short: an MP3 gives no length, and dr_wav trims a WAV's to its file. */
+    switch(kind){
+    case AUDIO_MP3: ch=mp3.channels; rate=mp3.sampleRate; break;
+    case AUDIO_FLAC: ch=fl->channels; rate=fl->sampleRate; total=fl->totalPCMFrameCount; break;
+    default: ch=wav.channels; rate=wav.sampleRate; break;}
     int16_t buf[4096*2]; Bytes *p=bytes_alloc(1<<16); p->len=0; uint64_t got, frames=0;
     if(ch<1||ch>2) snprintf(why,sizeof why,"%u channels; music plays mono or stereo",ch);
-    else while((got=flac?drflac_read_pcm_frames_s16(fl,4096,buf):drmp3_read_pcm_frames_s16(&mp3,4096,buf))>0){
+    else while((got=kind==AUDIO_MP3?drmp3_read_pcm_frames_s16(&mp3,4096,buf):kind==AUDIO_FLAC?drflac_read_pcm_frames_s16(fl,4096,buf):drwav_read_pcm_frames_s16(&wav,4096,buf))>0){
         if((uint64_t)p->len+got*4>BYTES_MAX){snprintf(why,sizeof why,"decodes to more than %d bytes of audio, the most a string holds",BYTES_MAX); break;}
         p=bytes_grow(p,p->len+(int)got*4); unsigned char *o=p->b+p->len;
         for(uint64_t i=0;i<got;i++) for(unsigned c=0;c<2;c++){
             uint16_t s=(uint16_t)buf[i*ch+(ch==2?c:0)]; *o++=(unsigned char)(s&255); *o++=(unsigned char)(s>>8);}
         p->len+=(int)got*4; frames+=got;}
-    if(flac) drflac_close(fl); else drmp3_uninit(&mp3);
+    if(kind==AUDIO_MP3) drmp3_uninit(&mp3); else if(kind==AUDIO_FLAC) drflac_close(fl); else {drwav_uninit(&wav); fclose(f);}
     if(!why[0]&&total&&frames<total) snprintf(why,sizeof why,"cut short: %llu of %llu frames",(unsigned long long)frames,(unsigned long long)total);
     if(!why[0]&&!frames) snprintf(why,sizeof why,"holds no audio");
     if(why[0]){free(p); push_path_fail(path,plen,why); free(path); return;}
@@ -3122,8 +3144,9 @@ static void read_audio(int flac) {
     int base=sp; spush(val_sym(sym_intern("rate"))); spush(val_int(rate)); spush(val_sym(sym_intern("pcm"))); spush(bytes_value(p));
     spush(val_compound(VAL_RECORD,2,sp-base+1)); push_ok();
 }
-static void prim_read_mp3(Frame *e){(void)e; read_audio(0);}
-static void prim_read_flac(Frame *e){(void)e; read_audio(1);}
+static void prim_read_mp3(Frame *e){(void)e; read_audio(AUDIO_MP3);}
+static void prim_read_flac(Frame *e){(void)e; read_audio(AUDIO_FLAC);}
+static void prim_read_wav(Frame *e){(void)e; read_audio(AUDIO_WAV);}
 /* Linux's own limit on symlinks met while resolving one path. */
 #define LINK_HOPS_MAX 40
 /* Read once in main: reading the umask means setting it, which races with SDL's threads. */
@@ -3468,7 +3491,7 @@ static void register_prims(void) {
         R(dict,dict),R(insert,insert),R(of,of),R(remove,remove),
         {"dict-entries",prim_entries,NULL},
         R(tag,tag),R(must,must),R(pthen,pthen),
-        R(read,read),R(write,write),R(ls,ls),{"read-mp3",prim_read_mp3,NULL},{"read-flac",prim_read_flac,NULL},
+        R(read,read),R(write,write),R(ls,ls),{"read-mp3",prim_read_mp3,NULL},{"read-flac",prim_read_flac,NULL},{"read-wav",prim_read_wav,NULL},
         M("str-find",strfind),{"str-split",prim_str_split,NULL},
         R(args,args),R(fail,fail),R(isheadless,isheadless),
 #ifndef SLAP_WASM

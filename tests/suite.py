@@ -118,6 +118,26 @@ def drive_demo(files, probe="", args=()):
 FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml rss cbor icn ufx ui".split())
 
 
+# A WAV past read's 64 MiB limit loads in the music app: read-wav streams the file. The file is
+# sparse, so its 64 MiB of silence costs no disk.
+def big_wav():
+    path = os.path.join(SCRATCH, "big.wav")
+    n = (64 << 20) + 4
+    with open(path, "wb") as f:
+        f.write(b"RIFF" + (n + 36).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little"))
+        f.write(bytes([1, 0, 2, 0]) + (44100).to_bytes(4, "little") + (176400).to_bytes(4, "little") + bytes([4, 0, 16, 0]))
+        f.write(b"data" + n.to_bytes(4, "little"))
+        f.truncate(44 + n)
+    libs = " ".join(f"examples/lib/{x}.slap" for x in "strings cbor icn ufx ui".split())
+    r = subprocess.run(
+        ["bash", "-o", "pipefail", "-c", f"cat {libs} examples/music-app.slap - | ./slap"],
+        input=f'"{path}" load-track must \'pcm at len print\n',
+        capture_output=True, text=True, timeout=TIMEOUT,
+    )
+    os.remove(path)
+    return r.returncode == 0 and r.stdout.split() == [str(n)], r.stdout[-2000:] + r.stderr[-2000:]
+
+
 def headless_demo(files, ok, probe="", args=()):
     def check():
         out, err = drive_demo(files, probe, args)
@@ -773,6 +793,7 @@ def steps(slow):
                 lambda out: "feed-selftest-ok" in out,
             ),
             "codec": ("python3 tests/run_codec.py", None),
+            "a WAV past read's 64 MiB limit loads": (big_wav, None),
             "utils": ("python3 tests/run_utils.py", None),
             "lua": ("python3 tests/run_lua.py", None),
         }
@@ -799,7 +820,6 @@ def steps(slow):
         ("icn", "ufx"),
         ("strings", "parse", "json"),
         ("strings", "cbor"),
-        ("strings", "wav"),
         ("strings", "http"),
         ("strings", "parse", "xml", "rss"),
     ]:
@@ -839,7 +859,7 @@ def steps(slow):
         )
     for n in ["book", "cal", "clock", "music"]:
         demos[f"{n}-app"] = (
-            [*lib("strings", "cbor", *(["wav"] if n == "music" else []), "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
+            [*lib("strings", "cbor", "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
     # Space at frame 2 starts the stopwatch, so its line shows from then on. In cal, n at frame 2

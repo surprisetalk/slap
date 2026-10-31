@@ -2,7 +2,7 @@
 -- window and the speakers are music-app-sdl.slap; this file holds no SDL
 -- word, so its self-test runs in the terminal build:
 --
---   cat examples/lib/{strings,cbor,wav,icn,ufx,ui}.slap examples/music-app.slap \
+--   cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/music-app.slap \
 --     | ./slap --headless
 
 -- ===== tracks =====
@@ -27,7 +27,7 @@
 -- rate play refuses is refused here, so the app shows it and keeps running.
 ('lt-p let lt-p track-ext 'lt-e let
  lt-e "mp3" eq (lt-p read-mp3) (lt-e "flac" eq (lt-p read-flac) (
-   lt-p read (wav-decode {'ok (ok) 'no (lt-p ": " cat swap cat no)} case) then) if) if
+   lt-p read-wav) if) if
  ('lt-a let lt-a 'rate at 'lt-r let lt-r 8000 lt lt-r 384000 gt or
    (lt-p ": " cat lt-r int-str cat " Hz; play takes 8000 to 384000" cat no) (lt-a ok) if) then) 'load-track let
 
@@ -108,7 +108,7 @@ isheadless (
   "tests/audio/mono48.flac" load-track must 'rate at 48000 eq assert
   "tests/audio/nope.wav" load-track {'ok (drop "") 'no ()} case "tests/audio/nope.wav: No such file or directory" eq assert
   "tests/audio/bad/rate4k.wav" load-track {'ok (drop "") 'no ()} case "tests/audio/bad/rate4k.wav: 4000 Hz; play takes 8000 to 384000" eq assert
-  "readme.md" load-track {'ok (drop "") 'no ()} case "readme.md: wav: not a RIFF WAVE file" eq assert
+  "readme.md" load-track {'ok (drop "") 'no ()} case "readme.md: not a WAV file" eq assert
   -- a place: 50 ms into a 100 ms track at 44100 Hz is frame 2205
   44100 17640 50 from-byte 8820 eq assert
   -- a place past the end, however far, is the end

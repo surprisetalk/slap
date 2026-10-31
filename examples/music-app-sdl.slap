@@ -1,7 +1,7 @@
 -- The window and speakers for music-app.slap: a directory's tracks, played
 -- in order. Run from the repo root with:
 --
---   cat examples/lib/{strings,cbor,wav,icn,ufx,ui}.slap examples/music-app.slap \
+--   cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/music-app.slap \
 --       examples/lib/ui-sdl.slap examples/music-app-sdl.slap \
 --     | ./slap-sdl state.cbor ~/Music/album
 --

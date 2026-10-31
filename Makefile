@@ -1,7 +1,7 @@
 CC = cc
 CFLAGS = -std=c99 -Wall -Wextra -O3 -flto -D_POSIX_C_SOURCE=200809L
 TLS := $(shell pkg-config --cflags --libs openssl 2>/dev/null || echo "-lssl -lcrypto")
-VENDOR = vendor/dr_mp3.h vendor/dr_flac.h
+VENDOR = vendor/dr_mp3.h vendor/dr_flac.h vendor/dr_wav.h
 slap: slap.c $(VENDOR)
 	$(CC) $(CFLAGS) -o slap slap.c -lm $(TLS)
 UNAME_S := $(shell uname -s)
