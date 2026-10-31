@@ -710,6 +710,15 @@ pz-a 'rate at 44100 eq assert
 -- the note, then its release until a block is silent with no note held, in whole 64-frame blocks
 pz-a 'pcm at len 94208 eq assert
 pz-a 'pcm at (0 eq not) filter len 0 gt assert
+-- the loudest sample of a render: 16-bit little-endian, as a magnitude
+('pcm at 2 chunks 0 ('s let 1 's nth must 256 mul 0 's nth must plus dup 32767 gt (65536 sub) () if abs max) fold) 'peak let
+-- every render peaks at -1 dBFS, 29204, soft or loud: eight keys at full velocity sum past full scale
+pz-a peak 29204 eq assert
+[0 192 0 45 0  0 144 0 48 127  0 144 0 52 127  0 144 0 55 127  0 144 0 60 127  0 144 0 64 127  0 144 0 67 127  0 144 0 72 127  0 144 0 76 127
+ 480 128 0 48 64  480 128 0 52 64  480 128 0 55 64  480 128 0 60 64  480 128 0 64 64  480 128 0 67 64  480 128 0 72 64  480 128 0 76 64]
+mid pz render-midi must peak 29204 eq assert
+-- silence has no peak to scale to: volume 0 on the one channel
+[0 176 0 7 0] one-note cat mid pz midi-err "renders only silence: no sample reaches one step of 16 bits. A note's velocity may fall outside every region of its preset, or its channel's volume may be 0" eq assert
 -- a note never released still sounds when the 10 s tail ends: refused, not cut
 [0 192 0 45 0  0 144 0 60 100] mid pz midi-err "notes still sound 10 s after the last event at 0:00: a note on lacks its note off, or the sustain pedal stays down" eq assert
 -- a key the preset holds no sample for would play silence

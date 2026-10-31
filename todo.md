@@ -130,16 +130,20 @@
      a quartet sits on one line. Weigh seating presets (orchestra, quartet,
      organ loft), distance as reverb send plus a low-pass, and whether
      headphones want HRTF.
-  9. Add humanization: a score typed in note by note (Mutopia, OpenScore)
+  9. Add a compressor, done correctly: each render now scales to a -1 dBFS
+     peak (`MIDI_PEAK_DB`), so a piano work with one sharp hit sounds
+     quieter than an organ at the same peak. Weigh a loudness target (EBU
+     R128) with a look-ahead limiter against a compressor inside a work.
+ 10. Add humanization: a score typed in note by note (Mutopia, OpenScore)
      plays every note on the grid at one velocity. Weigh small random
      shifts of timing and velocity, a seed kept with the work so a bounce
      repeats, and rubato from phrase shape; piano-midi.de shows the target.
- 10. Decode piano-roll expression: scanned rolls (kunstderfuge's
+ 11. Decode piano-roll expression: scanned rolls (kunstderfuge's
      "(nc)smythe", ~/Music/midi/kunstderfuge/piano-rolls) encode dynamics
      and pedal as notes outside the keyboard; 9 play key 1, which
      render-midi refuses. Identify each roll's system (Ampico, Duo-Art,
      Welte) and map its codes to velocity and CC64.
- 11. Then the editor: a parts view (track, font, preset name, gain) with
+ 12. Then the editor: a parts view (track, font, preset name, gain) with
      keys to change them, which rewrites the work's events.
 
 ## Blocked on you

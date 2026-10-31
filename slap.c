@@ -3176,6 +3176,13 @@ static void prim_read_wav(Frame *e){(void)e; read_audio(AUDIO_WAV);}
    long. tsf counts a voice whose release has faded below hearing as active, so its voice count
    cannot say when to stop; and an attack starts silent, so silence alone cannot either. */
 #define MIDI_TAIL_MS 10000
+/* Each render's loudest sample, in dB relative to full scale. The voices of a loud chord sum past full
+   scale, and an MP3 decoder overshoots a peak at 0 dB.
+   REVIEW: scale each whole render so its loudest sample sits here. It keeps every dynamic the file
+   writes, and a quiet work plays as loud as a loud one. Alternative: a compressor. It evens out loud
+   and soft inside a work too, but flattens the pp to ff a score asks for, and needs a threshold, a
+   ratio, an attack and a release to tune. */
+#define MIDI_PEAK_DB (-1)
 /* The tempo before a file's first tempo event, in microseconds a quarter note: 120 bpm. */
 #define MIDI_TEMPO 500000
 /* The longest audio a string holds, in microseconds, less the tail. */
@@ -3293,9 +3300,13 @@ static void prim_render_midi(Frame *e) {
     /* The buffer holds whole 64-frame blocks, since the loop writes one at a time. */
     int64_t cap = (end_frame + (int64_t)MIDI_TAIL_MS * MIDI_RATE / 1000 + 63) / 64 * 64;
     if (!why[0]) {
-        p = bytes_alloc((int)(cap * 4)); p->len = 0;
-        float buf[64 * 2]; int j = 0;
-        for (int64_t at = 0; !why[0]; at += 64) {
+        /* The floats render into the string's own block, which then shrinks to 16 bits in place:
+           sample i's two bytes land below its float's four, so a forward pass reads each float before
+           it writes over it. At the limit the block holds 2 GiB, the float audio, and no copy. */
+        p = malloc(sizeof(Bytes) + (size_t)cap * 8);
+        if (!p) die("render-midi: out of memory for %lld frames of audio", (long long)cap);
+        float *pcm = (float *)p->b, peak = 0; int j = 0; int64_t at = 0;
+        for (; !why[0]; at += 64) {
             if (at == cap) { char last[32]; midi_clock(last, sizeof last, end_frame);
                 snprintf(why, sizeof why, "notes still sound %d s after the last event at %s: a note on lacks its note off, or the sustain pedal stays down", MIDI_TAIL_MS / 1000, last); break; }
             for (; j < n && me[j].frame < at + 64 && !why[0]; j++) {
@@ -3317,14 +3328,22 @@ static void prim_render_midi(Frame *e) {
                 else if (m->status == 176) tsf_channel_midi_control(f, m->ch, m->a, m->b);
                 else tsf_channel_set_pitchwheel(f, m->ch, m->a);
             }
+            float *buf = pcm + at * 2;
             for (int i = 0; i < 64 * 2; i++) buf[i] = 0;
             for (int i = 0; i < nfonts; i++) tsf_render_float(fonts[i], buf, 64, 1);
-            unsigned char *o = p->b + p->len; int loud = 0;
-            for (int i = 0; i < 64 * 2; i++) { float x = buf[i] * 32767.0f; int16_t v = (int16_t)(x > 32767 ? 32767 : x < -32768 ? -32768 : x);
-                loud |= v; *o++ = (unsigned char)((uint16_t)v & 255); *o++ = (unsigned char)((uint16_t)v >> 8); }
+            float top = 0; for (int i = 0; i < 64 * 2; i++) top = fmaxf(top, fabsf(buf[i]));
             int held = 0; for (int i = 0; i < nfonts; i++) held |= midi_held(fonts[i]);
-            if (j == n && !loud && !held) break;
-            p->len += 64 * 4;
+            /* A block is silent when no sample reaches one step of 16 bits before the gain. */
+            if (j == n && top * 32767 < 1 && !held) break;
+            peak = fmaxf(peak, top);
+        }
+        if (!why[0] && peak * 32767 < 1) snprintf(why, sizeof why, "renders only silence: no sample reaches one step of 16 bits. A note's velocity may fall outside every region of its preset, or its channel's volume may be 0");
+        if (!why[0]) {
+            float gain = powf(10, MIDI_PEAK_DB / 20.0f) / peak * 32767; unsigned char *o = p->b;
+            for (int64_t i = 0; i < at * 2; i++) { int16_t v = (int16_t)lrintf(pcm[i] * gain);
+                *o++ = (unsigned char)((uint16_t)v & 255); *o++ = (unsigned char)((uint16_t)v >> 8); }
+            p->len = p->cap = (int)(at * 4);
+            Bytes *q = realloc(p, sizeof(Bytes) + (size_t)p->cap); if (q) p = q;
         }
     }
     for (int i = 0; i < nfonts; i++) tsf_close(fonts[i]);

@@ -72,7 +72,7 @@ These return `value ok` on success and `none` (or `payload no`) on failure:
 | `of` (dict lookup) | `value ok` | `key no` |
 | `read` / `write` / `ls` | `bytes ok` / `1 ok` / `entries ok` | `"path: reason" no`, the reason from `strerror` |
 | `read-mp3` / `read-flac` / `read-wav` | `{'rate 'pcm} ok` | `"path: reason" no`: `strerror`, or the decoder's refusal |
-| `render-midi` | `{'rate 'pcm} ok` | `message no`: a missing preset, font or channel, no notes, or past 1 GiB; a malformed event list dies |
+| `render-midi` | `{'rate 'pcm} ok` | `message no`: a missing preset, font or channel, no notes, only silence, or past 1 GiB; a malformed event list dies |
 | `midi-decode` (midi.slap) | `{'division 'events} ok` | `"midi: ... at byte N" no` |
 | `tcp-connect` / `tls-connect` / `tcp-send` / `tcp-recv` / `tcp-listen` / `tcp-accept` | `socket ok` / `socket ok` / `1 ok` / `data ok` / `socket ok` / `client ok` | `message no` |
 
