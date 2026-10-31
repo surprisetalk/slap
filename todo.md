@@ -99,8 +99,8 @@
       for that work. Decided: TinySoundFont, MIDI first, settings inside
       the .mid, fonts outside the repo, a font per part, render a whole
       movement. Later: stream in chunks; far off, synthesize in slap.
-  1. Vendor TinySoundFont (`tsf.h` MIT, `tml.h` zlib) at a pinned commit.
-     Add `render-midi (bytes fontdir -- {'rate 'pcm} ok | msg no)`: one tsf
+  1. Add `render-midi (bytes fontdir -- {'rate 'pcm} ok | msg no)` over
+     vendored TinySoundFont (`vendor/tsf.h`, `vendor/tml.h`): one tsf
      per font the tracks name, mixed. It takes bytes, so what midi.slap
      writes is what plays.
   2. Per part, store settings as the standard events at tick 0 of the
@@ -116,8 +116,9 @@
      music splits it into a track per channel (type 1) on its first write.
   5. A channel that two tracks with different fonts share stops the work
      with both track names; tsf renders by channel.
-  6. Time tsf on a 10-minute orchestral movement. Past a few seconds,
-     stream: that needs `play` to append (readme `## Pending design`).
+  6. Render whole: BWV 582 (12 min, Jeux principal chorus, 104 voices)
+     took 4.1 s at load 31, 179x real time. Stream only if an orchestral
+     movement takes past 10 s; that needs `play` to append.
   7. Reverb: tsf has none. Freeverb in C, about 200 lines, public domain,
      driven by each channel's CC91.
   8. Then a parts view in music: track, font, preset name, gain, with keys
