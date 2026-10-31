@@ -14,3 +14,4 @@ slap-asan.dSYM/
 .env
 .env.*
 !.env.example
+/state.cbor
