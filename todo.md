@@ -107,6 +107,43 @@
   2. Add the API table and a first cart diffed pixel for pixel.
   3. Then duskos and decker.
 
+- [ ] You play an MP3, FLAC or WAV in audio, decoded by slap code, and
+      `make slap` builds no vendored decoder. Decided: decoders move from
+      dr_mp3, dr_flac and dr_wav (C) into examples/lib, one library per
+      format, each `bytes -- {'rate 'pcm} ok | msg no` like the primitive it
+      replaces. They parse untrusted files by hand, against the house rule:
+      you chose it, since slap bounds every read, so bad input gives `'no`
+      or a crash with a message, never memory damage.
+  1. wav.slap: PCM 8/16/24/32-bit and float, mono and stereo, to the
+     primitive's `'pcm`. Diff it against `read-wav` on tests/audio and every
+     WAV under ~/Music. A test in expect.slap per format path.
+  2. flac.slap: frames, subframes (constant, verbatim, fixed, LPC), Rice
+     residuals, stereo decorrelation, CRC checked. Diff against
+     `read-flac` on tests/audio and a sample of ~/Music.
+  3. mp3.slap: MPEG-1/2 layer III (Huffman tables, requantize, joint
+     stereo, IMDCT, polyphase filter), ID3 and Xing skipped. Diff against
+     `read-mp3` sample by sample; dr_mp3 is the reference.
+  4. Time each on a 5-minute track in `./slap`. Goal: a decode under 5 s,
+     as a status condition. Past it, profile first; then weigh decoding
+     in chunks, which needs `play` to append.
+  5. Fuzz each library against its primitive with mutated files from
+     tests/audio: same `'ok` result, or `'no` where the primitive refuses.
+  6. Switch audio-app to the libraries. Delete `read-mp3`, `read-flac`,
+     `read-wav`, the three vendor headers and their vendor/readme.md rows;
+     update readme.md, claude.md and the Makefile's ASan and wasm lines.
+
+- [ ] You draw text in a sauce app from one font library, and its
+      self-test runs in the terminal build. Decided: ui.slap turns text
+      into rectangles, pure data, and the app draws them; ui-sdl.slap goes.
+  1. In ui.slap, add `text-rects (str x y scale xmax -- rects)`: a list of
+     `{'x 'y 'w 'h}`, one per run of lit pixels, as `text` draws today.
+     Test it in ui.slap's self-test against a known glyph.
+  2. Each app draws with `text-rects (... col fill-rect) each`. Delete
+     ui-sdl.slap; update suite.py's library lists, readme.md and claude.md.
+  3. Time a full-screen redraw in feed-app-sdl before and after; a list of
+     records per frame may cost. Keep the change only if a frame stays
+     under 16 ms.
+
 ## Blocked on you
 
 - [ ] You read a post series on slap: 001 why I built it; 002 API,
