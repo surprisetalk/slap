@@ -1398,7 +1398,7 @@ static void ty_err(int line, const char *fmt, ...);
 #define READ_MAX (64 << 20)
 /* Error path only: names the first examples/lib file that defines `'word let`, so the message can say what to cat.
    Any failure (no directory, unreadable file, file past READ_MAX, past 256 files) just finds nothing.
-   REVIEW: The hint is a text search for `'word let` under examples/lib in the working directory. Alternative: an index built by make, which costs a build step and a generated file. */
+   The hint is a text search for `'word let` under examples/lib in the working directory. Alternative: an index built by make, which costs a build step and a generated file. */
 static const char *lib_defining(const char *word) {
     static char out[512];
     out[0] = 0;
@@ -3214,7 +3214,7 @@ static void prim_read_wav(Frame *e){(void)e; read_audio(AUDIO_WAV);}
 #define MIDI_TAIL_MS 10000
 /* Each render's loudest sample, in dB relative to full scale. The voices of a loud chord sum past full
    scale, and an MP3 decoder overshoots a peak at 0 dB.
-   REVIEW: scale each whole render so its loudest sample sits here. It keeps every dynamic the file
+   scale each whole render so its loudest sample sits here. It keeps every dynamic the file
    writes, and a quiet work plays as loud as a loud one. Alternative: a compressor. It evens out loud
    and soft inside a work too, but flattens the pp to ff a score asks for, and needs a threshold, a
    ratio, an attack and a release to tune. */
@@ -3707,7 +3707,7 @@ static void prim_str_split(Frame *e) {
    global locale and LC_NUMERIC stay as they are. macOS's mbrtowc refuses overlong forms, truncated
    sequences and lone continuation bytes, but accepts surrogates and code points past U+10FFFF. A range
    check on the decoded value refuses those two. */
-/* REVIEW: wasm may lack a UTF-8 locale, untested; then the primitive dies with its message. Alternative:
+/* wasm may lack a UTF-8 locale, untested; then the primitive dies with its message. Alternative:
    a decoder in slap.c, which the house rules forbid. */
 static void prim_utf8_check(Frame *e) {
     (void)e; static locale_t loc=(locale_t)0; int n; unsigned char *b=pop_byte_list_buf("utf8-check",&n);
