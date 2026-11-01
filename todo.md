@@ -36,113 +36,72 @@
       audio stays audio-only; TinySoundFont, settings inside the .mid, fonts
       outside the repo, a font per part, render a whole movement. Later:
       stream in chunks; far off, synthesize in slap.
-  1. midi app, first cut: open one .mid (with none, the last); list its
-     channels with each one's program; b bounces to NAME.wav beside it,
-     every channel on the font state.cbor names. ~/Music/renders/render.slap
-     holds the WAV header code to start from.
-  2. Per part, store settings as the standard events at tick 0 of the
+  1. Per part, store settings as the standard events at tick 0 of the
      part's track, which every player obeys: bank select CC0/CC32 and
      program change (preset), CC7 (gain), CC10 (pan), CC91 (reverb send,
      GM2). A font that is not GM (Jeux, Aeolus) numbers its own presets:
      GM's 19 plays Jeux's Gamba 8, unrefused.
-  3. Per part, store the font as RP-019's Device Name meta event (FF 09)
+  2. Per part, store the font as RP-019's Device Name meta event (FF 09)
      at the start of the track: the font's file name, found in the font
      directory midi's state.cbor names. A missing font stops the work
      with its name.
-  4. midi splits a type 0 file into a track per channel (type 1) on its
+  3. midi splits a type 0 file into a track per channel (type 1) on its
      first write, with midi-tracks and midi-encode: type 0 holds one
      track, so one font.
-  5. A channel that two tracks with different fonts share stops the work
+  4. A channel that two tracks with different fonts share stops the work
      with both track names; tsf renders by channel.
-  6. Render whole: BWV 582 (12 min) decodes in 59 ms and renders in 1.7 s
+  5. Render whole: BWV 582 (12 min) decodes in 59 ms and renders in 1.7 s
      on MuseScore_General, 4.1 s on Jeux's principal chorus. Stream only
      if a movement takes past 10 s; that needs `play` to append.
-  7. Figure out reverb: tsf has none, and a dry orchestra or organ sounds
+  6. Figure out reverb: tsf has none, and a dry orchestra or organ sounds
      wrong. Candidates: Freeverb in C (about 200 lines, public domain),
      driven by each channel's CC91; or convolution with a hall's impulse
      response. Decide where the room lives: per work, or per font.
-  8. Figure out space and panning: tsf pans each channel by CC10 only, so
+  7. Figure out space and panning: tsf pans each channel by CC10 only, so
      a quartet sits on one line. Weigh seating presets (orchestra, quartet,
      organ loft), distance as reverb send plus a low-pass, and whether
      headphones want HRTF.
-  9. Add a compressor, done correctly: each render now scales to a -1 dBFS
+  8. Add a compressor, done correctly: each render now scales to a -1 dBFS
      peak (`MIDI_PEAK_DB`), so a piano work with one sharp hit sounds
      quieter than an organ at the same peak. Weigh a loudness target (EBU
      R128) with a look-ahead limiter against a compressor inside a work.
- 10. Add humanization: a score typed in note by note (Mutopia, OpenScore)
+  9. Add humanization: a score typed in note by note (Mutopia, OpenScore)
      plays every note on the grid at one velocity. Weigh small random
      shifts of timing and velocity, a seed kept with the work so a bounce
      repeats, and rubato from phrase shape; piano-midi.de shows the target.
- 11. Decode piano-roll expression: scanned rolls (kunstderfuge's
+ 10. Decode piano-roll expression: scanned rolls (kunstderfuge's
      "(nc)smythe", ~/Music/midi/kunstderfuge/piano-rolls) encode dynamics
      and pedal as notes outside the keyboard; 9 play key 1, which
      render-midi refuses. Identify each roll's system (Ampico, Duo-Art,
      Welte) and map its codes to velocity and CC64.
- 12. Then the editor: a parts view (track, font, preset name, gain) with
+ 11. Then the editor: a parts view (track, font, preset name, gain) with
      keys to change them, which rewrites the work's events.
 
 - [ ] You play a render and it moves at a tempo a pianist would take.
-      Audit (31 Oct): render-midi times files correctly; the files are
-      fast or flat. piano-midi.de runs 8-19% shorter than the median
-      MusicBrainz recording (Chopin, Debussy, Liszt, Grieg, Ravel: 14 of 22
-      below the 25th percentile). Nine Mutopia Bach files hold one tempo,
-      60, LilyPond's default with no `\tempo`: BWV 565's Adagio and
-      Prestissimo play at one speed.
-  1. Per work, store a stretch inside the .mid: scale its own FF 51 tempo
-     events with midi-tracks and midi-encode, as midi's editor will. Never
-     a flag on render.sh. Write the stretched file beside the source, never
-     over it.
-  2. Stretch piano-midi.de works to their median recording length; the
-     audit's scripts and results are in ~/Music/renders/tempo-audit.
-  3. For BWV 565 and the other eight (tempo.tsv: one event, 60), find a
-     performed source on kunstderfuge, or write the score's tempo marks
-     into the .mid as tempo events.
+      Done: 255 piano-midi.de works and the nine flat Mutopia Bach files
+      play from a `.tempo.mid` beside the source (midi-stretch, or tempo
+      marks from the LilyPond score), fitted to the median MusicBrainz
+      recording. ~/Music/renders/tempo-audit holds the scripts and tables.
+  1. Match the 47 works in tempo-audit/unmatched.txt by hand (arrangements,
+     joined movements, too few recordings), add their rows to lengths.tsv,
+     and rerun tempo-audit/stretch.py.
+  2. Mutopia's other single-tempo files (tempo.tsv, one event, not 60) set
+     a tempo on purpose; check the slowest (BWV 622 and 646 at 20 bpm)
+     against their recordings before you leave them.
 
 - [ ] You run a tic80 cart with lua.slap, and its screen matches tic80's.
-      Decided: tic80's API (240x136 screen, 16-colour palette in RAM,
-      `TIC()` each frame) is a second API table beside pico8's, chosen by
-      the cart format.
-  1. Build tic80 headless on pc as the reference renderer, as zepto8 is
-     pico8's; write tests/tic80/refs.sh beside tests/pico8/refs.sh.
-  2. Add the API table and a first cart diffed pixel for pixel.
-  3. Then duskos and decker.
-
-- [ ] You play an MP3, FLAC or WAV in audio, decoded by slap code, and
-      `make slap` builds no vendored decoder. Decided: decoders move from
-      dr_mp3, dr_flac and dr_wav (C) into examples/lib, one library per
-      format, each `bytes -- {'rate 'pcm} ok | msg no` like the primitive it
-      replaces. They parse untrusted files by hand, against the house rule:
-      you chose it, since slap bounds every read, so bad input gives `'no`
-      or a crash with a message, never memory damage.
-  1. wav.slap: PCM 8/16/24/32-bit and float, mono and stereo, to the
-     primitive's `'pcm`. Diff it against `read-wav` on tests/audio and every
-     WAV under ~/Music. A test in expect.slap per format path.
-  2. flac.slap: frames, subframes (constant, verbatim, fixed, LPC), Rice
-     residuals, stereo decorrelation, CRC checked. Diff against
-     `read-flac` on tests/audio and a sample of ~/Music.
-  3. mp3.slap: MPEG-1/2 layer III (Huffman tables, requantize, joint
-     stereo, IMDCT, polyphase filter), ID3 and Xing skipped. Diff against
-     `read-mp3` sample by sample; dr_mp3 is the reference.
-  4. Time each on a 5-minute track in `./slap`. Goal: a decode under 5 s,
-     as a status condition. Past it, profile first; then weigh decoding
-     in chunks, which needs `play` to append.
-  5. Fuzz each library against its primitive with mutated files from
-     tests/audio: same `'ok` result, or `'no` where the primitive refuses.
-  6. Switch audio-app to the libraries. Delete `read-mp3`, `read-flac`,
-     `read-wav`, the three vendor headers and their vendor/readme.md rows;
-     update readme.md, claude.md and the Makefile's ASan and wasm lines.
-
-- [ ] You draw text in a sauce app from one font library, and its
-      self-test runs in the terminal build. Decided: ui.slap turns text
-      into rectangles, pure data, and the app draws them; ui-sdl.slap goes.
-  1. In ui.slap, add `text-rects (str x y scale xmax -- rects)`: a list of
-     `{'x 'y 'w 'h}`, one per run of lit pixels, as `text` draws today.
-     Test it in ui.slap's self-test against a known glyph.
-  2. Each app draws with `text-rects (... col fill-rect) each`. Delete
-     ui-sdl.slap; update suite.py's library lists, readme.md and claude.md.
-  3. Time a full-screen redraw in feed-app-sdl before and after; a list of
-     records per frame may cost. Keep the change only if a frame stays
-     under 16 ms.
+      Done: lua.slap reads a `.lua` cart with `-- script: lua`, draws with
+      cls, pix, rect, rectb, line, circ, circb and tri, and two carts match
+      TIC-80 v1.1.2837 (tests/tic80, refs from pc's ~/tic80-ref).
+  1. Write tests/tic80/fuzz.py like tests/pico8/fuzz.py: random draw carts
+     against the pc dumper, one ssh per batch. Fix each cart that differs.
+  2. Add print with tic80's system font, then spr and map from the cart's
+     sprite and map chunks; each with a cart and a ref.
+  3. Add `math`, `string`, `table`, `//` and exponent literals (`1e9`);
+     numbers stay 16.16, so time() wraps at 32768 ms; decide whether tic80
+     carts get floats.
+  4. Show tic80 carts in lua-sdl.slap.
+  5. Then duskos and decker.
 
 ## Blocked on you
 

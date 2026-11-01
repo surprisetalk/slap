@@ -115,6 +115,23 @@ def drive_demo(files, probe="", args=()):
     return r.stdout, None
 
 
+# A bounced WAV: the 44-byte header for 44.1 kHz 16-bit stereo, sizes that match the file, and at
+# least the note's 0.5 s of audio.
+def midi_wav_ok(path):
+    try:
+        w = open(path, "rb").read()
+    except OSError:
+        return False
+    n = len(w) - 44
+    return (
+        w[:4] == b"RIFF" and w[8:16] == b"WAVEfmt " and w[36:40] == b"data"
+        and int.from_bytes(w[4:8], "little") == len(w) - 8
+        and int.from_bytes(w[40:44], "little") == n
+        and w[20:36] == bytes([1, 0, 2, 0]) + (44100).to_bytes(4, "little") + (176400).to_bytes(4, "little") + bytes([4, 0, 16, 0])
+        and n % 4 == 0 and n >= 88200
+    )
+
+
 FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml rss cbor icn ufx ui".split())
 
 
@@ -822,6 +839,13 @@ def steps(slow):
                 and [l.strip() for l in o.splitlines()].count("midi-encode: track 0, event 1: an event follows the end-of-track event") == 1
                 and "exit-0" not in o,
             ),
+            # 2^58+1 times 500000 wraps at 64 bits to 500000: a silent wrong tempo unless the ratio is bounded
+            "midi-stretch refuses a ratio that overflows": (
+                "{ for r in \"288230376151711745 1\" \"1 288230376151711745\"; do"
+                " o=$(echo \"{'format 0 'division 96 'tracks [[{'tick 0 'status 255 'type 81 'data [7 161 32]}]]} $r midi-stretch print\""
+                f" | cat {lib('strings', 'midi')} - | ./slap 2>&1) && echo exit-0; echo \"$o\" | grep -m1 'midi-stretch:'; done; }}",
+                lambda o: o.count("midi-stretch: num and den must be 1-1000000; received") == 2 and "exit-0" not in o,
+            ),
             "utils": ("python3 tests/run_utils.py", None),
             "lua": ("python3 tests/run_lua.py", None),
         }
@@ -886,9 +910,9 @@ def steps(slow):
             [f"examples/{n}.slap", f"examples/{n}-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
-    for n in ["audio", "book", "cal", "clock"]:
+    for n in ["audio", "book", "cal", "clock", "midi"]:
         demos[f"{n}-app"] = (
-            [*lib("strings", "cbor", "icn", "ufx", "ui").split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
+            [*lib("strings", "cbor", "icn", "ufx", "ui", *(["midi"] if n == "midi" else [])).split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
     # Space at frame 2 starts the stopwatch, so its line shows from then on. In cal, n at frame 2
@@ -899,7 +923,20 @@ def steps(slow):
     # In audio, j and enter at frame 2 play tests/audio's second track. Headless, play takes nothing
     # and queued stays 0, so each tick ends a track: after the last, audio stops at the first.
     audio_state = os.path.join(SCRATCH, "audio-state.cbor")
-    demo_args = {"cal-app": [cal_events], "book-app": [book_state, "readme.md"], "audio-app": [audio_state, "tests/audio"]}
+    # In midi, b at frame 2 bounces a one-note file in the scratch directory to a WAV beside it, on the
+    # font that the command line names and the state file then keeps.
+    midi_state = os.path.join(SCRATCH, "midi-state.cbor")
+    midi_mid = os.path.join(SCRATCH, "tiny.mid")
+    midi_wav = os.path.join(SCRATCH, "tiny.wav")
+    track = bytes([0, 192, 45, 0, 144, 60, 100, 131, 96, 128, 60, 64, 0, 255, 47, 0])
+    with open(midi_mid, "wb") as f:
+        f.write(b"MThd" + bytes([0, 0, 0, 6, 0, 0, 0, 1, 1, 224]) + b"MTrk" + len(track).to_bytes(4, "big") + track)
+    demo_args = {
+        "cal-app": [cal_events],
+        "book-app": [book_state, "readme.md"],
+        "audio-app": [audio_state, "tests/audio"],
+        "midi-app": [midi_state, midi_mid, "tests/audio/pizzicato.sf2"],
+    }
     probes = {
         "book-app": (
             "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'at at 'p at print) () if",
@@ -921,6 +958,10 @@ def steps(slow):
             lambda o: "audio-selftest-ok" in o
             and o.split()[-4:] == ["1", "1", "0", "0"]
             and b"mono48.flac" in open(audio_state, "rb").read(),
+        ),
+        "midi-app": (
+            "test-frame 2 eq (98 test-keydown) () if test-frame 14 eq (dup 'status at print) () if",
+            lambda o: "midi-selftest-ok" in o and midi_wav_ok(midi_wav) and b"pizzicato.sf2" in open(midi_state, "rb").read(),
         ),
         "clock-app": (
             "test-frame 2 eq (32 test-keydown) () if test-frame 14 eq (dup 'shown at len print) () if",

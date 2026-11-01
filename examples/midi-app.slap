@@ -1,0 +1,115 @@
+-- midi-app.slap: the MIDI bouncer's channels, WAV bytes and state file. The
+-- window is midi-app-sdl.slap; this file holds no SDL word, so its self-test
+-- runs in the terminal build:
+--
+--   cat examples/lib/{strings,cbor,icn,ufx,ui,midi}.slap examples/midi-app.slap \
+--     | ./slap --headless
+
+-- midi-channels: ({'division 'events} -- channels).  One {'channel 'program
+-- 'notes} per channel that has an event, in channel order. 'program is the
+-- first program change, or 0 when the file sets none: the preset a channel
+-- starts on. 'notes counts the note ons with a velocity. One pass over the
+-- events, which read in place: cutting the string into events copies the rest
+-- of it for each one.
+-- mc-add: (acc i n -- acc).  Add n to slot i.
+('ma-n let 'ma-i let 'ma-a let ma-a ma-i ma-i 'ma-a nth must ma-n plus set must) 'mc-add let
+-- The acc holds 16 event counts, 16 note counts, then 16 programs: -1 until a program change (192) sets one, by adding the difference. A tempo (81) is no channel's event.
+('mc-m let mc-m 'events at 'mc-ev let
+ 0 mc-ev len 10 div range [] 32 (0 push) repeat 16 (-1 push) repeat (
+   'mi let 'mq-a let mi 10 mul 'mb let
+   mb 4 plus 'mc-ev nth must 'ms let mb 5 plus 'mc-ev nth must 'mc let
+   mq-a mc ms 81 eq not mc-add
+     mc 16 plus ms 144 eq mb 9 plus 'mc-ev nth must 0 gt and mc-add
+     mc 32 plus
+       mc 32 plus 'mq-a nth must -1 eq ms 192 eq and mb 8 plus 'mc-ev nth must mc 32 plus 'mq-a nth must sub mul mc-add) fold 'mc-r let
+ 0 16 range ('mc-x let mc-x 'mc-r nth must 0 gt) filter
+ ('mc-y let {'channel mc-y 'program mc-y 32 plus 'mc-r nth must dup 0 lt (drop 0) () if 'notes mc-y 16 plus 'mc-r nth must}) each) 'midi-channels let
+
+-- wav-path: (path -- path).  NAME.mid becomes NAME.wav; any other name takes
+-- .wav after it.
+('wp-p let wp-p len 4 ge (wp-p wp-p len 4 sub drop-n dup ".mid" eq swap ".MID" eq or) (0) if
+ (wp-p wp-p len 4 sub take-n) (wp-p) if ".wav" cat) 'wav-path let
+
+-- lsb: (n k -- bytes).  n as k little-endian bytes.
+('lk let 'ln let 0 lk range ('li let ln li 8 mul shr 255 band) each) 'lsb let
+
+-- midi-render: (bytes font -- wav ok | msg no).  Every channel that has an
+-- event plays on the one font. The WAV is 44.1 kHz 16-bit stereo, which is
+-- what render-midi gives.
+('mr-f let midi-decode ('mr-m let
+   mr-m midi-channels ('mr-x let {'channel mr-x 'channel at 'font mr-f}) each 'mr-parts let
+   mr-m mr-parts render-midi ('mr-a let mr-a 'pcm at 'mr-pcm let mr-pcm len 'mr-n let
+     "RIFF" mr-n 36 plus 4 lsb cat "WAVEfmt " cat 16 4 lsb cat 1 2 lsb cat 2 2 lsb cat 44100 4 lsb cat
+       176400 4 lsb cat 4 2 lsb cat 16 2 lsb cat "data" cat mr-n 4 lsb cat mr-pcm cat ok) then) then) 'midi-render let
+
+-- clock: (ms -- str).  m:ss.
+(1000 div 'ck-s let ck-s 60 div int-str ":" cat ck-s 60 mod 10 lt ("0") ("") if cat ck-s 60 mod int-str cat) 'clock let
+
+-- bounce-status: (mid font -- msg).  Bounce the file and say what happened.
+-- An empty font is a state file that names none. Every failure comes back as
+-- text for the window; nothing is skipped.
+('bs-f let 'bs-p let
+ bs-f len 0 eq ("midi: no font named. Run: midi FILE.mid FONT.sf2 once; the font is then kept") (
+ bs-p read {
+  'no ()
+  'ok (bs-f midi-render {
+    'no (bs-p ": " cat swap cat)
+    'ok ('bs-w let bs-p wav-path 'bs-o let bs-o bs-w write {
+      'no ()
+      'ok (drop bs-o " | " cat bs-w len 44 sub 1000 mul 176400 div clock cat)} case)} case)} case) if) 'bounce-status let
+
+-- ===== model and view =====
+-- A model: {'w 'h 'mid 'font 'channels 'status 'shown}.
+('mm-ch let 'mm-font let 'mm-mid let
+ {'w 0 'h 0 'mid mm-mid 'font mm-font 'channels mm-ch 'status "b bounces to a WAV" 'shown []}) 'midi-model let
+
+-- midi-layout: (w h -- layout).  The text scale grows with the window. A line
+-- is 18 pixels at scale 1. The last row holds the status.
+('ml-h let 'ml-w let ml-w 640 div ml-h 360 div min 1 max 'ml-s let 18 ml-s mul 'ml-lh let
+ {'s ml-s 'lh ml-lh 'x ml-lh}) 'midi-layout let
+
+-- midi-view: (m -- view).  The file's name over a line per channel, and the status.
+('mv-m let
+ {'w mv-m 'w at 'h mv-m 'h at 'status mv-m 'status at
+  'rows [mv-m 'mid at] mv-m 'channels at ('mv-c let
+    "ch " mv-c 'channel at int-str cat "  program " cat mv-c 'program at int-str cat "  notes " cat mv-c 'notes at int-str cat) each cat}) 'midi-view let
+
+-- ===== state.cbor =====
+-- {"mid": path, "font": path}, a CBOR map: the file opened last and the font
+-- that bounces it.
+-- REVIEW: The font enters state.cbor from the command line: STATE.cbor [FILE.mid [FONT.sf2]]. A FONT is kept and the next run needs no argument. Alternative: a key that types the path in the window. It needs a text field and its own keys, and the command line already holds every path.
+('se-s let [{'name "mid" 'value se-s 'mid at ce-str} {'name "font" 'value se-s 'font at ce-str}] ce-map) 'state-encode let
+(('sd-cv let sd-cv "mid" cd-str cd-field apply ('sd-mid let sd-cv "font" cd-str cd-field apply ('sd-font let
+  {'mid sd-mid 'font sd-font} ok) then) then) cd-run) 'state-decode let
+
+-- ===== self-test =====
+isheadless (
+  "a.mid" wav-path "a.wav" eq assert  "a.MID" wav-path "a.wav" eq assert  "a.midi" wav-path "a.midi.wav" eq assert
+  "mid" wav-path "mid.wav" eq assert  "" wav-path ".wav" eq assert  "d/x.y.mid" wav-path "d/x.y.wav" eq assert
+  3723000 clock "62:03" eq assert  5000 clock "0:05" eq assert
+  -- channel 0 sets program 45 and plays one note; channel 9 plays two, the second at velocity 0 (a note off)
+  [0 192 45  0 144 60 100  0 153 36 90  0 153 38 0  0 255 81 3 7 161 32] md-smf midi-decode must midi-channels
+    [{'channel 0 'program 45 'notes 1} {'channel 9 'program 0 'notes 1}] eq assert
+  -- a long file reads in one pass: 2^19 note ons on channel 0
+  [0 0 0 0 144 0 0 0 60 100] 19 (dup cat) repeat 'ts-long let
+  {'division 480 'events ts-long} midi-channels [{'channel 0 'program 0 'notes 524288}] eq assert
+  -- the first program change wins, and a later one on another channel is its own
+  [0 192 45  0 193 7  0 192 9  0 144 60 100] md-smf midi-decode must midi-channels
+    [{'channel 0 'program 45 'notes 1} {'channel 1 'program 7 'notes 0}] eq assert
+  -- a tempo alone is no channel
+  [0 255 81 3 7 161 32] md-smf midi-decode must midi-channels [] eq assert
+  -- the font renders the one preset it holds into a WAV: 44-byte header, then the pcm
+  [0 192 45  0 144 60 100  131 96 128 60 64] md-smf "tests/audio/pizzicato.sf2" midi-render must 'ts-w let
+  ts-w len 44 sub 4 mod 0 eq assert  ts-w len 88244 ge assert  ts-w 4 take-n "RIFF" eq assert
+  -- render-midi refuses a preset the font lacks, naming it
+  [0 144 60 100  131 96 128 60 64] md-smf "tests/audio/pizzicato.sf2" midi-render {'ok (drop "") 'no ()} case
+    "channel 0 plays a note at 0:00 before any program change, and tests/audio/pizzicato.sf2 has no preset 0" eq assert
+  -- the status line names each failure
+  "tests/audio/nope.mid" "tests/audio/pizzicato.sf2" bounce-status "tests/audio/nope.mid: No such file or directory" eq assert
+  "tests/audio/tone.wav" "tests/audio/pizzicato.sf2" bounce-status "tests/audio/tone.wav: midi: not a MIDI file: it does not start with MThd" eq assert
+  "tests/audio/tone.wav" "" bounce-status "midi: no font named. Run: midi FILE.mid FONT.sf2 once; the font is then kept" eq assert
+  -- the state file round-trips
+  {'mid "a.mid" 'font "f.sf2"} 'ts-s let ts-s state-encode state-decode must ts-s eq assert
+  [] ce-map state-decode {'ok (drop "") 'no ()} case "$: missing field \"mid\"" eq assert
+  "midi-selftest-ok" print
+) () if

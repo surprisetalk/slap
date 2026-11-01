@@ -254,6 +254,37 @@
   mv-t 24 shr push mv-t 16 shr 255 band push mv-t 8 shr 255 band push mv-t 255 band push
   mv-s push mv-c push mv-a 16 shr push mv-a 8 shr 255 band push mv-a 255 band push mv-b push) fold) 'midi-events let
 
+-- midi-stretch: ({'format 'division 'tracks} num den -- {'format 'division 'tracks}).
+-- Every tempo (FF 51) times num/den, rounded to nearest: num/den 3/2 makes the
+-- music play 1.5 times as long. A file with no tempo at tick 0 in any track plays
+-- at the SMF default of 500000, so track 0 gets that tempo scaled, at tick 0.
+-- num and den above 1000000 stop it: 2 times 16777215 times num must fit 64 bits.
+-- A result outside 1-16777215 stops the program, naming the track, tick and
+-- value: "midi-stretch: track 0, tick 480: tempo 9000000 times 3/1 is 27000000, outside 1-16777215".
+-- REVIEW: Stretch the tempo events and leave every tick alone. Alternative: scale the ticks and keep the tempos. It changes the 'division range and rounds every note time, where a tempo rounds once.
+('ms-d let 'ms-n let 'ms-r let
+ ms-n 1 lt ms-d 1 lt or ms-n 1000000 gt or ms-d 1000000 gt or ("midi-stretch: num and den must be 1-1000000; received " ms-n int-str cat "/" cat ms-d int-str cat fail) () if
+ ms-r 'tracks at 'ms-tr let
+ ms-tr len 0 eq ("midi-stretch: 'tracks is empty; a file with no track has no tempo to scale" fail) () if
+ -- ms-t: (v k tick -- bytes).  v scaled, as the 3 data bytes of a tempo.
+ ('mt-t let 'mt-k let 'mt-v let
+  mt-v ms-n mul 2 mul ms-d plus 2 ms-d mul div 'mt-w let
+  mt-w 1 lt mt-w 16777215 gt or
+    ("midi-stretch: track " mt-k int-str cat ", tick " cat mt-t int-str cat ": tempo " cat mt-v int-str cat " times " cat
+     ms-n int-str cat "/" cat ms-d int-str cat " is " cat mt-w int-str cat ", outside 1-16777215" cat fail) () if
+  [mt-w 16 shr mt-w 8 shr 255 band mt-w 255 band]) 'ms-t let
+ ms-tr 0 (('mi-e let mi-e 'tick at 0 eq mi-e 'status at 255 eq and mi-e 'type at 81 eq and) filter len plus) fold 0 eq 'ms-ins let
+ 0 ms-tr len range ('ms-k let
+   ms-k 'ms-tr nth must ('me-e let
+     me-e 'status at 255 eq me-e 'type at 81 eq and (
+       me-e 'data at 'me-d let
+       me-d len 3 eq not
+         ("midi-stretch: track " ms-k int-str cat ", tick " cat me-e 'tick at int-str cat ": a tempo holds " cat me-d len int-str cat " bytes, not 3" cat fail) () if
+       me-e  me-d 0 get must 16 shl me-d 1 get must 8 shl bor me-d 2 get must bor ms-k me-e 'tick at ms-t  'data into) (me-e) if) each
+   ms-k 0 eq ms-ins and (500000 0 0 ms-t 'mi-b let [{'tick 0 'status 255 'type 81 'data mi-b}] swap cat) () if) each
+ 'ms-new let
+ ms-r ms-new 'tracks into) 'midi-stretch let
+
 -- ===== tests =====
 -- smf: (events -- bytes).  One format 0 track, 480 ticks a quarter note.
 ('se let "MThd" [0 0 0 6 0 0 0 1 1 224] cat "MTrk" cat [0 0 0 se len 4 plus] cat se cat [0 255 47 0] cat) 'md-smf let
@@ -316,3 +347,16 @@ md-tr midi-encode midi-tracks must midi-encode md-tr midi-encode eq assert
 -- delta times of two, three and four bytes
 {'format 0 'division 96 'tracks [[{'tick 200 'status 192 'type 0 'data [1]} {'tick 20000 'status 192 'type 0 'data [2]} {'tick 3000000 'status 192 'type 0 'data [3]}]]} midi-encode midi-tracks must 'tracks at
   0 get must 2 get must 'tick at 3000000 eq assert
+-- midi-stretch scales every tempo, rounded to nearest: 500000 times 3/2 is 750000, times 1/3 is 166667
+md-tr 3 2 midi-stretch 'tracks at 0 get must 2 get must 'data at [11 113 176] eq assert
+md-tr 1 3 midi-stretch 'tracks at 0 get must 2 get must 'data at [2 139 11] eq assert
+md-tr 3 2 midi-stretch 'tracks at 0 get must 0 get must 'data at "Song" eq assert
+md-tr 3 2 midi-stretch 'tracks at 1 get must md-tr 'tracks at 1 get must eq assert
+md-tr 3 2 midi-stretch midi-encode midi-tracks must md-tr 3 2 midi-stretch eq assert
+-- a file with no tempo plays at 500000, so track 0 gets one at tick 0
+{'format 0 'division 96 'tracks [[{'tick 5 'status 144 'type 0 'data [60 100]}]]} 3 2 midi-stretch 'tracks at 0 get must
+  [{'tick 0 'status 255 'type 81 'data [11 113 176]} {'tick 5 'status 144 'type 0 'data [60 100]}] eq assert
+-- a tempo at tick 0 in any track stands in for the default: track 0 stays as it was
+{'format 1 'division 96 'tracks [[{'tick 0 'status 255 'type 3 'data "a"}] [{'tick 0 'status 255 'type 81 'data [7 161 32]}]]} 3 2 midi-stretch 'tracks at 0 get must len 1 eq assert
+-- a tempo after tick 0 does not stand in for the default
+{'format 0 'division 96 'tracks [[{'tick 5 'status 255 'type 81 'data [7 161 32]}]]} 1 2 midi-stretch 'tracks at 0 get must len 2 eq assert

@@ -1,0 +1,48 @@
+-- The window for midi-app.slap: a MIDI file's channels, and b bounces it to a
+-- WAV beside it. Run from the repo root with:
+--
+--   cat examples/lib/{strings,cbor,icn,ufx,ui,midi}.slap examples/midi-app.slap \
+--       examples/lib/ui-sdl.slap examples/midi-app-sdl.slap \
+--     | ./slap-sdl state.cbor [song.mid [font.sf2]]
+--
+-- With no file named, it opens the file opened last; with no font named, it
+-- uses the font kept. Each channel shows its program and note count. b renders
+-- every channel on the one font with render-midi and writes NAME.wav beside
+-- NAME.mid; the status line shows the WAV or why there is none. A bounce
+-- blocks the window until it ends. Closing the window quits.
+
+args len 1 lt args len 3 gt or ("midi: usage: ./slap-sdl STATE.cbor [FILE.mid [FONT.sf2]]" fail) () if
+args 0 get must 'STATE let
+
+-- A missing state file is a first run. A path inside a plain file counts as
+-- missing too; the save at startup then stops the app.
+STATE read {
+  'ok (state-decode {'ok () 'no ("midi: " STATE cat ": " cat swap cat ". Fix or delete it." cat fail)} case)
+  'no ('rd-err let rd-err STATE is-missing ({'mid "" 'font ""}) ("midi: " rd-err cat fail) if)
+} case 'STATE0 let
+args len 2 ge (args 1 get must) (STATE0 'mid at) if 'MID let
+args len 3 eq (args 2 get must) (STATE0 'font at) if 'SF2 let
+MID len 0 eq ("midi: no file named, and " STATE cat " names none opened before. Usage: ./slap-sdl STATE.cbor [FILE.mid [FONT.sf2]]" cat fail) () if
+STATE {'mid MID 'font SF2} state-encode write {'ok (drop) 'no ("midi: " swap cat fail)} case
+
+-- A file that does not load shows its message in place of channels.
+MID read {'ok (midi-decode {'ok (ok) 'no (MID ": " cat swap cat no)} case) 'no (no)} case {
+  'ok (midi-channels "b bounces to a WAV")
+  'no ([] swap)} case 'STATUS0 let 'CHANNELS let
+
+-- draw: (view --).  The file's name and a line per channel; the status takes the last row.
+('dv let 0 clear dv 'w at 'dw let dv 'h at 'dh let dw dh midi-layout 'dl let
+ dl 's at 'ds let dl 'lh at 'dlh let dl 'x at 'dx let
+ dv 'rows at 0 ('dr let 'di let dr dx dlh di dlh mul plus ds plus 3 ds dw dx sub text di 1 plus) fold drop
+ dv 'status at dx dh dlh 2 mul sub 2 ds dw dx sub text) 'draw let
+
+MID SF2 CHANNELS midi-model STATUS0 'status into 'MODEL0 let
+MODEL0
+
+('rh let 'rw let rw 'w into rh 'h into [] 'shown into) 'resize on
+('kk let 'km let km kk 98 eq (dup 'mid at over 'font at bounce-status 'status into) () if) 'keydown on
+('tf let 'tm let
+ [tm midi-view] 'tv let
+ tv tm 'shown at eq (tm) (0 'tv nth must draw tm tv 'shown into) if) 'tick on
+
+(drop) show

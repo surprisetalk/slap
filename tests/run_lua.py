@@ -215,27 +215,56 @@ check("print scrolls only the screen", r.returncode == 0 and r.stdout.startswith
 for arg in ["abc", "-1", "", "123456"]:
     r = subprocess.run(["./slap", path, arg], input=SRC, capture_output=True, timeout=60)
     check(f"frame count {arg!r}", r.returncode == 1 and b"lua: the frame count must be 1 to 5 digits up to 32767" in r.stderr, r.stderr.decode()[-600:])
-# Each tests/pico8 cart draws what zepto8 drew: tests/pico8/refs.sh made the .ref
-# files with it, after the frames the cart's "-- frames: N" line names.
-def cart_diff(path):
+# Each tests/pico8 cart draws what zepto8 drew, each tests/tic80 cart what
+# TIC-80's core drew: refs.sh in each directory made the .ref files, after the
+# frames the cart's "-- frames: N" line names.
+def cart_diff(path, w=128, h=128):
     m = re.search(r"^-- frames: (\d+)$", open(path).read(), re.M)
     if not m:
         sys.exit(f"lua: {path} has no '-- frames: N' line")
     n = m.group(1)
     r = subprocess.run(["./slap", path, n], input=SRC, capture_output=True, timeout=60)
-    want = open(path[:-3] + ".ref", "rb").read().split(b"\n")
+    want = open(os.path.splitext(path)[0] + ".ref", "rb").read().split(b"\n")
     got = r.stdout.split(b"\n")
-    if want[:-129] != got[:-129]:
-        return r, False, f"printh lines differ: want {want[:-129][:5]} got {got[:-129][:5]}"
-    want, got = want[-129:-1], got[-129:-1]
-    bad = [(y, x) for y in range(min(len(want), len(got))) for x in range(128) if want[y][x : x + 1] != got[y][x : x + 1]]
-    same = len(want) == len(got) == 128 and all(len(row) == 128 for row in want + got) and not bad
+    if want[: -h - 1] != got[: -h - 1]:
+        return r, False, f"printh lines differ: want {want[: -h - 1][:5]} got {got[: -h - 1][:5]}"
+    want, got = want[-h - 1 : -1], got[-h - 1 : -1]
+    bad = [(y, x) for y in range(min(len(want), len(got))) for x in range(w) if want[y][x : x + 1] != got[y][x : x + 1]]
+    same = len(want) == len(got) == h and all(len(row) == w for row in want + got) and not bad
     return r, same, f"{len(bad)} pixels differ, first at (x, y) = {bad[0][::-1] if bad else None}"
 
 
 CARTS_P8 = sorted(glob.glob("tests/pico8/*.p8"))
 for path, (r, same, why) in zip(CARTS_P8, POOL.map(cart_diff, CARTS_P8)):
     check(f"{path} matches zepto8", r.returncode == 0 and same, f"exit {r.returncode}: {why}\n{r.stderr.decode()[-600:]}")
+CARTS_TIC = sorted(glob.glob("tests/tic80/*.lua"))
+for path, (r, same, why) in zip(CARTS_TIC, POOL.map(lambda p: cart_diff(p, 240, 136), CARTS_TIC)):
+    check(f"{path} matches TIC-80", r.returncode == 0 and same, f"exit {r.returncode}: {why}\n{r.stderr.decode()[-600:]}")
+TIC_ERRORS = [
+    ("integer division", "x = 7 // 2\nfunction TIC() end", "lua: line 3: tic80's // (integer division) is not supported"),
+    ("sprites", "function TIC() spr(0, 0, 0) end", "tic80's 'spr' is not supported"),
+    ("argument count", "function TIC() rect(1, 2, 3) end", "invalid parameters, rect(x,y,w,h,color)"),
+    ("peek past the palette", "function TIC() peek(0) end", "tic80's peek reads only the palette, 16320 to 16367 (0x3FC0 to 0x3FEF), not 0"),
+    ("string argument", 'function TIC() rect("a", 0, 1, 1, 2) end', "tic80: argument 1 must be a number, got string"),
+    ("nil argument", "function TIC() line(0, 0, 1, nil, 2) end", "tic80: argument 4 must be a number, got nil"),
+    ("peek bits", "function TIC() peek(16320, 4) end", "tic80's peek reads only 8 bits, not 4"),
+    ("poke bits", "function TIC() poke(16320, 1, 4) end", "tic80's poke writes only 8 bits, not 4"),
+    ("no TIC", "x = 1", "attempt to call a nil value"),
+]
+for name, text, want in TIC_ERRORS:
+    path = os.path.join(tmp, "tic-" + name.replace(" ", "-") + ".lua")
+    with open(path, "w") as f:
+        f.write("-- title: t\n-- script: lua\n" + text + "\n")
+    r = subprocess.run(["./slap", path, "1"], input=SRC, capture_output=True, timeout=60)
+    err = r.stderr.decode()
+    check(f"tic80 {name}", r.returncode == 1 and want in err, f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}")
+# The palette lives in RAM at 0x3FC0 and a poke changes it; trace prints one line per call.
+path = os.path.join(tmp, "tic-ram.lua")
+with open(path, "w") as f:
+    f.write("-- script: lua\nfunction TIC() poke(16320, 7) trace(peek(16320)) trace(peek(16321)) trace(time()) end\n")
+r = subprocess.run(["./slap", path, "3"], input=SRC, capture_output=True, timeout=60)
+check("tic80 palette in RAM", r.returncode == 0 and r.stdout.split(b"\n")[:6] == [b"7", b"28", b"0", b"7", b"28", b"16.6667"], r.stdout[:200] + r.stderr[-600:])
+
 # The SDL shell, headless: a held left arrow reaches btn(0), and the view the
 # render body draws holds the cart's screen.
 if os.path.exists("./slap-sdl"):
