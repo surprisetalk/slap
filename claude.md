@@ -69,6 +69,7 @@ These return `value ok` on success and `none` (or `payload no`) on failure:
 | `get` / `peek` / `nth` | `element ok` | `none` out of bounds (`get` consumes the list, `peek` leaves it, `nth` reads the bound name written right before it, as in `1 'xs nth`) |
 | `set` | `list ok` | `none` out of bounds |
 | `index-of` / `str-find` | `index ok` | `none` |
+| `utf8-check` | `1 ok` | `offset no`: the byte offset of the first invalid sequence |
 | `of` (dict lookup) | `value ok` | `key no` |
 | `read` / `write` / `ls` | `bytes ok` / `1 ok` / `entries ok` | `"path: reason" no`, the reason from `strerror` |
 | `read-mp3` / `read-flac` / `read-wav` | `{'rate 'pcm} ok` | `"path: reason" no`: `strerror`, or the decoder's refusal |

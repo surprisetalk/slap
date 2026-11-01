@@ -60,7 +60,10 @@
         carg 0 lt ({} 'null tag "cbor: integer past the int64 range" ci _cat no) (-1 carg sub 'int tag cni ok) if) (
       cm 2 eq cm 3 eq or (
         carg 0 lt carg _cn cni sub gt or ({} 'null tag "cbor: length past the end of the input" ci _cat no) (
-          cm 2 eq (carg cni _cstr 'bytes tag) (carg cni _cstr 'str tag) if cni carg plus ok) if) (
+          cm 2 eq (carg cni _cstr 'bytes tag cni carg plus ok) (
+            carg cni _cstr 'cu let cu utf8-check
+            {'ok (drop cu 'str tag cni carg plus ok)
+             'no ('cuo let {} 'null tag "cbor: text string is not UTF-8" cni cuo plus _cat no)} case) if) if) (
       cm 4 eq cm 5 eq or (
         cd 255 gt ({} 'null tag "cbor: nested deeper than 256" ci _cpos no) (
         carg 0 lt carg _cn cni sub gt or ({} 'null tag "cbor: length past the end of the input" ci _cat no) (
@@ -181,8 +184,10 @@
 -- ce-float: (float -- bytes).  Always float64.
 (float-bits 8 _ce-be [251] swap cat) 'ce-float let
 
--- ce-str: (s -- bytes).  A text string.  ce-bytes: (bs -- bytes).  A byte string.
-('s let 3 s len _ce-head s cat) 'ce-str let
+-- ce-str: (s -- bytes).  A text string; text that is not UTF-8 is a bug in the program that built it,
+-- since the decoder refuses it.  ce-bytes: (bs -- bytes).  A byte string.
+('s let s utf8-check {'ok (drop) 'no ('cso let "cbor: ce-str: text is not UTF-8 at byte " cso int-str cat "; tag bytes that are not text 'bytes" cat fail)} case
+  3 s len _ce-head s cat) 'ce-str let
 ('s let 2 s len _ce-head s cat) 'ce-bytes let
 
 -- ce-bool: (0|1 -- bytes).  ce-null: ( -- bytes).
@@ -372,6 +377,14 @@
 "61" _hx cd-int cd-run cerr "cbor: length past the end of the input at byte 0, found byte 97" eq assert
 -- a map key cut short fails with its own offset, not a death
 "a16361" _hx cd-value cd-run cerr "cbor: length past the end of the input at byte 1, found byte 99" eq assert
+-- A text string must be UTF-8 (RFC 8949 section 3.1); the offset is in the whole input
+"62c080" "cbor: text string is not UTF-8 at byte 1, found byte 192" _fail
+"63eda080" "cbor: text string is not UTF-8 at byte 1, found byte 237" _fail
+"64f4908080" "cbor: text string is not UTF-8 at byte 1, found byte 244" _fail
+"62e6b0" "cbor: text string is not UTF-8 at byte 1, found byte 230" _fail
+"6180" "cbor: text string is not UTF-8 at byte 1, found byte 128" _fail
+"626180" "cbor: text string is not UTF-8 at byte 2, found byte 128" _fail
+"a162c08001" "cbor: text string is not UTF-8 at byte 2, found byte 192" _fail
 "6161" _hx cd-int cd-run cerr "$: expected int, got string" eq assert
 "4161" _hx cd-str cd-run cerr "$: expected string, got bytes" eq assert
 "6161" _hx cd-bytes cd-run cerr "$: expected bytes, got string" eq assert
@@ -393,6 +406,6 @@ ce-null "f6" _hx eq assert
 -- A value written reads back: strings of every byte, a map in a list
 0 256 range 'cbor-all-bytes let
 cbor-all-bytes 'bytes tag ce-value (ok) cd-run cbor-all-bytes 'bytes tag ok eq assert
-cbor-all-bytes 'str tag ce-value (ok) cd-run cbor-all-bytes 'str tag ok eq assert
+0 128 range 'str tag ce-value (ok) cd-run 0 128 range 'str tag ok eq assert
 [] "k" [] 1 _i push "x" 'str tag push -5 _i push 1.25 'float tag push {} 'null tag push 0 'bool tag push 'list tag _ent push 'map tag 'cbor-rt let
 cbor-rt ce-value (ok) cd-run cbor-rt ok eq assert

@@ -693,6 +693,10 @@ def steps(slow):
                             "cbor: ce-bool: expected 0 or 1, got 2",
                         ),
                         (
+                            """[104 105 255] 's let s 'str tag ce-value print""",
+                            "cbor: ce-str: text is not UTF-8 at byte 2; tag bytes that are not text 'bytes",
+                        ),
+                        (
                             """"r" [] {'name "x" 'value "1"} push {'name "x" 'value "2"} push [] xe-elem xml-render print""",
                             'xml: duplicate attribute "x" in <r>',
                         ),

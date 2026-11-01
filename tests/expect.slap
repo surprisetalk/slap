@@ -782,6 +782,25 @@ crlf 1 get must 10 eq assert
 "aaa" "a" str-find must 0 eq assert
 "" "a" str-find none eq assert
 
+-- utf8-check
+[] utf8-check 1 ok eq assert
+[0 97 0] utf8-check 1 ok eq assert
+[195 188 230 176 180 240 144 133 145] utf8-check 1 ok eq assert
+[192 128] utf8-check 0 no eq assert
+-- libcs differ on these, so each is pinned: more overlongs, 5- and 6-byte forms, noncharacters
+[193 191] utf8-check 0 no eq assert
+[224 128 128] utf8-check 0 no eq assert
+[248 136 128 128 128] utf8-check 0 no eq assert
+[252 132 128 128 128 128] utf8-check 0 no eq assert
+[239 191 190] utf8-check 1 ok eq assert
+[244 143 191 191] utf8-check 1 ok eq assert
+[97 237 160 128] utf8-check 1 no eq assert
+[244 144 128 128] utf8-check 0 no eq assert
+[97 230 176] utf8-check 1 no eq assert
+[97 128] utf8-check 1 no eq assert
+-- the offset counts bytes, not characters: ü is two
+[195 188 255] utf8-check 2 no eq assert
+
 -- str-split
 "a,b,c" "," str-split len 3 eq assert
 "a,b,c" "," str-split 0 get must "a" eq assert

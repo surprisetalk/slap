@@ -18,6 +18,8 @@
 #include <signal.h>
 #include <limits.h>
 #include <setjmp.h>
+#include <locale.h>
+#include <wchar.h>
 #ifndef SLAP_WASM
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -1175,6 +1177,7 @@ static const char *TYPES =
     "'set ['a var 'list tag int 'a var] [dict \"ok\" 'a var 'list tag insert \"no\" [] [] fn insert either] 'cat ['a var 'list tag 'a var 'list tag] ['a var 'list tag] 'reverse ['a var 'list tag] ['a var 'list tag]\n"
     "'take-n ['a var 'list tag int] ['a var 'list tag] 'drop-n ['a var 'list tag int] ['a var 'list tag] 'range [int int] [int 'list tag] 'sort [int 'list tag] [int 'list tag]\n"
     "'index-of ['a var 'list tag 'a var] [dict \"ok\" int insert \"no\" [] [] fn insert either] 'zip ['a var 'list tag 'a var 'list tag] ['a var 'list tag 'list tag]\n"
+    "'utf8-check [str] [dict \"ok\" int insert \"no\" int insert either]\n"
     "'str-find [str str] [dict \"ok\" int insert \"no\" [] [] fn insert either] 'str-split [str str] [str 'list tag]\n"
     "'must [dict \"ok\" 'a var insert \"no\" 'b var insert either] ['a var] 'fail ['a rest str] ['b rest]\n"
     "'pthen ['s rest dict \"ok\" 'a var insert \"no\" 'b var insert either 'd copy ['s rest 'a var] ['s rest 'd copy dict \"ok\" 'c var insert \"no\" 'b var insert either] fn] ['s rest 'd copy dict \"ok\" 'c var insert \"no\" 'b var insert either]\n"
@@ -3667,6 +3670,29 @@ static void prim_str_split(Frame *e) {
         push_byte_list(str+pos,found-pos);count++;pos=found+dl;}
     spush(val_compound(VAL_LIST,count,sp-base+1));free(delim);free(str);
 }
+/* utf8-check: libc decodes, so slap holds no UTF-8 decoder. mbrtowc runs in a UTF-8 locale_t, so the
+   global locale and LC_NUMERIC stay as they are. macOS's mbrtowc refuses overlong forms, truncated
+   sequences and lone continuation bytes, but accepts surrogates and code points past U+10FFFF. A range
+   check on the decoded value refuses those two. */
+/* REVIEW: wasm may lack a UTF-8 locale, untested; then the primitive dies with its message. Alternative:
+   a decoder in slap.c, which the house rules forbid. */
+static void prim_utf8_check(Frame *e) {
+    (void)e; static locale_t loc=(locale_t)0; int n; unsigned char *b=pop_byte_list_buf("utf8-check",&n);
+    if(!loc){
+        static const char *names[]={"en_US.UTF-8","C.UTF-8","UTF-8"};
+        for(size_t i=0;i<sizeof names/sizeof *names&&!loc;i++) loc=newlocale(LC_CTYPE_MASK,names[i],(locale_t)0);
+        if(!loc){ free(b); die("utf8-check: no UTF-8 locale; expected one of en_US.UTF-8, C.UTF-8 or UTF-8 from newlocale; run `locale -a` and install one"); }
+    }
+    locale_t old=uselocale(loc); mbstate_t st; memset(&st,0,sizeof st);
+    int off=0, bad=-1;
+    while(off<n){
+        wchar_t wc; size_t r=mbrtowc(&wc,(const char*)b+off,(size_t)(n-off),&st);
+        if(r==(size_t)-1||r==(size_t)-2||(wc>=0xD800&&wc<=0xDFFF)||(unsigned long)wc>0x10FFFF){ bad=off; break; }
+        off+=r?(int)r:1; /* r is 0 for a NUL byte */
+    }
+    uselocale(old); free(b);
+    if(bad<0){ spush(val_int(1)); push_ok(); } else { spush(val_int(bad)); push_no(); }
+}
 static void prim_args(Frame *e) {
     (void)e; int base=sp; for(int i=0;i<cli_argc;i++) push_c_string(cli_args[i]);
     spush(val_compound(VAL_LIST,cli_argc,sp-base+1));
@@ -3698,7 +3724,7 @@ static void register_prims(void) {
         {"dict-entries",prim_entries,NULL},
         R(tag,tag),R(must,must),R(pthen,pthen),
         R(read,read),R(write,write),R(ls,ls),{"read-mp3",prim_read_mp3,NULL},{"read-flac",prim_read_flac,NULL},{"read-wav",prim_read_wav,NULL},{"render-midi",prim_render_midi,NULL},
-        M("str-find",strfind),{"str-split",prim_str_split,NULL},
+        M("str-find",strfind),{"str-split",prim_str_split,NULL},{"utf8-check",prim_utf8_check,NULL},
         R(args,args),R(fail,fail),R(isheadless,isheadless),
 #ifndef SLAP_WASM
         {"tcp-connect",prim_tcp_connect,NULL},{"tcp-send",prim_tcp_send,NULL},{"tcp-recv",prim_tcp_recv,NULL},
