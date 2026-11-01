@@ -14,6 +14,21 @@
 -- Key and channel pressure, sysex and the other meta events are read and
 -- passed over: render-midi has no use for them. A refusal names the byte:
 -- "midi: a data byte at byte 23 has no running status".
+--
+-- midi-tracks: (bytes -- {'format 'division 'tracks} ok | msg no).  The same
+-- reading, keeping the whole file. A track is a list of events in file order,
+-- one record each: {'tick 'status 'type 'data}. 'tick counts from the track's
+-- start; 'status is the full status byte (128-239 a channel message with its
+-- channel, 240 and 247 sysex, 255 meta); 'type is the meta type, else 0; 'data
+-- holds the bytes after the status (the data bytes, the sysex bytes, the meta
+-- bytes). Running status comes out explicit. The end-of-track event stays.
+-- midi-tracks holds a record per event, each several stack slots, so it stops
+-- near the stack's 2,097,152 slots on a very long file. midi-decode does not:
+-- it builds its string without a record per event.
+-- md-put: (ev tick status channel a b -- ev).  One event, as midi-events writes it.
+('mp-b let 'mp-a let 'mp-c let 'mp-st let 'mp-t let
+ mp-t 24 shr push mp-t 16 shr 255 band push mp-t 8 shr 255 band push mp-t 255 band push
+  mp-st push mp-c push mp-a 16 shr push mp-a 8 shr 255 band push mp-a 255 band push mp-b push) 'md-put let
 ('md-b let md-b len 'md-n let
  -- md-u: (i k -- n).  k bytes from i, big-endian; the caller checked they are there.
  ('mu-k let 'mu-i let mu-i mu-i mu-k plus range 0 ('mu-j let 8 shl mu-j 'md-b nth must bor) fold) 'md-u let
@@ -28,10 +43,90 @@
       vq-n 7 shl vq-b 127 band bor vq-j 1 plus vq-k 1 plus vq-b 128 lt (1) (0) if) if) while
   'vq-fin let drop vq-fin 1 eq) 'md-vlq let
  (int-str) 'md-s let
- -- md-put: (ev tick status channel a b -- ev).  One event, as midi-events writes it.
- ('mp-b let 'mp-a let 'mp-c let 'mp-st let 'mp-t let
-  mp-t 24 shr push mp-t 16 shr 255 band push mp-t 8 shr 255 band push mp-t 255 band push
-  mp-st push mp-c push mp-a 16 shr push mp-a 8 shr 255 band push mp-a 255 band push mp-b push) 'md-put let
+ -- md-sl: (i k -- bytes).  k bytes from i; the caller checked they are there.
+ (over plus range ('md-b nth must) each) 'md-sl let
+ -- md-rec: (tick status type data -- event).
+ ('mr-d let 'mr-y let 'mr-s let 'mr-t let {'tick mr-t 'status mr-s 'type mr-y 'data mr-d}) 'md-rec let
+ -- md-event: (ev i tick run end -- ev i run done err).  The event whose
+ -- status byte, or first data byte under running status, is at i. err is []
+ -- or [msg]; done is 1 after the end-of-track event.
+ ('me-end let 'me-run let 'me-t let 'me-i let
+  me-i 'md-b nth must 'me-s let
+  me-s 128 lt (me-run me-i) (me-s me-i 1 plus) if 'me-j let 'me-st let
+  me-s 128 lt me-run 0 eq and (me-i me-run 0 ["midi: a data byte at byte " me-i md-s cat " has no running status" cat]) (
+  me-st 240 lt (
+    -- a channel message: one data byte for program change and channel pressure, two for the rest
+    me-st 240 band 'me-ty let me-st 15 band 'me-ch let
+    me-ty 192 eq me-ty 208 eq or (1) (2) if 'me-k let
+    me-j me-k plus me-end gt (me-i me-st 0 ["midi: the event at byte " me-i md-s cat " runs past its track" cat]) (
+    me-j 'md-b nth must 'me-a let me-k 2 eq (me-j 1 plus 'md-b nth must) (0) if 'me-d let
+    me-a 127 gt me-d 127 gt or (me-i me-st 0 ["midi: the event at byte " me-i md-s cat " holds a data byte past 127" cat]) (
+      me-t me-st 0 me-k 2 eq ([me-a me-d]) ([me-a]) if md-rec push
+      me-j me-k plus me-st 0 []) if) if) (
+  -- sysex and meta events cancel running status
+  me-st 255 eq me-st 240 eq or me-st 247 eq or not
+    (me-i 0 0 ["midi: byte " me-i md-s cat " holds status " cat me-st md-s cat ", which starts no event in a MIDI file" cat]) (
+  me-st 255 eq (me-j 1 plus) (me-j) if 'me-lj let
+  me-lj me-end ge (me-i 0 0 ["midi: the event at byte " me-i md-s cat " runs past its track" cat]) (
+  me-lj me-end md-vlq 'me-ok let 'me-dj let 'me-len let
+  me-ok not (me-i 0 0 ["midi: the length at byte " me-lj md-s cat " runs past its track or past 4 bytes" cat]) (
+  me-dj me-len plus me-end gt (me-i 0 0 ["midi: the event at byte " me-i md-s cat " says " cat me-len md-s cat " bytes, but " cat me-end me-dj sub md-s cat " remain in its track" cat]) (
+  me-st 255 eq (me-j 'md-b nth must) (0) if 'me-mt let
+  me-t me-st me-mt me-dj me-len md-sl md-rec 'me-rec let
+  me-st 255 eq me-mt 47 eq and (
+    me-dj me-len plus me-end eq (me-rec push me-end 0 1 []) (me-i 0 0 ["midi: the track goes on after its end-of-track event at byte " me-i md-s cat] ) if) (
+  me-st 255 eq me-mt 81 eq and (
+    me-len 3 eq not (me-i 0 0 ["midi: the tempo at byte " me-i md-s cat " holds " cat me-len md-s cat " bytes, not 3" cat]) (
+    me-dj 3 md-u 'me-tempo let
+    me-tempo 0 eq (me-i 0 0 ["midi: the tempo at byte " me-i md-s cat " is 0; a tempo is 1 to 16777215 microseconds a quarter note" cat]) (
+      me-rec push me-dj 3 plus 0 0 []) if) if) (
+  me-rec push me-dj me-len plus 0 0 []) if) if) if) if) if) if) if) if) 'md-event let
+ -- md-track: (start end k -- events err).  Track k's events, from start up to end.
+ ('mt-k let 'mt-end let 'mt-start let
+  [] mt-start 0 0 0 [] ('mc-e let 'mc-d let mc-d mc-e mc-d 0 eq mc-e len 0 eq and) ('tb-e let 'tb-d let 'tb-r let 'tb-t let 'tb-i let
+    tb-i mt-end ge (tb-i tb-t tb-r 0 ["midi: track " mt-k md-s cat " ends at byte " cat mt-end md-s cat " without an end-of-track event" cat]) (
+    tb-i mt-end md-vlq 'tv-ok let 'tv-j let 'tv-n let
+    tv-ok not (tb-i tb-t tb-r 0 ["midi: the delta time at byte " tb-i md-s cat " runs past its track or past 4 bytes" cat]) (
+    tb-t tv-n plus 'tv-t let
+    -- render-midi times a tick at up to 2^24 microseconds; past 2^32 ticks that leaves int64
+    tv-t 4294967295 gt (tb-i tb-t tb-r 0 ["midi: track " mt-k md-s cat " runs past 2^32 ticks at byte " cat tb-i md-s cat]) (
+    tv-j mt-end ge (tb-i tb-t tb-r 0 ["midi: track " mt-k md-s cat " ends at byte " cat mt-end md-s cat " inside an event" cat]) (
+    tv-j tv-t tb-r mt-end md-event 'te-e let 'te-d let 'te-r let 'te-i let
+    te-i tv-t te-r te-d te-e) if) if) if) if) while
+  'tk-e let drop drop drop drop tk-e) 'md-track let
+ md-n 14 lt ("midi: shorter than the 14-byte header" no) (
+ 0 md-id "MThd" eq not ("midi: not a MIDI file: it does not start with MThd" no) (
+ 4 4 md-u 'md-hl let 8 2 md-u 'md-fmt let 10 2 md-u 'md-nt let 12 2 md-u 'md-div let
+ md-hl 6 lt 8 md-hl plus md-n gt or ("midi: the header says " md-hl md-s cat " bytes; it holds 6 or more, within the file" cat no) (
+ md-fmt 1 gt ("midi: format " md-fmt md-s cat " holds independent songs; render-midi plays format 0 and 1" cat no) (
+ md-div 32768 band 0 eq not ("midi: SMPTE time division is not supported" no) (
+ md-div 0 eq ("midi: the time division is 0 ticks a quarter note" no) (
+ md-fmt 0 eq md-nt 1 eq not and ("midi: format 0 holds one track, but the header says " md-nt md-s cat no) (
+   -- chunks after the header: MTrk chunks are tracks, other chunks are passed over
+   [] md-hl 8 plus 0 [] ('cc-e let 'cc-k let 'cc-p let cc-p cc-k cc-e cc-p md-n lt cc-e len 0 eq and) ('cb-e let 'cb-k let 'cb-p let
+     cb-p 8 plus md-n gt (cb-p cb-k ["midi: the " md-n cb-p sub md-s cat " bytes at byte " cat cb-p md-s cat " are too few for a chunk header" cat]) (
+     cb-p 4 plus 4 md-u 'cb-l let cb-p 8 plus cb-l plus 'cb-q let
+     cb-q md-n gt (cb-p cb-k ["midi: the chunk at byte " cb-p md-s cat " says " cat cb-l md-s cat " bytes, but " cat md-n cb-p 8 plus sub md-s cat " remain" cat]) (
+     cb-p md-id "MTrk" eq (cb-p 8 plus cb-q cb-k md-track 'cb-te let push cb-q cb-k 1 plus cb-te) (cb-q cb-k []) if) if) if) while
+   'dk-e let 'dk-k let drop 'md-ev let
+   dk-e len 0 gt (dk-e 0 get must no) (
+   dk-k md-nt eq not ("midi: the header says " md-nt md-s cat " tracks, but the file holds " cat dk-k md-s cat no) (
+   {'format md-fmt 'division md-div 'tracks md-ev} ok) if) if) if) if) if) if) if) if) if) 'midi-tracks let
+
+('md-b let md-b len 'md-n let
+ -- md-u: (i k -- n).  k bytes from i, big-endian; the caller checked they are there.
+ ('mu-k let 'mu-i let mu-i mu-i mu-k plus range 0 ('mu-j let 8 shl mu-j 'md-b nth must bor) fold) 'md-u let
+ (dup 4 plus range ('md-b nth must) each) 'md-id let
+ -- md-vlq: (i end -- n j ok).  A variable-length number from i: seven bits a
+ -- byte, the high bit set on all but the last, at most four bytes before end.
+ ('vq-end let 'vq-i let
+  -- the state is n j k fin: fin is 0 while reading, 1 when done, 2 when cut short or too long
+  0 vq-i 0 0 (dup 0 eq) ('vq-f let 'vq-k let 'vq-j let 'vq-n let
+    vq-j vq-end ge vq-k 4 ge or (vq-n vq-j vq-k 2) (
+      vq-j 'md-b nth must 'vq-b let
+      vq-n 7 shl vq-b 127 band bor vq-j 1 plus vq-k 1 plus vq-b 128 lt (1) (0) if) if) while
+  'vq-fin let drop vq-fin 1 eq) 'md-vlq let
+ (int-str) 'md-s let
  -- md-event: (ev i tick run end -- ev i run done err).  The event whose
  -- status byte, or first data byte under running status, is at i. err is []
  -- or [msg]; done is 1 after the end-of-track event.
@@ -99,6 +194,59 @@
    dk-k md-nt eq not ("midi: the header says " md-nt md-s cat " tracks, but the file holds " cat dk-k md-s cat no) (
    {'division md-div 'events md-ev} ok) if) if) if) if) if) if) if) if) if) 'midi-decode let
 
+-- midi-encode: ({'format 'division 'tracks} -- bytes).  The file midi-tracks
+-- read, written back with delta times and no running status; a track that
+-- lacks an end-of-track event gets one. A record a program built wrong stops
+-- the program: "midi-encode: track 1 event 3: 'tick 5 is before the previous tick 9".
+('ev-n let
+ ev-n 128 lt ([ev-n]) (
+ ev-n 16384 lt ([ev-n 7 shr 128 bor  ev-n 127 band]) (
+ ev-n 2097152 lt ([ev-n 14 shr 128 bor  ev-n 7 shr 127 band 128 bor  ev-n 127 band]) (
+ [ev-n 21 shr 128 bor  ev-n 14 shr 127 band 128 bor  ev-n 7 shr 127 band 128 bor  ev-n 127 band]) if) if) if) 'md-venc let
+('eb-n let [eb-n 24 shr eb-n 16 shr 255 band eb-n 8 shr 255 band eb-n 255 band]) 'md-be32 let
+ -- md-enc-track: (events k -- bytes).  The body of track k's MTrk chunk.
+('et-k let 'et-tr let
+ et-tr {'out "" 'prev 0 'n 0 'eot 0} (
+   'ee-e let 'ee-a let
+   ee-a 'out at 'ee-o let ee-a 'prev at 'ee-p let ee-a 'n at 'ee-n let ee-a 'eot at 'ee-x let
+   ee-e 'tick at 'ee-t let ee-e 'status at 'ee-s let ee-e 'type at 'ee-y let ee-e 'data at 'ee-d let
+   ee-d len 'ee-l let
+   ("midi-encode: track " et-k int-str cat ", event " cat ee-n int-str cat ": " cat) 'ee-w let
+   ee-x 1 eq (ee-w "an event follows the end-of-track event" cat fail) () if
+   ee-t ee-p lt (ee-w "'tick " cat ee-t int-str cat " is before the previous tick " cat ee-p int-str cat fail) () if
+   ee-t ee-p sub 'ee-dt let
+   ee-dt 268435455 gt (ee-w "'tick " cat ee-t int-str cat " is over 268435455 ticks after the previous tick " cat ee-p int-str cat fail) () if
+   ee-s 128 lt ee-s 239 gt or ee-s 240 eq ee-s 247 eq or ee-s 255 eq or not and
+     (ee-w "'status " cat ee-s int-str cat " is not a channel message (128-239), sysex (240, 247) or meta (255)" cat fail) () if
+   ee-s 255 eq not ee-y 0 eq not and (ee-w "'type " cat ee-y int-str cat " must be 0 unless 'status is 255" cat fail) () if
+   ee-y 127 gt ee-y 0 lt or (ee-w "'type " cat ee-y int-str cat " is outside 0-127" cat fail) () if
+   ee-s 240 lt (
+     ee-s 240 band 192 eq ee-s 240 band 208 eq or (1) (2) if 'ee-k let
+     ee-l ee-k eq not (ee-w "'data holds " cat ee-l int-str cat " bytes; status " cat ee-s int-str cat " takes " cat ee-k int-str cat fail) () if) () if
+   ee-s 240 lt (127) (255) if 'ee-m let
+   ee-d 0 ('ec-b let ec-b ee-m gt ec-b 0 lt or or) fold (ee-w "'data holds a byte outside 0-" cat ee-m int-str cat fail) () if
+   -- midi-tracks reads a sysex up to its 247 byte, so a file without it does not read back
+   ee-s 240 eq (ee-l 0 eq (1) (ee-l 1 sub 'ee-d nth must 247 eq not) if) (0) if
+     (ee-w "'data of status 240 must end with 247; it holds " cat ee-l int-str cat " bytes" cat fail) () if
+   ee-o ee-dt md-venc cat
+   ee-s 240 lt ([ee-s] ee-d cat) (ee-s 255 eq ([ee-s ee-y]) ([ee-s]) if ee-l md-venc cat ee-d cat) if cat 'ee-o2 let
+   {'out ee-o2 'prev ee-t 'n ee-n 1 plus 'eot ee-s 255 eq ee-y 47 eq and}) fold
+ 'et-a let et-a 'out at et-a 'eot at 1 eq () ([0 255 47 0] cat) if) 'md-enc-track let
+(
+ 'en-r let
+ en-r 'format at 'en-f let en-r 'division at 'en-d let en-r 'tracks at 'en-t let
+ en-t len 'en-nt let
+ en-f 0 lt en-f 1 gt or ("midi-encode: 'format " en-f int-str cat " is not 0 or 1" cat fail) () if
+ en-d 1 lt en-d 32767 gt or ("midi-encode: 'division " en-d int-str cat " is outside 1-32767 ticks a quarter note" cat fail) () if
+ en-nt 65535 gt ("midi-encode: 'tracks holds " en-nt int-str cat " tracks; a file holds at most 65535" cat fail) () if
+ en-f 0 eq en-nt 1 eq not and ("midi-encode: 'format 0 holds one track, but 'tracks holds " en-nt int-str cat fail) () if
+ "MThd" [0 0 0 6 0 en-f en-nt 8 shr en-nt 255 band en-d 8 shr en-d 255 band] cat 'en-h let
+ en-t {'out en-h 'k 0} (
+   'ef-t let 'ef-a let
+   ef-a 'k at 'ef-k let ef-a 'out at ef-t ef-k md-enc-track 'ef-b let
+   "MTrk" cat ef-b len md-be32 cat ef-b cat 'ef-o let
+   {'out ef-o 'k ef-k 1 plus}) fold 'out at) 'midi-encode let
+
 -- midi-events: (ints -- events).  Five ints an event, tick status channel a
 -- b, as the 10-byte events midi-decode gives: for events a program writes.
 (5 chunks "" ('mv-e let mv-e 0 get must mv-e 1 get must mv-e 2 get must mv-e 3 get must mv-e 4 get must
@@ -142,3 +290,29 @@
 "MThd" [0 0 0 6 0 0 0 1 0 0] cat md-err "midi: the time division is 0 ticks a quarter note" eq assert
 "MThd" [0 0 0 6 0 0 0 2 1 224] cat md-err "midi: format 0 holds one track, but the header says 2" eq assert
 "MThd" [0 0 0 6 0 1 0 2 1 224] cat "MTrk" cat [0 0 0 4 0 255 47 0] cat md-err "midi: the header says 2 tracks, but the file holds 1" eq assert
+-- midi-tracks and midi-encode keep the whole file
+-- two tracks: a name, a device name (FF 09), a tempo, a sysex; then running status, pressure, a program change
+('tk let "MTrk" [0 0 0 tk len] cat tk cat) 'md-trk let
+"MThd" [0 0 0 6 0 1 0 2 1 224] cat
+  [0 255 3 4] "Song" cat [0 255 9 3] cat "Pno" cat [0 255 81 3 7 161 32  0 240 3 1 2 247  0 255 47 0] cat md-trk cat
+  [0 144 60 100  10 62 100  10 128 60 0  0 160 60 50  0 192 5  0 255 47 0] md-trk cat 'md-two let
+md-two midi-tracks must 'md-tr let
+md-tr 'format at 1 eq assert
+md-tr 'division at 480 eq assert
+md-tr 'tracks at len 2 eq assert
+md-tr 'tracks at 0 get must 1 get must 'data at "Pno" eq assert
+-- running status turns explicit; every event stays, the pressure and the sysex too
+md-tr 'tracks at 1 get must
+  [{'tick 0 'status 144 'type 0 'data [60 100]} {'tick 10 'status 144 'type 0 'data [62 100]}
+   {'tick 20 'status 128 'type 0 'data [60 0]} {'tick 20 'status 160 'type 0 'data [60 50]}
+   {'tick 20 'status 192 'type 0 'data [5]} {'tick 20 'status 255 'type 47 'data []}] eq assert
+md-tr 'tracks at 0 get must 3 get must {'tick 0 'status 240 'type 0 'data [1 2 247]} eq assert
+-- the round trip keeps the record, and a second encode keeps the bytes
+md-tr midi-encode midi-tracks must md-tr eq assert
+md-tr midi-encode midi-tracks must midi-encode md-tr midi-encode eq assert
+-- a track without an end-of-track event gets one; a device name written as a string
+{'format 0 'division 96 'tracks [[{'tick 0 'status 255 'type 9 'data "Pno"} {'tick 5 'status 144 'type 0 'data [60 100]}]]} midi-encode
+  "MThd" [0 0 0 6 0 0 0 1 0 96] cat [0 255 9 3] "Pno" cat [5 144 60 100  0 255 47 0] cat md-trk cat eq assert
+-- delta times of two, three and four bytes
+{'format 0 'division 96 'tracks [[{'tick 200 'status 192 'type 0 'data [1]} {'tick 20000 'status 192 'type 0 'data [2]} {'tick 3000000 'status 192 'type 0 'data [3]}]]} midi-encode midi-tracks must 'tracks at
+  0 get must 2 get must 'tick at 3000000 eq assert

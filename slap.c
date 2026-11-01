@@ -1394,6 +1394,39 @@ static int ty_in_prelude;
 /* The end of the program's tokens, for a look ahead past the range being checked. */
 static int ty_tok_end;
 static void ty_err(int line, const char *fmt, ...);
+/* A read past this dies: 64 MiB is far more than any app here reads, and a test of the limit stays cheap. */
+#define READ_MAX (64 << 20)
+/* Error path only: names the first examples/lib file that defines `'word let`, so the message can say what to cat.
+   Any failure (no directory, unreadable file, file past READ_MAX, past 256 files) just finds nothing.
+   REVIEW: The hint is a text search for `'word let` under examples/lib in the working directory. Alternative: an index built by make, which costs a build step and a generated file. */
+static const char *lib_defining(const char *word) {
+    static char out[512];
+    out[0] = 0;
+    DIR *d = opendir("examples/lib");
+    if (!d) return out;
+    char needle[256]; int nl = snprintf(needle, sizeof needle, "'%s let", word), seen = 0;
+    if (nl <= 0 || nl >= (int)sizeof needle) { closedir(d); return out; }
+    struct dirent *de;
+    while ((de = readdir(d)) && seen < 256) {
+        size_t n = strlen(de->d_name);
+        if (n < 6 || strcmp(de->d_name + n - 5, ".slap")) continue;
+        seen++;
+        char path[512]; if (snprintf(path, sizeof path, "examples/lib/%s", de->d_name) >= (int)sizeof path) continue;
+        struct stat st; if (stat(path, &st) || !S_ISREG(st.st_mode) || st.st_size > READ_MAX) continue;
+        FILE *f = fopen(path, "rb"); if (!f) continue;
+        char *buf = malloc((size_t)st.st_size + 1);
+        size_t got = buf ? fread(buf, 1, (size_t)st.st_size, f) : 0; fclose(f);
+        int hit = 0;
+        if (buf) { buf[got] = 0;
+            for (char *q = buf; (q = strstr(q, needle)); q += nl) {
+                char after = q[nl];
+                if (!(after == '_' || after == '-' || isalnum((unsigned char)after))) { hit = 1; break; } } }
+        free(buf);
+        if (hit) { memcpy(out, path, strlen(path) + 1); break; }
+    }
+    closedir(d);
+    return out;
+}
 /* Words the runtime reads as forms, not bindings. */
 static int ty_reserved(uint32_t sym) {
     return sym == S_LET || sym == S_EFFECT || sym == S_TAG || sym == S_CASE || sym == S_NTH
@@ -1866,7 +1899,9 @@ static void ty_range(Token *toks, int i, int end) {
             { int later = 0;
               for (int j = i + 1; j + 1 < ty_tok_end && !later; j++) if (toks[j].tag == TOK_SYM && toks[j].as.sym == w && toks[j+1].tag == TOK_WORD && toks[j+1].as.sym == S_LET) later = toks[j].line;
               if (later) ty_err(line, "unknown word '%s': it is defined later, on line %d. A word used before its definition needs `'%s [ins] [outs] effect` before its first use.", sym_name(w), later, sym_name(w));
-              else ty_err(line, "unknown word '%s'.", sym_name(w)); }
+              else { const char *libs = lib_defining(sym_name(w));
+                  if (*libs) ty_err(line, "unknown word '%s': %s defines it; cat that file before the file that uses it.", sym_name(w), libs);
+                  else ty_err(line, "unknown word '%s'.", sym_name(w)); } }
             break;
         }
         default: break;
@@ -3094,8 +3129,6 @@ static int path_has_nul(const char *path, int len) {
     if (!memchr(path, 0, len)) return 0;
     push_path_fail(path, len, "contains a NUL byte"); return 1;
 }
-/* A read past this dies: 64 MiB is far more than any app here reads, and a test of the limit stays cheap. */
-#define READ_MAX (64 << 20)
 static void prim_read(Frame *e) {
     (void)e; int plen;char *path=pop_string_path("read",&plen);
     if(path_has_nul(path,plen)){free(path);return;}

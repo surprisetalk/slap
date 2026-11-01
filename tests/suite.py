@@ -805,6 +805,23 @@ def steps(slow):
                 f" | cat {lib('strings', 'midi')} - | ./slap",
                 lambda o: o.split() == ["94208"],
             ),
+            # midi-encode stops a program that built a bad record, and the message names the field
+            "midi-encode names the bad field": (
+                "{ for ev in \"144 [60 200]\" \"144 [60 -1]\" \"240 [256]\" \"255 [-1]\"; do"
+                " o=$(echo \"{'format 0 'division 96 'tracks [[{'tick 5 'status ${ev%% *} 'type 0 'data ${ev#* }}]]} midi-encode print\""
+                f" | cat {lib('strings', 'midi')} - | ./slap 2>&1) && echo exit-0; echo \"$o\" | grep -m1 'midi-encode: track'; done;"
+                # a sysex that lacks its 247, a tick before the previous tick, an event after the end-of-track
+                " for tr in \"{'tick 5 'status 240 'type 0 'data [1 2]}\""
+                " \"{'tick 5 'status 192 'type 0 'data [1]} {'tick 3 'status 192 'type 0 'data [1]}\""
+                " \"{'tick 0 'status 255 'type 47 'data []} {'tick 0 'status 192 'type 0 'data [1]}\"; do"
+                " o=$(echo \"{'format 0 'division 96 'tracks [[$tr]]} midi-encode print\""
+                f" | cat {lib('strings', 'midi')} - | ./slap 2>&1) && echo exit-0; echo \"$o\" | grep -m1 'midi-encode: track'; done; }}",
+                lambda o: o.count("midi-encode: track 0, event 0: 'data holds a byte") == 4
+                and [l.strip() for l in o.splitlines()].count("midi-encode: track 0, event 0: 'data of status 240 must end with 247; it holds 2 bytes") == 1
+                and [l.strip() for l in o.splitlines()].count("midi-encode: track 0, event 1: 'tick 3 is before the previous tick 5") == 1
+                and [l.strip() for l in o.splitlines()].count("midi-encode: track 0, event 1: an event follows the end-of-track event") == 1
+                and "exit-0" not in o,
+            ),
             "utils": ("python3 tests/run_utils.py", None),
             "lua": ("python3 tests/run_lua.py", None),
         }
@@ -844,7 +861,7 @@ def steps(slow):
             with open(path, "w") as f:
                 f.write(sec + "\n")
             out[f"tests/scale.slap:{line}"] = (
-                f"cat {lib('strings', 'parse', 'json', 'xml', 'rss', 'http', 'cbor')} {path} | ./slap",
+                f"cat {lib('strings', 'parse', 'json', 'xml', 'rss', 'http', 'cbor', 'midi')} {path} | ./slap",
                 None,
             )
         line += sec.count("\n") + 2

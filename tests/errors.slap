@@ -88,6 +88,9 @@ false assert
 -- EXPECT: unknown word
 nonexistent_word_xyz
 
+-- EXPECT: examples/lib/strings.slap defines it; cat that file before the file that uses it
+5 int-str
+
 -- EXPECT: index 5 out of bounds
 [1 2 3] 5 99 set must
 

@@ -1,15 +1,5 @@
 ## Open
 
-- [ ] You run a program that lacks a library, and the error names the file
-      to cat: `unknown word 'int-str': examples/lib/strings.slap defines
-      it; cat that file before the file that uses it`. Decided: files
-      compose by `cat` (readme.md, Pending design).
-  1. Failing case first in tests/errors.slap: a program that calls
-     `int-str` without strings.slap.
-  2. At the unknown-word site in slap.c, on the error path only, look for
-     `'word let` in examples/lib/*.slap under the working directory; with
-     no match or no directory, keep today's message.
-
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps
       only, a launcher like iOS's; later, apps take partial width (full
@@ -59,10 +49,9 @@
      at the start of the track: the font's file name, found in the font
      directory midi's state.cbor names. A missing font stops the work
      with its name.
-  4. Teach examples/lib/midi.slap to encode SMF, and to keep each track's
-     FF 09, to edit those tick-0 events. Type 0 holds one track, so one
-     font: midi splits it into a track per channel (type 1) on its first
-     write.
+  4. midi splits a type 0 file into a track per channel (type 1) on its
+     first write, with midi-tracks and midi-encode: type 0 holds one
+     track, so one font.
   5. A channel that two tracks with different fonts share stops the work
      with both track names; tsf renders by channel.
   6. Render whole: BWV 582 (12 min) decodes in 59 ms and renders in 1.7 s
@@ -100,8 +89,9 @@
       60, LilyPond's default with no `\tempo`: BWV 565's Adagio and
       Prestissimo play at one speed.
   1. Per work, store a stretch inside the .mid: scale its own FF 51 tempo
-     events, as midi's editor will. Never a flag on render.sh. Needs
-     midi.slap to encode SMF (midi entry, step 4).
+     events with midi-tracks and midi-encode, as midi's editor will. Never
+     a flag on render.sh. Write the stretched file beside the source, never
+     over it.
   2. Stretch piano-midi.de works to their median recording length; the
      audit's scripts and results are in ~/Music/renders/tempo-audit.
   3. For BWV 565 and the other eight (tempo.tsv: one event, 60), find a

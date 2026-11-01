@@ -63,3 +63,6 @@
 [154 0 4 147 224] 300000 (1 push) repeat (ok) cd-run {'ok (drop 1) 'no (drop 0)} case assert
 [122 0 4 147 224] 300000 (120 push) repeat (ok) cd-run {'ok ({'str (len) '_ (drop -1)} case) 'no (drop -1)} case 300000 eq assert
 0 40000 range [] ('k let {'name "k" k int-str cat 'value 1 ce-int} push) fold ce-map (ok) cd-run {'ok ({'map (len) '_ (drop -1)} case) 'no (drop -1)} case 40000 eq assert
+
+-- midi.slap: midi-decode reads 200000 note events, which midi-tracks' record a event would not fit
+"MThd" [0 0 0 6 0 0 0 1 0 96] cat "MTrk" cat [0 12 53 4] cat [] 200000 (0 push 144 push 60 push 100 push) repeat cat [0 255 47 0] cat midi-decode must 'events at len 2000000 eq assert
