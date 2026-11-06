@@ -19,5 +19,6 @@ for f in dump textfile filter; do eval "$CC -c -o $f.o $f.cpp"; done
 make -C . libzepto8.la >/dev/null
 LINK=$(make -n ../z8tool 2>&1 | grep "^echo.*CXXLD" | sed "s/^echo [^;]*;//; s/-o ..\/z8tool .*//")
 eval "$LINK -o ../../dump.bin dump.o textfile.o filter.o libzepto8.la -lm -lpthread"
+# shellcheck disable=SC2016 # the $ belong to the script that printf writes.
 printf '#!/bin/sh\nc=$(realpath "$1") || exit 1\ncd ~/scratch/zepto8/src/src && exec ../../dump.bin "$c" "$2"\n' > ../../dump
 chmod +x ../../dump

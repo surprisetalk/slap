@@ -11,6 +11,7 @@ for cart in *.p8; do
   [ -n "$n" ] || { echo "$cart: no '-- frames: N' line" >&2; exit 1; }
   grep -q '_update60' "$cart" || n=$((n * 2))
   scp -q "$cart" "taylor@100.97.122.7:scratch/zepto8/$cart"
+  # shellcheck disable=SC2029 # $cart and $n expand here on purpose; the remote gets plain words.
   ssh taylor@100.97.122.7 "cd ~/scratch/zepto8 && ./dump ~/scratch/zepto8/$cart $n" > "${cart%.p8}.ref"
   [ "$(wc -l < "${cart%.p8}.ref")" -ge 128 ] || { echo "$cart: zepto8 gave no screen" >&2; exit 1; }
 done
