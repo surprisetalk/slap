@@ -261,7 +261,7 @@
 -- num and den above 1000000 stop it: 2 times 16777215 times num must fit 64 bits.
 -- A result outside 1-16777215 stops the program, naming the track, tick and
 -- value: "midi-stretch: track 0, tick 480: tempo 9000000 times 3/1 is 27000000, outside 1-16777215".
--- REVIEW: Stretch the tempo events and leave every tick alone. Alternative: scale the ticks and keep the tempos. It changes the 'division range and rounds every note time, where a tempo rounds once.
+-- Stretch the tempo events and leave every tick alone. Alternative: scale the ticks and keep the tempos. It changes the 'division range and rounds every note time, where a tempo rounds once.
 ('ms-d let 'ms-n let 'ms-r let
  ms-n 1 lt ms-d 1 lt or ms-n 1000000 gt or ms-d 1000000 gt or ("midi-stretch: num and den must be 1-1000000; received " ms-n int-str cat "/" cat ms-d int-str cat fail) () if
  ms-r 'tracks at 'ms-tr let

@@ -35,7 +35,7 @@ args len 1 ge args len 2 le and () ("usage: cat examples/lib/strings.slap exampl
 args 0 get must 'lua-path let
 lua-path read {'ok () 'no ('e let "lua: cannot read " e cat fail)} case 'lua-bytes let
 lua-bytes 16 take-n "pico-8 cartridge" eq 'IS-CART let
--- REVIEW: A .lua file is a tic80 cart when a line says `-- script: lua`, tic80's own metadata tag. Alternative: a .tic file. It needs a binary chunk reader here and in the dumper, and the cart could not be read as text.
+-- A .lua file is a tic80 cart when a line says `-- script: lua`, tic80's own metadata tag. Alternative: a .tic file. It needs a binary chunk reader here and in the dumper, and the cart could not be read as text.
 "\n" lua-bytes cat "\n-- script: lua" str-find {'ok (drop 1) 'no (drop 0)} case IS-CART not and 'IS-TIC let
 
 -- ===== tokens =====
@@ -1521,8 +1521,8 @@ DPAL-B 16 plus 'TPAL-B let  TPAL-B 48 plus 'TSIDE-B let
  "rawequal" "rawlen" "cocreate" "coresume" "costatus" "yield" "load" "run" "split" "flip" "assert" "select" "error"] 'UNSUPPORTED-P8 let
 
 -- ===== tic80's API =====
--- REVIEW: A tic80 cart gets no pico8 prelude (flr, add, rnd, ...) and no `math`: tic80's Lua has `math.*`, which lua.slap lacks. Alternative: keep the prelude, which gives a cart pico8 names tic80 does not have and 16.16 rounding it would not expect.
--- REVIEW: The tic80 draw words are separate from pico8's (_px, _rect, _circle, _line). Alternative: one set parameterised by screen size and camera; tic80's circle, line and triangle differ in algorithm, so the shared code would branch on every pixel.
+-- A tic80 cart gets no pico8 prelude (flr, add, rnd, ...) and no `math`: tic80's Lua has `math.*`, which lua.slap lacks. Alternative: keep the prelude, which gives a cart pico8 names tic80 does not have and 16.16 rounding it would not expect.
+-- The tic80 draw words are separate from pico8's (_px, _rect, _circle, _line). Alternative: one set parameterised by screen size and camera; tic80's circle, line and triangle differ in algorithm, so the shared code would branch on every pixel.
 -- The second API table, bound instead of pico8's when the cart is tic80's. The screen is 240x136,
 -- a palette index a cell from SCREEN-B, and the draw calls follow TIC-80's core (src/core/draw.c)
 -- so a cart's screen matches it pixel for pixel. A coordinate is the 16.16 number cut toward zero,

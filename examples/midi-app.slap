@@ -77,7 +77,7 @@
 -- ===== state.cbor =====
 -- {"mid": path, "font": path}, a CBOR map: the file opened last and the font
 -- that bounces it.
--- REVIEW: The font enters state.cbor from the command line: STATE.cbor [FILE.mid [FONT.sf2]]. A FONT is kept and the next run needs no argument. Alternative: a key that types the path in the window. It needs a text field and its own keys, and the command line already holds every path.
+-- The font enters state.cbor from the command line: STATE.cbor [FILE.mid [FONT.sf2]]. A FONT is kept and the next run needs no argument. Alternative: a key that types the path in the window. It needs a text field and its own keys, and the command line already holds every path.
 ('se-s let [{'name "mid" 'value se-s 'mid at ce-str} {'name "font" 'value se-s 'font at ce-str}] ce-map) 'state-encode let
 (('sd-cv let sd-cv "mid" cd-str cd-field apply ('sd-mid let sd-cv "font" cd-str cd-field apply ('sd-font let
   {'mid sd-mid 'font sd-font} ok) then) then) cd-run) 'state-decode let
