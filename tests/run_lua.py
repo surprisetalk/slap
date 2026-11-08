@@ -3,38 +3,39 @@
 exactly what the system `lua` prints; pico8-only syntax prints what pico8
 would; and each refused program dies with its message and line."""
 
-import concurrent.futures, glob, os, re, subprocess, sys, tempfile
+import atexit, concurrent.futures, glob, os, re, shutil, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
 
 check, count = harness.make_check("lua")
 tmp = tempfile.mkdtemp(prefix="slap-lua-")
+atexit.register(shutil.rmtree, tmp)
 SRC = b"".join(
     open(f, "rb").read() for f in ["examples/lib/strings.slap", "examples/lua.slap"]
 )
+# Every ./slap starts at once, since each spends most of its time checking
+# lua.slap, and the checks read the results in order.
+POOL = concurrent.futures.ThreadPoolExecutor(os.cpu_count())
 
 
-def run(path):
-    return subprocess.run(["./slap", path], input=SRC, capture_output=True, timeout=60)
+def slap(*args, cmd="./slap", input=SRC):
+    return POOL.submit(subprocess.run, [cmd, *args], input=input, capture_output=True, timeout=60)
 
 
-def run_text(name, text):
-    path = os.path.join(tmp, name + ".lua")
+def write(name, text):
+    path = os.path.join(tmp, name)
     with open(path, "w") as f:
         f.write(text)
-    return run(path)
+    return path
 
 
-for path in sorted(glob.glob("tests/lua/*.lua")):
-    want = subprocess.run(["lua", path], capture_output=True, timeout=60)
-    check(f"system lua runs {path}", want.returncode == 0, want.stderr.decode())
-    got = run(path)
-    check(
-        path,
-        got.returncode == 0 and got.stdout == want.stdout,
-        f"exit {got.returncode}\nwant {want.stdout[:400]!r}\ngot  {got.stdout[:400]!r}\n{got.stderr.decode()[-600:]}",
-    )
+def frames(path):
+    m = re.search(r"^-- frames: (\d+)$", open(path).read(), re.M)
+    if not m:
+        sys.exit(f"lua: {path} has no '-- frames: N' line")
+    return m.group(1)
+
 
 # pico8's own syntax, which the system lua cannot run.
 PICO8 = [
@@ -90,23 +91,6 @@ PICO8 = [
     ("numbers print as %1.4f does", "print(0x0.08, -0x0.0003, 3.03125, 0x0.0001)", "0.0312\t-0\t3.0312\t0\n"),
     ("question print", "?1, 'two'\n? 3", "1\ttwo\n3\n"),
 ]
-# Each program is a separate ./slap; they run in parallel and are checked in order.
-POOL = concurrent.futures.ThreadPoolExecutor(os.cpu_count())
-
-
-def run_all(cases):
-    return POOL.map(lambda c: run_text(c[0].replace(" ", "-"), c[1]), cases)
-
-
-# The cases run as one program, each in its own block after a "#n" line, since
-# each ./slap spends most of its time checking lua.slap.
-r = run_text("pico8", "\n".join(f"print('#{i}')\ndo\n{text}\nend" for i, (_, text, _) in enumerate(PICO8)))
-out = r.stdout.decode().split("\n")
-marks = [out.index(f"#{i}") if f"#{i}" in out else len(out) for i in range(len(PICO8))] + [len(out) - 1]
-for i, (name, text, want) in enumerate(PICO8):
-    got = "".join(line + "\n" for line in out[marks[i] + 1 : marks[i + 1]])
-    check(f"pico8 {name}", got == want, f"exit {r.returncode}\nwant {want!r}\ngot  {got!r}\n{r.stderr.decode()[-600:]}")
-
 # Each program dies, exit 1, and its message names the line.
 ERRORS = [
     (
@@ -176,14 +160,6 @@ ERRORS = [
         "lua: line 1: an expression nests deeper than 200 levels",
     ),
 ]
-for (name, text, want), r in zip(ERRORS, run_all(ERRORS)):
-    err = r.stderr.decode()
-    check(
-        f"error {name}",
-        r.returncode == 1 and want in err,
-        f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}",
-    )
-
 # Carts: the .p8 text format.
 HEAD = "pico-8 cartridge // http://www.pico-8.com\nversion 42\n"
 CARTS = [
@@ -193,53 +169,6 @@ CARTS = [
     ("cart error line", "__lua__\nx = 1\nx = x + nil\n", "lua: line 5: attempt to perform arithmetic on a nil value"),
     ("frame loop error", "__lua__\n_update = 5\n", "lua: the frame loop's line 2: attempt to call a number value"),
 ]
-for name, text, want in CARTS:
-    path = os.path.join(tmp, name.replace(" ", "-") + ".p8")
-    with open(path, "w") as f:
-        f.write(HEAD + text)
-    r = subprocess.run(["./slap", path, "2"], input=SRC, capture_output=True, timeout=60)
-    err = r.stderr.decode()
-    check(f"cart {name}", r.returncode == 1 and want in err, f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}")
-path = os.path.join(tmp, "frames.p8")
-with open(path, "w") as f:
-    f.write(HEAD + "__lua__\nn = 0\nfunction _update() n = n + 1 end\nfunction _draw() pset(n, 100, 7) ?'hi' end\n")
-r = subprocess.run(["./slap", path, "3"], input=SRC, capture_output=True, timeout=60)
-rows = r.stdout.split()
-check("cart dump", r.returncode == 0 and len(rows) == 128 and rows[100][:4] == b"0777" and b"7" in rows[0], r.stdout[:300] + r.stderr[-600:])
-# A print far below the screen scrolls it and leaves the sprite sheet alone.
-path = os.path.join(tmp, "scroll.p8")
-with open(path, "w") as f:
-    f.write(HEAD + "__lua__\nfunction _draw() local s = '' for i = 1, 50 do s = s .. '\\n' end print(s .. 'x') printh(sget(0, 0)) end\n__gfx__\n5" + "0" * 127 + "\n")
-r = subprocess.run(["./slap", path, "1"], input=SRC, capture_output=True, timeout=60)
-check("print scrolls only the screen", r.returncode == 0 and r.stdout.startswith(b"5\n"), r.stdout[:200] + r.stderr[-600:])
-for arg in ["abc", "-1", "", "123456"]:
-    r = subprocess.run(["./slap", path, arg], input=SRC, capture_output=True, timeout=60)
-    check(f"frame count {arg!r}", r.returncode == 1 and b"lua: the frame count must be 1 to 5 digits up to 32767" in r.stderr, r.stderr.decode()[-600:])
-# Each tests/pico8 cart draws what zepto8 drew, each tests/tic80 cart what
-# TIC-80's core drew: refs.sh in each directory made the .ref files, after the
-# frames the cart's "-- frames: N" line names.
-def cart_diff(path, w=128, h=128):
-    m = re.search(r"^-- frames: (\d+)$", open(path).read(), re.M)
-    if not m:
-        sys.exit(f"lua: {path} has no '-- frames: N' line")
-    n = m.group(1)
-    r = subprocess.run(["./slap", path, n], input=SRC, capture_output=True, timeout=60)
-    want = open(os.path.splitext(path)[0] + ".ref", "rb").read().split(b"\n")
-    got = r.stdout.split(b"\n")
-    if want[: -h - 1] != got[: -h - 1]:
-        return r, False, f"printh lines differ: want {want[: -h - 1][:5]} got {got[: -h - 1][:5]}"
-    want, got = want[-h - 1 : -1], got[-h - 1 : -1]
-    bad = [(y, x) for y in range(min(len(want), len(got))) for x in range(w) if want[y][x : x + 1] != got[y][x : x + 1]]
-    same = len(want) == len(got) == h and all(len(row) == w for row in want + got) and not bad
-    return r, same, f"{len(bad)} pixels differ, first at (x, y) = {bad[0][::-1] if bad else None}"
-
-
-CARTS_P8 = sorted(glob.glob("tests/pico8/*.p8"))
-for path, (r, same, why) in zip(CARTS_P8, POOL.map(cart_diff, CARTS_P8)):
-    check(f"{path} matches zepto8", r.returncode == 0 and same, f"exit {r.returncode}: {why}\n{r.stderr.decode()[-600:]}")
-CARTS_TIC = sorted(glob.glob("tests/tic80/*.lua"))
-for path, (r, same, why) in zip(CARTS_TIC, POOL.map(lambda p: cart_diff(p, 240, 136), CARTS_TIC)):
-    check(f"{path} matches TIC-80", r.returncode == 0 and same, f"exit {r.returncode}: {why}\n{r.stderr.decode()[-600:]}")
 TIC_ERRORS = [
     ("integer division", "x = 7 // 2\nfunction TIC() end", "lua: line 3: tic80's // (integer division) is not supported"),
     ("sprites", "function TIC() spr(0, 0, 0) end", "tic80's 'spr' is not supported"),
@@ -251,46 +180,117 @@ TIC_ERRORS = [
     ("poke bits", "function TIC() poke(16320, 1, 4) end", "tic80's poke writes only 8 bits, not 4"),
     ("no TIC", "x = 1", "attempt to call a nil value"),
 ]
-for name, text, want in TIC_ERRORS:
-    path = os.path.join(tmp, "tic-" + name.replace(" ", "-") + ".lua")
-    with open(path, "w") as f:
-        f.write("-- title: t\n-- script: lua\n" + text + "\n")
-    r = subprocess.run(["./slap", path, "1"], input=SRC, capture_output=True, timeout=60)
-    err = r.stderr.decode()
-    check(f"tic80 {name}", r.returncode == 1 and want in err, f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}")
-# The palette lives in RAM at 0x3FC0 and a poke changes it; trace prints one line per call.
-path = os.path.join(tmp, "tic-ram.lua")
-with open(path, "w") as f:
-    f.write("-- script: lua\nfunction TIC() poke(16320, 7) trace(peek(16320)) trace(peek(16321)) trace(time()) end\n")
-r = subprocess.run(["./slap", path, "3"], input=SRC, capture_output=True, timeout=60)
-check("tic80 palette in RAM", r.returncode == 0 and r.stdout.split(b"\n")[:6] == [b"7", b"28", b"0", b"7", b"28", b"16.6667"], r.stdout[:200] + r.stderr[-600:])
 
+LUA = [(path, slap(path, cmd="lua", input=None), slap(path)) for path in sorted(glob.glob("tests/lua/*.lua"))]
+# The cases run as one program, each in its own block after a "#n" line, since
+# each ./slap spends most of its time checking lua.slap.
+PICO8_RUN = slap(write("pico8.lua", "\n".join(f"print('#{i}')\ndo\n{text}\nend" for i, (_, text, _) in enumerate(PICO8))))
+ERROR_RUNS = [slap(write(name.replace(" ", "-") + ".lua", text)) for name, text, _ in ERRORS]
+CART_RUNS = [slap(write(name.replace(" ", "-") + ".p8", HEAD + text), "2") for name, text, _ in CARTS]
+FRAMES_RUN = slap(write("frames.p8", HEAD + "__lua__\nn = 0\nfunction _update() n = n + 1 end\nfunction _draw() pset(n, 100, 7) ?'hi' end\n"), "3")
+scroll = write("scroll.p8", HEAD + "__lua__\nfunction _draw() local s = '' for i = 1, 50 do s = s .. '\\n' end print(s .. 'x') printh(sget(0, 0)) end\n__gfx__\n5" + "0" * 127 + "\n")
+SCROLL_RUN = slap(scroll, "1")
+COUNT_RUNS = [(arg, slap(scroll, arg)) for arg in ["abc", "-1", "", "123456"]]
+CARTS_P8 = sorted(glob.glob("tests/pico8/*.p8"))
+CARTS_TIC = sorted(glob.glob("tests/tic80/*.lua"))
+CART_DIFFS = {path: slap(path, frames(path)) for path in CARTS_P8 + CARTS_TIC}
+TIC_RUNS = [slap(write("tic-" + name.replace(" ", "-") + ".lua", "-- title: t\n-- script: lua\n" + text + "\n"), "1") for name, text, _ in TIC_ERRORS]
+TIC_RAM_RUN = slap(write("tic-ram.lua", "-- script: lua\nfunction TIC() poke(16320, 7) trace(peek(16320)) trace(peek(16321)) trace(time()) end\n"), "3")
 # The SDL shell, headless: a held left arrow reaches btn(0), and the view the
 # render body draws holds the cart's screen.
 if os.path.exists("./slap-sdl"):
-    path = os.path.join(tmp, "btn.p8")
-    with open(path, "w") as f:
-        f.write(HEAD + "__lua__\nfunction _draw() cls(1) if btn(0) then pset(0, 0, 8) end end\n")
     driver = (
         "('tf let tf 2 eq (1073741904 1 key!) () if"
         " tf 5 eq (dup 'screen at dup 0 get must print 1 get must print \"test-done\" fail) () if) 'tick on show\n"
     )
     sdl = open("examples/lua-sdl.slap").read()
     sdl = sdl[: sdl.rindex(") show")] + ") 'render let\n"
-    r = subprocess.run(["./slap-sdl", "--headless", path], input=SRC + sdl.encode() + b"(render)" + driver.encode(), capture_output=True, timeout=60)
+    btn = write("btn.p8", HEAD + "__lua__\nfunction _draw() cls(1) if btn(0) then pset(0, 0, 8) end end\n")
+    SDL_RUN = slap("--headless", btn, cmd="./slap-sdl", input=SRC + sdl.encode() + b"(render)" + driver.encode())
+NEED_CART_RUN = slap(write("frames-need-a-cart.lua", "print(1)"), "3")
+NO_ARG_RUN = slap()
+MISSING_RUN = slap(os.path.join(tmp, "missing.lua"))
+
+for path, want, got in LUA:
+    want = want.result()
+    check(f"system lua runs {path}", want.returncode == 0, want.stderr.decode())
+    got = got.result()
+    check(
+        path,
+        got.returncode == 0 and got.stdout == want.stdout,
+        f"exit {got.returncode}\nwant {want.stdout[:400]!r}\ngot  {got.stdout[:400]!r}\n{got.stderr.decode()[-600:]}",
+    )
+
+r = PICO8_RUN.result()
+out = r.stdout.decode().split("\n")
+marks = [out.index(f"#{i}") if f"#{i}" in out else len(out) for i in range(len(PICO8))] + [len(out) - 1]
+for i, (name, text, want) in enumerate(PICO8):
+    got = "".join(line + "\n" for line in out[marks[i] + 1 : marks[i + 1]])
+    check(f"pico8 {name}", got == want, f"exit {r.returncode}\nwant {want!r}\ngot  {got!r}\n{r.stderr.decode()[-600:]}")
+
+for (name, text, want), r in zip(ERRORS, ERROR_RUNS):
+    r = r.result()
+    err = r.stderr.decode()
+    check(
+        f"error {name}",
+        r.returncode == 1 and want in err,
+        f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}",
+    )
+
+for (name, text, want), r in zip(CARTS, CART_RUNS):
+    r = r.result()
+    err = r.stderr.decode()
+    check(f"cart {name}", r.returncode == 1 and want in err, f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}")
+r = FRAMES_RUN.result()
+rows = r.stdout.split()
+check("cart dump", r.returncode == 0 and len(rows) == 128 and rows[100][:4] == b"0777" and b"7" in rows[0], r.stdout[:300] + r.stderr[-600:])
+# A print far below the screen scrolls it and leaves the sprite sheet alone.
+r = SCROLL_RUN.result()
+check("print scrolls only the screen", r.returncode == 0 and r.stdout.startswith(b"5\n"), r.stdout[:200] + r.stderr[-600:])
+for arg, r in COUNT_RUNS:
+    r = r.result()
+    check(f"frame count {arg!r}", r.returncode == 1 and b"lua: the frame count must be 1 to 5 digits up to 32767" in r.stderr, r.stderr.decode()[-600:])
+# Each tests/pico8 cart draws what zepto8 drew, each tests/tic80 cart what
+# TIC-80's core drew: refs.sh in each directory made the .ref files, after the
+# frames the cart's "-- frames: N" line names.
+def cart_diff(path, w=128, h=128):
+    r = CART_DIFFS[path].result()
+    want = open(os.path.splitext(path)[0] + ".ref", "rb").read().split(b"\n")
+    got = r.stdout.split(b"\n")
+    if want[: -h - 1] != got[: -h - 1]:
+        return r, False, f"printh lines differ: want {want[: -h - 1][:5]} got {got[: -h - 1][:5]}"
+    want, got = want[-h - 1 : -1], got[-h - 1 : -1]
+    bad = [(y, x) for y in range(min(len(want), len(got))) for x in range(w) if want[y][x : x + 1] != got[y][x : x + 1]]
+    same = len(want) == len(got) == h and all(len(row) == w for row in want + got) and not bad
+    return r, same, f"{len(bad)} pixels differ, first at (x, y) = {bad[0][::-1] if bad else None}"
+
+
+for path, (r, same, why) in zip(CARTS_P8, map(cart_diff, CARTS_P8)):
+    check(f"{path} matches zepto8", r.returncode == 0 and same, f"exit {r.returncode}: {why}\n{r.stderr.decode()[-600:]}")
+for path, (r, same, why) in zip(CARTS_TIC, map(lambda p: cart_diff(p, 240, 136), CARTS_TIC)):
+    check(f"{path} matches TIC-80", r.returncode == 0 and same, f"exit {r.returncode}: {why}\n{r.stderr.decode()[-600:]}")
+for (name, text, want), r in zip(TIC_ERRORS, TIC_RUNS):
+    r = r.result()
+    err = r.stderr.decode()
+    check(f"tic80 {name}", r.returncode == 1 and want in err, f"exit {r.returncode}\nwant {want!r}\n{err[-600:]}")
+# The palette lives in RAM at 0x3FC0 and a poke changes it; trace prints one line per call.
+r = TIC_RAM_RUN.result()
+check("tic80 palette in RAM", r.returncode == 0 and r.stdout.split(b"\n")[:6] == [b"7", b"28", b"0", b"7", b"28", b"16.6667"], r.stdout[:200] + r.stderr[-600:])
+
+if os.path.exists("./slap-sdl"):
+    r = SDL_RUN.result()
     check("lua-sdl headless", r.returncode == 1 and r.stdout == b"8\n1\n" and b"test-done" in r.stderr, f"exit {r.returncode} {r.stdout!r}\n{r.stderr.decode()[-600:]}")
 
-run_text("frames-need-a-cart", "print(1)")
-r = subprocess.run(["./slap", os.path.join(tmp, "frames-need-a-cart.lua"), "3"], input=SRC, capture_output=True, timeout=60)
+r = NEED_CART_RUN.result()
 check("frames need a cart", r.returncode == 1 and b"lua: a frame count needs a .p8 cart" in r.stderr, r.stderr.decode()[-600:])
 
-r = subprocess.run(["./slap"], input=SRC, capture_output=True, timeout=60)
+r = NO_ARG_RUN.result()
 check(
     "no argument",
     r.returncode == 1 and b"usage: cat examples/lib/strings.slap" in r.stderr,
     r.stderr.decode()[-600:],
 )
-r = run(os.path.join(tmp, "missing.lua"))
+r = MISSING_RUN.result()
 check(
     "missing file",
     r.returncode == 1 and b"lua: cannot read" in r.stderr,

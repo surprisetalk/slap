@@ -2,7 +2,7 @@
 """Integration test for examples/utils: each util runs on real files and must
 print exactly what the system tool prints under LC_ALL=C."""
 
-import os, random, subprocess, sys, tempfile
+import atexit, os, random, shutil, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -10,6 +10,7 @@ import harness
 LIBS = ["examples/lib/strings.slap"]
 check, count = harness.make_check("utils")
 tmp = tempfile.mkdtemp(prefix="slap-utils-")
+atexit.register(shutil.rmtree, tmp)
 
 
 def words(n):

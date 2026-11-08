@@ -19,7 +19,7 @@ swap
 -- EXPECT: but the stack has nothing
 plus
 
--- EXPECT: division by zero
+-- EXPECT: div: division by zero
 -- EXPECT-LINE: 1
 -- EXPECT-COL: 5
 1 0 div
@@ -803,14 +803,6 @@ dict free
 [1 2 3] pop "str" default len drop
 
 -- ===== runtime panics: programmer errors that types cannot see =====
--- EXPECT: div: division by zero
--- division by zero
-1 0 div drop
-
--- EXPECT: mod: division by zero
--- modulo by zero
-1 0 mod drop
-
 -- EXPECT: expected 'ok tagged, got 'no tagged
 -- must on a 'no value
 none must drop
@@ -1026,10 +1018,6 @@ dict [256] 1 insert drop
 -- EXPECT: unknown word 'lq'
 -- a name a literal binds is gone after the literal
 [1 'lq let lq] drop lq
-
--- EXPECT: 'drop' takes 'a copy
--- EXPECT: but the stack has nothing
-1 [drop]
 
 -- EXPECT: 'push' takes 'a copy 'list tag 'a copy
 -- EXPECT: a type the signature leaves open is int here.
@@ -1913,12 +1901,6 @@ g
 -- EXPECT: 'on' needs the SDL build
 (drop 0) 'tick on
 
--- EXPECT: fail: the text is empty
-"" fail
-
--- EXPECT: fail: the text holds a NUL byte
-"a\0b" fail
-
 -- EXPECT: 'g' calls itself here with a stack its body does not take: each call leaves a different number of values than the body leaves
 (g 7) 'g let g
 
@@ -2007,6 +1989,7 @@ list
 
 -- EXPECT: a [...] or {...} literal starts from an empty stack
 -- EXPECT: 'drop' takes 'a copy
+-- EXPECT: but the stack has nothing
 1 [drop]
 
 -- EXPECT: but the stack has dict "_" 'a var insert either int

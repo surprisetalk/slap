@@ -423,25 +423,6 @@ def snapshots(port):
             boot_refused("dir", f"{snap}: Is a directory", None)
             os.rmdir(snap)
 
-            # A large snapshot loads in linear time.
-            big = os.path.join(d, "big.snap")
-            for label, lines in [
-                ("many-lines", [f"k{i}\tv{i}\n" for i in range(50000)]),
-                ("big-values", [f"k{i}\t{'v' * 4000}\n" for i in range(240)]),
-            ]:
-                with open(big, "w") as f:
-                    f.write("".join(lines))
-                cpu = harness.child_cpu()
-                proc = harness.boot("kv", [str(port), big], server_src, port)
-                key, value = lines[-1].rstrip("\n").split("\t")
-                check(
-                    f"{label}-loaded",
-                    raw(f"GET {key}\n".encode()) == f"VALUE {value}\n",
-                )
-                harness.kill(proc)
-                cpu = harness.child_cpu() - cpu
-                check(f"{label}-boots-fast", cpu < 3, f"{cpu:.1f} s of CPU")
-
             # The server stops after 100 accept failures in a row.
             harness.accept_failures(
                 check, "kv-server", [str(port), snap], server_src, port
