@@ -265,6 +265,7 @@ STEADY = [
     f"0 100000 (drop [] {DICT} push {DICT} push {DICT} index-of must) repeat drop",
     f"0 100000 (drop {{'d {DICT} 'n 1}} 'n at) repeat drop",
     f"0 100000 (drop [] {DICT} push {DICT} push (drop 0) filter len) repeat drop",
+    '"ab" 13 (dup cat) repeat 2 chunks len 8192 eq assert',
 ]
 
 

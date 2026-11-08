@@ -189,8 +189,8 @@ static void spush(Value v) { if (sp >= STACK_MAX) die("stack overflow: all %d va
 static void stack_room(int n, const char *who) {
     if (sp + n > STACK_MAX) die("%s: stack overflow: this needs %d more value slots, but only %d of %d are free. One value this large, or recursion that leaves values behind, fills the stack; read a large input in parts.", who, n, STACK_MAX - sp, STACK_MAX);
 }
-static Value spop(void) { if (sp <= 0) die("stack underflow: this word needs a value, but the stack is empty"); return stack[--sp]; }
-static Value speek(void) { if (sp <= 0) die("stack underflow: this word needs a value, but the stack is empty"); return stack[sp - 1]; }
+static Value spop(void) { return stack[--sp]; }
+static Value speek(void) { return stack[sp - 1]; }
 #define VCPY(d,s,n) memcpy(d,s,(n)*sizeof(Value))
 #define SPUSH(src,n) do{ if(sp+(int)(n)>STACK_MAX) die("stack overflow: %d of %d value slots are in use and this pushes %d more.\n" \
     "  The operand stack is a fixed array. A list being built one element at a time sits on it,\n" \
@@ -311,12 +311,12 @@ static inline Value with_tok(Value v, const Token *t) {
     return v;
 }
 /* Each binding owns a heap block of its values. A trimmed binding keeps its
-   block for the next binding made at that index. `pinned` counts the calls
-   executing from the block; a rebind never writes into a pinned block. */
+   block for the next binding made at that index. The checker refuses a `let` of a visible name,
+   so a frame never binds a name twice and no binding is written while a word runs from it. */
 /* word: bound from a body written right before `'name let`, so a lookup runs it; any other binding is a value. */
 /* heap: the values hold a dict, which the binding owns: a lookup copies it, and the binding frees it. */
 /* tuples: the values hold a tuple, whose frame a lookup's copy must count again. */
-typedef struct Binding { uint32_t sym; int slots, cap, pinned, word, heap, tuples; Value *vals; } Binding;
+typedef struct Binding { uint32_t sym; int slots, cap, word, heap, tuples; Value *vals; } Binding;
 /* Names are lexical: each run of a body that makes names gets its own frame, whose parent is the frame
    the body was made in. refs counts what keeps a frame: the run, the tuples that close over it (not
    the ones in its own bindings, which would keep it forever) and its child frames. At zero it frees
@@ -392,14 +392,11 @@ static void frame_trim(Frame *f, int n) {
     f->bind_count = n;
 }
 static inline __attribute__((always_inline)) void frame_bind(Frame *f, uint32_t sym, Value *vals, int slots, int word) {
-    int bi = frame_find(f, sym);
-    if (bi < 0) { if (f->bind_count == f->bind_cap) frame_grow(f); bi = f->bind_count++; f->bindings[bi].sym = sym; if (f->hash) hash_put(f, bi); }
+    if (f->bind_count == f->bind_cap) frame_grow(f);
+    int bi = f->bind_count++; f->bindings[bi].sym = sym; if (f->hash) hash_put(f, bi);
     if (f != global_frame) sym_local[sym] = 1;
     Binding *b = &f->bindings[bi];
-    /* a pinned block runs a word now; its values stay where they are */
-    if (!b->pinned) binding_release(f, b);
-    if (slots > b->cap || b->pinned) {
-        if (b->pinned) { b->vals = NULL; b->cap = 0; }
+    if (slots > b->cap) {
         b->vals = realloc(b->vals, (size_t)slots*sizeof(Value));
         if (!b->vals) die("out of memory: cannot bind %d values to '%s", slots, sym_name(sym));
         b->cap = slots;
@@ -454,14 +451,13 @@ static Frame *frame_acquire(Frame *parent) {
 }
 /* Tuples in a pushed copy of v close over their frames once more. */
 static void vals_retain(const Value *v, int n) { for (int i = 0; i < n; i++) if (v[i].tag == VAL_TUPLE) frame_ref(v[i].as.compound.env); }
-typedef struct { Binding *bind; Frame *frame; } Lookup;
-static inline __attribute__((always_inline)) Lookup frame_lookup(Frame *f, uint32_t sym) {
-    if (!sym_local[sym]) { int i = frame_find(global_frame, sym); Lookup r = {i >= 0 ? &global_frame->bindings[i] : NULL, i >= 0 ? global_frame : NULL}; return r; }
+static inline __attribute__((always_inline)) Binding *frame_lookup(Frame *f, uint32_t sym) {
+    if (!sym_local[sym]) { int i = frame_find(global_frame, sym); return i >= 0 ? &global_frame->bindings[i] : NULL; }
     for (Frame *cur = f; cur; cur = cur->parent) {
         int i = frame_find(cur, sym);
-        if (i >= 0) { Lookup r = {&cur->bindings[i], cur}; return r; }
+        if (i >= 0) return &cur->bindings[i];
     }
-    Lookup r = {NULL, NULL}; return r;
+    return NULL;
 }
 static void eval(Token *toks, int count, Frame *env);
 static void eval_body(Value *body, int slots, Frame *env);
@@ -2094,9 +2090,10 @@ static void prim_mod(Frame *e){(void)e;int64_t b=pop_int(),a=pop_int();int_div_c
 #define SHIFT_OK(nm) (b<0||b>63?(die(#nm ": shift count %lld is outside 0-63",(long long)b),0):1)
 INTOP2(band,a&b) INTOP2(bor,a|b) INTOP2(bxor,a^b) INTOP2(shl,SHIFT_OK(shl)?(int64_t)((uint64_t)a<<b):0) INTOP2(shr,SHIFT_OK(shr)?(int64_t)((uint64_t)a>>b):0)
 INTOP2(and,(a&&b)?1:0) INTOP2(or,(a||b)?1:0)
-#define CMP2(nm,expr) static void prim_##nm(Frame *e){(void)e;int b=val_start(sp),a=val_start(b),r=(expr);deep_free_values(&stack[a],sp-a);sp=a;spush(val_int(r?1:0));}
-CMP2(eq, val_equal(&stack[a],b-a,&stack[b],sp-b))
-CMP2(lt, val_less(&stack[a],b-a,&stack[b],sp-b))
+/* An int under a one-slot int is a whole int, because a compound ends in its header. */
+#define CMP2(nm,iop,expr) static void prim_##nm(Frame *e){(void)e; if(stack[sp-1].tag==VAL_INT&&stack[sp-2].tag==VAL_INT){ sp--; stack[sp-1]=val_int(stack[sp-1].as.i iop stack[sp].as.i); return; } int b=val_start(sp),a=val_start(b),r=(expr);deep_free_values(&stack[a],sp-a);sp=a;spush(val_int(r?1:0));}
+CMP2(eq, ==, val_equal(&stack[a],b-a,&stack[b],sp-b))
+CMP2(lt, <, val_less(&stack[a],b-a,&stack[b],sp-b))
 static void prim_print(Frame *e){(void)e;Value top=stack[sp-1];int s=val_slots(top);val_print(&stack[sp-s],s,stdout);printf("\n");deep_free_values(&stack[sp-s],s);sp-=s;
     if(ferror(stdout)) die("print: cannot write to stdout: %s", strerror(errno));}
 /* A failed write to stdout must not exit 0. */
@@ -2265,8 +2262,8 @@ static void prim_concat(Frame *e) {
 }
 static inline void prim_nth_impl(Frame *env, int tagged) {
     uint32_t sym=pop_sym(); int64_t idx=pop_int();
-    Lookup lu=frame_lookup(env,sym);
-    Value *data=lu.bind->vals; int s=lu.bind->slots;
+    Binding *b=frame_lookup(env,sym);
+    Value *data=b->vals; int s=b->slots;
     Value top=data[s-1];
     if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top);
         if(idx<0||idx>=p->len){ if(tagged) push_none(); else die("nth: index %lld out of bounds (len %d)",(long long)idx,p->len); return; }
@@ -2287,7 +2284,7 @@ static void prim_slice_n(int take) {
     if(top.tag==VAL_BYTES){ Bytes *p=BYTES(top);
         if(n<0) die("%s: count %lld is negative", label, (long long)n);
         if(n>p->len) n=p->len;
-        if(take) p->len=(int)n; else { memmove(p->b,p->b+n,(size_t)(p->len-n)); p->len-=(int)n; }
+        if(take){ if(n<p->len){ stack[sp-1]=bytes_of(p->b,(int)n); free(p); } } else { memmove(p->b,p->b+n,(size_t)(p->len-n)); p->len-=(int)n; }
         return; }
     int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
     if(n<0) die("%s: count %lld is negative", label, (long long)n);
@@ -2678,22 +2675,20 @@ static void prof_report(void) {
     free(path);
 }
 static inline __attribute__((always_inline)) void dispatch_word(uint32_t sym, Frame *env) {
-    Lookup lu=frame_lookup(env,sym);
-    Binding *b=lu.bind; Value *v=b->vals; int s=b->slots;
+    Binding *b=frame_lookup(env,sym); Value *v=b->vals; int s=b->slots;
     if(!b->word){
         if(s==1&&v->tag<=VAL_SYM&&sp<STACK_MAX){ stack[sp++]=*v; return; }
         if(b->heap){ stack_room(s,sym_name(sym)); deep_copy_values(&stack[sp],v,s); sp+=s; } else { SPUSH(v,s); if(b->tuples) vals_retain(v,s); } return; }
-    Frame *f=lu.frame; int bi=(int)(b-f->bindings);
     if(LOC_FID(current_loc)!=FID_PRELUDE) user_loc=current_loc;
-    b->pinned++; eval_body(v,s,env); f->bindings[bi].pinned--;
+    eval_body(v,s,env);
 }
 /* Under --profile, build_tuple leaves primitives unresolved, so every word arrives here.
    A separate function keeps eval_in's hot loop as it is. */
 __attribute__((noinline)) static void prof_dispatch(uint32_t sym, Frame *env) {
     /* The checker refuses a binding named like a primitive, so a primitive is never shadowed. */
     if(prim_fns[sym]){ prof_enter(sym); prim_fns[sym](env); prof_leave(); return; }
-    Lookup lu=frame_lookup(env,sym);
-    if(!lu.bind || !lu.bind->word){ dispatch_word(sym,env); return; }
+    Binding *b=frame_lookup(env,sym);
+    if(!b || !b->word){ dispatch_word(sym,env); return; }
     prof_enter(sym); dispatch_word(sym,env); prof_leave();
 }
 static void eval_body(Value *body, int slots, Frame *env) {
@@ -3847,8 +3842,6 @@ static int shell(Token *table, int table_count, Token *combined, int prelude_n) 
                 asp = 0; staged_n = 0; eval_depth = 0; user_loc = 0;
                 VCPY(stack, snap, sp0); sp = sp0;
                 frame_trim(global_frame, binds0);
-                /* a word the error left running stays pinned; nothing runs between lines */
-                for (int b = 0; b < global_frame->bind_cap; b++) global_frame->bindings[b].pinned = 0;
             } else deep_free_values(snap, sp0);
             free(snap); free(src);
             char *h = realloc(hist, hlen + 2); if (!h) die("shell: out of memory");
