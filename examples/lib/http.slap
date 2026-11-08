@@ -47,7 +47,6 @@
 -- without close_notify, -1 failed with msg. hg-fetch takes the port, for the tests.
 -- A response is a packed string, a byte per byte; 16 MiB bounds what a server can make it hold.
 16777216 'HG-CAP let
-((dup 64 gt over 91 lt and (32 plus) () if) each) 'hg-lower let
 -- The body is whole when it matches Content-Length. HTTP/1.0 asked for no chunked body, so
 -- Transfer-Encoding is refused rather than handed over as framing. A reply outside 2xx passes as it
 -- is, so the caller reports its status rather than its framing.
@@ -55,16 +54,16 @@
  hg-st 200 lt hg-st 299 gt or (hg-r ok) (
  hg-hs ('key at (dup 32 eq swap 9 eq or) filter len 0 gt) filter len 0 gt
  ("https-get: a header name contains a space or a tab, so its meaning is unclear" no)
- (hg-hs ('key at hg-lower "transfer-encoding" eq) filter len 0 gt
+ (hg-hs ('key at lower "transfer-encoding" eq) filter len 0 gt
   ("https-get: the server sent Transfer-Encoding, which a reply to HTTP/1.0 may not use" no)
   -- every Content-Length must be the body's length in plain digits; two that disagree are refused too
-  (hg-hs ('key at hg-lower "content-length" eq) filter ('value at hg-bl eq not) filter
+  (hg-hs ('key at lower "content-length" eq) filter ('value at hg-bl eq not) filter
     dup len 0 eq (drop hg-r ok) (0 get must 'value at 'hg-cl let
       "https-get: Content-Length is \"" hg-cl cat "\", which does not name the body's " cat hg-bl cat " bytes" cat no) if) if) if) if) 'hg-whole let
 -- hg-mark: (response code -- response ok).  Add 'whole: an end with close_notify (code 0) vouches for the
 -- body, and so does a Content-Length, which hg-whole has checked. Each lookup copies one field at a time.
 ('hm-code let 'hm-r let
- hm-code 0 eq hm-r 'headers at ('key at hg-lower "content-length" eq) filter len 0 gt or 'hm-w let
+ hm-code 0 eq hm-r 'headers at ('key at lower "content-length" eq) filter len 0 gt or 'hm-w let
  {'status hm-r 'status at 'headers hm-r 'headers at 'body hm-r 'body at 'whole hm-w} ok) 'hg-mark let
 ('hg-path let 'hg-port let 'hg-host let
  hg-host hg-path cat (dup 13 eq swap 10 eq or) filter len 0 gt ("https-get: the host or the path contains CR or LF" no) (
@@ -92,7 +91,7 @@
 ('hu-port let 'hu-host let
  reverse ph-trim reverse ph-trim dup "#" str-find {'ok (take-n) 'no (drop)} case 'hu-loc let
  hu-loc len 0 eq ("https-get: " hu-host cat " sent a redirect with an empty Location" cat no) (
- hu-loc 8 take-n hg-lower "https://" eq (
+ hu-loc 8 take-n lower "https://" eq (
    hu-loc 8 drop-n 'hu-rest let
    hu-rest ('hc let hc 47 eq hc 63 eq or) each 1 index-of {'ok () 'no (drop hu-rest len)} case 'hu-slash let
    hu-rest hu-slash take-n 'hu-auth let hu-rest hu-slash drop-n 'hu-p0 let
@@ -112,14 +111,14 @@
  (hu-loc "/" hg-starts hu-loc "//" hg-starts not and (
     hu-loc hg-bad-path ("https-get: the redirect to " hu-loc cat " has a space or a control byte in its path" cat no)
       ({'host hu-host 'port hu-port 'path hu-loc} ok) if)
-  (hu-loc 7 take-n hg-lower "http://" eq
+  (hu-loc 7 take-n lower "http://" eq
     ("https-get: " hu-host cat " redirects to " cat hu-loc cat ", which drops TLS" cat no)
     ("https-get: " hu-host cat " redirects to " cat hu-loc cat ", which is not an https URL or an absolute path" cat no) if) if) if) if) 'hg-url let
 ('hl-hops let 'hl-path let 'hl-port let 'hl-host let
  hl-host hl-port hl-path hg-once {
   'ok ('hl-r let hl-r 'status at 'hl-st let
     [301 302 303 307 308] hl-st member (
-      hl-r 'headers at ('key at hg-lower "location" eq) filter dup len 0 eq
+      hl-r 'headers at ('key at lower "location" eq) filter dup len 0 eq
         (drop "https-get: " hl-host cat hl-path cat " sent status " cat hl-st int-str cat " with no Location" cat no)
         (0 get must 'value at 'hl-loc let
          hl-hops 5 eq ("https-get: more than 5 redirects; the last went to " hl-loc cat no) (

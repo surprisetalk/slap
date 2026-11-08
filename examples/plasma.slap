@@ -35,8 +35,6 @@ N 1 lt (
  16.0 q fmul 5.0 pi pi fmul fmul 4.0 q fmul fsub fdiv 'sv let
  tr pi fgt (sv fneg) (sv) if) 'fsin let
 
-(pi 2.0 fdiv fplus fsin) 'fcos let
-
 -- 0.0..1.0 float to a 0..255 byte, saturating rather than wrapping
 ('cv let cv 1.0 flt (cv) (1.0) if dup 0.0 fgt () (drop 0.0) if 255.0 fmul fround ftoi) 'chan let
 

@@ -17,7 +17,7 @@
 
 -- track-ext: (name -- ext).  The name after its last dot, in lower case;
 -- "" for a name with no dot.
-("." str-split dup len 2 lt (drop "") (dup len 1 sub get must (dup 65 ge over 90 le and (32 plus) () if) each) if) 'track-ext let
+("." str-split dup len 2 lt (drop "") (dup len 1 sub get must lower) if) 'track-ext let
 
 -- audio-tracks: (names -- tracks).  The names a directory lists that audio
 -- plays, in byte order.

@@ -21,7 +21,6 @@ args len 1 gt (args 1 get must) ("examples/wiki-pages") if 'DIR let
 
 ('sfx let 'eh let eh eh len sfx len sub drop-n sfx eq) 'ends-with let
 
-(('lc let lc 65 ge lc 90 le and (lc 32 plus) (lc) if) each) 'lower let
 
 ('pn let DIR "/" cat pn cat ".txt" cat) 'page-path let
 

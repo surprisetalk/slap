@@ -821,7 +821,6 @@ DPAL-B 16 plus 'TPAL-B let  TPAL-B 48 plus 'TSIDE-B let
 (2147483648 plus 4294967295 band 2147483648 sub) '_wrap let
 -- _fdiv: (x d -- q).  Floor division; slap's div truncates.
 ('fd let 'fx let fx fd div 'fq let fx fq fd mul sub 0 eq not fx 0 lt fd 0 lt neq and (fq 1 sub) (fq) if) '_fdiv let
-('gd let 'gx let gx gx gd _fdiv gd mul sub) '_fmod let
 ('v let v 7 band 'tg let
  tg 0 eq ("nil") (tg 1 eq ("boolean") (tg 2 eq ("number") (tg 3 eq ("string") (
  tg 4 eq ("table") (tg 7 eq ("cell") ("function") if) if) if) if) if) if) '_tname let

@@ -3,6 +3,9 @@
 
 ([] 13 push 10 push) 'crlf let
 
+-- lower: (str -- str).  ASCII A-Z to a-z; other bytes stay.
+((dup 65 ge over 90 le and (32 plus) () if) each) 'lower let
+
 ('n let n 0 gt (n 10 mod 48 plus push n 10 div int-str-digits) () if) 'int-str-digits let
 
 -- A negative number splits off its last digit before it negates, since -9223372036854775808 has no positive twin. div truncates.

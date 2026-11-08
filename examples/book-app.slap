@@ -117,7 +117,6 @@ isheadless (
   millis 'ts-t0 let
   ts-long {'p 0 'w 10000} 2 "word word" text-width page 'lines at ["word word" "word word"] eq assert
   millis ts-t0 sub 1000 lt assert
-  " " text-width 'ts-sp let
   "one two" text-width 'ts-w2 let
   ["one" "two" "three"] ts-w2 9 wrap-words [{'text "one two" 'n 2} {'text "three" 'n 1}] eq assert
   ["one" "two" "three"] ts-w2 1 wrap-words [{'text "one two" 'n 2}] eq assert

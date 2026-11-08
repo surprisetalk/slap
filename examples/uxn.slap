@@ -78,7 +78,6 @@
 -- `make bench-uxn` prints the current speed.
 
 -- ===== state map (indices into the machine list) =====
-0      'RAM-B let     -- main memory 0x0000..0xffff
 65536  'WST-B let     -- working stack data
 65792  'RST-B let     -- return stack data
 66048  'DEV-B let     -- device page
@@ -104,8 +103,6 @@
 66329  'DY1-I let
 66330  'SX-I let      -- scratch: sprite/fill inner loop
 66331  'SY-I let      -- scratch: sprite/fill outer loop
-66332  'RX-I let      -- scratch: render inner loop
-66333  'RY-I let      -- scratch: render outer loop
 66334  'CON-N-I let   -- console bytes buffered
 66335  'CON-B let     -- console line buffer (66335..66590)
 66591  'BG-B let      -- background layer 320x240 (66591..143390)
@@ -526,7 +523,6 @@
 ('a let a mrd) 'gm let
 ('p let p dev) 'gd let
 ('y let 'x let 'lay let lay y SCR-W mul plus x plus cell) 'gpx let
-(PC-I cell) 'pc? let
 
 blank
 
