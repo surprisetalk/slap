@@ -687,6 +687,13 @@ static int ty_rest(int x, int *hops) {
     if (++*hops > 0) die("type checker bug: a stack or row links in a cycle");
     return ty_find(ty[x].kind == K_SCONS ? ty[x].b : ty[x].c);
 }
+/* The variable or end a stack or a row finishes in. */
+static int ty_tail(int r) {
+    r = ty_find(r);
+    for (int hops = -ty_n; ty[r].kind == K_SCONS || ty[r].kind == K_REXT; r = ty_rest(r, &hops)) {}
+    return r;
+}
+static int ty_depth(int s) { int n = 0; for (int hops = -ty_n; ty[s = ty_find(s)].kind == K_SCONS; s = ty_rest(s, &hops)) n++; return n; }
 static int *ty_work, ty_work_cap;
 static void ty_work_push(int *n, int t) {
     if (*n >= ty_work_cap) { ty_work_cap = ty_work_cap ? 2*ty_work_cap : 4096; ty_work = realloc(ty_work, (size_t)ty_work_cap * sizeof(int)); if (!ty_work) die("type checker: out of memory for %d terms to visit", ty_work_cap); }
@@ -775,13 +782,11 @@ static void ty_show(char *out, size_t cap, int t, int depth) {
     /* A row is a dict of types; the key "_" holds an open rest. */
     case K_REC: case K_REXT: case K_RNIL: case K_RVAR: {
         int r = ty[t].kind == K_REC ? ty_find(ty[t].a) : t; ty_put(out, cap, &len, "dict");
-        for (int hops = 0; ty[r].kind == K_REXT; hops++) {
-            if (hops == ty_n) die("type checker bug: a row links in a cycle");
+        for (int hops = -ty_n; ty[r].kind == K_REXT; r = ty_rest(r, &hops)) {
             if (!ty_absent(r)) {
                 ty_show(a, sizeof a, ty[r].b, depth + 1); ty_put(out, cap, &len, " \"");
                 for (const char *c = sym_name(ty[ty[r].a].sym); *c; c++) ty_put(out, cap, &len, *c == '"' || *c == '\\' ? "\\%c" : "%c", *c);
                 ty_put(out, cap, &len, "\" %s insert", a); }
-            r = ty_find(ty[r].c);
         }
         if (ty[r].kind == K_RVAR) { ty_print_var(a, sizeof a, r); ty_put(out, cap, &len, " \"_\" %s %s insert", a, ty[r].prot & P_COPY ? "copy" : "var"); }
         if (ty[t].kind == K_REC) ty_put(out, cap, &len, " rec");
@@ -864,7 +869,7 @@ static int ty_bind(int v, int t) {
     int occ = ty_occurs(v, t, ty[v].level);
     if (occ == 2) { snprintf(ty_why, sizeof ty_why, "a type the signature leaves open would have to be a type from outside the body"); return 1; }
     if (occ) {
-        int n = 0, x = ty_find(t); for (; ty[x].kind == K_SCONS && n < ty_n; x = ty_find(ty[x].b)) n++;
+        int n = ty_depth(t), x = ty_tail(t);
         /* The stack does not end in v, so v is inside a value on it: a body's type that names this stack. */
         if (ty[v].kind == K_SVAR && n && x != v) snprintf(ty_why, sizeof ty_why, "a copy of the body lies below it on the stack. dup, or a second lookup of a body bound with let, gives both copies one type, so one copy cannot run while the other lies below it");
         else if (ty[v].kind == K_SVAR && n) ty_depth_why = 1, snprintf(ty_why, sizeof ty_why, "one path leaves %d more value%s on the stack than the other, so a branch, clause, loop pass or recursive call changes the stack's depth", n, n == 1 ? "" : "s");
@@ -933,12 +938,6 @@ static int ty_no_body(int t) {
     }
 }
 static int ty_row_take(int r, uint32_t label, int *field, int *rest, int *presence, int depth);
-/* The variable or end a row finishes in. */
-static int ty_tail(int r) {
-    r = ty_find(r);
-    for (int hops = 0; ty[r].kind == K_REXT; hops++) { if (hops == ty_n) die("type checker bug: a row links in a cycle"); r = ty_find(ty[r].c); }
-    return r;
-}
 /* Recursion follows nesting; a stack or a row is a chain, which the loop walks. A structure found equal
    to another links to it only once the whole chain is unified: an occurs check during the chain must
    still see the parts of both. */
@@ -1107,14 +1106,16 @@ static int ty_reaches(int t, int v) {
     return 0;
 }
 /* The variables the last instantiation made, for ty_rigid. */
-static int *ty_memo_to, ty_memo_n, ty_memo_cap, ty_copy_stamp;
-static int ty_copy(int t, int depth) {
+static int *ty_memo_to, ty_memo_n, ty_memo_cap;
+/* t with variable v replaced by w, or for v 0 each generic variable by a fresh one; parts without them are shared. */
+static int ty_copy(int t, int v, int w, int stamp, int depth) {
     if ((depth & 255) == 255) c_stack_check("while copying a type");
     t = ty_find(t);
-    if (ty_mark[t] == ty_copy_stamp) return ty_to[t];
+    if (t == v) return w;
+    if (ty_mark[t] == stamp) return ty_to[t];
     int r = t;
     if (ty_isvar(ty[t].kind)) {
-        if (ty[t].level == GENERIC) {
+        if (!v && ty[t].level == GENERIC) {
             r = ty_new(ty[t].kind, 0, 0, 0); ty[r].prot = ty[t].prot; ty[r].sealed = ty[t].sealed;
             if (ty_memo_n == ty_memo_cap) { ty_memo_cap = ty_memo_cap ? 2*ty_memo_cap : 256; ty_memo_to = realloc(ty_memo_to, (size_t)ty_memo_cap * sizeof(int));
                 if (!ty_memo_to) die("type checker: out of memory for %d type variables", ty_memo_cap); }
@@ -1122,14 +1123,14 @@ static int ty_copy(int t, int depth) {
         }
     } else if (ty[t].kind == K_TAG) {
         /* A recursive type meets t again inside it: the copy is recorded first, so the cycle copies once. */
-        if (ty_reaches(t, 0)) { r = ty_new(K_TAG, 0, 0, 0); ty_mark[t] = ty_copy_stamp; ty_to[t] = r; int a = ty_copy(ty[t].a, depth + 1); ty[r].a = a; }
+        if (ty_reaches(t, v)) { r = ty_new(K_TAG, 0, 0, 0); ty_mark[t] = stamp; ty_to[t] = r; int a = ty_copy(ty[t].a, v, w, stamp, depth + 1); ty[r].a = a; }
     } else if (ty[t].a || ty[t].b || ty[t].c) {
-        int a = ty[t].a ? ty_copy(ty[t].a, depth + 1) : 0, b = ty[t].b ? ty_copy(ty[t].b, depth + 1) : 0, c = ty[t].c ? ty_copy(ty[t].c, depth + 1) : 0;
+        int a = ty[t].a ? ty_copy(ty[t].a, v, w, stamp, depth + 1) : 0, b = ty[t].b ? ty_copy(ty[t].b, v, w, stamp, depth + 1) : 0, c = ty[t].c ? ty_copy(ty[t].c, v, w, stamp, depth + 1) : 0;
         if (a != ty[t].a || b != ty[t].b || c != ty[t].c) { r = ty_new(ty[t].kind, a, b, c); ty[r].sym = ty[t].sym; }
     }
-    ty_mark[t] = ty_copy_stamp; ty_to[t] = r; return r;
+    ty_mark[t] = stamp; ty_to[t] = r; return r;
 }
-static int ty_instantiate(int t) { ty_memo_n = 0; ty_copy_stamp = ++ty_stamp; return ty_copy(t, 0); }
+static int ty_instantiate(int t) { ty_memo_n = 0; return ty_copy(t, 0, 0, ++ty_stamp, 0); }
 
 /* The type of every primitive: 'name [ins] [outs], bottom first, in a signature's notation. A body's
    stack rest is 's rest; where a body runs on the stack below a word's inputs, the two rests are the same
@@ -1463,12 +1464,6 @@ static int ty_pop(void) {
     if (ty_unify(ty_cur, ty_new(K_SCONS, v, r, 0))) { ty_err(LOC_LINE(current_loc), "'%s' takes more values than the stack holds here.", ty_at_word); return v; }
     ty_cur = r; return v;
 }
-/* The stack variable a stack type ends in. */
-static int ty_stack_tail(int s) {
-    s = ty_find(s);
-    for (int hops = 0; ty[s].kind == K_SCONS; hops++) { if (hops == ty_n) die("type checker bug: a stack links in a cycle"); s = ty_find(ty[s].b); }
-    return s;
-}
 static void ty_apply(int scheme, const char *who, int line, int user) {
     int n0 = ty_n, f = ty_find(ty_instantiate(scheme)), body = user;
     for (int x = ty_find(ty[f].a), hops = -ty_n; !body && ty[x].kind == K_SCONS; x = ty_rest(x, &hops)) body = ty[ty_find(ty[x].a)].kind == K_FN;
@@ -1480,10 +1475,9 @@ static void ty_apply(int scheme, const char *who, int line, int user) {
     if (ty_unify(ty[f].a, ty_cur)) {
         Ty *failed = malloc((size_t)(n1 + 1) * sizeof(Ty)); if (!failed) die("type checker: out of memory for %d types", n1);
         memcpy(failed, ty + n0, (size_t)n1 * sizeof(Ty)); memcpy(ty + n0, snap, (size_t)n1 * sizeof(Ty));
-        char want[TY_SHOW_MAX] = "", before[TY_SHOW_MAX]; int g = f, n = 0;
-        for (int x = ty_find(ty[g].a); ty[x].kind == K_SCONS && n < ty_n; x = ty_find(ty[x].b)) n++;
+        char want[TY_SHOW_MAX] = "", before[TY_SHOW_MAX]; int g = f, n = ty_depth(ty[f].a);
         /* A body type in the inputs may run on the word's own rest (dip, repeat). A pasted signature must then name it, so the message does. */
-        int tv = ty_stack_tail(ty[f].a), tail = ty[tv].kind, named = 0;
+        int tv = ty_tail(ty[f].a), tail = ty[tv].kind, named = 0;
         if (tail == K_SVAR && !ty[tv].sealed) { int x = ty_find(ty[g].a); for (int k = 0; k < n && !named; k++, x = ty_find(ty[x].b)) named = ty_reaches(ty[x].a, tv); }
         if (named) { char v[16]; ty_print_var(v, sizeof v, tv); snprintf(want, sizeof want, "%s rest ", v); }
         ty_show_top(want + strlen(want), sizeof want - strlen(want), ty[g].a, n);
@@ -1492,16 +1486,15 @@ static void ty_apply(int scheme, const char *who, int line, int user) {
         char hint[512] = "";
         for (int x = ty_find(ty_cur), k = ty_depth_why ? n : 0; !hint[0] && k-- > 0 && ty[x].kind == K_SCONS; x = ty_find(ty[x].b)) {
             int v = ty_find(ty[x].a);
-            if (ty[v].kind != K_FN || ty[ty_stack_tail(ty[v].a)].kind == K_SVAR) continue;
+            if (ty[v].kind != K_FN || ty[ty_tail(ty[v].a)].kind == K_SVAR) continue;
             for (int b = tyb_n - 1; b >= 0; b--) if (!tyb[b].word && ty_find(tyb[b].ty) == v) {
                 snprintf(hint, sizeof hint, "\n    '%s' is a body bound with let, and a body bound with let runs at one stack depth. Bound with its body written in place, `(...) '%s let`, it is a word, which runs at any depth.", sym_name(tyb[b].sym), sym_name(tyb[b].sym)); break; }
         }
         /* A word whose input ends in an empty stack takes exactly its inputs, so a longer stack fails it too. */
-        int m = 0, exact = 0;
-        for (int x = ty_find(ty_cur); ty[x].kind == K_SCONS && m < ty_n; x = ty_find(ty[x].b)) m++;
+        int m = ty_depth(ty_cur), exact = 0;
         if (tail == K_SNIL && m > n && !strncmp(ty_why, "the stack is shorter", 20)) { exact = 1;
-            snprintf(ty_why, sizeof ty_why, "'%s' takes exactly %d value%s, but the stack holds %s%d", who, n, n == 1 ? "" : "s", ty[ty_stack_tail(ty_cur)].kind == K_SNIL ? "" : "at least ", m); }
-        int lit = ty_stack_tail(ty_cur);
+            snprintf(ty_why, sizeof ty_why, "'%s' takes exactly %d value%s, but the stack holds %s%d", who, n, n == 1 ? "" : "s", ty[ty_tail(ty_cur)].kind == K_SNIL ? "" : "at least ", m); }
+        int lit = ty_tail(ty_cur);
         if (ty[lit].kind == K_SNIL && ty[lit].sym && !strncmp(ty_why, "the stack is shorter", 20)) snprintf(ty_why, sizeof ty_why, "the code in a [...] or {...} literal starts from an empty stack, so it cannot take values from below the literal");
         if (n) ty_err(line, "'%s' takes %s\n    but the stack has %s\n    %s.%s", who, want, before, ty_why, hint);
         else if (exact) ty_err(line, "%s.%s", ty_why, hint);
@@ -1525,23 +1518,7 @@ static int ty_self_fn(int b, int line) {
     ty_level = level;
     ty_rec_call[ty_rec_n] = fn; ty_rec_line[ty_rec_n] = line; ty_rec_owner[ty_rec_n++] = b; return fn;
 }
-/* t with variable v replaced by w; parts without v are shared. */
-static int ty_subst_at(int t, int v, int w, int stamp, int depth) {
-    if ((depth & 255) == 255) c_stack_check("while copying a type");
-    t = ty_find(t);
-    if (t == v) return w;
-    if (ty_mark[t] == stamp) return ty_to[t];
-    int r = t;
-    if (ty[t].kind == K_TAG) {
-        /* recorded first, as in ty_copy */
-        if (ty_reaches(t, v)) { r = ty_new(K_TAG, 0, 0, 0); ty_mark[t] = stamp; ty_to[t] = r; int a = ty_subst_at(ty[t].a, v, w, stamp, depth + 1); ty[r].a = a; }
-    } else if (!ty_isvar(ty[t].kind) && (ty[t].a || ty[t].b || ty[t].c)) {
-        int a = ty[t].a ? ty_subst_at(ty[t].a, v, w, stamp, depth + 1) : 0, b = ty[t].b ? ty_subst_at(ty[t].b, v, w, stamp, depth + 1) : 0, c = ty[t].c ? ty_subst_at(ty[t].c, v, w, stamp, depth + 1) : 0;
-        if (a != ty[t].a || b != ty[t].b || c != ty[t].c) { r = ty_new(ty[t].kind, a, b, c); ty[r].sym = ty[t].sym; }
-    }
-    ty_mark[t] = stamp; ty_to[t] = r; return r;
-}
-static int ty_subst(int t, int v, int w) { return ty_subst_at(t, v, w, ++ty_stamp, 0); }
+static int ty_subst(int t, int v, int w) { return ty_copy(t, v, w, ++ty_stamp, 0); }
 /* The line where the body being checked first pushed a body as a value, or 0: from there its frame
    may be kept by a closure, so a let there may not bind a value that holds a body (ty_no_body). An
    in-place body (if, while, dip, pthen, case clauses) is part of the body around it; any other body
@@ -1583,7 +1560,7 @@ static void ty_define(Token *toks, int open, int close, int sig_ins, int sig_out
     int keep = 0;
     for (int k = 0; k < ty_rec_n; k++) {
         if (ty_rec_owner[k] != mark) { ty_rec_call[keep] = ty_rec_call[k]; ty_rec_line[keep] = ty_rec_line[k]; ty_rec_owner[keep++] = ty_rec_owner[k]; continue; }
-        int inst = bt, tin = ty_stack_tail(ty[bt].a), tout = ty_stack_tail(ty[bt].b);
+        int inst = bt, tin = ty_tail(ty[bt].a), tout = ty_tail(ty[bt].b);
         if (ty[tin].kind == K_SVAR && ty[tin].level > ty_level - 1) inst = ty_subst(inst, tin, ty_new(K_SVAR, 0, 0, 0));
         if (tout != tin && ty[tout].kind == K_SVAR && ty[tout].level > ty_level - 1) inst = ty_subst(inst, tout, ty_new(K_SVAR, 0, 0, 0));
         /* A call must not bind the body's own stack rests: that would grow the body's type after inst was made.
@@ -1673,9 +1650,7 @@ static void ty_item(int k, int t) {
    variable instead comes from a call whose effect is not known yet, so the count of values is not known.
    The caller skips this after an error in the literal's code, which also leaves a variable. */
 static int ty_lit_open(int out, int line) {
-    int s = ty_find(out);
-    for (int hops = -ty_n; ty[s].kind == K_SCONS; s = ty_rest(s, &hops)) {}
-    if (ty[s].kind == K_SNIL) return 0;
+    if (ty[ty_tail(out)].kind == K_SNIL) return 0;
     ty_err(line, "the checker cannot count what this literal holds: its code ends in a call whose effect is not known yet (a recursive call or a body passed in), or in fail, which leaves any stack. Run the call before the literal and bind its result, as in `x f 'r let [r]`; write fail outside the literal.");
     return 1;
 }
