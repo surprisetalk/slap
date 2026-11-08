@@ -697,6 +697,7 @@ static int ty_sym_name(int t) { t = ty_find(t); return ty[t].kind == K_SYM ? (in
 static int ty_find(int t) {
     for (int hops = 0; ty[t].link; hops++) {
         if (hops == ty_n) die("type checker bug: a type links in a cycle (%d hops)", hops);
+        if (ty[ty[t].link].link) ty[t].link = ty[ty[t].link].link;
         t = ty[t].link;
     }
     return t;
