@@ -2928,18 +2928,12 @@ static void prim_fill_rect(Frame *e){(void)e;int64_t c=pop_color("fill-rect"),h=
     if(__builtin_add_overflow(y,h,&ye)) ye=INT64_MAX;
     int64_t x0=x<0?0:x, x1=xe<canvas_w?xe:canvas_w, y0=y<0?0:y, y1=ye<canvas_h?ye:canvas_h;
     for(int64_t r=y0;r<y1&&x0<x1;r++) memset(&canvas[r*canvas_w+x0],(int)c,(size_t)(x1-x0));}
-static uint32_t sym_tick=0,sym_keydown=0,sym_keyup=0,sym_text=0,sym_mousedown=0,sym_mouseup=0,sym_mousemove=0,sym_resize=0;
-static void show_intern_syms(void) {
-    if(!sym_tick){sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_keyup=sym_intern("keyup");sym_text=sym_intern("text");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");sym_resize=sym_intern("resize");}
-}
+static uint32_t sym_tick,sym_keydown,sym_keyup,sym_text,sym_mousedown,sym_mouseup,sym_mousemove,sym_resize;
 static void prim_on(Frame *e) {
     (void)e; uint32_t ev=pop_sym(); Value fn_top=speek();
     int fn_s=val_slots(fn_top); if(handler_count>=MAX_HANDLERS) die("on: too many event handlers");
     Value *hb=malloc((size_t)fn_s*sizeof(Value)); if(!hb) die("on: out of memory"); VCPY(hb,&stack[sp-fn_s],fn_s); event_handlers[handler_count].handler_body=hb;
     event_handlers[handler_count].handler_slots=fn_s; sp-=fn_s;
-    show_intern_syms();
-    if(ev!=sym_tick&&ev!=sym_keydown&&ev!=sym_keyup&&ev!=sym_text&&ev!=sym_mousedown&&ev!=sym_mouseup&&ev!=sym_mousemove&&ev!=sym_resize)
-        die("on: unknown event '%s; the events are 'tick 'keydown 'keyup 'text 'mousedown 'mouseup 'mousemove 'resize",sym_name(ev));
     event_handlers[handler_count].event_sym=ev; handler_count++;
 }
 /* REVIEW: play replaces what the speakers play; an empty 'pcm stops them, whatever its 'rate. A rate
@@ -2976,25 +2970,21 @@ static void prim_play(Frame *e) {
    device's own buffer, 2048 frames, counts as played, so a place taken from it runs up to 46 ms
    ahead of the sound at 44.1 kHz. */
 static void prim_queued(Frame *e){(void)e; spush(val_int(audio_dev?(int64_t)SDL_GetQueuedAudioSize(audio_dev):0));}
-static void run_resize(int64_t w,int64_t h,Frame *env){for(int k=0;k<handler_count;k++)if(event_handlers[k].event_sym==sym_resize){spush(val_int(w));spush(val_int(h));eval_body(event_handlers[k].handler_body,event_handlers[k].handler_slots,env);}}
+static void run_handlers(uint32_t ev,int n,int64_t a,int64_t b,Frame *env){for(int k=0;k<handler_count;k++)if(event_handlers[k].event_sym==ev){if(n>0)spush(val_int(a));if(n>1)spush(val_int(b));eval_body(event_handlers[k].handler_body,event_handlers[k].handler_slots,env);}}
 static void show_dispatch_event(SDL_Event *ev, Frame *env) {
     if(ev->type==SDL_WINDOWEVENT&&ev->window.event==SDL_WINDOWEVENT_SIZE_CHANGED){
         int w,h; SDL_GetWindowSize(sdl_window,&w,&h);
-        if(w!=canvas_w||h!=canvas_h){canvas_alloc(w,h);run_resize(w,h,env);}
+        if(w!=canvas_w||h!=canvas_h){canvas_alloc(w,h);run_handlers(sym_resize,2,w,h,env);}
         return;}
-    if(ev->type==SDL_KEYDOWN||ev->type==SDL_KEYUP){uint32_t ksym=ev->type==SDL_KEYDOWN?sym_keydown:sym_keyup;for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==ksym){spush(val_int((int64_t)ev->key.keysym.sym));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}}
+    if(ev->type==SDL_KEYDOWN||ev->type==SDL_KEYUP) run_handlers(ev->type==SDL_KEYDOWN?sym_keydown:sym_keyup,1,ev->key.keysym.sym,0,env);
     /* SDL gives typed text as UTF-8 with the keyboard layout and shift applied, which keycodes lack. */
     if(ev->type==SDL_TEXTINPUT)for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==sym_text){push_c_string(ev->text.text);eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
-    int is_mouse=0;
-    if(ev->type==SDL_MOUSEBUTTONDOWN||ev->type==SDL_MOUSEBUTTONUP||ev->type==SDL_MOUSEMOTION) is_mouse=1;
-    if(is_mouse){
+    if(ev->type==SDL_MOUSEBUTTONDOWN||ev->type==SDL_MOUSEBUTTONUP||ev->type==SDL_MOUSEMOTION){
         int sx,sy; SDL_GetMouseState(&sx,&sy);
-        int64_t mx=sx, my=sy;
-        uint32_t sym=ev->type==SDL_MOUSEBUTTONDOWN?sym_mousedown:ev->type==SDL_MOUSEBUTTONUP?sym_mouseup:sym_mousemove;
-        for(int h=0;h<handler_count;h++)if(event_handlers[h].event_sym==sym){spush(val_int(mx));spush(val_int(my));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}}
+        run_handlers(ev->type==SDL_MOUSEBUTTONDOWN?sym_mousedown:ev->type==SDL_MOUSEBUTTONUP?sym_mouseup:sym_mousemove,2,sx,sy,env);}
 }
 static void show_tick_render(int64_t frame, Frame *env) {
-    for(int h=0;h<handler_count;h++) if(event_handlers[h].event_sym==sym_tick){spush(val_int(frame));eval_body(event_handlers[h].handler_body,event_handlers[h].handler_slots,env);}
+    run_handlers(sym_tick,1,frame,0,env);
     if(render_slots>0){int ms=val_slots(stack[sp-1]);stack_room(ms,"show");deep_copy_values(&stack[sp],&stack[sp-ms],ms);sp+=ms;eval_body(render_body,render_slots,env);}
     sdl_present();
 }
@@ -3014,17 +3004,17 @@ static void prim_show(Frame *env) {
     Value fn_top=speek();
     render_slots=val_slots(fn_top); render_body=malloc((size_t)render_slots*sizeof(Value)); if(!render_body) die("show: out of memory");
     VCPY(render_body,&stack[sp-render_slots],render_slots); sp-=render_slots;
-    show_intern_syms();
+    sym_tick=sym_intern("tick");sym_keydown=sym_intern("keydown");sym_keyup=sym_intern("keyup");sym_text=sym_intern("text");sym_mousedown=sym_intern("mousedown");sym_mouseup=sym_intern("mouseup");sym_mousemove=sym_intern("mousemove");sym_resize=sym_intern("resize");
     if(headless_mode){
-        canvas_alloc(640,480); run_resize(640,480,env);
+        canvas_alloc(640,480); run_handlers(sym_resize,2,640,480,env);
         for(int64_t frame=0;;frame++){show_tick_render(frame,env);SDL_Delay(16);}
     }
     sdl_init();
 #ifdef __EMSCRIPTEN__
-    show_env=env; show_frame=0; run_resize(canvas_w,canvas_h,env);
+    show_env=env; show_frame=0; run_handlers(sym_resize,2,canvas_w,canvas_h,env);
     emscripten_set_main_loop(show_one_frame,0,1);
 #else
-    int64_t frame=0; int running=1; run_resize(canvas_w,canvas_h,env);
+    int64_t frame=0; int running=1; run_handlers(sym_resize,2,canvas_w,canvas_h,env);
     while(running){
         SDL_Event ev;
         while(SDL_PollEvent(&ev)){
@@ -3052,13 +3042,12 @@ static void push_path_fail(const char *path, int len, const char *reason) {
     spush(val_compound(VAL_LIST, len + 2 + rl, len + 3 + rl)); pack_top(); push_no();
 }
 /* A C string stops at a NUL, so a path with one cannot name a file. */
-static int path_has_nul(const char *path, int len) {
-    if (!memchr(path, 0, len)) return 0;
-    push_path_fail(path, len, "contains a NUL byte"); return 1;
+static char *pop_path(const char *who, int *len) {
+    char *path = pop_string_path(who, len); if (!memchr(path, 0, *len)) return path;
+    push_path_fail(path, *len, "contains a NUL byte"); free(path); return NULL;
 }
 static void prim_read(Frame *e) {
-    (void)e; int plen;char *path=pop_string_path("read",&plen);
-    if(path_has_nul(path,plen)){free(path);return;}
+    (void)e; int plen;char *path=pop_path("read",&plen); if(!path) return;
     FILE *f=fopen(path,"rb");
     if(!f) { push_path_fail(path,plen,strerror(errno)); free(path); return; }
     size_t n=0,cap=65536,got; unsigned char *buf=malloc(cap); errno=0;
@@ -3088,8 +3077,7 @@ static drwav_bool32 wav_seek(void *u, int off, drwav_seek_origin o) {
 static drwav_bool32 wav_tell(void *u, drwav_int64 *at) { off_t t = ftello(((WavFile*)u)->f); *at = t; return t >= 0; }
 static void read_audio(AudioKind kind) {
     static const char *who[]={"read-mp3","read-flac","read-wav"}, *refusal[]={"not an MP3 stream","not a FLAC stream","not a WAV file"};
-    int plen; char *path=pop_string_path(who[kind],&plen);
-    if(path_has_nul(path,plen)){free(path);return;}
+    int plen; char *path=pop_path(who[kind],&plen); if(!path) return;
     /* The decoders say only that a file did not open, so fopen first names a missing or unreadable file. */
     FILE *f=fopen(path,"rb"); if(!f){push_path_fail(path,plen,strerror(errno));free(path);return;}
     WavFile wf={f,0};
@@ -3168,7 +3156,6 @@ static int midi_preset(tsf *f, int ch, int program) {
     int bank = tsf_channel_get_preset_bank(f, ch);
     return tsf_get_presetindex(f, ch == 9 ? 128 | bank : bank, program);
 }
-/* A string value read in place: a packed one is a Bytes slot, an unpacked one a list of int slots. */
 /* Whether a preset holds a sample for a key. tsf_note_on plays nothing for a key outside every
    region, and says so to no one: the part is on an instrument that cannot play it.
    REVIEW: a key the preset covers, at a velocity no region takes, plays nothing, as the font
@@ -3184,6 +3171,7 @@ static int midi_held(tsf *f) {
     for (int i = 0; i < f->voiceNum; i++) if (f->voices[i].playingPreset != -1 && f->voices[i].ampenv.segment < TSF_SEGMENT_RELEASE) return 1;
     return 0;
 }
+/* A string value read in place: a packed one is a Bytes slot, an unpacked one a list of int slots. */
 static char *string_at(Value *v, int slots, int *len) {
     Value h = v[slots-1]; int n = *len = h.tag == VAL_BYTES ? BYTES(h)->len : (int)h.as.compound.len;
     char *out = malloc((size_t)n + 1); if (!out) die("out of memory copying a %d-byte string", n);
@@ -3374,8 +3362,7 @@ fail:
     free(tmp); free(target); errno = er; return -1;
 }
 static void prim_write(Frame *e) {
-    (void)e; int len;unsigned char *buf=pop_byte_list_buf("write",&len);int plen;char *path=pop_string_path("write",&plen);
-    if(path_has_nul(path,plen)){free(buf);free(path);return;}
+    (void)e; int len;unsigned char *buf=pop_byte_list_buf("write",&len);int plen;char *path=pop_path("write",&plen); if(!path){free(buf);return;}
     /* Opening /dev/stdout again would skip what print still buffers, and on Linux it truncates a
        file the shell redirected stdout to. Write through the process's own streams instead. */
     FILE *std=strcmp(path,"/dev/stdout")==0?stdout:strcmp(path,"/dev/stderr")==0?stderr:NULL;
@@ -3386,8 +3373,7 @@ static void prim_write(Frame *e) {
     free(buf);free(path); spush(val_int(1)); push_ok();
 }
 static void prim_ls(Frame *e) {
-    (void)e; int plen;char *path=pop_string_path("ls",&plen);
-    if(path_has_nul(path,plen)){free(path);return;}
+    (void)e; int plen;char *path=pop_path("ls",&plen); if(!path) return;
     DIR *d=opendir(path); if(!d) { push_path_fail(path,plen,strerror(errno)); free(path); return; }
     struct dirent *ent; int base=sp,count=0;
     /* readdir returns NULL at the end and on an error; only an error sets errno */
@@ -3429,16 +3415,19 @@ static int connect_bounded(int fd, const struct sockaddr *sa, socklen_t sl, int 
     }
     return fcntl(fd, F_SETFL, fl);
 }
+static int64_t pop_port(const char *who){int64_t p=pop_int();if(p<0||p>65535)die("%s: port %lld is outside 0-65535",who,(long long)p);return p;}
+static long ms_left(struct timespec t0, long ms) { struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1); return ms - ((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000); }
 /* A connected socket, or -1 with msg set. tcp-connect and tls-connect share it; who names the word. */
-static int tcp_open(const char *who, const char *host, int64_t port, struct timespec t0, char *msg, size_t cap) {
+static int tcp_open(const char *who, const char *host, int hlen, int64_t port, struct timespec t0, char *msg, size_t cap) {
+    if(memchr(host,0,hlen)){snprintf(msg,cap,"%s: the host contains a NUL byte",who);return -1;}
     struct addrinfo hints={0},*res; hints.ai_family=AF_UNSPEC; hints.ai_socktype=SOCK_STREAM;
     char ps[16]; snprintf(ps,sizeof(ps),"%lld",(long long)port);
     int err=getaddrinfo(host,ps,&hints,&res);
     if(err){snprintf(msg,cap,"%s: cannot resolve %s: %s",who,host,gai_strerror(err));return -1;}
     /* One 10 s deadline from t0 covers every address. getaddrinfo waits as long as the system resolver does. */
-    int fd=-1,last=0; struct timespec t1;
+    int fd=-1,last=0;
     for(struct addrinfo *a=res;a&&fd<0;a=a->ai_next){
-        clock_gettime(CLOCK_MONOTONIC,&t1); long left=10000-((t1.tv_sec-t0.tv_sec)*1000+(t1.tv_nsec-t0.tv_nsec)/1000000);
+        long left=ms_left(t0,10000);
         if(left<=0){last=ETIMEDOUT;break;}
         fd=socket(a->ai_family,a->ai_socktype,a->ai_protocol);
         if(fd<0){last=errno;continue;}
@@ -3449,11 +3438,9 @@ static int tcp_open(const char *who, const char *host, int64_t port, struct time
     return fd;
 }
 static void prim_tcp_connect(Frame *e) {
-    (void)e; int64_t port=pop_int(); int hlen;char *host=pop_string_path("tcp-connect",&hlen);
-    if(port<0||port>65535) die("tcp-connect: port %lld is outside 0-65535",(long long)port);
-    if(memchr(host,0,hlen)){free(host);push_fail("tcp-connect: the host contains a NUL byte");return;}
+    (void)e; int64_t port=pop_port("tcp-connect"); int hlen;char *host=pop_string_path("tcp-connect",&hlen);
     char msg[512]; struct timespec t0; clock_gettime(CLOCK_MONOTONIC,&t0);
-    int fd=tcp_open("tcp-connect",host,port,t0,msg,sizeof msg); free(host);
+    int fd=tcp_open("tcp-connect",host,hlen,port,t0,msg,sizeof msg); free(host);
     if(fd<0){push_fail(msg);return;}
     if(shell_jmp) shell_sock(fd+1); spush(val_int(fd));push_ok();
 }
@@ -3483,8 +3470,7 @@ static const char *tls_why(SSL *s, int r) {
 static int tls_wait(SSL *s, int fd, int r, struct timespec t0, long ms, const char **why) {
     int se = SSL_get_error(s, r);
     if (se != SSL_ERROR_WANT_READ && se != SSL_ERROR_WANT_WRITE) return 0;
-    struct timespec t1; clock_gettime(CLOCK_MONOTONIC, &t1);
-    long left = ms - ((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
+    long left = ms_left(t0, ms);
     struct pollfd p = {fd, se == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, 0};
     int pr = left > 0 ? poll(&p, 1, (int)left) : 0;
     if (pr == 0) *why = "the connect and the handshake took more than 10 s";
@@ -3492,12 +3478,10 @@ static int tls_wait(SSL *s, int fd, int r, struct timespec t0, long ms, const ch
     return pr > 0;
 }
 static void prim_tls_connect(Frame *e) {
-    (void)e; int64_t port=pop_int(); int hlen; char *host=pop_string_path("tls-connect",&hlen);
-    if(port<0||port>65535) die("tls-connect: port %lld is outside 0-65535",(long long)port);
-    if(memchr(host,0,hlen)){free(host);push_fail("tls-connect: the host contains a NUL byte");return;}
+    (void)e; int64_t port=pop_port("tls-connect"); int hlen; char *host=pop_string_path("tls-connect",&hlen);
     /* One 10 s deadline covers the connect and the handshake. */
     char msg[512]; struct timespec t0; clock_gettime(CLOCK_MONOTONIC,&t0);
-    int fd=tcp_open("tls-connect",host,port,t0,msg,sizeof msg);
+    int fd=tcp_open("tls-connect",host,hlen,port,t0,msg,sizeof msg);
     if(fd<0){free(host);push_fail(msg);return;}
     /* The context becomes tls_ctx only once verification is on: in the shell a die returns, and a half-made
        context would verify nothing on the next line. */
@@ -3540,7 +3524,7 @@ static void prim_tcp_send(Frame *e) {
        so a peer that reads a trickle would hold it forever: the socket sends without blocking, and poll waits for room. */
     int fl = fcntl(fd, F_GETFL, 0); const char *err = NULL;
     if (fl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0) { free(buf); push_fail(strerror(errno)); return; }
-    struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
+    struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
     SSL *s = tls_get(fd); if (s) tls_enter();
     for (size_t sent = 0; sent < (size_t)len && !err; ) {
         short want = POLLOUT;
@@ -3554,8 +3538,7 @@ static void prim_tcp_send(Frame *e) {
             if (n > 0) { sent += n; continue; }
             if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) { err = strerror(errno); break; }
         }
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        long left = 30000 - ((t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_nsec - t0.tv_nsec) / 1000000);
+        long left = ms_left(t0, 30000);
         struct pollfd p = {fd, want, 0}; int r = left > 0 ? poll(&p, 1, (int)left) : 0;
         if (r < 0) err = strerror(errno); else if (r == 0) err = "timed out after 30 s";
     }
@@ -3583,7 +3566,7 @@ static void prim_tcp_recv(Frame *e) {
 }
 static void prim_tcp_close(Frame *e) { (void)e; int fd=(int)pop_int(); if(shell_jmp){shell_sock(-(fd+1));return;} if(sock_close(fd)) die("tcp-close: closing socket %d failed: %s", fd, strerror(errno)); }
 static void prim_tcp_listen(Frame *e) {
-    (void)e; int64_t port=pop_int(); if(port<0||port>65535) die("tcp-listen: port %lld is outside 0-65535",(long long)port);
+    (void)e; int64_t port=pop_port("tcp-listen");
     int fd=socket(AF_INET,SOCK_STREAM,0); if(fd<0){push_fail(strerror(errno));return;}
     int opt=1;setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&opt,sizeof(opt));
     struct sockaddr_in addr={0};addr.sin_family=AF_INET;addr.sin_addr.s_addr=htonl(0x7f000001);addr.sin_port=htons((uint16_t)port);
@@ -3625,7 +3608,7 @@ static void prim_str_split(Frame *e) {
     (void)e; int dl,sl; unsigned char *delim=pop_byte_list_buf("str-split",&dl); unsigned char *str=pop_byte_list_buf("str-split",&sl);
     if(dl==0) die("str-split: empty delimiter");
     int base=sp,count=0,pos=0;
-    while(pos<=sl){int found=-1;if(dl>0)for(int i=pos;i<=sl-dl;i++)if(memcmp(str+i,delim,dl)==0){found=i;break;}
+    while(pos<=sl){int found=-1;for(int i=pos;i<=sl-dl;i++)if(memcmp(str+i,delim,dl)==0){found=i;break;}
         if(found<0){push_byte_list(str+pos,sl-pos);count++;break;}
         push_byte_list(str+pos,found-pos);count++;pos=found+dl;}
     spush(val_compound(VAL_LIST,count,sp-base+1));free(delim);free(str);
@@ -3658,9 +3641,8 @@ static void prim_args(Frame *e) {
     spush(val_compound(VAL_LIST,cli_argc,sp-base+1));
 }
 static void prim_isheadless(Frame *e){(void)e;spush(val_int(headless_mode));}
-#define PRIM(nm,body) static void prim_##nm(Frame *e){(void)e;body;}
-PRIM(take_n, prim_slice_n(1)) PRIM(drop_n, prim_slice_n(0))
-#undef PRIM
+static void prim_take_n(Frame *e){(void)e;prim_slice_n(1);}
+static void prim_drop_n(Frame *e){(void)e;prim_slice_n(0);}
 #define R(n,f) {#n,prim_##f,NULL}
 #define M(n,f) {n,prim_##f,prim_##f##_must}
 static void register_prims(void) {
