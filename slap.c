@@ -214,7 +214,7 @@ typedef enum {
 } TokTag;
 typedef struct {
     TokTag tag;
-    union { int64_t i; double f; uint32_t sym; struct { int *codes; int len; } str; } as;
+    union { int64_t i; double f; uint32_t sym; struct { unsigned char *b; int len; } str; } as;
     int line;
     int col;
     int fid;
@@ -223,6 +223,7 @@ typedef struct {
 static Token tokens[TOK_MAX];
 static int tok_count = 0;
 static int tok_limit = TOK_MAX; /* the program's share of TOK_MAX: the prelude takes the rest */
+static int word_char(char c) { return c && !isspace((unsigned char)c) && c!='(' && c!=')' && c!='[' && c!=']' && c!='{' && c!='}'; }
 #define LEX_ADVANCE() do { if (*p == '\n') { line++; col = 1; } else { col++; } p++; } while (0)
 static void lex(const char *src, int fid) {
     tok_count = 0; int line = 1; int col = 1; const char *p = src;
@@ -250,7 +251,7 @@ static void lex(const char *src, int fid) {
             LEX_ADVANCE();tok_count++;continue;} }
         if (*p == '"') {
             LEX_ADVANCE();
-            int *codes = NULL; int len = 0, cap = 0;
+            unsigned char *b = NULL; int len = 0, cap = 0;
             while (*p != '"') {
                 if (!*p) die("string literal opened at line %d never closes: add the missing \"", t->line);
                 int ch = (unsigned char)*p;
@@ -259,21 +260,11 @@ static void lex(const char *src, int fid) {
                     case 0: die("string literal opened at line %d ends in a lone backslash", t->line);
                     default: die("string literal at line %d: unknown escape \\%c; the escapes are \\n \\t \\\\ \\\" \\0", t->line, *p); } }
                 LEX_ADVANCE();
-                if (len >= cap) { cap = cap ? cap*2 : 16; codes = realloc(codes, cap * sizeof(int)); }
-                codes[len++] = ch;
+                if (len + 1 >= cap) { cap = cap ? cap*2 : 16; b = realloc(b, (size_t)cap); if (!b) die("string literal opened at line %d: out of memory at %d bytes", t->line, len); }
+                b[len++] = (unsigned char)ch;
             }
-            LEX_ADVANCE();
-            t->tag = TOK_STRING; t->as.str.codes = codes; t->as.str.len = len; tok_count++; continue;
-        }
-        if (*p == '\'') {
-            LEX_ADVANCE();
-            const char *start = p;
-            while (*p && !isspace((unsigned char)*p) && *p!='(' && *p!=')' && *p!='[' && *p!=']' && *p!='{' && *p!='}') LEX_ADVANCE();
-            int len = (int)(p - start);
-            if (len == 0) die("empty symbol literal");
-            char buf[256]; if (len >= (int)sizeof(buf)) die("a symbol is %d characters long; the limit is %d", len, (int)sizeof(buf)-1);
-            memcpy(buf, start, len); buf[len] = 0;
-            t->tag = TOK_SYM; t->as.sym = sym_intern(buf); tok_count++; continue;
+            LEX_ADVANCE(); if (b) b[len] = 0;
+            t->tag = TOK_STRING; t->as.str.b = b; t->as.str.len = len; tok_count++; continue;
         }
         if (isdigit((unsigned char)*p) || (*p == '-' && isdigit((unsigned char)p[1]))) {
             const char *start = p; if (*p == '-') LEX_ADVANCE();
@@ -287,21 +278,23 @@ static void lex(const char *src, int fid) {
                     die("float literal at line %d is too small for 64 bits: it reads as 0.0. Write 0.0 if you mean zero.", t->line);
             } else { errno = 0; t->tag = TOK_INT; t->as.i = strtoll(start, NULL, 10);
                 if (errno == ERANGE) die("integer literal at line %d does not fit in 64 bits", t->line); }
-            if (*p && !isspace((unsigned char)*p) && !strchr("()[]{}", *p)) {
-                const char *e = p; while (*e && !isspace((unsigned char)*e) && !strchr("()[]{}", *e)) e++;
+            if (word_char(*p)) {
+                const char *e = p; while (word_char(*e)) e++;
                 die("`%.*s` at line %d starts like a number, but a number ends at a space or a bracket, and slap has no hex, "
                     "exponent or digit-separator syntax. Write a space after the number, or start the word with a letter.", (int)(e - start), start, t->line);
             }
             tok_count++; continue;
         }
-        { const char *start = p;
-          while (*p && !isspace((unsigned char)*p) && *p!='(' && *p!=')' && *p!='[' && *p!=']' && *p!='{' && *p!='}') LEX_ADVANCE();
+        { int is_sym = *p == '\''; if (is_sym) LEX_ADVANCE();
+          const char *start = p;
+          while (word_char(*p)) LEX_ADVANCE();
           int len = (int)(p - start); char buf[256];
-          if (len >= (int)sizeof(buf)) die("a word is %d characters long; the limit is %d", len, (int)sizeof(buf)-1);
+          if (is_sym && len == 0) die("empty symbol literal");
+          if (len >= (int)sizeof(buf)) die("a %s is %d characters long; the limit is %d", is_sym ? "symbol" : "word", len, (int)sizeof(buf)-1);
           memcpy(buf, start, len); buf[len] = 0;
-          if (strcmp(buf, "true") == 0) { t->tag = TOK_INT; t->as.i = 1; tok_count++; continue; }
-          if (strcmp(buf, "false") == 0) { t->tag = TOK_INT; t->as.i = 0; tok_count++; continue; }
-          t->tag = TOK_WORD; t->as.sym = sym_intern(buf); tok_count++;
+          if (!is_sym && strcmp(buf, "true") == 0) { t->tag = TOK_INT; t->as.i = 1; tok_count++; continue; }
+          if (!is_sym && strcmp(buf, "false") == 0) { t->tag = TOK_INT; t->as.i = 0; tok_count++; continue; }
+          t->tag = is_sym ? TOK_SYM : TOK_WORD; t->as.sym = sym_intern(buf); tok_count++;
         }
     }
     if (depth) die("line %d: `%c` is never closed", tokens[open_at[depth-1]].line, "([{"[(tokens[open_at[depth-1]].tag-TOK_LPAREN)/2]);
@@ -376,7 +369,7 @@ static inline __attribute__((always_inline)) void binding_release(Frame *f, Bind
     for (int i = 0; i < b->slots; i++) {
         Value *v = &b->vals[i];
         if (v->tag == VAL_TUPLE && v->as.compound.env != f) frame_drop(v->as.compound.env);
-        else if ((v->tag == VAL_DICT || v->tag == VAL_BYTES) && b->heap) deep_free_values(v, 1);
+        else if (v->tag == VAL_DICT || v->tag == VAL_BYTES) deep_free_owned(v, 1);
     }
     b->heap = 0; b->tuples = 0; b->slots = 0;
 }
@@ -444,13 +437,6 @@ __attribute__((noinline)) static void frame_end_run(Frame *f) {
     f->bind_count=0; f->refs=0; f->parent=frame_pool; frame_pool=f;
     frame_drop(p);
 }
-static Frame *frame_acquire(Frame *parent) {
-    Frame *f = frame_pool;
-    if (f) frame_pool = f->parent; else f = frame_new(NULL);
-    f->parent = parent; f->refs = 1; frame_ref(parent); return f;
-}
-/* Tuples in a pushed copy of v close over their frames once more. */
-static void vals_retain(const Value *v, int n) { for (int i = 0; i < n; i++) if (v[i].tag == VAL_TUPLE) frame_ref(v[i].as.compound.env); }
 static inline __attribute__((always_inline)) Binding *frame_lookup(Frame *f, uint32_t sym) {
     if (!sym_local[sym]) { int i = frame_find(global_frame, sym); return i >= 0 ? &global_frame->bindings[i] : NULL; }
     for (Frame *cur = f; cur; cur = cur->parent) {
@@ -466,7 +452,8 @@ static void eval_run(Value *body, int slots, Frame *ee);
    otherwise. */
 static inline void eval_in(Value *body, int slots, Frame *ee) {
     if(!(body[slots-1].flags&VF_BINDS)){ eval_run(body,slots,ee); return; }
-    Frame *f=frame_acquire(ee); eval_run(body,slots,f); frame_end_run(f);
+    Frame *f=frame_pool; if(f) frame_pool=f->parent; else f=frame_new(NULL);
+    f->parent=ee; f->refs=1; frame_ref(ee); eval_run(body,slots,f); frame_end_run(f);
 }
 static inline void dispatch_word(uint32_t sym, Frame *env);
 /* Primitives by symbol id; the second table holds the fused `X must` variant. */
@@ -483,16 +470,13 @@ static ElemRef compound_elem(Value *data, int total_slots, int len, int64_t inde
     int sz = val_slots(data[elem_end - 1]);
     ElemRef ref = { elem_end - sz, sz }; return ref;
 }
-static ElemRef record_field(Value *data, int total_slots, int len, uint32_t key, int *found) {
-    int elem_end = total_slots - 1; *found = 0; ElemRef ref = {0, 0};
-    for (int i = len - 1; i >= 0; i--) {
-        int lp = elem_end - 1; Value last = data[lp];
-        int vsize = val_slots(last);
-        int val_base = elem_end - vsize, key_pos = val_base - 1;
-        if (data[key_pos].as.sym == key) { ref.base = val_base; ref.slots = vsize; *found = 1; return ref; }
+static ElemRef record_field(Value *data, int total_slots, int len, uint32_t key) {
+    for (int i = len - 1, elem_end = total_slots - 1; i >= 0; i--) {
+        int vsize = val_slots(data[elem_end - 1]), key_pos = elem_end - vsize - 1;
+        if (data[key_pos].as.sym == key) { ElemRef ref = { key_pos + 1, vsize }; return ref; }
         elem_end = key_pos;
     }
-    return ref;
+    ElemRef ref = { -1, 0 }; return ref;
 }
 static int eval_depth = 0;
 #define EVAL_DEPTH_MAX 10000
@@ -609,9 +593,9 @@ static int val_equal(Value *a, int aslots, Value *b, int bslots) {
         int len = (int)atop.as.compound.len;
         if (len != (int)btop.as.compound.len) return 0;
         for (int p = aslots - 1, k = 0; k < len; k++) {
-            int vs = val_slots(a[p-1]), found; uint32_t key = a[p-1-vs].as.sym;
-            ElemRef r = record_field(b, bslots, len, key, &found);
-            if (!found || !val_equal(&a[p-vs], vs, &b[r.base], r.slots)) return 0;
+            int vs = val_slots(a[p-1]); uint32_t key = a[p-1-vs].as.sym;
+            ElemRef r = record_field(b, bslots, len, key);
+            if (r.base < 0 || !val_equal(&a[p-vs], vs, &b[r.base], r.slots)) return 0;
             p -= vs + 1; }
         return 1; }
     case VAL_TUPLE:
@@ -629,10 +613,6 @@ static int val_equal(Value *a, int aslots, Value *b, int bslots) {
     default: break;
     }
     return 0;
-}
-static int val_less(Value *a, int aslots, Value *b, int bslots) {
-    Value atop = a[aslots - 1], btop = b[bslots - 1];
-    return atop.tag == VAL_INT ? atop.as.i < btop.as.i : atop.as.f < btop.as.f;
 }
 static uint32_t S_LET, S_EFFECT, S_OK, S_NO, S_NONE, S_TAG, S_CASE, S_MUST, S_AT, S_EDIT, S_INTO, S_KEY, S_VALUE, S_ON, S_SHOW, S_WILD;
 static void syms_init(void) {
@@ -1262,9 +1242,9 @@ static int ty_list(Token *toks, int open, TyNames *nm, int rest, int inherit, in
         if (t->tag == TOK_SYM) { tyi_push(TI_SYM, 0, t->as.sym, j); continue; }
         if (t->tag == TOK_LBRACKET) { tyi_push(TI_LIST, 0, 0, j); j += t->span; continue; }
         if (t->tag == TOK_STRING) {
-            char *k = malloc((size_t)t->as.str.len + 1); if (!k) die("type checker: out of memory for a %d-byte key", t->as.str.len);
-            for (int c = 0; c < t->as.str.len; c++) { if (!t->as.str.codes[c]) TY_DIE(t, "type annotation: this key holds a NUL byte at offset %d, but a key names a field or a tag, as in \"x\". Drop the \\0.", c); k[c] = (char)t->as.str.codes[c]; }
-            k[t->as.str.len] = 0; current_loc = LOC_PACK(t->fid, t->line, t->col); tyi_push(TI_KEY, 0, sym_intern(k), j); free(k); continue; }
+            const unsigned char *nul = t->as.str.len ? memchr(t->as.str.b, 0, (size_t)t->as.str.len) : NULL;
+            if (nul) TY_DIE(t, "type annotation: this key holds a NUL byte at offset %d, but a key names a field or a tag, as in \"x\". Drop the \\0.", (int)(nul - t->as.str.b));
+            current_loc = LOC_PACK(t->fid, t->line, t->col); tyi_push(TI_KEY, 0, sym_intern(t->as.str.len ? (const char *)t->as.str.b : ""), j); continue; }
         if (t->tag != TOK_WORD) TY_DIE(t, "type annotation: a type is written with type words, as in int, 'a var, int 'list tag or [int] [int] fn, not a literal.");
         const char *w = sym_name(t->as.sym);
         int k = !strcmp(w, "int") ? K_INT : !strcmp(w, "float") ? K_FLOAT : !strcmp(w, "sym") ? K_SYM : !strcmp(w, "socket") ? K_SOCK : !strcmp(w, "str") ? K_LIST : -1;
@@ -2093,7 +2073,7 @@ INTOP2(and,(a&&b)?1:0) INTOP2(or,(a||b)?1:0)
 /* An int under a one-slot int is a whole int, because a compound ends in its header. */
 #define CMP2(nm,iop,expr) static void prim_##nm(Frame *e){(void)e; if(stack[sp-1].tag==VAL_INT&&stack[sp-2].tag==VAL_INT){ sp--; stack[sp-1]=val_int(stack[sp-1].as.i iop stack[sp].as.i); return; } int b=val_start(sp),a=val_start(b),r=(expr);deep_free_values(&stack[a],sp-a);sp=a;spush(val_int(r?1:0));}
 CMP2(eq, ==, val_equal(&stack[a],b-a,&stack[b],sp-b))
-CMP2(lt, <, val_less(&stack[a],b-a,&stack[b],sp-b))
+CMP2(lt, <, stack[b-1].tag==VAL_INT ? stack[b-1].as.i<stack[sp-1].as.i : stack[b-1].as.f<stack[sp-1].as.f)
 static void prim_print(Frame *e){(void)e;Value top=stack[sp-1];int s=val_slots(top);val_print(&stack[sp-s],s,stdout);printf("\n");deep_free_values(&stack[sp-s],s);sp-=s;
     if(ferror(stdout)) die("print: cannot write to stdout: %s", strerror(errno));}
 /* A failed write to stdout must not exit 0. */
@@ -2116,9 +2096,9 @@ static void prim_if(Frame *env) {
    so they run in the frame that runs case. A clause runs on its tag's payload, already in place under the
    tagged value's header; '_ runs on the tagged value. */
 static void case_run(Value *clauses, int n, Frame *env) {
-    int len=(int)clauses[n-1].as.compound.len, found=0; uint32_t tag_sym=stack[sp-1].as.compound.len;
-    ElemRef br = record_field(clauses,n,len,tag_sym,&found);
-    if (found) sp--; else br = record_field(clauses,n,len,S_WILD,&found);
+    int len=(int)clauses[n-1].as.compound.len; uint32_t tag_sym=stack[sp-1].as.compound.len;
+    ElemRef br = record_field(clauses,n,len,tag_sym);
+    if (br.base >= 0) sp--; else br = record_field(clauses,n,len,S_WILD);
     eval_in(&clauses[br.base],br.slots,env);
 }
 static void prim_case(Frame *env) { POP_VAL(clauses); stage_body(asp-1); case_run(clauses_buf,clauses_s,env); }
@@ -2400,7 +2380,7 @@ static void prim_at(Frame *env) {
     (void)env; uint32_t key=pop_sym();
     Value next=stack[sp-1];
     int s=val_slots(next),len=(int)next.as.compound.len,base=sp-s;
-    int found; ElemRef ref=record_field(&stack[base],s,len,key,&found);
+    ElemRef ref=record_field(&stack[base],s,len,key);
     deep_free_values(&stack[base],ref.base); deep_free_values(&stack[base+ref.base+ref.slots],s-ref.base-ref.slots);
     memmove(&stack[base],&stack[base+ref.base],ref.slots*sizeof(Value));
     sp=base+ref.slots;
@@ -2412,7 +2392,7 @@ static void rec_put(uint32_t key) {
     int v_s=val_slots(stack[sp-1]),v_base=sp-v_s;
     Value rec_top=stack[v_base-1];
     int rec_s=val_slots(rec_top),rec_len=(int)rec_top.as.compound.len,rec_base=v_base-rec_s;
-    int found; ElemRef ex=record_field(&stack[rec_base],rec_s,rec_len,key,&found);
+    ElemRef ex=record_field(&stack[rec_base],rec_s,rec_len,key);
     rec_top.loc=0;
     int old_base=rec_base+ex.base,os=ex.slots;
     if(os==v_s) { deep_free_values(&stack[old_base],os); memmove(&stack[old_base],&stack[v_base],(size_t)v_s*sizeof(Value)); sp=v_base; return; }
@@ -2422,7 +2402,7 @@ static void rec_put(uint32_t key) {
 static void prim_into(Frame *e) { (void)e; rec_put(pop_sym()); }
 static void prim_edit(Frame *env) {
     uint32_t key=pop_sym(); POP_BODY(fn); REC_PREAMBLE;
-    int found; ElemRef ref=record_field(&stack[rec_base],rec_s,rec_len,key,&found);
+    ElemRef ref=record_field(&stack[rec_base],rec_s,rec_len,key);
     stack_room(ref.slots,"edit");
     deep_copy_values(&stack[sp],&stack[rec_base+ref.base],ref.slots); sp+=ref.slots;
     eval_body(fn_buf,fn_s,env);
@@ -2678,7 +2658,7 @@ static inline __attribute__((always_inline)) void dispatch_word(uint32_t sym, Fr
     Binding *b=frame_lookup(env,sym); Value *v=b->vals; int s=b->slots;
     if(!b->word){
         if(s==1&&v->tag<=VAL_SYM&&sp<STACK_MAX){ stack[sp++]=*v; return; }
-        if(b->heap){ stack_room(s,sym_name(sym)); deep_copy_values(&stack[sp],v,s); sp+=s; } else { SPUSH(v,s); if(b->tuples) vals_retain(v,s); } return; }
+        if(b->heap){ stack_room(s,sym_name(sym)); deep_copy_values(&stack[sp],v,s); sp+=s; } else { SPUSH(v,s); if(b->tuples) for(int i=0;i<s;i++) if(v[i].tag==VAL_TUPLE) frame_ref(v[i].as.compound.env); } return; }
     if(LOC_FID(current_loc)!=FID_PRELUDE) user_loc=current_loc;
     eval_body(v,s,env);
 }
@@ -2795,8 +2775,7 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
             break;
         case TOK_STRING:
             if(tt->as.str.len==0){ spush(with_tok(val_compound(VAL_LIST,0,1),tt)); ec++; break; }
-            { Bytes *p=bytes_alloc(tt->as.str.len); for(int c=0;c<tt->as.str.len;c++) p->b[c]=(unsigned char)tt->as.str.codes[c]; p->len=tt->as.str.len;
-              spush(with_tok(bytes_value(p),tt)); ec++; break; }
+            spush(with_tok(bytes_of(tt->as.str.b,tt->as.str.len),tt)); ec++; break;
         case TOK_LPAREN:{int nc=(j+toks[j].span);build_tuple(toks,j+1,nc,tc,env);stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col);ec++;j=nc;break;}
         case TOK_LBRACKET:{
             int bc=(j+toks[j].span);
@@ -3017,9 +2996,9 @@ static void prim_on(Frame *e) {
    feeds chunks copies the bound pcm on each feed. */
 static SDL_AudioDeviceID audio_dev=0; static int64_t audio_rate=0;
 static void prim_play(Frame *e) {
-    (void)e; Value top=speek(); int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s,found;
-    ElemRef r=record_field(&stack[base],s,len,sym_intern("rate"),&found); int64_t rate=stack[base+r.base].as.i;
-    ElemRef pr=record_field(&stack[base],s,len,sym_intern("pcm"),&found); Value pv=stack[base+pr.base+pr.slots-1];
+    (void)e; Value top=speek(); int s=val_slots(top),len=(int)top.as.compound.len,base=sp-s;
+    ElemRef r=record_field(&stack[base],s,len,sym_intern("rate")); int64_t rate=stack[base+r.base].as.i;
+    ElemRef pr=record_field(&stack[base],s,len,sym_intern("pcm")); Value pv=stack[base+pr.base+pr.slots-1];
     int n=pv.tag==VAL_BYTES?BYTES(pv)->len:(int)pv.as.compound.len;
     /* SDL takes rates far outside this, but no audio file holds one. */
     if(n&&(rate<8000||rate>384000)) die("play: the rate is %lld Hz; expected 8000 to 384000",(long long)rate);
@@ -3265,9 +3244,9 @@ static void prim_render_midi(Frame *e) {
     /* The events come from midi.slap or the program itself, never from a file unread: a bad one is a
        bug in that code, so it dies rather than giving 'no. They are checked in place, before
        anything is allocated, since the shell goes on after a death. */
-    Value mtop = stack[pbase - 1]; int ms = val_slots(mtop), mlen = (int)mtop.as.compound.len, mbase = pbase - ms, found;
-    ElemRef dr = record_field(&stack[mbase], ms, mlen, sym_intern("division"), &found); int64_t division = stack[mbase + dr.base].as.i;
-    ElemRef er = record_field(&stack[mbase], ms, mlen, sym_intern("events"), &found);
+    Value mtop = stack[pbase - 1]; int ms = val_slots(mtop), mlen = (int)mtop.as.compound.len, mbase = pbase - ms;
+    ElemRef dr = record_field(&stack[mbase], ms, mlen, sym_intern("division")); int64_t division = stack[mbase + dr.base].as.i;
+    ElemRef er = record_field(&stack[mbase], ms, mlen, sym_intern("events"));
     Value *ev = &stack[mbase + er.base]; Value eh = ev[er.slots-1]; int en = eh.tag == VAL_BYTES ? BYTES(eh)->len : (int)eh.as.compound.len;
     if (division < 1 || division > 32767) die("render-midi: the division is %lld; expected 1 to 32767 ticks a quarter note", (long long)division);
     if (en % 10) die("render-midi: 'events holds %d bytes; expected 10 an event: tick (4) status channel a (3) b", en);
@@ -3288,8 +3267,8 @@ static void prim_render_midi(Frame *e) {
     for (int i = 0; i < plen && !why[0]; i++) {
         ElemRef r = compound_elem(&stack[pbase], ps, plen, i); Value *rec = &stack[pbase + r.base];
         int rl = (int)rec[r.slots-1].as.compound.len;
-        ElemRef c = record_field(rec, r.slots, rl, k_channel, &found); int64_t ch = rec[c.base].as.i;
-        ElemRef fo = record_field(rec, r.slots, rl, k_font, &found);
+        ElemRef c = record_field(rec, r.slots, rl, k_channel); int64_t ch = rec[c.base].as.i;
+        ElemRef fo = record_field(rec, r.slots, rl, k_font);
         if (ch < 0 || ch > 15) snprintf(why, sizeof why, "part %d names channel %lld; a channel is 0 to 15", i, (long long)ch);
         else if (font_of[ch]) snprintf(why, sizeof why, "channel %lld is named by two parts", (long long)ch);
         else { int fl; font_of[ch] = string_at(&rec[fo.base], fo.slots, &fl);
@@ -3883,10 +3862,10 @@ int main(int argc, char **argv) {
         else cli_args[cli_argc++]=argv[i];
     }
     prof_on=profile; syms_init(); register_prims();
-    global_frame=frame_new(NULL); Frame *global=global_frame;
+    global_frame=frame_new(NULL);
     store_source_lines(PRELUDE, FID_PRELUDE);
     static Token combined[TOK_MAX], table[TOK_MAX]; int cpos=0;
-    lex(PRELUDE, FID_PRELUDE); memcpy(combined,tokens,tok_count*sizeof(Token)); cpos=tok_count; eval(combined,cpos,global);
+    lex(PRELUDE, FID_PRELUDE); memcpy(combined,tokens,tok_count*sizeof(Token)); cpos=tok_count; eval(combined,cpos,global_frame);
     store_source_lines(TYPES, FID_BUILTIN); lex(TYPES, FID_BUILTIN);
     int table_count=tok_count; memcpy(table,tokens,table_count*sizeof(Token));
     current_loc=LOC_PACK(FID_STDIN,0,0);
@@ -3912,20 +3891,18 @@ int main(int argc, char **argv) {
 #endif
     if(sz==0){fprintf(stderr,"usage: slap [--check] [--headless] [--profile] [args...] < file.slap\n");return 1;}
     store_source_lines(src, FID_STDIN);
-    static Token user_tokens[TOK_MAX];
     int user_start=cpos;
     /* tokens hold no pointer into src: words are interned, strings and source lines are copies */
     tok_limit=TOK_MAX-cpos; lex(src, FID_STDIN); free(src); int user_tok_count=tok_count;
-    memcpy(user_tokens,tokens,user_tok_count*sizeof(Token));
     current_loc=LOC_PACK(FID_STDIN,0,0);
-    memcpy(&combined[cpos],user_tokens,user_tok_count*sizeof(Token)); cpos+=user_tok_count;
+    memcpy(&combined[cpos],tokens,user_tok_count*sizeof(Token)); cpos+=user_tok_count;
     int errors=infer_program(table,table_count,combined,cpos,user_start);
     if(errors>0){fprintf(stderr,"%d type error(s)\n",errors);return 1;}
     if(check_only){fprintf(stderr,"type check passed\n");return 0;}
-    refuse_missing_words(user_tokens,user_tok_count);
+    refuse_missing_words(&combined[user_start],user_tok_count);
     current_loc=LOC_PACK(FID_STDIN,0,0);
     /* Registered after stdout_check, so it runs first, on die too. */
     if(profile){ prof_last=prof_now(); atexit(prof_report); }
-    eval(user_tokens,user_tok_count,global);
+    eval(&combined[user_start],user_tok_count,global_frame);
     return 0;
 }
