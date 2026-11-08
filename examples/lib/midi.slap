@@ -37,7 +37,7 @@
  -- byte, the high bit set on all but the last, at most four bytes before end.
  ('vq-end let 'vq-i let
   -- the state is n j k fin: fin is 0 while reading, 1 when done, 2 when cut short or too long
-  0 vq-i 0 0 (dup 0 eq) ('vq-f let 'vq-k let 'vq-j let 'vq-n let
+  0 vq-i 0 0 (dup 0 eq) (drop 'vq-k let 'vq-j let 'vq-n let
     vq-j vq-end ge vq-k 4 ge or (vq-n vq-j vq-k 2) (
       vq-j 'md-b nth must 'vq-b let
       vq-n 7 shl vq-b 127 band bor vq-j 1 plus vq-k 1 plus vq-b 128 lt (1) (0) if) if) while
@@ -83,7 +83,7 @@
   me-rec push me-dj me-len plus 0 0 []) if) if) if) if) if) if) if) if) 'md-event let
  -- md-track: (start end k -- events err).  Track k's events, from start up to end.
  ('mt-k let 'mt-end let 'mt-start let
-  [] mt-start 0 0 0 [] ('mc-e let 'mc-d let mc-d mc-e mc-d 0 eq mc-e len 0 eq and) ('tb-e let 'tb-d let 'tb-r let 'tb-t let 'tb-i let
+  [] mt-start 0 0 0 [] ('mc-e let 'mc-d let mc-d mc-e mc-d 0 eq mc-e len 0 eq and) (drop drop 'tb-r let 'tb-t let 'tb-i let
     tb-i mt-end ge (tb-i tb-t tb-r 0 ["midi: track " mt-k md-s cat " ends at byte " cat mt-end md-s cat " without an end-of-track event" cat]) (
     tb-i mt-end md-vlq 'tv-ok let 'tv-j let 'tv-n let
     tv-ok not (tb-i tb-t tb-r 0 ["midi: the delta time at byte " tb-i md-s cat " runs past its track or past 4 bytes" cat]) (
@@ -103,7 +103,7 @@
  md-div 0 eq ("midi: the time division is 0 ticks a quarter note" no) (
  md-fmt 0 eq md-nt 1 eq not and ("midi: format 0 holds one track, but the header says " md-nt md-s cat no) (
    -- chunks after the header: MTrk chunks are tracks, other chunks are passed over
-   [] md-hl 8 plus 0 [] ('cc-e let 'cc-k let 'cc-p let cc-p cc-k cc-e cc-p md-n lt cc-e len 0 eq and) ('cb-e let 'cb-k let 'cb-p let
+   [] md-hl 8 plus 0 [] ('cc-e let 'cc-k let 'cc-p let cc-p cc-k cc-e cc-p md-n lt cc-e len 0 eq and) (drop 'cb-k let 'cb-p let
      cb-p 8 plus md-n gt (cb-p cb-k ["midi: the " md-n cb-p sub md-s cat " bytes at byte " cat cb-p md-s cat " are too few for a chunk header" cat]) (
      cb-p 4 plus 4 md-u 'cb-l let cb-p 8 plus cb-l plus 'cb-q let
      cb-q md-n gt (cb-p cb-k ["midi: the chunk at byte " cb-p md-s cat " says " cat cb-l md-s cat " bytes, but " cat md-n cb-p 8 plus sub md-s cat " remain" cat]) (
@@ -121,7 +121,7 @@
  -- byte, the high bit set on all but the last, at most four bytes before end.
  ('vq-end let 'vq-i let
   -- the state is n j k fin: fin is 0 while reading, 1 when done, 2 when cut short or too long
-  0 vq-i 0 0 (dup 0 eq) ('vq-f let 'vq-k let 'vq-j let 'vq-n let
+  0 vq-i 0 0 (dup 0 eq) (drop 'vq-k let 'vq-j let 'vq-n let
     vq-j vq-end ge vq-k 4 ge or (vq-n vq-j vq-k 2) (
       vq-j 'md-b nth must 'vq-b let
       vq-n 7 shl vq-b 127 band bor vq-j 1 plus vq-k 1 plus vq-b 128 lt (1) (0) if) if) while
@@ -164,7 +164,7 @@
   me-dj me-len plus 0 0 []) if) if) if) if) if) if) if) if) 'md-event let
  -- md-track: (ev start end k -- ev err).  Track k's events, from start up to end.
  ('mt-k let 'mt-end let 'mt-start let
-  mt-start 0 0 0 [] ('mc-e let 'mc-d let mc-d mc-e mc-d 0 eq mc-e len 0 eq and) ('tb-e let 'tb-d let 'tb-r let 'tb-t let 'tb-i let
+  mt-start 0 0 0 [] ('mc-e let 'mc-d let mc-d mc-e mc-d 0 eq mc-e len 0 eq and) (drop drop 'tb-r let 'tb-t let 'tb-i let
     tb-i mt-end ge (tb-i tb-t tb-r 0 ["midi: track " mt-k md-s cat " ends at byte " cat mt-end md-s cat " without an end-of-track event" cat]) (
     tb-i mt-end md-vlq 'tv-ok let 'tv-j let 'tv-n let
     tv-ok not (tb-i tb-t tb-r 0 ["midi: the delta time at byte " tb-i md-s cat " runs past its track or past 4 bytes" cat]) (
@@ -184,7 +184,7 @@
  md-div 0 eq ("midi: the time division is 0 ticks a quarter note" no) (
  md-fmt 0 eq md-nt 1 eq not and ("midi: format 0 holds one track, but the header says " md-nt md-s cat no) (
    -- chunks after the header: MTrk chunks are tracks, other chunks are passed over
-   "" md-hl 8 plus 0 [] ('cc-e let 'cc-k let 'cc-p let cc-p cc-k cc-e cc-p md-n lt cc-e len 0 eq and) ('cb-e let 'cb-k let 'cb-p let
+   "" md-hl 8 plus 0 [] ('cc-e let 'cc-k let 'cc-p let cc-p cc-k cc-e cc-p md-n lt cc-e len 0 eq and) (drop 'cb-k let 'cb-p let
      cb-p 8 plus md-n gt (cb-p cb-k ["midi: the " md-n cb-p sub md-s cat " bytes at byte " cat cb-p md-s cat " are too few for a chunk header" cat]) (
      cb-p 4 plus 4 md-u 'cb-l let cb-p 8 plus cb-l plus 'cb-q let
      cb-q md-n gt (cb-p cb-k ["midi: the chunk at byte " cb-p md-s cat " says " cat cb-l md-s cat " bytes, but " cat md-n cb-p 8 plus sub md-s cat " remain" cat]) (

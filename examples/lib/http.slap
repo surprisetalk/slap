@@ -126,7 +126,7 @@
            hl-loc hl-host hl-port hg-url {'ok ('hl-u let hl-u 'host at hl-u 'port at hl-u 'path at hl-hops 1 plus hg-follow) 'no (no)} case) if) if)
     (hl-r ok) if)
   'no (no)} case) 'hg-follow let
-('hf-path let 'hf-port let 'hf-host let hf-host hf-port hf-path 0 hg-follow) 'hg-fetch let
+(0 hg-follow) 'hg-fetch let
 (443 swap hg-fetch) 'https-get let
 
 -- ========== Self-test (runs when the library loads) ==========

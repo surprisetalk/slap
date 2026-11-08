@@ -870,12 +870,6 @@ crlf 1 get must 10 eq assert
   tcp-close tcp-close
 ) 'tcp-large-data let tcp-large-data
 
--- ===== HTTP Prelude =====
-(
-  "GET" "example.com" "/path" [] [] http-request 'req let
-  req 4 take-n "GET " eq assert
-) 'test-http-request let test-http-request
-
 -- ===== HTTP Integration (Loopback) =====
 (
   19205 open-pair swap

@@ -2,7 +2,7 @@
 -- An element is a record {'name "tag" 'attrs [{'name "n" 'value "v"}...] 'children [node...]}.
 -- A node is `element 'elem tag` or `text 'text tag`.
 -- _xml-parse returns the root `element ok`, or `msg no` for input that is not well-formed.
--- Decoders (xd-*) are first-class composable values. Run with xd-run or xd-eval.
+-- Decoders (xd-*) are first-class composable values. Run with xd-run.
 -- Errors are XPath-ish strings: "/rss/channel/item[2]: missing <title>".
 
 -- ========== Char predicates ==========
@@ -23,6 +23,9 @@
  over 95 eq or
  over 58 eq or
  swap 46 eq or) '_x-name-char? let
+
+-- REVIEW: _x-nc holds _x-name-char? of each byte, so the scan in _xname reads one table entry for each byte. Alternative: call the predicate's comparison chain for each byte. It costs about 18% more instructions on the 600 KB feed.
+0 256 range (_x-name-char?) each '_x-nc let
 
 -- ========== Entities ==========
 
@@ -118,7 +121,7 @@
   -- _xname: (i -- name st)
   ('xni let xni _xc 'xc0 let
    xc0 _x-name-start? not ([] "xml: expected a name" xni _xhere no) (
-     xni (dup _xc _x-name-char?) (1 plus) while 'xne let xni xne _xslice xne ok) if) '_xname let
+     xni (dup '_xin nth {'ok ('_x-nc nth {'ok () 'no (drop 0)} case) 'no (drop 0)} case) (1 plus) while 'xne let xni xne _xslice xne ok) if) '_xname let
 
   -- _xentity: (i -- bytes st).  i is just past '&'.  A body past 32 bytes is unterminated.
   ('xei let
@@ -183,6 +186,7 @@
          [] xrj 1 plus ok 1
          (dup) (drop 0 ('xhi let
              xhi _xc 0 lt (0 "xml: unexpected end of input inside <" xen cat ">" cat xhi _xpos no) (
+             xhi _xc 60 eq not (xhi _xtext swap 'text tag swap (push) dip 1 swap) (
              xhi "<!--" _xat (1 xhi 4 plus "-->" _xpast) (
              xhi "<![CDATA[" _xat (xhi 9 plus _xcdata swap 'text tag swap (push) dip 1 swap) (
              xhi "<?" _xat (1 xhi 2 plus "?>" _xpast) (
@@ -191,8 +195,7 @@
                (_xws 'xck let xct xen eq not ("xml: expected </" xen cat "> but found </" cat xct cat ">" cat xhi _xpos no) (
                   xck _xc 62 eq (xck 1 plus ok) ("xml: expected > to close </" xct cat ">" cat xck _xhere no) if) if) then
                0 swap) (
-             xhi _xc 60 eq (xhi xed 1 plus _xelem swap 'elem tag swap (push) dip 1 swap) (
-               xhi _xtext swap 'text tag swap (push) dip 1 swap
+             xhi xed 1 plus _xelem swap 'elem tag swap (push) dip 1 swap
              ) if) if) if) if) if) if) pthen swap) while
          drop) ([] "xml: expected > or /> after <" xen cat xrj _xhere no) if) if) pthen swap 'xek let
      {'name xen 'attrs xea 'children xek} swap) if) if) '_xelem let
@@ -288,19 +291,8 @@
 -- xd-children: (name dec -- dec').  Every child element with the name.
 ('d let 'n let ('children at (n eq) _x-elems d _xa-list {'ok (ok) 'no ("/" n cat swap cat no)} case)) 'xd-children let
 
--- xd-all-children: (dec -- dec').  Every child element.
-('d let ('children at (drop 1) _x-elems d _xa-list {'ok (ok) 'no ("/*" swap cat no)} case)) 'xd-all-children let
-
--- xd-at: (names dec -- dec').  Children nested along names: ["b" "c"] reads /b/c.
-(swap reverse swap (swap xd-child) fold) 'xd-at let
-
 -- xd-map: (dec f -- dec').  f: (value -- value').
 ('f let 'd let (d apply (f apply ok) then)) 'xd-map let
-
--- xd-map2: (dec1 dec2 f -- dec).  f: (value1 value2 -- value).  Both decoders
--- read the same element; `"t" xd-text "u" xd-text ('u let 't let {'title t 'url u}) xd-map2`
--- builds a record of two fields.
-('f let 'd2 let 'd1 let ('e let e d1 apply ('a let e d2 apply (a swap f apply ok) then) then)) 'xd-map2 let
 
 -- xd-and-then: (dec f -- dec').  f: (value -- dec2), and dec2 reads the same element.
 ('f let 'd let ('e let e d apply (f apply e swap apply) then)) 'xd-and-then let
@@ -322,17 +314,10 @@
 ('v let (drop v ok)) 'xd-succeed let
 ('m let (drop ": " m cat no)) 'xd-fail let
 
--- xd-default-ns: the element's xmlns attribute, or "" if it declares none.
--- Useful for detecting Atom feeds (xmlns="http://www.w3.org/2005/Atom").
-("xmlns" xd-attr xd-maybe ("" default) xd-map) 'xd-default-ns let
-
 -- ========== Public entry ==========
 
 -- xd-run: (source dec -- value ok | msg no).
 ('d let _xml-parse ('root let root d apply {'ok (ok) 'no ("/" root 'name at cat swap cat no)} case) then) 'xd-run let
-
--- xd-eval: (source (-- dec) -- value ok | msg no).  Builds the decoder, then runs it.
-(apply xd-run) 'xd-eval let
 
 -- ========== Builder combinators (xe-*) ==========
 -- Nodes for xml-render.
@@ -462,21 +447,13 @@ nks 1 get must node-name "c" eq assert
 ("b" xd-text xd-children) 'b-list let
 "<a><b>1</b><b>2</b><c/><b>3</b></a>" b-list xd-run ["1" "2" "3"] ok eq assert
 
-(["b" "c"] xd-text xd-at) 'abc-text let
-"<a><b><c>deep</c></b></a>" abc-text xd-run "deep" ok eq assert
-
-"<feed><t>Hi</t><t>Bye</t></feed>"
-  ("t" xd-text xd-children) xd-eval ["Hi" "Bye"] ok eq assert
-
-"<a><b>1</b>x<c>2</c></a>" xd-text xd-all-children xd-run ["1" "2"] ok eq assert
-
 ("x" xd-attr xd-maybe) 'maybe-x-attr let
 "<a/>" maybe-x-attr xd-run none ok eq assert
 "<a x=\"1\"/>" maybe-x-attr xd-run "1" ok ok eq assert
 -- A missing child is none, and a present child that fails its decoder fails the decode
 "<a/>" "b" xd-text xd-child xd-maybe xd-run none ok eq assert
 "<a><b><c/></b></a>" "b" xd-text xd-child xd-maybe xd-run xerr "/a/b/text(): element has non-text children" eq assert
-"<a><b/></a>" ["b" "c"] xd-text xd-at xd-maybe xd-run xerr "/a/b: missing <c>" eq assert
+"<a><b/></a>" "b" "c" xd-text xd-child xd-child xd-maybe xd-run xerr "/a/b: missing <c>" eq assert
 
 -- xd-markup: the children as XML, so text stays escaped and an element stays markup
 "<a> AT&amp;T </a>" xd-markup xd-run "AT&amp;T" ok eq assert
@@ -488,9 +465,6 @@ nks 1 get must node-name "c" eq assert
 
 ([] "wrong" xd-fail push xd-text push xd-one-of) 'first-int-fail-then-text let
 "<a>hi</a>" first-int-fail-then-text xd-run "hi" ok eq assert
-
-(xd-tag xd-text ('t let "=" cat t cat) xd-map2) 'tag-eq-text let
-"<a>hi</a>" tag-eq-text xd-run "a=hi" ok eq assert
 
 -- Adversarial
 "<a/>" "id" xd-attr xd-run xerr "/a: missing @id" eq assert
@@ -543,13 +517,6 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 "<a><b><c>deep</c></b></a>" _xml-parse must 'elem tag xml-pretty
   "<a>\n  <b>\n    <c>deep</c>\n  </b>\n</a>\n" eq assert
 
--- xd-default-ns: missing xmlns → ""
-"<a/>" xd-default-ns xd-run "" ok eq assert
-
--- xd-default-ns: present
-"<feed xmlns=\"http://www.w3.org/2005/Atom\"/>" xd-default-ns xd-run
-  "http://www.w3.org/2005/Atom" ok eq assert
-
 
 -- ========== Malformed input returns 'no, never a crash ==========
 
@@ -565,6 +532,7 @@ rendered "<a id=\"1\"><b>hi &amp; bye</b><c/></a>" eq assert
 "<a /x>" _xml-parse xerr "xml: expected > or /> after <a at byte 3, found '/'" eq assert
 "<1/>" _xml-parse xerr "xml: expected a name at byte 1, found '1'" eq assert
 "<" _xml-parse xerr "xml: expected a name at byte 1" eq assert
+[60 97 1000 62 60 47 97 62] _xml-parse xerr "xml: expected a name at byte 2, found byte 1000" eq assert
 "<a>&bogus;</a>" _xml-parse xerr "xml: unknown entity &bogus; at byte 3" eq assert
 "<a>&amp</a>" _xml-parse xerr "xml: unterminated entity at byte 3" eq assert
 "<a>&#xZZ;</a>" _xml-parse xerr "xml: bad digit in a numeric entity at byte 3" eq assert

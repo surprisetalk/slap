@@ -217,9 +217,6 @@
        'no (drop ": missing field \"" k cat "\"" cat no)} case)
    '_ ("object" _jwant nip)} case)) 'jd-field let
 
--- jd-at: (keys dec -- dec').  Fields nested along keys: ["a" "b"] reads $.a.b.
-(swap reverse swap (swap jd-field) fold) 'jd-at let
-
 -- jd-map: (dec f -- dec').  f: (value -- value').
 ('f let 'd let (d apply (f apply ok) then)) 'jd-map let
 
@@ -248,9 +245,6 @@
 -- jd-run: (source dec -- value ok | msg no).
 ('d let _json-parse (d apply {'ok (ok) 'no ("$" swap cat no)} case) then) 'jd-run let
 
--- jd-eval: (source (-- dec) -- value ok | msg no).  Builds the decoder, then runs it.
-(apply jd-run) 'jd-eval let
-
 -- ========== JSON encoder helpers (je-*) ==========
 -- Each je-* returns a fragment-string ready to concatenate.
 
@@ -270,15 +264,7 @@
 (int-str) 'je-int let
 
 -- je-list: (list-of-json-string-fragments -- json-array-string)
--- Stack layout for fold: (iter-list init body).  Since we set items-rest first
--- then build acc on top, the order is already correct.
-('items let
-  items len 0 eq ("[]") (
-    items 0 get must 'first-item let
-    items 1 drop-n                                 -- (items-rest)
-    [] 91 push first-item cat                     -- (items-rest acc="[first")
-    ("," swap cat cat) fold
-    93 push) if) 'je-list let
+("," str-join "[" swap cat 93 push) 'je-list let
 
 -- je-obj: (list-of-{'name key-str 'value value-fragment} -- json-object-string)
 -- Keys are plain strings (encoded via je-str); values are already JSON fragments.
@@ -286,15 +272,7 @@
 ('pairs let
   pairs dict ('jq let 'jqd let jq 'name at 'jqk let
     jqd jqk of {'ok ("json: je-obj: duplicate key \"" jqk cat "\"; the parser refuses it" cat fail) 'no (0 insert)} case) fold drop
-  pairs len 0 eq ("{}") (
-    pairs 0 get must 'p0 let
-    pairs 1 drop-n                                 -- (pairs-rest)
-    [] 123 push
-      p0 'name at je-str cat ":" cat p0 'value at cat
-    ('kv let
-      "," cat kv 'name at je-str cat ":" cat kv 'value at cat
-    ) fold
-    125 push) if) 'je-obj let
+  pairs ('kv let kv 'name at je-str ":" cat kv 'value at cat) each "," str-join "{" swap cat 125 push) 'je-obj let
 
 -- je-value: (jv -- json-string).  Writes back the values the parser reads, in
 -- the same key order, so a program can change one field and keep the rest. The
@@ -340,18 +318,9 @@
 "{\"x\": [1, 2], \"y\": 3}" "x" jd-int jd-list jd-field jd-run [1 2] ok eq assert
 "{\"x\": 1, \"y\": 2}" "y" jd-int jd-field jd-run 2 ok eq assert
 
--- Map: headline example. Two styles:
---   jd-run  - takes a pre-built decoder (e.g., via def)
---   jd-eval - takes an inline decoder-building quotation
--- In concatenative order, key "a" must be pushed *before* the inner decoder.
+-- Map: headline example. In concatenative order, key "a" must be pushed *before* the inner decoder.
 ("a" jd-int (1 plus) jd-map jd-list jd-field) 'headline-dec let
 "{ \"a\": [1,2,3] }" headline-dec jd-run [2 3 4] ok eq assert
-"{ \"a\": [1,2,3] }" ("a" jd-int (1 plus) jd-map jd-list jd-field) jd-eval
-  [2 3 4] ok eq assert
-
--- At: nested path
-"{\"a\":{\"b\":{\"c\":42}}}" ["a" "b" "c"] jd-int jd-at jd-run 42 ok eq assert
-"{\"a\":{\"b\":99}}" ["a" "b"] jd-int jd-at jd-run 99 ok eq assert
 
 -- Succeed / fail
 "42" 7 jd-succeed jd-run 7 ok eq assert
