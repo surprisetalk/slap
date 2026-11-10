@@ -6,7 +6,7 @@
 -- mp3-next: (bytes dec -- bytes dec chunk).  chunk is the next whole frames' pcm, ok, 8192 sample frames or a little more, fewer at the end; "" ok after the last; msg no when the stream fails, as mp3-decode would refuse it.
 -- mp3-seek: (bytes dec frame -- bytes dec).  The next chunk starts at that sample frame of the audio, or at the end past it. A damaged stream seeks as if it were whole (see the second REVIEW).
 -- mp3-decode: (bytes -- {'rate 'pcm} ok | msg no).  The whole file at once: one chunk of every frame.
--- 'pcm holds 16-bit little-endian stereo frames, as read-mp3 gives them, and mono plays on both sides.
+-- 'pcm holds 16-bit little-endian stereo frames, as play takes them, and mono plays on both sides.
 -- REVIEW: mp3-seek walks the frame headers from the first frame to the frame that holds the sample (3 us a frame), then decodes the 2 frames before it and drops their audio. Alternative: an index of frame offsets that mp3-open makes. It costs the walk at every open, and only a seek needs it.
 -- The 2 frames rebuild the decoder exactly. A granule needs the overlap that the granule before it saved, and the filter rows hold the samples of the granule before it, which need the overlap of the granule before that. MPEG-1 has 2 granules a frame, so 1 frame is exact there. MPEG-2 and 2.5 have 1, so they need 2: a seek with 1 frame gives wrong audio on them. The bit reservoir is the main data of the frames before, which mp3-seek reads from the file.
 -- REVIEW: mp3-seek counts every frame header as audio and never decodes the frames it walks past. Alternative: count only the frames that decode. mp3-decode drops a frame whose reservoir is short, a frame with a damaged header and the junk between frames, so after each such frame a seek lands a whole frame early; a seek to the end or past it can still give audio, and a refusal such as a changed channel count is skipped. The alternative costs a decode of every frame, which is the walk a seek avoids. A clean file has none of these.
@@ -14,7 +14,7 @@
 -- CRC frames and free bitrates, and it follows dr_mp3 where a file is not clean: an ID3v2 tag at the start is skipped, an ID3v1 or APE tag at the end is cut off,
 -- bytes between frames are skipped by looking for a header that repeats at its frame length, and a Xing or Info frame first in the stream is not played,
 -- while the delay and padding of its LAME tag are cut from the audio. A refusal names the reason: "mp3: layer 2 frame at byte 0; mp3-decode reads layer 3".
--- On clean files the audio is within 1 of read-mp3's in every sample, and equal in nearly all; on a corrupt stream a sample can differ by more (see the first REVIEW). Compare the two words on a file to check.
+-- On clean files the audio is within 1 of minimp3's (dr_mp3, which slap's C read-mp3 used) in every sample, and equal in nearly all; on a corrupt stream a sample can differ by more (see the first REVIEW).
 -- REVIEW: Compute in 64-bit floats. Alternative: round to 32 bits after every operation, as minimp3 computes. It costs a rounding word after every operation, and it still would not match bit for bit, since minimp3's vector code orders its sums its own way. On clean files no sample differs by more than 1. A corrupt frame, whose dequantized values are huge, can differ by far more, since minimp3 rounds those in 32 bits.
 -- REVIEW: Refuse layers I and II, which dr_mp3 plays. Alternative: port them. It costs scale factors, dequantizing and then the same filter bank, for streams rare in practice.
 -- REVIEW: Refuse a stream whose channel count changes. Alternative: copy dr_mp3, which keeps the first frame's count and reads later frames at the wrong stride, so it plays noise. It costs reproducing stale buffer bytes.
@@ -74,7 +74,7 @@
 
 -- m3-pcm: (float -- int).  A sample as a 16-bit integer, as the vector code of minimp3 rounds it (ARM): x + 1/2 cut toward zero, then 1 less when the sum is below 0, saturated.
 -- m3-pcm0: the same for the 4 samples per slot that minimp3 converts one by one: x + 1/2 cut toward zero, then 1 less when the result is below 0.
--- REVIEW: Round like the ARM build of minimp3. Alternative: round like its x86 build, which takes ties to even and is how read-mp3 sounds on an Intel Mac. The two differ only on an exact .5, which no float sum reaches in practice.
+-- REVIEW: Round like the ARM build of minimp3. Alternative: round like its x86 build, which takes ties to even and is how minimp3 sounds on an Intel Mac. The two differ only on an exact .5, which no float sum reaches in practice.
 -- Above 32767 the cut of x + 1/2 is 32767 or 32768, and the clamp gives 32767 for both, so the first test replaces the clamp.
 (0.5 fplus dup 32767.0 fgt (drop 32767) (dup -32768.0 flt (drop -32768) (dup ftoi swap 0.0 flt sub) if) if) 'm3-pcm let
 (dup 32766.5 fgt (drop 32767) (dup -32767.5 flt (drop -32768) (0.5 fplus ftoi dup 0 lt sub) if) if) 'm3-pcm0 let
@@ -920,14 +920,14 @@
 (mp3-decode {'ok (drop "") 'no ()} case) 'mt-err let
 -- mt-fp: (bytes -- int).  h = h * 31 + byte over the bytes, modulo 2^32.
 (0 (swap 31 mul plus 4294967295 band) fold) 'mt-fp let
--- mt-is: (bytes rate frames hash -- pcm).  The file decodes to what read-mp3 gives for it: this rate, frame count and hash of the pcm.
+-- mt-is: (bytes rate frames hash -- pcm).  The file decodes to what minimp3 gave for it: this rate, frame count and hash of the pcm.
 ('mt-h let 'mt-n let 'mt-r let mp3-decode must dup 'rate at mt-r eq assert 'pcm at dup len 4 div mt-n eq assert dup mt-fp mt-h eq assert) 'mt-is let
 (mp3-decode must 'pcm at) 'mt-pcm let
 -- mt-no: (bytes msg --).  The file is refused with this message.
 ('mt-m let mt-err mt-m eq assert) 'mt-no let
 -- mt-z: (n -- bytes).  n zero bytes.
 (0 swap range (drop 0) each) 'mt-z let
--- The streams are cut from LAME and ffmpeg output; every expected frame count and hash is what read-mp3 gives.
+-- The streams are cut from LAME and ffmpeg output; every expected frame count and hash is what minimp3 gave.
 -- MPEG-1 stereo: an Info frame that names 2 frames, a delay of 1105 and a padding of 303, then 2 frames; 896 samples play
 "
 fffb58440000000000000000000000000000000000000000000000000000000000000000496e666f0000000f00000002

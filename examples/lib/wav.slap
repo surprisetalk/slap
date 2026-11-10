@@ -12,7 +12,7 @@
 -- wav-seek: (bytes dec frame -- bytes dec).  The next chunk starts at that
 --   frame, or at the end past it.
 -- wav-decode: (bytes -- {'rate 'pcm} ok | msg no).  The whole file at once, as
---   read-wav gives it.
+--   dr_wav decoded it.
 -- pcm holds 16-bit little-endian stereo frames, and mono plays on both sides.
 -- wav.slap reads PCM of 8, 16, 24 or 32 bits and float of 32 or 64 bits, plain
 -- or WAVE_FORMAT_EXTENSIBLE, and turns each sample into 16 bits as dr_wav

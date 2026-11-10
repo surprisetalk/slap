@@ -2,7 +2,7 @@
 """Run every check in parallel. `suite.py` is `make test`, `suite.py slow` is
 `make test-slow`, and `suite.py status` is `make status`."""
 
-import concurrent.futures, glob, json, os, random, re, resource, shlex, shutil, socket, subprocess, sys, tempfile, threading, time
+import concurrent.futures, glob, hashlib, json, os, random, re, resource, shlex, shutil, socket, subprocess, sys, tempfile, threading, time
 
 sys.path.insert(0, os.path.dirname(__file__))
 import harness
@@ -136,29 +136,35 @@ FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml r
 
 
 # A WAV past 64 MiB opens in the audio app and gives its first chunk. The file is sparse, so its 64 MiB of silence costs no disk.
-# A slap decoder against the C primitive it replaces, on each path: the same rate and length, and
-# each 16-bit sample within tol (0 for an exact match). Status passes tests/audio/chord, 5 s of a
-# chord, out of the audio app's sight; the suite passes the short files.
-def decoder_matches(fmt, tol, paths):
+# Each test file's pcm from the slap decoders, as its length and SHA-256. They were recorded when
+# the C decoders they replaced still ran beside them: flac and wav equal to dr_flac's and dr_wav's
+# pcm byte for byte, mp3 within 1 of minimp3's in every sample. tests/audio/chord holds 5 s of a
+# chord, out of the audio app's sight; status decodes it, the suite the short files.
+PCM = {
+    "tests/audio/tone.flac": (17640, "42ffdc88e7887b17c7b135d3c547d7572edc054670ea634e7c7966917e65d7a5"),
+    "tests/audio/mono48.flac": (9600, "e2b99e54667f5ceb5d47ae7e7544b3b35058a2e8e83b4466ec38107020a0ef82"),
+    "tests/audio/chord/5s.flac": (882000, "be528153d41fcfc5acd28a3759f15f1822be4f5803f61573cc420f8b5960c5a0"),
+    "tests/audio/tone.mp3": (23040, "735b23b3007cab2d2c059259bb968247752bcc06198755b1bb130884893aa68e"),
+    "tests/audio/chord/5s.mp3": (882000, "8746e71268b0bf7fe300c73100cb5f487973a3967e3c79217bb9ce06f0ad192d"),
+    "tests/audio/tone.wav": (17640, "42ffdc88e7887b17c7b135d3c547d7572edc054670ea634e7c7966917e65d7a5"),
+}
+
+
+def decoder_gives(fmt, paths):
     def check():
         for path in paths:
-            mine, theirs = (os.path.join(SCRATCH, f"{fmt}-{w}.pcm") for w in ("mine", "theirs"))
-            prog = (
-                f'"{path}" read must {fmt}-decode must dup \'rate at print \'pcm at "{mine}" swap write must drop\n'
-                f'"{path}" read-{fmt} must dup \'rate at print \'pcm at "{theirs}" swap write must drop\n'
-            )
+            out = os.path.join(SCRATCH, f"{fmt}-{os.path.basename(path)}.pcm")
+            prog = f'"{path}" read must {fmt}-decode must \'pcm at "{out}" swap write must drop\n'
             r = subprocess.run(
                 ["./slap"], input=open(lib("strings")).read() + open(lib(fmt)).read() + prog,
                 capture_output=True, text=True, timeout=TIMEOUT,
             )
-            if r.returncode or len(set(r.stdout.split())) != 1:
-                return False, f"{path}: exit {r.returncode}, rates {r.stdout.split()}: {r.stderr[-1000:]}"
-            a, b = (memoryview(open(f, "rb").read()).cast("h") for f in (mine, theirs))
-            if len(a) != len(b):
-                return False, f"{path}: {len(a)} samples, read-{fmt} gives {len(b)}"
-            worst = max((abs(x - y) for x, y in zip(a, b)), default=0)
-            if worst > tol:
-                return False, f"{path}: a sample differs by {worst}; the most allowed is {tol}"
+            if r.returncode:
+                return False, f"{path}: exit {r.returncode}: {r.stderr[-1000:]}"
+            pcm = open(out, "rb").read()
+            got = (len(pcm), hashlib.sha256(pcm).hexdigest())
+            if got != PCM[path]:
+                return False, f"{path}: expected {PCM[path][0]} bytes of pcm with SHA-256 {PCM[path][1]}, got {got[0]} with {got[1]}"
         return True, ""
     return check
 
@@ -842,14 +848,8 @@ def steps(slow):
             ),
             "codec": ("python3 tests/run_codec.py", None),
             "a WAV past 64 MiB loads": (big_wav, None),
-            # wav.slap's own tests run as it loads; here a real file decodes as read-wav decodes it
-            "flac-decode matches read-flac": (decoder_matches("flac", 0, sorted(glob.glob("tests/audio/*.flac"))), None),
-            "mp3-decode matches read-mp3 within 1": (decoder_matches("mp3", 1, ["tests/audio/tone.mp3"]), None),
-            "wav-decode matches read-wav": (
-                "echo '\"tests/audio/tone.wav\" read must wav-decode must \"tests/audio/tone.wav\" read-wav must eq print'"
-                f" | cat {lib('strings', 'wav')} - | ./slap",
-                lambda o: o.split() == ["1"],
-            ),
+            # each library's own tests run as it loads; here real files give their recorded pcm
+            **{f"{fmt}-decode gives the recorded pcm": (decoder_gives(fmt, [p for p in PCM if p.endswith(fmt) and "/chord/" not in p]), None) for fmt in ("flac", "mp3", "wav")},
             # midi.slap's tests cannot open a font: it loads from any directory. Here a decoded file
             # plays: middle C on Florestan Pizzicato for half a second, then its release.
             "a MIDI file decodes and renders": (
@@ -1176,10 +1176,10 @@ def status():
         print(f"status: wav-decode: exit {r.returncode}: {r.stderr[-500:]}", file=sys.stderr)
     # The audio app decodes a chunk on a display tick while the speakers play, so flac.slap and
     # mp3.slap must stay well ahead of the speakers on a loaded machine: a quarter of real time.
-    # Each is checked against its C primitive first, and the CPU count includes that decode.
-    for fmt, tol in (("flac", 0), ("mp3", 1)):
+    # The decode must give its recorded pcm too.
+    for fmt in ("flac", "mp3"):
         cpu = harness.child_cpu()
-        ok, detail = decoder_matches(fmt, tol, [f"tests/audio/chord/5s.{fmt}"])()
+        ok, detail = decoder_gives(fmt, [f"tests/audio/chord/5s.{fmt}"])()
         score[f"{fmt}-decode decodes 5 s of stereo in under 1.25 s of CPU."] = (
             1.25 / (harness.child_cpu() - cpu) if ok else 0.0
         )

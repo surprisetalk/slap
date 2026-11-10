@@ -143,7 +143,7 @@ isheadless (
   ts-b ts-b len 8 sub ts-b ts-b len 8 sub get must 255 bxor set must flac-open must 'flac tag next-dec drop next-dec 'ts-c let drop drop
   ts-c {'ok (drop "") 'no ()} case "flac: cut short: 4096 of 4410 frames" eq assert
   "tests/audio/tone.mp3" open-track drop dec-rate 44100 eq assert next-dec must len "tests/audio/tone.mp3" read must mp3-decode must 'pcm at len eq assert drop drop
-  "tests/audio/mono48.flac" open-track drop dec-rate 48000 eq assert dec-total 2400 eq assert next-dec must "tests/audio/mono48.flac" read-flac must 'pcm at eq assert drop drop
+  "tests/audio/mono48.flac" open-track drop dec-rate 48000 eq assert dec-total 2400 eq assert next-dec must "tests/audio/mono48.flac" read must flac-decode must 'pcm at eq assert drop drop
   -- 50 ms in is frame 2205: the rest of the tone follows
   "tests/audio/tone.wav" open-track drop dec-total 4410 eq assert 44100 50 seek-frame seek-dec next-dec must len 8820 eq assert drop drop
   "tests/audio/tone.flac" open-track drop 2205 seek-dec next-dec must len 8820 eq assert drop drop
