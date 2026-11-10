@@ -2962,7 +2962,6 @@ static void prim_play(Frame *e) {
             SDL_AudioSpec want={0}; want.freq=(int)rate; want.format=AUDIO_S16LSB; want.channels=2; want.samples=2048;
             if(!(audio_dev=SDL_OpenAudioDevice(NULL,0,&want,NULL,0))) die("play: no audio output at %lld Hz: %s",(long long)rate,SDL_GetError());
             audio_rate=rate; SDL_PauseAudioDevice(audio_dev,0);}
-        SDL_ClearQueuedAudio(audio_dev);
         if(SDL_QueueAudio(audio_dev,pcm?pcm:BYTES(pv)->b,(Uint32)n)<0) die("play: SDL_QueueAudio of %d bytes: %s",n,SDL_GetError());}
     free(pcm); deep_free_values(&stack[base],s); sp=base;
 }

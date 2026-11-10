@@ -76,6 +76,7 @@ These return `value ok` on success and `none` (or `payload no`) on failure:
 | `read-mp3` / `read-flac` / `read-wav` | `{'rate 'pcm} ok` | `"path: reason" no`: `strerror`, or the decoder's refusal |
 | `render-midi` | `{'rate 'pcm} ok` | `message no`: a missing preset, font or channel, no notes, only silence, or past 1 GiB; a malformed event list dies |
 | `midi-decode` (midi.slap) | `{'division 'events} ok` | `"midi: ... at byte N" no` |
+| `flac-decode` (flac.slap) / `mp3-decode` (mp3.slap) | `{'rate 'pcm} ok` | `"flac: ..." no` / `"mp3: ..." no` |
 | `wav-decode` (wav.slap) | `{'rate 'pcm} ok` | `"wav: ..." no`: a format it does not read, a bad chunk, or no audio |
 | `tcp-connect` / `tls-connect` / `tcp-send` / `tcp-recv` / `tcp-listen` / `tcp-accept` | `socket ok` / `socket ok` / `1 ok` / `data ok` / `socket ok` / `client ok` | `message no` |
 

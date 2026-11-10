@@ -105,23 +105,15 @@
       `make slap` builds no vendored decoder. Decided: decoders move from
       dr_mp3, dr_flac and dr_wav (C) into examples/lib, one library per
       format, each `bytes -- {'rate 'pcm} ok | msg no` like the primitive it
-      replaces; wav.slap is the model. They parse untrusted files by hand,
-      against the house rule: you chose it, since slap bounds every read,
-      so bad input gives `'no` or a crash with a message, never memory
-      damage.
-  1. flac.slap: frames, subframes (constant, verbatim, fixed, LPC), Rice
-     residuals, stereo decorrelation, CRC checked. Diff against
-     `read-flac` on tests/audio and a sample of ~/Music.
-  2. mp3.slap: MPEG-1/2 layer III (Huffman tables, requantize, joint
-     stereo, IMDCT, polyphase filter), ID3 and Xing skipped. Diff against
-     `read-mp3` sample by sample; dr_mp3 is the reference.
-  3. Time flac and mp3 on a 5-minute track, as status conditions like
-     wav-decode's (under 5 s of CPU). Past it, profile first.
-  4. Fuzz each library against its primitive with mutated files from
-     tests/audio: same `'ok` result, or `'no` where the primitive refuses.
-  5. Switch audio-app to the libraries. Delete `read-mp3`, `read-flac`,
-     `read-wav`, the three vendor headers and their vendor/readme.md rows;
-     update readme.md, claude.md and the Makefile's ASan and wasm lines.
+      replaces. The audio app streams through all three in chunks. They
+      parse untrusted files by hand, against the house rule: you chose it,
+      since slap bounds every read, so bad input gives `'no` or a crash
+      with a message, never memory damage.
+  1. Delete `read-mp3`, `read-flac`, `read-wav`, the three vendor headers
+     and their vendor/readme.md rows. First store each test file's
+     reference pcm (or its hash) from the primitives, since the suite and
+     status compare the libraries against them; then update readme.md,
+     claude.md and the Makefile's ASan and wasm lines.
 
 ## Blocked on you
 

@@ -1,7 +1,7 @@
 -- The window and speakers for audio-app.slap: a directory's tracks, played
 -- in order. Run from the repo root with:
 --
---   cat examples/lib/{strings,cbor,icn,ufx,ui}.slap examples/audio-app.slap \
+--   cat examples/lib/{strings,cbor,icn,ufx,ui,wav,flac,mp3}.slap examples/audio-app.slap \
 --       examples/lib/ui-sdl.slap examples/audio-app-sdl.slap \
 --     | ./slap-sdl state.cbor ~/Music/album
 --
@@ -10,7 +10,8 @@
 -- track from its start; space pauses and plays. A track plays to its end,
 -- then the next; after the last, it stops at the first. Each pause and track
 -- writes the place to the state file, and so does each 10 s of play. Closing
--- the window quits.
+-- the window quits. A track streams: each tick decodes one chunk into play
+-- while under a second of audio is queued.
 
 args len 1 lt args len 2 gt or ("audio: usage: ./slap-sdl STATE.cbor [DIR]" fail) () if
 args 0 get must 'STATE let
@@ -43,21 +44,21 @@ START-MS 0 lt ("audio: " STATE cat " places " cat STATE0 'track at cat " at " ca
  STATE {'dir DIR 'track kp-m 'at at 'TRACKS nth must 'ms kp-ms} state-encode write {'ok (drop) 'no ("audio: " swap cat fail)} case
  kp-m kp-ms 'saved into) 'keep let
 
--- play-at: (m -- m).  Play m's track from its 'ms. A track that does not
--- load shows its message and stays paused, and an empty pcm stops the
--- speakers.
-('pa-m let DIR "/" cat pa-m 'at at 'TRACKS nth must cat load-track {
-  'ok ('pa-a let pa-a 'rate at 'pa-r let pa-a 'pcm at len 'pa-n let pa-r pa-n pa-m 'ms at from-byte 'pa-from let
-    pa-a (pa-from drop-n) 'pcm edit play
-    pa-m pa-r pa-n pa-from audio-started)
-  'no ('pa-e let {'rate 44100 'pcm ""} play pa-m [pa-e] 'err into [] 'run into [] 'total into)} case) 'play-at let
+-- play-at: (bytes dec m -- bytes dec m).  Open m's track, seek to its 'ms and
+-- empty the queue; the ticks then queue its chunks. A track that does not open
+-- shows its message and stays paused. An empty pcm empties play's queue.
+('pa-m let drop drop DIR "/" cat pa-m 'at at 'TRACKS nth must cat open-track
+ dup len 0 eq (drop dec-rate 'pa-r let dec-total 'pa-t let
+    pa-r pa-m 'ms at seek-frame seek-dec {'rate 44100 'pcm ""} play
+    pa-m pa-r pa-t audio-started)
+  ('pa-e let {'rate 44100 'pcm ""} play pa-m pa-e 'err into [] 'run into [] 'total into) if) 'play-at let
 
--- pause: (m -- m).  An empty pcm stops the speakers.
+-- pause: (bytes dec m -- bytes dec m).  An empty pcm stops the speakers.
 ('pz-m let pz-m queued audio-pos 'pz-pos let
  {'rate 44100 'pcm ""} play
  pz-m pz-pos 'ms into [] 'run into pz-pos keep) 'pause let
 
--- advance: (m -- m).  The next track from its start, or after the last, the
+-- advance: (bytes dec m -- bytes dec m).  The next track from its start, or after the last, the
 -- first track, paused. The highlight follows unless it was moved away.
 ('av-m let av-m 'at at 1 plus 'av-at let av-m 'sel at av-m 'at at eq 'av-follow let
  av-at TRACKS len lt (av-m av-at 'at into 0 'ms into play-at) (av-m 0 'at into 0 'ms into [] 'run into [] 'total into) if
@@ -73,15 +74,28 @@ START-MS 0 lt ("audio: " STATE cat " places " cat STATE0 'track at cat " at " ca
    dr 'text at dx dy ds plus dc ds dw dx sub text di 1 plus) fold drop
  dv 'status at dx dh dlh 2 mul sub 2 ds dw dx sub text) 'draw let
 
-TRACKS START-AT START-MS audio-model START-MS keep
+"" {} 'none tag TRACKS START-AT START-MS audio-model START-MS keep
+
+-- pump: (bytes dec m -- bytes dec m).  Decode one chunk and queue it. A chunk
+-- that fails shows its message and stops the track there.
+('pu-m let next-dec {
+  'ok ('pu-p let pu-p len 0 eq (pu-m run-done) (
+    pu-m 'run at 0 get must 'rate at 'pu-r let
+    {'rate pu-r 'pcm pu-p} play pu-m pu-p len run-add) if)
+  'no ('pu-e let pu-m pause [pu-m 'at at 'TRACKS nth must ": " cat pu-e cat] 'err into)} case) 'pump let
+
+-- step: (bytes dec m -- bytes dec m).  While playing: a track ends when its
+-- decoder is done and play has nothing queued; else a chunk is decoded when
+-- under a second of audio is queued.
+(dup 'run at 'sp-r let sp-r len 0 eq () (
+   sp-r 0 get must 'sp-t let
+   sp-t 'done at 1 eq (queued 0 eq (advance) () if) (queued sp-t 'rate at 4 mul lt (pump) () if) if) if) 'step let
 
 ('rh let 'rw let rw 'w into rh 'h into [] 'shown into) 'resize on
 ('kk let 'km let
  kk 13 eq (km km 'sel at 'at into 0 'ms into play-at 0 keep) (
  kk 32 eq (km 'run at len 0 gt (km pause) (km play-at) if) (km kk audio-key) if) if) 'keydown on
--- A track ends when play has nothing left queued.
-('tf let 'tm let
- tm 'run at len 0 gt queued 0 eq and (tm advance) (tm) if 'tk let
+('tf let step 'tk let
  tk queued audio-pos 'tp let
  tk 'run at len 0 gt tp tk 'saved at sub 10000 ge and (tk tp keep) (tk) if 'tq let
  [tq tp audio-view] 'tv let

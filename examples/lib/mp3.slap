@@ -1,0 +1,1058 @@
+-- mp3.slap: MPEG audio layer III files as the audio record play takes. Requires strings.slap.
+
+-- An MP3 plays as it decodes, a chunk at a time, so the first sound waits only for the first frame. The file's bytes travel apart from the decoder's state:
+-- a lookup of a bound record or list copies all of it, and each call copies the file once, when it gives the bytes back.
+-- mp3-open: (bytes -- bytes res).  res is dec ok, or msg no. dec is {'rate ...}: the rate and the decoder's state (the overlap, the filter rows, the reservoir, the position), never the file.
+-- mp3-next: (bytes dec -- bytes dec chunk).  chunk is the next whole frames' pcm, ok, 8192 sample frames or a little more, fewer at the end; "" ok after the last; msg no when the stream fails, as mp3-decode would refuse it.
+-- mp3-seek: (bytes dec frame -- bytes dec).  The next chunk starts at that sample frame of the audio, or at the end past it. A damaged stream seeks as if it were whole (see the second REVIEW).
+-- mp3-decode: (bytes -- {'rate 'pcm} ok | msg no).  The whole file at once: one chunk of every frame.
+-- 'pcm holds 16-bit little-endian stereo frames, as read-mp3 gives them, and mono plays on both sides.
+-- REVIEW: mp3-seek walks the frame headers from the first frame to the frame that holds the sample (3 us a frame), then decodes the 2 frames before it and drops their audio. Alternative: an index of frame offsets that mp3-open makes. It costs the walk at every open, and only a seek needs it.
+-- The 2 frames rebuild the decoder exactly. A granule needs the overlap that the granule before it saved, and the filter rows hold the samples of the granule before it, which need the overlap of the granule before that. MPEG-1 has 2 granules a frame, so 1 frame is exact there. MPEG-2 and 2.5 have 1, so they need 2: a seek with 1 frame gives wrong audio on them. The bit reservoir is the main data of the frames before, which mp3-seek reads from the file.
+-- REVIEW: mp3-seek counts every frame header as audio and never decodes the frames it walks past. Alternative: count only the frames that decode. mp3-decode drops a frame whose reservoir is short, a frame with a damaged header and the junk between frames, so after each such frame a seek lands a whole frame early; a seek to the end or past it can still give audio, and a refusal such as a changed channel count is skipped. The alternative costs a decode of every frame, which is the walk a seek avoids. A clean file has none of these.
+-- It reads MPEG-1, MPEG-2 and MPEG-2.5 layer III, mono, stereo, joint (mid/side and intensity), dual channel, long, short and mixed blocks, the bit reservoir,
+-- CRC frames and free bitrates, and it follows dr_mp3 where a file is not clean: an ID3v2 tag at the start is skipped, an ID3v1 or APE tag at the end is cut off,
+-- bytes between frames are skipped by looking for a header that repeats at its frame length, and a Xing or Info frame first in the stream is not played,
+-- while the delay and padding of its LAME tag are cut from the audio. A refusal names the reason: "mp3: layer 2 frame at byte 0; mp3-decode reads layer 3".
+-- On clean files the audio is within 1 of read-mp3's in every sample, and equal in nearly all; on a corrupt stream a sample can differ by more (see the first REVIEW). Compare the two words on a file to check.
+-- REVIEW: Compute in 64-bit floats. Alternative: round to 32 bits after every operation, as minimp3 computes. It costs a rounding word after every operation, and it still would not match bit for bit, since minimp3's vector code orders its sums its own way. On clean files no sample differs by more than 1. A corrupt frame, whose dequantized values are huge, can differ by far more, since minimp3 rounds those in 32 bits.
+-- REVIEW: Refuse layers I and II, which dr_mp3 plays. Alternative: port them. It costs scale factors, dequantizing and then the same filter bank, for streams rare in practice.
+-- REVIEW: Refuse a stream whose channel count changes. Alternative: copy dr_mp3, which keeps the first frame's count and reads later frames at the wrong stride, so it plays noise. It costs reproducing stale buffer bytes.
+-- REVIEW: Read zeros where a corrupt frame's Huffman data runs past its main data. Alternative: read the bytes an earlier frame left in minimp3's buffer. It costs keeping a buffer between frames, for a stream that is already noise.
+-- REVIEW: mp3-open reads the first frame's header and its Info tag only. Alternative: decode it. It costs a frame of CPU (5 ms) and the first frame's audio kept in dec.
+-- REVIEW: Find frames in the whole file at once. Alternative: dr_mp3's 16 KB window, which accepts a header run cut by the window's end. It costs reading as the window does; the two differ only where damage sits within 10 frames of a window's end.
+-- m3-hex: (str w b -- ints).  Every w hex digits of str are one entry, less the bias b.
+('hx-b let 'hx-w let hx-w chunks (0 (dup 58 lt (48 sub) (87 sub) if swap 4 shl swap bor) fold hx-b sub) each) 'm3-hex let
+
+-- REVIEW: Keep minimp3's tables as hex text, decoded once at load. Alternative: int lists. They cost one token per entry, against one token per table, and the program's token count is limited.
+-- Tables from minimp3 (dr_mp3.h), as hex text so that each costs one token.
+"10001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000100010001000131113111311131113101310131013101201120112011201120112011201120111001100110011001100110011001100110011001100110011001100110011000f011521151215021311131113111311131013101310131013011301130113011100110011001100110011001100110011001100110011001100110011001100112211200f011521151215021301130113011301121112111211121112111211121112111210121012101210121012101210121012001200120012001200120012001200112211200f030ec20ea10e91131113111311131113101310131013101301130113011301110011001100110011001100110011001100110011001100110011001100110013331332122312231113111311131113123112301203122211211112112011020f020ee11531151315221520142114211412141214021402131013101310131012111211121112111211121112111211130113011301130113001300130013001233123011321132112311030f040e630e230de215120dc1141114111310131013101310130113011301130111001100110011001100110011001100110011001100110011001100110011000e810e7114531444145214251351135113151315145014431305130514341433115511541145113513421324124112411214121412041204134013321323133012311231121312131203122211211121112011020f040e530e130dd114211421141214121211121112111211121112111211121113101310131013101301130113011301120012001200120012001200120012000e8214350e6114521425145013511351131513151443143414051433134213421255124511541154115311441324134112141214134013041332132313311313133013031122112211221122112011020f030ea30e620e410e31153115130e211522152014211421141214121402140213111311131113111310131013101310130113011301130113001300130013000ec1135313350eb1134413521325135111551154114511501215121512431243123412341305134012421224123312041141111411321123113011030f050dc40d230cc20ca10c91141114111310131013101310130113011301130111001100110011001100110011001100110011001100110011001100110011000e010df10de115741547156515561573153715640dd11536147214721427142715461570140714071426142615541553146014601535154413711371137113711177117611671175115711661155114513171317146314620d41145114150d311361136113161316130613061450140511521125114311340ce10cd11341131413041332132313301142112411331140123112131203122211211112112011020f050df30da30d530d030cc10cb2151214211421152015021311131113111311131013101310131013011301130113011200120012001200120012001200120015771576156715571566157415470e011565155614731473143714371464146415541545155315351372137213721372132713271327132714461446147014701175115512171217137113071363133613060db1114411520d61135112261226136213601261126111251150121612161315134313050d111342132411341133134113141340130412321232122312231131111312301203112211220f040e730e230dd30d920d730d310d210d12153115131522142114211412141215201502140014001311131113111311131013101310131013011301130113010e8114671475145714661474144714561365136513731373143714551372137211771176132713641346137113170e3113631336117011071354134513440de112621262122612261160115012161216136113061353133513521325125112151243123413051340124212421224122412411241113311141132112312041230110311030f0607c50635053404a30462044104311411141114101410130113011301130111001100110011001100110011001100110011001100110011001100110011000d010be40b430b030ab20a830a430a0109f209d209b209910982096209420921091208f108e208c208a2161d088108710861085116c316c2162c16b5084116c1161c0831160c0821081116b3163b080116b207f1164a07e1164907d1152b152b15b115b1151b151b16b0160b166916a416a3163a1695165915a215a2152a152a0cf40c330c7214ff14fe14fd14ee14fc14ed14fb14bf14ec14cd0c4113ce13ce13dd13dd0c5112df11de11de11ef11cf11fa119e0bf113eb13be13f9139f13ae13db13bd11af11dc14f8148f14cc0b6114e80b51137f137f13ad13ad14da14cb14bc146f13f613f611ea11e911f711e7138e13f513d9139d135f137e13ca13bb13f4134f0ac1133f12f312f313d8138d11ac116e12f2122f0a9112f011e611c9139c13e512ba12ba13d7137d12e412e4138c136d12e312e3129b129b13b913aa11f1111f110f110f12ab125e124e12c812d6123e112e112e12e212e011e1111e120e12d5125d12c7127c12d412b8128b124d12a9129a12c6116c11d3123d12b711d211d2112d11d1117b117b12c5125c129912a7113c113c127a127911b411b411d0110d11a8118a11c4114c11b6116b115b1198118911c0114b11a6116a1197118811a5115a1196118711781177116715a1151a06c1150a06b1153906a1069115921529068115831538067106610651149114911419141915901509158415481527064114821482142814281481148111a0118611681194119311851158117611751157116611741147116511561137116411461573157214711471141714171555157015071563153615541545156215261553131813181318131814801480140814081461146114161416146014601406140604b11452142514501351135113151315144314341405144214241433134113411135114412141214134013041332132312311231121312301203122211211112112011020f060b6509d508d4083407b4073306e306930653061205f205d105c205a1152215211512152015021311131113111311141014101401140113001300130013000d020ce20cc20ca20c810c710c610c510c410c310c210c110c010bf10be10bd216bc166f0bb10ba1165f16e7167e16ca16ac16bb0b9116f4164f16f3163f168d166e16f2162f0b8116f1161f16c9169c16e516ba16ab165e16d7167d16e4164e16c8168c16e316d6166d163e16b9169b16e216aa162e16e1161e0b7116d5165d12ff12fe12ef12fd11ee11ee12df12fc12cf12ed12de12fb11bf11bf12ec12ce11dd11fa11af11eb11be11dc11cd11f9119f11ae11db11bd11f8118f11cc11e9119e11f7117f11da11ad11cb11f611f612ea12f011e8118e11f511d9119d11d811e6110f11e0110e0a610a51154d0a410a310a21153d152d0a1115d115b7157b151d0a01155c15a8158a15c4154c15b6156b09f115c3153c15a7157a156a09e1142c142c15c215b511c7117c11d411b8118b11a9119a11c6116c11d311d211d011c5110d119911c0110c11b0155b15c115981589151c15b4154b15a615b31597143b143b1579158815b215a5142b142b155a15b1141b141b150b1596156915a4154a1587157815a3143a143a1495145914a2142a14a1141a085114861468149414491493143908411485145811a0110a117711901492147614671429131913191491140914841448147514571483143814661474138213821328132813811381131813181447148014081465145614731437146413721327134613711355131706f113631170110713361354134513621326136106a1135311601106121612161335134412521252122512251251125112151215135013051243124312341242122412331114111412411240113211231204123011311131111311030f050c8407f605c404f40473043104211411141114101410130113011301130111001100110011001100110011001100110011001100110011001100110011000e010df10de10dd115fa0dc10db115f815f7157f15f6156f13ff13ff13ff13ff15f5155f14f414f4144f144f143f143f140f140f15f30da4132f132f132f132f11fe11ef11fd11df11fc11cf11fb11bf11af11f9119f118f0d220cf214ee0cd114eb14dc0cc114ea14cc0cb10ca114ac0c9114e513db13db12ec0d0111ed11ed11ce11dd119e119e12ae129d11de11be11cd11bd11da11ad11e711ca119c11d714f214f013f113f1131f131f0c050b040a5409d30973092308e308a20873083314e914e915cb15bc15e8158e15d9157e15bb15d8158d15e6146e146e14c914c915ba15ab155e157d14e414e4154e15c8148c148c14e314e314d614d6156d15b90a81141e144d0a7114b70a61133e133e14e0140e14d5145d14c7147c14d414b8119b11aa118b119a117b110d14a914c6146c14d314c5145c13d013d014a8148a149914c4146b14a713c313c3099113c1130c0981122e122e13e213e111b5119811891197133d13d2132d131d13b3093112d112d111791188134c13b6133c137a12c212c2132c135b131c13c013b4134b13a6136a123b123b088112b2122b12b111a5115a121b121b13b0130b1396136913a4134a13871378123a123a13a3139512a212a205f1161a05e1164905d11676152a152a15a115a116a0160a16931639168516581592159215291529166716901591159115191519160916841648165716831638166616821528152816741647158115811518151815081508168016651573157315371537165616641572157215271527164616551570157014711471147114711159118611681177119411751417054105310521142614611416051114350501145214251315131514511450110711631136115411451162116011061153114414431434140514421424143313411341131413141440140413321332132313231231123112131213133013031222122211211112112011020f030ec30e830e420e220e0314ff14ff0cd50b650a550924089408140773073306e306920673063106221521151206011411141114101410140114011400140013fe13ef13fd13df13fc13cf13fb13bf12af12af13fa13f9129f129f128f128f13f813f7127f127f12f612f6126f126f12f5125f12f4124f12f3123f12f2122f121f121f13f1130f0dc10d930d530d1311f00db212ee12ed12de12ec13ce13dd13eb13be13dc13cd13ea13ae13db13bd13cc13e9139e13da13ad13cb13bc13e8138e13d9139d13e7137e13ca0bd10bc10bb2156e0b91159c15e515ab155e0b81157d154e15c8158c0b7115e315d6156d153e15b9159b15aa152e15e1151e15d5155d15c7157c15d415b8158b11ac11bb11d8118d12e0120e11d011d011e611c911ba11d711e411e2154d15a9159a15c6156c15d3153d15d2152d15d115b7157b151d15c5155c15a8158a159915c4154c15b6156b0a6115c3153c15a7157a15c2152c15b5155b15c1110d11c015981589151c15b4095115b3094115a1144b144b15a6156a1597157909311509143b143b1488148815b215a5142b142b155a15b1151b159614691469144a144a110c11b0110b11a0110a119008a1147814a3143a1495145914a2142a141a148614681477149414491493143911a4118714851458149214761467142914911419148414481475145714831438146614821428148114741447141807911465145614710781133713371473147213271327118011081170110713641346135513171363133613541345136213261361131606f11353133513441160110613521325135106a112151215134313341150110512421224123312411214121413401304123212321223122311311113123012031122112211201102" 4 4096 m3-hex 'm3-tabs let
+"060606060606080a0c0e1014181c20262e343c443a36000c0c0c0c0c0c1014181c20283038404c5a020202020200060606060606080a0c0e1014181c20262e343c443a3600060606060606080a0c0e1012161a20262e363e464c2400060606060606080a0c0e1014181c20262e343c443a3600040404040404060608080a0c1014181c222a32364c9e00040404040404060606080a0c1012161c22282e3636c0000404040404040606080a0c1014181e262e384454661a00" 2 0 m3-hex 'm3-sfbl let
+"0404040404040404040606060808080a0a0a0c0c0c0e0e0e1212121818181e1e1e282828121212000808080808080808080c0c0c1010101414141818181c1c1c2424240202020202020202021a1a1a000404040404040404040606060606060808080a0a0a0e0e0e1212121a1a1a2020202a2a2a121212000404040404040404040606060808080a0a0a0c0c0c0e0e0e1212121818182020202c2c2c0c0c0c000404040404040404040606060808080a0a0a0c0c0c0e0e0e1212121818181e1e1e282828121212000404040404040404040404040606060808080a0a0a0c0c0c0e0e0e1212121616161e1e1e383838000404040404040404040404040606060606060a0a0a0c0c0c0e0e0e1010101414141a1a1a424242000404040404040404040404040606060808080c0c0c1010101414141a1a1a2222222a2a2a0c0c0c00" 2 0 m3-hex 'm3-sfbs let
+"0606060606060606060808080a0a0a0c0c0c0e0e0e1212121818181e1e1e282828121212000000000c0c0c0404040808080c0c0c1010101414141818181c1c1c2424240202020202020202021a1a1a000606060606060606060606060808080a0a0a0e0e0e1212121a1a1a2020202a2a2a121212000000000606060606060606060808080a0a0a0c0c0c0e0e0e1212121818182020202c2c2c0c0c0c000000000606060606060606060808080a0a0a0c0c0c0e0e0e1212121818181e1e1e2828281212120000000004040404040406060404040606060808080a0a0a0c0c0c0e0e0e1212121616161e1e1e383838000004040404040406060404040606060606060a0a0a0c0c0c0e0e0e1010101414141a1a1a424242000004040404040406060404040606060808080c0c0c1010101414141a1a1a2222222a2a2a0c0c0c0000" 2 0 m3-hex 'm3-sfbm let
+"0004080c1014181c202830384048500004080c1014181c202830384048500010181c2028303840485058607080001014181c202830384050607080a00010181c202830384050607080a0c000102030405060708090a0b0c0d0e0" 2 0 m3-hex 'm3-halfrate let
+"1869a1870f1871f18d02185801ad0e159e1285aa27b7c165441ac111875918c7a18743187011869b18699187151870a18d421847f1ad5c153ec28a5e2760916aae1ab681883218c3418751186fb1869c186991871d186f318d7f183721ad8714dcc28ecd2705e16fe61aaa3188fd18bec1875d186f51869c1869818724186d918db9182591ad8e14785292f426a7d174eb1a9c6189ba18ba318768186ef1869d186971872b186bd18dee181341ad6f14119296cf2646a179bc1a8d318a6a18b5a18770186e91869d18696187331869e18e1f180041ad2713a8a29a5e25e2a17e561a7cb18b0b18b1118777186e41869e186951873a1867c18e4a17eca1acb6133db29d9c257be182ba1a6b118ba018ac81877d186df1869e18693187411865818e7117d861ac1812d0f2a0892512d186e61a58618c2618a7f18780186da1869e18692187491863118e9017c391ab4d1262a2a32324a7918ada1a44d18c9f18a3718783186d51869e18690187501860718ea917ae41aa5311f2e2a567243a618e951a30718d0c189f018784186d11869f1868f18757185db18ebb179891a9281181f2a75423cb9192171a1b718d6b189ab18784186cd1869f1868d1875e185ac18ec5178271a7cc111002a8e9235b5195601a05d18dbe1896718783186c91869f1868b187641857a18ec7176c11a63c109d52aa2622e9e1987119efd18e051892518781186c61869f186881876a1854518ec0175571a478102a12ab082277819b4819d9718e40188e51877e186c31869f18686187701850f18eaf173ec1a27e0fb682ab902204819de719c2d18e70188a71877a186bf1869f" 5 100000 m3-hex (itof) each 'm3-ca let
+"1869b1863f18743180c6187591612f16544091c4285aa1b35f1ad0e187c018d02186211870f186a61869c18645187511810c18832161d816aae0973728a5e1b9541ad5c188c118d421863618715186a71869c1864b1875d18154188fd1629d16fe609ce228ecd1bf741ad87189ce18d7f1864d1871d186a71869d18651187681819d189ba1637a174eb0a2c3292f41c5bb1ad8e18ae718db91866718724186a81869d1865718770181e618a6a1646d179bc0a8d6296cf1cc271ad6f18c0c18dee186831872b186a91869e1865c187771822f18b0b1657517e560af1629a5e1d2b61ad2718d3c18e1f186a218733186aa1869e186611877d1827818ba01668f182ba0b58229d9c1d9651acb618e7618e4a186c41873a186ab1869e1866618780182c118c26167ba186e60bc132a0891e0311ac1818fba18e71186e818741186ad1869e1866b187831830918c9f168f318ada0c2c72a3231e7161ab4d1910718e901870f18749186ae1869f1866f187841835018d0c16a3918e950c99a2a5671ee121aa531925c18ea91873918750186b01869f18673187841839518d6b16b89192170d0872a7541f5211a928193b718ebb1876518757186b11869f1867718783183d918dbe16ce3195600d78b2a8e91fc401a7cc1951918ec5187941875e186b31869f1867a187811841b18e0516e43198710dea22aa262036b1a63c1967f18ec7187c618764186b51869f1867d1877e1845b18e4016fa919b480e5c82ab0820a9f1a478197e918ec0187fb1876a186b81869f186811877a1849918e701711319de70ecf82ab90211d81a27e1995418eaf1883118770186ba" 5 100000 m3-hex (itof) each 'm3-cb let
+"01f03f01e03e01d03d01c03c01b03b01a03a01903901803801703701603601503501403401303301203201103101000002104102204202304302404402504502604602704702804802904902a04a02b04b02c04c02d04d02e04e02f04f03002005f07f05e07e05d07d05c07c05b07b05a07a05907905807805707705607605507505407405307305207205107105004006108106208206308306408406508506608606708706808806908906a08a06b08b06c08c06d08d06e08e06f08f07006009f0bf09e0be09d0bd09c0bc09b0bb09a0ba0990b90980b80970b70960b60950b50940b40930b30920b20910b10900800a10c10a20c20a30c30a40c40a50c50a60c60a70c70a80c80a90c90aa0ca0ab0cb0ac0cc0ad0cd0ae0ce0af0cf0b00a00df0ff0de0fe0dd0fd0dc0fc0db0fb0da0fa0d90f90d80f80d70f70d60f60d50f50d40f40d30f30d20f20d10f10d00c00e11010e21020e31030e41040e51050e61060e71070e81080e91090ea10a0eb10b0ec10c0ed10d0ee10e0ef10f0f00e011f13f11e13e11d13d11c13c11b13b11a13a11913911813811713711613611513511413411313311213211113111010012114112214212314312414412514512614612714712814812914912a14a12b14b12c14c12d14d12e14e12f14f13012015f17f15e17e15d17d15c17c15b17b15a17a15917915817815717715617615517515417415317315217215117115014016118116218216318316418416518516618616718716818816918916a18a16b18b16c18c16d18d16e18e16f18f17016019f1bf19e1be19d1bd19c1bc19b1bb19a1ba1991b91981b81971b71961b61951b51941b41931b31921b21911b11901801a11c11a21c21a31c31a41c41a51c51a61c61a71c71a81c81a91c91aa1ca1ab1cb1ac1cc1ad1cd1ae1ce1af1cf1b01a01df1ff1de1fe1dd1fd1dc1fc1db1fb1da1fa1d91f91d81f81d71f71d61f61d51f51d41f41d31f31d21f21d11f11d01c01e12011e22021e32031e42041e52051e62061e72071e82081e92091ea20a1eb20b1ec20c1ed20d1ee20e1ef20f1f01e021f23f21e23e21d23d21c23c21b23b21a23a21923921823821723721623621523521423421323321223221123121020022124122224222324322424422524522624622724722824822924922a24a22b24b22c24c22d24d22e24e22f24f230220" 3 0 m3-hex 'm3-hmap let
+[130 162 193 209 44 28 76 140 9 9 9 9 9 9 9 9 190 254 222 238 126 94 157 157 109 61 173 205
+ 252 236 220 204 188 172 156 140 124 108 92 76 60 44 28 12] 'm3-c1 let
+[0 32 64 98 0 132 180 218 292 364 426 538 648 746 0 1126 1460 1460 1460 1460 1460 1460 1460 1460 1842 1842 1842 1842 1842 1842 1842 1842] 'm3-tabindex let
+[0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 2 3 4 6 8 10 13 4 5 6 7 8 9 11 13] 'm3-linbits let
+[0 1 2 3 12 5 6 7 9 10 11 13 14 15 18 19] 'm3-scfc let
+[6 5 5 5 6 5 5 5 6 5 7 3 11 10 0 0 7 7 7 0 6 6 6 3 8 8 5 0
+ 8 9 6 12 6 9 9 9 6 9 12 6 15 18 0 0 6 15 12 0 6 12 9 6 6 18 9 0
+ 9 9 6 12 9 9 9 9 9 9 12 6 18 18 0 0 12 12 12 0 12 9 9 6 15 12 9 0] 'm3-parts let
+[5 5 4 4 5 5 4 1 4 3 1 1 5 6 6 1 4 4 4 1 4 3 1 1] 'm3-mod let
+[1 1 1 1 2 2 3 3 3 2] 'm3-preamp let
+[0.0 1.0 0.21132487 0.78867513 0.36602540 0.63397460 0.5 0.5 0.63397460 0.36602540 0.78867513 0.21132487 1.0 0.0] 'm3-pan let
+[10.19000816 0.50060302 0.50241929 3.40760851 0.50547093 0.52249861 2.05778098 0.51544732 0.56694406 1.48416460 0.53104258 0.64682180
+ 1.16943991 0.55310392 0.78815460 0.97256821 0.58293498 1.06067765 0.83934963 0.62250412 1.72244716 0.74453628 0.67480832 5.10114861] 'm3-sec let
+[0.85749293 0.88174200 0.94962865 0.98331459 0.99551782 0.99916056 0.99989920 0.99999316] 'm3-aa0 let
+[0.51449576 0.47173197 0.31337745 0.18191320 0.09457419 0.04096558 0.01419856 0.00369997] 'm3-aa1 let
+[0.73727734 0.79335334 0.84339145 0.88701083 0.92387953 0.95371695 0.97629601 0.99144486 0.99904822
+ 0.67559021 0.60876143 0.53729961 0.46174861 0.38268343 0.30070580 0.21643961 0.13052619 0.04361938] 'm3-twid9 let
+[0.99904822 0.99144486 0.97629601 0.95371695 0.92387953 0.88701083 0.84339145 0.79335334 0.73727734
+ 0.04361938 0.13052619 0.21643961 0.30070580 0.38268343 0.46174861 0.53729961 0.60876143 0.67559021] 'm3-win0 let
+[1.0 1.0 1.0 1.0 1.0 1.0 0.99144486 0.92387953 0.79335334 0.0 0.0 0.0 0.0 0.0 0.0 0.13052619 0.38268343 0.60876143] 'm3-win1 let
+[0.79335334 0.92387953 0.99144486 0.60876143 0.38268343 0.13052619] 'm3-twid3 let
+0 576 range (drop 0.0) each 'm3-z576 let
+-- m3-p43: x^(4/3) for x in 0 to 128, the table minimp3 interpolates between.
+0 129 range (itof 4.0 3.0 fdiv fpow) each 'm3-p43 let
+[44100 48000 32000] 'm3-hz let
+0 48 range (drop 0) each 'm3-zi let
+
+-- m3-pow43: (x -- float).  x^(4/3) for a count x: a table up to 128, then minimp3's interpolation.
+('pw-x let
+ pw-x 129 lt (pw-x 'm3-p43 nth must) (
+  pw-x 1024 lt (pw-x 3 shl 16.0) (pw-x 256.0) if 'pw-m let 'pw-y let
+  pw-y pw-y plus 64 band 'pw-s let
+  pw-y 63 band pw-s sub itof pw-y pw-y 63 band sub pw-s plus itof fdiv 'pw-f let
+  pw-y pw-s plus 6 shr 'm3-p43 nth must pw-f 0.2222222222222222 fmul 1.3333333333333333 fplus pw-f fmul 1.0 fplus fmul pw-m fmul) if) 'm3-pow43 let
+
+-- m3-ldexp: (y q -- float).  y times 2^(-q/4).
+('lx-q let 'lx-y let lx-y 2.0 0 lx-q sub itof 4.0 fdiv fpow fmul) 'm3-ldexp let
+
+-- m3-pcm: (float -- int).  A sample as a 16-bit integer, as the vector code of minimp3 rounds it (ARM): x + 1/2 cut toward zero, then 1 less when the sum is below 0, saturated.
+-- m3-pcm0: the same for the 4 samples per slot that minimp3 converts one by one: x + 1/2 cut toward zero, then 1 less when the result is below 0.
+-- REVIEW: Round like the ARM build of minimp3. Alternative: round like its x86 build, which takes ties to even and is how read-mp3 sounds on an Intel Mac. The two differ only on an exact .5, which no float sum reaches in practice.
+-- Above 32767 the cut of x + 1/2 is 32767 or 32768, and the clamp gives 32767 for both, so the first test replaces the clamp.
+(0.5 fplus dup 32767.0 fgt (drop 32767) (dup -32768.0 flt (drop -32768) (dup ftoi swap 0.0 flt sub) if) if) 'm3-pcm let
+(dup 32766.5 fgt (drop 32767) (dup -32767.5 flt (drop -32768) (0.5 fplus ftoi dup 0 lt sub) if) if) 'm3-pcm0 let
+
+-- m3-dct39: (9 floats -- 9 floats).  minimp3's 9-point DCT-III.
+('d9-y let
+ 0 'd9-y nth must 'd9-0 let 1 'd9-y nth must 'd9-1 let 2 'd9-y nth must 'd9-2 let 3 'd9-y nth must 'd9-3 let 4 'd9-y nth must 'd9-4 let
+ 5 'd9-y nth must 'd9-5 let 6 'd9-y nth must 'd9-6 let 7 'd9-y nth must 'd9-7 let 8 'd9-y nth must 'd9-8 let
+ d9-0 d9-6 0.5 fmul fplus 'd9-t0 let
+ d9-0 d9-6 fsub 'd9-s0 let
+ d9-4 d9-2 fplus 0.93969262 fmul 'd9-t4 let
+ d9-8 d9-2 fplus 0.76604444 fmul 'd9-t2 let
+ d9-4 d9-8 fsub 0.17364818 fmul 'd9-s6 let
+ d9-4 d9-8 d9-2 fsub fplus 'd9-s4 let
+ d9-s0 d9-s4 0.5 fmul fsub 'd9-s2 let
+ d9-s4 d9-s0 fplus 'd9-o4 let
+ d9-t0 d9-t2 fsub d9-s6 fplus 'd9-s8 let
+ d9-t0 d9-t4 fsub d9-t2 fplus 'd9-s0b let
+ d9-t0 d9-t4 fplus d9-s6 fsub 'd9-s4b let
+ d9-3 0.86602540 fmul 'd9-s3 let
+ d9-5 d9-1 fplus 0.98480775 fmul 'd9-u0 let
+ d9-5 d9-7 fsub 0.34202014 fmul 'd9-u4 let
+ d9-1 d9-7 fplus 0.64278761 fmul 'd9-u2 let
+ d9-1 d9-5 fsub d9-7 fsub 0.86602540 fmul 'd9-s1 let
+ d9-u0 d9-s3 fsub d9-u2 fsub 'd9-s5 let
+ d9-u4 d9-s3 fsub d9-u0 fsub 'd9-s7 let
+ d9-u4 d9-s3 fplus d9-u2 fsub 'd9-s3b let
+ [d9-s4b d9-s7 fsub  d9-s2 d9-s1 fplus  d9-s0b d9-s3b fsub  d9-s8 d9-s5 fplus  d9-o4
+  d9-s8 d9-s5 fsub  d9-s0b d9-s3b fplus  d9-s2 d9-s1 fsub  d9-s4b d9-s7 fplus]) 'm3-dct39 let
+
+-- REVIEW: Write m3-imd36, m3-dct32 and m3-antialias with literal indices and constants, as m3-synth. Alternative: loops over index tables. They cost 2000 words of source, and the three run 2 to 3 times faster, since a loop body that binds a name makes a frame for each pass.
+-- m3-imd36: (g ov w -- out ov').  One long band: 18 spectrum values, the 9 saved values and a window in; 18 samples and 9 saved values out.
+('im-w let 'im-o let 'im-g let
+ [0 'im-g nth must fneg
+  1 'im-g nth must 2 'im-g nth must fplus
+  3 'im-g nth must 4 'im-g nth must fplus fneg
+  5 'im-g nth must 6 'im-g nth must fplus
+  7 'im-g nth must 8 'im-g nth must fplus fneg
+  9 'im-g nth must 10 'im-g nth must fplus
+  11 'im-g nth must 12 'im-g nth must fplus fneg
+  13 'im-g nth must 14 'im-g nth must fplus
+  15 'im-g nth must 16 'im-g nth must fplus fneg] m3-dct39 'im-c let
+ [17 'im-g nth must
+  16 'im-g nth must 15 'im-g nth must fsub
+  13 'im-g nth must 14 'im-g nth must fsub
+  12 'im-g nth must 11 'im-g nth must fsub
+  9 'im-g nth must 10 'im-g nth must fsub
+  8 'im-g nth must 7 'im-g nth must fsub
+  5 'im-g nth must 6 'im-g nth must fsub
+  4 'im-g nth must 3 'im-g nth must fsub
+  1 'im-g nth must 2 'im-g nth must fsub] m3-dct39 'im-s0 let
+ [0 'im-c nth must 0.67559021 fmul 0 'im-s0 nth must 0.73727734 fmul fplus
+  1 'im-c nth must 0.60876143 fmul 1 'im-s0 nth must 0.79335334 fmul fsub
+  2 'im-c nth must 0.53729961 fmul 2 'im-s0 nth must 0.84339145 fmul fplus
+  3 'im-c nth must 0.46174861 fmul 3 'im-s0 nth must 0.88701083 fmul fsub
+  4 'im-c nth must 0.38268343 fmul 4 'im-s0 nth must 0.92387953 fmul fplus
+  5 'im-c nth must 0.30070580 fmul 5 'im-s0 nth must 0.95371695 fmul fsub
+  6 'im-c nth must 0.21643961 fmul 6 'im-s0 nth must 0.97629601 fmul fplus
+  7 'im-c nth must 0.13052619 fmul 7 'im-s0 nth must 0.99144486 fmul fsub
+  8 'im-c nth must 0.04361938 fmul 8 'im-s0 nth must 0.99904822 fmul fplus] 'im-sum let
+ [0 'im-o nth must 0 'im-w nth must fmul 0 'im-sum nth must 9 'im-w nth must fmul fsub
+  1 'im-o nth must 1 'im-w nth must fmul 1 'im-sum nth must 10 'im-w nth must fmul fsub
+  2 'im-o nth must 2 'im-w nth must fmul 2 'im-sum nth must 11 'im-w nth must fmul fsub
+  3 'im-o nth must 3 'im-w nth must fmul 3 'im-sum nth must 12 'im-w nth must fmul fsub
+  4 'im-o nth must 4 'im-w nth must fmul 4 'im-sum nth must 13 'im-w nth must fmul fsub
+  5 'im-o nth must 5 'im-w nth must fmul 5 'im-sum nth must 14 'im-w nth must fmul fsub
+  6 'im-o nth must 6 'im-w nth must fmul 6 'im-sum nth must 15 'im-w nth must fmul fsub
+  7 'im-o nth must 7 'im-w nth must fmul 7 'im-sum nth must 16 'im-w nth must fmul fsub
+  8 'im-o nth must 8 'im-w nth must fmul 8 'im-sum nth must 17 'im-w nth must fmul fsub
+  8 'im-o nth must 17 'im-w nth must fmul 8 'im-sum nth must 8 'im-w nth must fmul fplus
+  7 'im-o nth must 16 'im-w nth must fmul 7 'im-sum nth must 7 'im-w nth must fmul fplus
+  6 'im-o nth must 15 'im-w nth must fmul 6 'im-sum nth must 6 'im-w nth must fmul fplus
+  5 'im-o nth must 14 'im-w nth must fmul 5 'im-sum nth must 5 'im-w nth must fmul fplus
+  4 'im-o nth must 13 'im-w nth must fmul 4 'im-sum nth must 4 'im-w nth must fmul fplus
+  3 'im-o nth must 12 'im-w nth must fmul 3 'im-sum nth must 3 'im-w nth must fmul fplus
+  2 'im-o nth must 11 'im-w nth must fmul 2 'im-sum nth must 2 'im-w nth must fmul fplus
+  1 'im-o nth must 10 'im-w nth must fmul 1 'im-sum nth must 1 'im-w nth must fmul fplus
+  0 'im-o nth must 9 'im-w nth must fmul 0 'im-sum nth must 0 'im-w nth must fmul fplus]
+ [0 'im-c nth must 0.73727734 fmul 0 'im-s0 nth must 0.67559021 fmul fsub
+  1 'im-c nth must 0.79335334 fmul 1 'im-s0 nth must 0.60876143 fmul fplus
+  2 'im-c nth must 0.84339145 fmul 2 'im-s0 nth must 0.53729961 fmul fsub
+  3 'im-c nth must 0.88701083 fmul 3 'im-s0 nth must 0.46174861 fmul fplus
+  4 'im-c nth must 0.92387953 fmul 4 'im-s0 nth must 0.38268343 fmul fsub
+  5 'im-c nth must 0.95371695 fmul 5 'im-s0 nth must 0.30070580 fmul fplus
+  6 'im-c nth must 0.97629601 fmul 6 'im-s0 nth must 0.21643961 fmul fsub
+  7 'im-c nth must 0.99144486 fmul 7 'im-s0 nth must 0.13052619 fmul fplus
+  8 'im-c nth must 0.99904822 fmul 8 'im-s0 nth must 0.04361938 fmul fsub]) 'm3-imd36 let
+
+-- m3-idct3: (x0 x1 x2 -- 3 floats), minimp3's 3-point DCT-III.
+('i3-x2 let 'i3-x1 let 'i3-x0 let
+ i3-x0 i3-x2 0.5 fmul fsub 'i3-a let i3-x1 0.86602540 fmul 'i3-m let
+ [i3-a i3-m fplus  i3-x0 i3-x2 fplus  i3-a i3-m fsub]) 'm3-idct3 let
+
+-- m3-imd12: (t6 ov3 -- 9 floats).  One short sub-block: its 6 values and 3 saved values in; 6 samples and 3 saved values out.
+('i2-o let 'i2-t let
+ ('tx-i let tx-i 'i2-t nth must) 'i2-tx let
+ 0 i2-tx fneg  2 i2-tx 1 i2-tx fplus  4 i2-tx 3 i2-tx fplus m3-idct3 'i2-c let
+ 5 i2-tx  4 i2-tx 3 i2-tx fsub  2 i2-tx 1 i2-tx fsub m3-idct3 'i2-s0 let
+ [0 'i2-s0 nth must  1 'i2-s0 nth must fneg  2 'i2-s0 nth must] 'i2-s let
+ 0 3 range ('i-i let
+   i-i 'i2-c nth must 3 i-i plus 'm3-twid3 nth must fmul i-i 'i2-s nth must i-i 'm3-twid3 nth must fmul fplus) each 'i2-sum let
+ 0 3 range ('i-i let
+   i-i 'i2-o nth must 2 i-i sub 'm3-twid3 nth must fmul i-i 'i2-sum nth must 5 i-i sub 'm3-twid3 nth must fmul fsub) each
+ 0 3 range ('i-i let
+   i-i 'i2-o nth must 5 i-i sub 'm3-twid3 nth must fmul i-i 'i2-sum nth must 2 i-i sub 'm3-twid3 nth must fmul fplus) each reverse cat
+ 0 3 range ('i-i let
+   i-i 'i2-c nth must i-i 'm3-twid3 nth must fmul i-i 'i2-s nth must 3 i-i plus 'm3-twid3 nth must fmul fsub) each cat) 'm3-imd12 let
+
+-- m3-imds: (g ov -- out ov').  One short band: 18 spectrum values and 9 saved values in; 18 samples and 9 saved values out.
+('is-o let 'is-g let
+ ('sb-s let 0 6 range (3 mul sb-s plus 'is-g nth must) each) 'is-sub let
+ 0 is-sub is-o 6 drop-n m3-imd12 'is-r1 let
+ 1 is-sub is-r1 6 drop-n m3-imd12 'is-r2 let
+ 2 is-sub is-r2 6 drop-n m3-imd12 'is-r3 let
+ is-o 6 take-n  is-r1 6 take-n cat  is-r2 6 take-n cat
+ is-r3 6 take-n  is-r3 6 drop-n cat) 'm3-imds let
+
+-- m3-d8: (8 floats -- 8 floats).  minimp3's 8-point butterfly inside its 32-point DCT-II.
+('d8-q let
+ 0 'd8-q nth must 'd8-e0 let 1 'd8-q nth must 'd8-e1 let 2 'd8-q nth must 'd8-e2 let 3 'd8-q nth must 'd8-e3 let
+ 4 'd8-q nth must 'd8-e4 let 5 'd8-q nth must 'd8-e5 let 6 'd8-q nth must 'd8-e6 let 7 'd8-q nth must 'd8-e7 let
+ d8-e0 d8-e7 fsub 'd8-xt let d8-e0 d8-e7 fplus 'd8-f0 let
+ d8-e1 d8-e6 fsub 'd8-f7 let d8-e1 d8-e6 fplus 'd8-f1 let
+ d8-e2 d8-e5 fsub 'd8-f6 let d8-e2 d8-e5 fplus 'd8-f2 let
+ d8-e3 d8-e4 fsub 'd8-f5 let d8-e3 d8-e4 fplus 'd8-f3 let
+ d8-f0 d8-f3 fsub 'd8-f4 let d8-f0 d8-f3 fplus 'd8-g0 let
+ d8-f1 d8-f2 fsub 'd8-g3 let d8-f1 d8-f2 fplus 'd8-g1 let
+ d8-f5 d8-f6 fplus 'd8-h5a let
+ d8-f6 d8-f7 fplus 0.70710677 fmul 'd8-h6 let
+ d8-f7 d8-xt fplus 'd8-h7a let
+ d8-g3 d8-f4 fplus 0.70710677 fmul 'd8-h3 let
+ d8-h5a d8-h7a 0.198912367 fmul fsub 'd8-h5b let
+ d8-h7a d8-h5b 0.382683432 fmul fplus 'd8-h7 let
+ d8-h5b d8-h7 0.198912367 fmul fsub 'd8-h5 let
+ d8-xt d8-h6 fsub 'd8-k0 let d8-xt d8-h6 fplus 'd8-kt let
+ [d8-g0 d8-g1 fplus
+  d8-kt d8-h7 fplus 0.50979561 fmul
+  d8-f4 d8-h3 fplus 0.54119611 fmul
+  d8-k0 d8-h5 fsub 0.60134488 fmul
+  d8-g0 d8-g1 fsub 0.70710677 fmul
+  d8-k0 d8-h5 fplus 0.89997619 fmul
+  d8-f4 d8-h3 fsub 1.30656302 fmul
+  d8-kt d8-h7 fsub 2.56291556 fmul]) 'm3-d8 let
+
+-- m3-dct32: (32 floats -- 32 floats).  minimp3's 32-point DCT-II over the subbands of one time slot.
+('dc-x let
+ [0 'dc-x nth must 31 'dc-x nth must fplus 15 'dc-x nth must 16 'dc-x nth must fplus over over fplus rot rot fsub 0.50241929 fmul
+  0 'dc-x nth must 31 'dc-x nth must fsub 0.50060302 fmul 15 'dc-x nth must 16 'dc-x nth must fsub 10.19000816 fmul over over fplus rot rot fsub 0.50241929 fmul
+  1 'dc-x nth must 30 'dc-x nth must fplus 14 'dc-x nth must 17 'dc-x nth must fplus over over fplus rot rot fsub 0.52249861 fmul
+  1 'dc-x nth must 30 'dc-x nth must fsub 0.50547093 fmul 14 'dc-x nth must 17 'dc-x nth must fsub 3.40760851 fmul over over fplus rot rot fsub 0.52249861 fmul
+  2 'dc-x nth must 29 'dc-x nth must fplus 13 'dc-x nth must 18 'dc-x nth must fplus over over fplus rot rot fsub 0.56694406 fmul
+  2 'dc-x nth must 29 'dc-x nth must fsub 0.51544732 fmul 13 'dc-x nth must 18 'dc-x nth must fsub 2.05778098 fmul over over fplus rot rot fsub 0.56694406 fmul
+  3 'dc-x nth must 28 'dc-x nth must fplus 12 'dc-x nth must 19 'dc-x nth must fplus over over fplus rot rot fsub 0.64682180 fmul
+  3 'dc-x nth must 28 'dc-x nth must fsub 0.53104258 fmul 12 'dc-x nth must 19 'dc-x nth must fsub 1.48416460 fmul over over fplus rot rot fsub 0.64682180 fmul
+  4 'dc-x nth must 27 'dc-x nth must fplus 11 'dc-x nth must 20 'dc-x nth must fplus over over fplus rot rot fsub 0.78815460 fmul
+  4 'dc-x nth must 27 'dc-x nth must fsub 0.55310392 fmul 11 'dc-x nth must 20 'dc-x nth must fsub 1.16943991 fmul over over fplus rot rot fsub 0.78815460 fmul
+  5 'dc-x nth must 26 'dc-x nth must fplus 10 'dc-x nth must 21 'dc-x nth must fplus over over fplus rot rot fsub 1.06067765 fmul
+  5 'dc-x nth must 26 'dc-x nth must fsub 0.58293498 fmul 10 'dc-x nth must 21 'dc-x nth must fsub 0.97256821 fmul over over fplus rot rot fsub 1.06067765 fmul
+  6 'dc-x nth must 25 'dc-x nth must fplus 9 'dc-x nth must 22 'dc-x nth must fplus over over fplus rot rot fsub 1.72244716 fmul
+  6 'dc-x nth must 25 'dc-x nth must fsub 0.62250412 fmul 9 'dc-x nth must 22 'dc-x nth must fsub 0.83934963 fmul over over fplus rot rot fsub 1.72244716 fmul
+  7 'dc-x nth must 24 'dc-x nth must fplus 8 'dc-x nth must 23 'dc-x nth must fplus over over fplus rot rot fsub 5.10114861 fmul
+  7 'dc-x nth must 24 'dc-x nth must fsub 0.67480832 fmul 8 'dc-x nth must 23 'dc-x nth must fsub 0.74453628 fmul over over fplus rot rot fsub 5.10114861 fmul] 'dc-f let
+ [0 'dc-f nth must 4 'dc-f nth must 8 'dc-f nth must 12 'dc-f nth must 16 'dc-f nth must 20 'dc-f nth must 24 'dc-f nth must 28 'dc-f nth must] m3-d8 'dc-r0 let
+ [1 'dc-f nth must 5 'dc-f nth must 9 'dc-f nth must 13 'dc-f nth must 17 'dc-f nth must 21 'dc-f nth must 25 'dc-f nth must 29 'dc-f nth must] m3-d8 'dc-r1 let
+ [2 'dc-f nth must 6 'dc-f nth must 10 'dc-f nth must 14 'dc-f nth must 18 'dc-f nth must 22 'dc-f nth must 26 'dc-f nth must 30 'dc-f nth must] m3-d8 'dc-r2 let
+ [3 'dc-f nth must 7 'dc-f nth must 11 'dc-f nth must 15 'dc-f nth must 19 'dc-f nth must 23 'dc-f nth must 27 'dc-f nth must 31 'dc-f nth must] m3-d8 'dc-r3 let
+ [0 'dc-r0 nth must
+  0 'dc-r2 nth must 0 'dc-r3 nth must fplus 1 'dc-r3 nth must fplus
+  0 'dc-r1 nth must 1 'dc-r1 nth must fplus
+  1 'dc-r2 nth must 0 'dc-r3 nth must fplus 1 'dc-r3 nth must fplus
+  1 'dc-r0 nth must
+  1 'dc-r2 nth must 1 'dc-r3 nth must fplus 2 'dc-r3 nth must fplus
+  1 'dc-r1 nth must 2 'dc-r1 nth must fplus
+  2 'dc-r2 nth must 1 'dc-r3 nth must fplus 2 'dc-r3 nth must fplus
+  2 'dc-r0 nth must
+  2 'dc-r2 nth must 2 'dc-r3 nth must fplus 3 'dc-r3 nth must fplus
+  2 'dc-r1 nth must 3 'dc-r1 nth must fplus
+  3 'dc-r2 nth must 2 'dc-r3 nth must fplus 3 'dc-r3 nth must fplus
+  3 'dc-r0 nth must
+  3 'dc-r2 nth must 3 'dc-r3 nth must fplus 4 'dc-r3 nth must fplus
+  3 'dc-r1 nth must 4 'dc-r1 nth must fplus
+  4 'dc-r2 nth must 3 'dc-r3 nth must fplus 4 'dc-r3 nth must fplus
+  4 'dc-r0 nth must
+  4 'dc-r2 nth must 4 'dc-r3 nth must fplus 5 'dc-r3 nth must fplus
+  4 'dc-r1 nth must 5 'dc-r1 nth must fplus
+  5 'dc-r2 nth must 4 'dc-r3 nth must fplus 5 'dc-r3 nth must fplus
+  5 'dc-r0 nth must
+  5 'dc-r2 nth must 5 'dc-r3 nth must fplus 6 'dc-r3 nth must fplus
+  5 'dc-r1 nth must 6 'dc-r1 nth must fplus
+  6 'dc-r2 nth must 5 'dc-r3 nth must fplus 6 'dc-r3 nth must fplus
+  6 'dc-r0 nth must
+  6 'dc-r2 nth must 6 'dc-r3 nth must fplus 7 'dc-r3 nth must fplus
+  6 'dc-r1 nth must 7 'dc-r1 nth must fplus
+  7 'dc-r2 nth must 6 'dc-r3 nth must fplus 7 'dc-r3 nth must fplus
+  7 'dc-r0 nth must
+  7 'dc-r2 nth must 7 'dc-r3 nth must fplus
+  7 'dc-r1 nth must
+  7 'dc-r3 nth must]) 'm3-dct32 let
+
+-- m3-synth: (xr q -- samples q').  The polyphase filter for one channel of one granule: 576 spectrum values and 480 saved values in; 576 samples and 480 saved values out.
+-- REVIEW: Write the 32 samples of a slot as straight-line code with the window's constants in it. Alternative: loop over the 16 terms with the constants in tables. It costs about 3500 words of source, and the dot products run about twice as fast, since a term is 7 words and no binding.
+-- A slot's samples: m = 0 and 16 pair the rows of one column (sl-b, from the slot's own row), and the rest dot 16 rows 32 apart (sl-a, from row 2p, column 2g + s) with the window's constants.
+('sy-q let 'sy-x let
+ [] 0 (dup 18 lt) ('sy-t let 0 32 range (18 mul sy-t plus 'sy-x nth must) each m3-dct32 cat sy-t 1 plus) while drop
+ m3-z576 32 take-n cat 'sy-y let
+ -- the saved rows 0 to 13, then row 14 with the first slot's low subbands, then the 18 new rows
+ sy-q 448 take-n
+ 0 32 range ('i-i let i-i 1 band 1 eq i-i 30 lt and (i-i 1 shr 1 plus 'sy-y nth must) (448 i-i plus 'sy-q nth must) if) each cat
+ m3-hmap ('sy-y nth must) each cat 'sy-h let
+ [] 0 (dup 18 lt) ('sl-i let
+  sy-h sl-i 1 shr 6 shl sl-i 1 band plus drop-n 'sl-a let
+  sy-h sl-i 5 shl drop-n 'sl-b let
+  [478 'sl-b nth must 30 'sl-b nth must fsub 29.0 fmul 62 'sl-b nth must 446 'sl-b nth must fplus 213.0 fmul fplus 414 'sl-b nth must 94 'sl-b nth must fsub 459.0 fmul fplus 126 'sl-b nth must 382 'sl-b nth must fplus 2037.0 fmul fplus 350 'sl-b nth must 158 'sl-b nth must fsub 5153.0 fmul fplus 190 'sl-b nth must 318 'sl-b nth must fplus 6574.0 fmul fplus 286 'sl-b nth must 222 'sl-b nth must fsub 37489.0 fmul fplus 254 'sl-b nth must 75038.0 fmul fplus m3-pcm0
+   28 'sl-a nth must -26.0 fmul 60 'sl-a nth must 208.0 fmul fplus 92 'sl-a nth must -401.0 fmul fplus 124 'sl-a nth must 2063.0 fmul fplus 156 'sl-a nth must -4788.0 fmul fplus 188 'sl-a nth must 7134.0 fmul fplus 220 'sl-a nth must -35640.0 fmul fplus 252 'sl-a nth must 74992.0 fmul fplus 284 'sl-a nth must 39336.0 fmul fplus 316 'sl-a nth must 5959.0 fmul fplus 348 'sl-a nth must 5517.0 fmul fplus 380 'sl-a nth must 2000.0 fmul fplus 412 'sl-a nth must 519.0 fmul fplus 444 'sl-a nth must 218.0 fmul fplus 476 'sl-a nth must 31.0 fmul fplus 508 'sl-a nth must -1.0 fmul fplus m3-pcm
+   26 'sl-a nth must -24.0 fmul 58 'sl-a nth must 202.0 fmul fplus 90 'sl-a nth must -347.0 fmul fplus 122 'sl-a nth must 2080.0 fmul fplus 154 'sl-a nth must -4425.0 fmul fplus 186 'sl-a nth must 7640.0 fmul fplus 218 'sl-a nth must -33791.0 fmul fplus 250 'sl-a nth must 74856.0 fmul fplus 282 'sl-a nth must 41176.0 fmul fplus 314 'sl-a nth must 5288.0 fmul fplus 346 'sl-a nth must 5879.0 fmul fplus 378 'sl-a nth must 1952.0 fmul fplus 410 'sl-a nth must 581.0 fmul fplus 442 'sl-a nth must 222.0 fmul fplus 474 'sl-a nth must 35.0 fmul fplus 506 'sl-a nth must -1.0 fmul fplus m3-pcm
+   24 'sl-a nth must -21.0 fmul 56 'sl-a nth must 196.0 fmul fplus 88 'sl-a nth must -294.0 fmul fplus 120 'sl-a nth must 2087.0 fmul fplus 152 'sl-a nth must -4063.0 fmul fplus 184 'sl-a nth must 8092.0 fmul fplus 216 'sl-a nth must -31947.0 fmul fplus 248 'sl-a nth must 74630.0 fmul fplus 280 'sl-a nth must 43006.0 fmul fplus 312 'sl-a nth must 4561.0 fmul fplus 344 'sl-a nth must 6237.0 fmul fplus 376 'sl-a nth must 1893.0 fmul fplus 408 'sl-a nth must 645.0 fmul fplus 440 'sl-a nth must 225.0 fmul fplus 472 'sl-a nth must 38.0 fmul fplus 504 'sl-a nth must -1.0 fmul fplus m3-pcm
+   22 'sl-a nth must -19.0 fmul 54 'sl-a nth must 190.0 fmul fplus 86 'sl-a nth must -244.0 fmul fplus 118 'sl-a nth must 2085.0 fmul fplus 150 'sl-a nth must -3705.0 fmul fplus 182 'sl-a nth must 8492.0 fmul fplus 214 'sl-a nth must -30112.0 fmul fplus 246 'sl-a nth must 74313.0 fmul fplus 278 'sl-a nth must 44821.0 fmul fplus 310 'sl-a nth must 3776.0 fmul fplus 342 'sl-a nth must 6589.0 fmul fplus 374 'sl-a nth must 1822.0 fmul fplus 406 'sl-a nth must 711.0 fmul fplus 438 'sl-a nth must 227.0 fmul fplus 470 'sl-a nth must 41.0 fmul fplus 502 'sl-a nth must -1.0 fmul fplus m3-pcm
+   20 'sl-a nth must -17.0 fmul 52 'sl-a nth must 183.0 fmul fplus 84 'sl-a nth must -197.0 fmul fplus 116 'sl-a nth must 2075.0 fmul fplus 148 'sl-a nth must -3351.0 fmul fplus 180 'sl-a nth must 8840.0 fmul fplus 212 'sl-a nth must -28289.0 fmul fplus 244 'sl-a nth must 73908.0 fmul fplus 276 'sl-a nth must 46617.0 fmul fplus 308 'sl-a nth must 2935.0 fmul fplus 340 'sl-a nth must 6935.0 fmul fplus 372 'sl-a nth must 1739.0 fmul fplus 404 'sl-a nth must 779.0 fmul fplus 436 'sl-a nth must 228.0 fmul fplus 468 'sl-a nth must 45.0 fmul fplus 500 'sl-a nth must -1.0 fmul fplus m3-pcm
+   18 'sl-a nth must -16.0 fmul 50 'sl-a nth must 176.0 fmul fplus 82 'sl-a nth must -153.0 fmul fplus 114 'sl-a nth must 2057.0 fmul fplus 146 'sl-a nth must -3004.0 fmul fplus 178 'sl-a nth must 9139.0 fmul fplus 210 'sl-a nth must -26482.0 fmul fplus 242 'sl-a nth must 73415.0 fmul fplus 274 'sl-a nth must 48390.0 fmul fplus 306 'sl-a nth must 2037.0 fmul fplus 338 'sl-a nth must 7271.0 fmul fplus 370 'sl-a nth must 1644.0 fmul fplus 402 'sl-a nth must 848.0 fmul fplus 434 'sl-a nth must 228.0 fmul fplus 466 'sl-a nth must 49.0 fmul fplus 498 'sl-a nth must -1.0 fmul fplus m3-pcm
+   16 'sl-a nth must -14.0 fmul 48 'sl-a nth must 169.0 fmul fplus 80 'sl-a nth must -111.0 fmul fplus 112 'sl-a nth must 2032.0 fmul fplus 144 'sl-a nth must -2663.0 fmul fplus 176 'sl-a nth must 9389.0 fmul fplus 208 'sl-a nth must -24694.0 fmul fplus 240 'sl-a nth must 72835.0 fmul fplus 272 'sl-a nth must 50137.0 fmul fplus 304 'sl-a nth must 1082.0 fmul fplus 336 'sl-a nth must 7597.0 fmul fplus 368 'sl-a nth must 1535.0 fmul fplus 400 'sl-a nth must 919.0 fmul fplus 432 'sl-a nth must 227.0 fmul fplus 464 'sl-a nth must 53.0 fmul fplus 496 'sl-a nth must -2.0 fmul fplus m3-pcm
+   14 'sl-a nth must -13.0 fmul 46 'sl-a nth must 161.0 fmul fplus 78 'sl-a nth must -72.0 fmul fplus 110 'sl-a nth must 2001.0 fmul fplus 142 'sl-a nth must -2330.0 fmul fplus 174 'sl-a nth must 9592.0 fmul fplus 206 'sl-a nth must -22929.0 fmul fplus 238 'sl-a nth must 72169.0 fmul fplus 270 'sl-a nth must 51853.0 fmul fplus 302 'sl-a nth must 70.0 fmul fplus 334 'sl-a nth must 7910.0 fmul fplus 366 'sl-a nth must 1414.0 fmul fplus 398 'sl-a nth must 991.0 fmul fplus 430 'sl-a nth must 224.0 fmul fplus 462 'sl-a nth must 58.0 fmul fplus 494 'sl-a nth must -2.0 fmul fplus m3-pcm
+   12 'sl-a nth must -11.0 fmul 44 'sl-a nth must 154.0 fmul fplus 76 'sl-a nth must -36.0 fmul fplus 108 'sl-a nth must 1962.0 fmul fplus 140 'sl-a nth must -2006.0 fmul fplus 172 'sl-a nth must 9750.0 fmul fplus 204 'sl-a nth must -21189.0 fmul fplus 236 'sl-a nth must 71420.0 fmul fplus 268 'sl-a nth must 53534.0 fmul fplus 300 'sl-a nth must -998.0 fmul fplus 332 'sl-a nth must 8209.0 fmul fplus 364 'sl-a nth must 1280.0 fmul fplus 396 'sl-a nth must 1064.0 fmul fplus 428 'sl-a nth must 221.0 fmul fplus 460 'sl-a nth must 63.0 fmul fplus 492 'sl-a nth must -2.0 fmul fplus m3-pcm
+   10 'sl-a nth must -10.0 fmul 42 'sl-a nth must 147.0 fmul fplus 74 'sl-a nth must -2.0 fmul fplus 106 'sl-a nth must 1919.0 fmul fplus 138 'sl-a nth must -1692.0 fmul fplus 170 'sl-a nth must 9863.0 fmul fplus 202 'sl-a nth must -19478.0 fmul fplus 234 'sl-a nth must 70590.0 fmul fplus 266 'sl-a nth must 55178.0 fmul fplus 298 'sl-a nth must -2122.0 fmul fplus 330 'sl-a nth must 8491.0 fmul fplus 362 'sl-a nth must 1131.0 fmul fplus 394 'sl-a nth must 1137.0 fmul fplus 426 'sl-a nth must 215.0 fmul fplus 458 'sl-a nth must 68.0 fmul fplus 490 'sl-a nth must -2.0 fmul fplus m3-pcm
+   8 'sl-a nth must -9.0 fmul 40 'sl-a nth must 139.0 fmul fplus 72 'sl-a nth must 29.0 fmul fplus 104 'sl-a nth must 1870.0 fmul fplus 136 'sl-a nth must -1388.0 fmul fplus 168 'sl-a nth must 9935.0 fmul fplus 200 'sl-a nth must -17799.0 fmul fplus 232 'sl-a nth must 69679.0 fmul fplus 264 'sl-a nth must 56778.0 fmul fplus 296 'sl-a nth must -3300.0 fmul fplus 328 'sl-a nth must 8755.0 fmul fplus 360 'sl-a nth must 970.0 fmul fplus 392 'sl-a nth must 1210.0 fmul fplus 424 'sl-a nth must 208.0 fmul fplus 456 'sl-a nth must 73.0 fmul fplus 488 'sl-a nth must -3.0 fmul fplus m3-pcm
+   6 'sl-a nth must -8.0 fmul 38 'sl-a nth must 132.0 fmul fplus 70 'sl-a nth must 57.0 fmul fplus 102 'sl-a nth must 1817.0 fmul fplus 134 'sl-a nth must -1095.0 fmul fplus 166 'sl-a nth must 9966.0 fmul fplus 198 'sl-a nth must -16155.0 fmul fplus 230 'sl-a nth must 68692.0 fmul fplus 262 'sl-a nth must 58333.0 fmul fplus 294 'sl-a nth must -4533.0 fmul fplus 326 'sl-a nth must 8998.0 fmul fplus 358 'sl-a nth must 794.0 fmul fplus 390 'sl-a nth must 1283.0 fmul fplus 422 'sl-a nth must 200.0 fmul fplus 454 'sl-a nth must 79.0 fmul fplus 486 'sl-a nth must -3.0 fmul fplus m3-pcm
+   4 'sl-a nth must -7.0 fmul 36 'sl-a nth must 125.0 fmul fplus 68 'sl-a nth must 83.0 fmul fplus 100 'sl-a nth must 1759.0 fmul fplus 132 'sl-a nth must -814.0 fmul fplus 164 'sl-a nth must 9959.0 fmul fplus 196 'sl-a nth must -14548.0 fmul fplus 228 'sl-a nth must 67629.0 fmul fplus 260 'sl-a nth must 59838.0 fmul fplus 292 'sl-a nth must -5818.0 fmul fplus 324 'sl-a nth must 9219.0 fmul fplus 356 'sl-a nth must 605.0 fmul fplus 388 'sl-a nth must 1356.0 fmul fplus 420 'sl-a nth must 189.0 fmul fplus 452 'sl-a nth must 85.0 fmul fplus 484 'sl-a nth must -4.0 fmul fplus m3-pcm
+   2 'sl-a nth must -7.0 fmul 34 'sl-a nth must 117.0 fmul fplus 66 'sl-a nth must 106.0 fmul fplus 98 'sl-a nth must 1698.0 fmul fplus 130 'sl-a nth must -545.0 fmul fplus 162 'sl-a nth must 9916.0 fmul fplus 194 'sl-a nth must -12980.0 fmul fplus 226 'sl-a nth must 66494.0 fmul fplus 258 'sl-a nth must 61289.0 fmul fplus 290 'sl-a nth must -7154.0 fmul fplus 322 'sl-a nth must 9416.0 fmul fplus 354 'sl-a nth must 402.0 fmul fplus 386 'sl-a nth must 1428.0 fmul fplus 418 'sl-a nth must 177.0 fmul fplus 450 'sl-a nth must 91.0 fmul fplus 482 'sl-a nth must -4.0 fmul fplus m3-pcm
+   0 'sl-a nth must -6.0 fmul 32 'sl-a nth must 111.0 fmul fplus 64 'sl-a nth must 127.0 fmul fplus 96 'sl-a nth must 1634.0 fmul fplus 128 'sl-a nth must -288.0 fmul fplus 160 'sl-a nth must 9838.0 fmul fplus 192 'sl-a nth must -11455.0 fmul fplus 224 'sl-a nth must 65290.0 fmul fplus 256 'sl-a nth must 62684.0 fmul fplus 288 'sl-a nth must -8540.0 fmul fplus 320 'sl-a nth must 9585.0 fmul fplus 352 'sl-a nth must 185.0 fmul fplus 384 'sl-a nth must 1498.0 fmul fplus 416 'sl-a nth must 163.0 fmul fplus 448 'sl-a nth must 97.0 fmul fplus 480 'sl-a nth must -5.0 fmul fplus m3-pcm
+   479 'sl-b nth must 104.0 fmul 415 'sl-b nth must 1567.0 fmul fplus 351 'sl-b nth must 9727.0 fmul fplus 287 'sl-b nth must 64019.0 fmul fplus 223 'sl-b nth must -9975.0 fmul fplus 159 'sl-b nth must -45.0 fmul fplus 95 'sl-b nth must 146.0 fmul fplus 31 'sl-b nth must -5.0 fmul fplus m3-pcm0
+   0 'sl-a nth must -5.0 fmul 32 'sl-a nth must -97.0 fmul fplus 64 'sl-a nth must 163.0 fmul fplus 96 'sl-a nth must -1498.0 fmul fplus 128 'sl-a nth must 185.0 fmul fplus 160 'sl-a nth must -9585.0 fmul fplus 192 'sl-a nth must -8540.0 fmul fplus 224 'sl-a nth must -62684.0 fmul fplus 256 'sl-a nth must 65290.0 fmul fplus 288 'sl-a nth must 11455.0 fmul fplus 320 'sl-a nth must 9838.0 fmul fplus 352 'sl-a nth must 288.0 fmul fplus 384 'sl-a nth must 1634.0 fmul fplus 416 'sl-a nth must -127.0 fmul fplus 448 'sl-a nth must 111.0 fmul fplus 480 'sl-a nth must 6.0 fmul fplus m3-pcm
+   2 'sl-a nth must -4.0 fmul 34 'sl-a nth must -91.0 fmul fplus 66 'sl-a nth must 177.0 fmul fplus 98 'sl-a nth must -1428.0 fmul fplus 130 'sl-a nth must 402.0 fmul fplus 162 'sl-a nth must -9416.0 fmul fplus 194 'sl-a nth must -7154.0 fmul fplus 226 'sl-a nth must -61289.0 fmul fplus 258 'sl-a nth must 66494.0 fmul fplus 290 'sl-a nth must 12980.0 fmul fplus 322 'sl-a nth must 9916.0 fmul fplus 354 'sl-a nth must 545.0 fmul fplus 386 'sl-a nth must 1698.0 fmul fplus 418 'sl-a nth must -106.0 fmul fplus 450 'sl-a nth must 117.0 fmul fplus 482 'sl-a nth must 7.0 fmul fplus m3-pcm
+   4 'sl-a nth must -4.0 fmul 36 'sl-a nth must -85.0 fmul fplus 68 'sl-a nth must 189.0 fmul fplus 100 'sl-a nth must -1356.0 fmul fplus 132 'sl-a nth must 605.0 fmul fplus 164 'sl-a nth must -9219.0 fmul fplus 196 'sl-a nth must -5818.0 fmul fplus 228 'sl-a nth must -59838.0 fmul fplus 260 'sl-a nth must 67629.0 fmul fplus 292 'sl-a nth must 14548.0 fmul fplus 324 'sl-a nth must 9959.0 fmul fplus 356 'sl-a nth must 814.0 fmul fplus 388 'sl-a nth must 1759.0 fmul fplus 420 'sl-a nth must -83.0 fmul fplus 452 'sl-a nth must 125.0 fmul fplus 484 'sl-a nth must 7.0 fmul fplus m3-pcm
+   6 'sl-a nth must -3.0 fmul 38 'sl-a nth must -79.0 fmul fplus 70 'sl-a nth must 200.0 fmul fplus 102 'sl-a nth must -1283.0 fmul fplus 134 'sl-a nth must 794.0 fmul fplus 166 'sl-a nth must -8998.0 fmul fplus 198 'sl-a nth must -4533.0 fmul fplus 230 'sl-a nth must -58333.0 fmul fplus 262 'sl-a nth must 68692.0 fmul fplus 294 'sl-a nth must 16155.0 fmul fplus 326 'sl-a nth must 9966.0 fmul fplus 358 'sl-a nth must 1095.0 fmul fplus 390 'sl-a nth must 1817.0 fmul fplus 422 'sl-a nth must -57.0 fmul fplus 454 'sl-a nth must 132.0 fmul fplus 486 'sl-a nth must 8.0 fmul fplus m3-pcm
+   8 'sl-a nth must -3.0 fmul 40 'sl-a nth must -73.0 fmul fplus 72 'sl-a nth must 208.0 fmul fplus 104 'sl-a nth must -1210.0 fmul fplus 136 'sl-a nth must 970.0 fmul fplus 168 'sl-a nth must -8755.0 fmul fplus 200 'sl-a nth must -3300.0 fmul fplus 232 'sl-a nth must -56778.0 fmul fplus 264 'sl-a nth must 69679.0 fmul fplus 296 'sl-a nth must 17799.0 fmul fplus 328 'sl-a nth must 9935.0 fmul fplus 360 'sl-a nth must 1388.0 fmul fplus 392 'sl-a nth must 1870.0 fmul fplus 424 'sl-a nth must -29.0 fmul fplus 456 'sl-a nth must 139.0 fmul fplus 488 'sl-a nth must 9.0 fmul fplus m3-pcm
+   10 'sl-a nth must -2.0 fmul 42 'sl-a nth must -68.0 fmul fplus 74 'sl-a nth must 215.0 fmul fplus 106 'sl-a nth must -1137.0 fmul fplus 138 'sl-a nth must 1131.0 fmul fplus 170 'sl-a nth must -8491.0 fmul fplus 202 'sl-a nth must -2122.0 fmul fplus 234 'sl-a nth must -55178.0 fmul fplus 266 'sl-a nth must 70590.0 fmul fplus 298 'sl-a nth must 19478.0 fmul fplus 330 'sl-a nth must 9863.0 fmul fplus 362 'sl-a nth must 1692.0 fmul fplus 394 'sl-a nth must 1919.0 fmul fplus 426 'sl-a nth must 2.0 fmul fplus 458 'sl-a nth must 147.0 fmul fplus 490 'sl-a nth must 10.0 fmul fplus m3-pcm
+   12 'sl-a nth must -2.0 fmul 44 'sl-a nth must -63.0 fmul fplus 76 'sl-a nth must 221.0 fmul fplus 108 'sl-a nth must -1064.0 fmul fplus 140 'sl-a nth must 1280.0 fmul fplus 172 'sl-a nth must -8209.0 fmul fplus 204 'sl-a nth must -998.0 fmul fplus 236 'sl-a nth must -53534.0 fmul fplus 268 'sl-a nth must 71420.0 fmul fplus 300 'sl-a nth must 21189.0 fmul fplus 332 'sl-a nth must 9750.0 fmul fplus 364 'sl-a nth must 2006.0 fmul fplus 396 'sl-a nth must 1962.0 fmul fplus 428 'sl-a nth must 36.0 fmul fplus 460 'sl-a nth must 154.0 fmul fplus 492 'sl-a nth must 11.0 fmul fplus m3-pcm
+   14 'sl-a nth must -2.0 fmul 46 'sl-a nth must -58.0 fmul fplus 78 'sl-a nth must 224.0 fmul fplus 110 'sl-a nth must -991.0 fmul fplus 142 'sl-a nth must 1414.0 fmul fplus 174 'sl-a nth must -7910.0 fmul fplus 206 'sl-a nth must 70.0 fmul fplus 238 'sl-a nth must -51853.0 fmul fplus 270 'sl-a nth must 72169.0 fmul fplus 302 'sl-a nth must 22929.0 fmul fplus 334 'sl-a nth must 9592.0 fmul fplus 366 'sl-a nth must 2330.0 fmul fplus 398 'sl-a nth must 2001.0 fmul fplus 430 'sl-a nth must 72.0 fmul fplus 462 'sl-a nth must 161.0 fmul fplus 494 'sl-a nth must 13.0 fmul fplus m3-pcm
+   16 'sl-a nth must -2.0 fmul 48 'sl-a nth must -53.0 fmul fplus 80 'sl-a nth must 227.0 fmul fplus 112 'sl-a nth must -919.0 fmul fplus 144 'sl-a nth must 1535.0 fmul fplus 176 'sl-a nth must -7597.0 fmul fplus 208 'sl-a nth must 1082.0 fmul fplus 240 'sl-a nth must -50137.0 fmul fplus 272 'sl-a nth must 72835.0 fmul fplus 304 'sl-a nth must 24694.0 fmul fplus 336 'sl-a nth must 9389.0 fmul fplus 368 'sl-a nth must 2663.0 fmul fplus 400 'sl-a nth must 2032.0 fmul fplus 432 'sl-a nth must 111.0 fmul fplus 464 'sl-a nth must 169.0 fmul fplus 496 'sl-a nth must 14.0 fmul fplus m3-pcm
+   18 'sl-a nth must -1.0 fmul 50 'sl-a nth must -49.0 fmul fplus 82 'sl-a nth must 228.0 fmul fplus 114 'sl-a nth must -848.0 fmul fplus 146 'sl-a nth must 1644.0 fmul fplus 178 'sl-a nth must -7271.0 fmul fplus 210 'sl-a nth must 2037.0 fmul fplus 242 'sl-a nth must -48390.0 fmul fplus 274 'sl-a nth must 73415.0 fmul fplus 306 'sl-a nth must 26482.0 fmul fplus 338 'sl-a nth must 9139.0 fmul fplus 370 'sl-a nth must 3004.0 fmul fplus 402 'sl-a nth must 2057.0 fmul fplus 434 'sl-a nth must 153.0 fmul fplus 466 'sl-a nth must 176.0 fmul fplus 498 'sl-a nth must 16.0 fmul fplus m3-pcm
+   20 'sl-a nth must -1.0 fmul 52 'sl-a nth must -45.0 fmul fplus 84 'sl-a nth must 228.0 fmul fplus 116 'sl-a nth must -779.0 fmul fplus 148 'sl-a nth must 1739.0 fmul fplus 180 'sl-a nth must -6935.0 fmul fplus 212 'sl-a nth must 2935.0 fmul fplus 244 'sl-a nth must -46617.0 fmul fplus 276 'sl-a nth must 73908.0 fmul fplus 308 'sl-a nth must 28289.0 fmul fplus 340 'sl-a nth must 8840.0 fmul fplus 372 'sl-a nth must 3351.0 fmul fplus 404 'sl-a nth must 2075.0 fmul fplus 436 'sl-a nth must 197.0 fmul fplus 468 'sl-a nth must 183.0 fmul fplus 500 'sl-a nth must 17.0 fmul fplus m3-pcm
+   22 'sl-a nth must -1.0 fmul 54 'sl-a nth must -41.0 fmul fplus 86 'sl-a nth must 227.0 fmul fplus 118 'sl-a nth must -711.0 fmul fplus 150 'sl-a nth must 1822.0 fmul fplus 182 'sl-a nth must -6589.0 fmul fplus 214 'sl-a nth must 3776.0 fmul fplus 246 'sl-a nth must -44821.0 fmul fplus 278 'sl-a nth must 74313.0 fmul fplus 310 'sl-a nth must 30112.0 fmul fplus 342 'sl-a nth must 8492.0 fmul fplus 374 'sl-a nth must 3705.0 fmul fplus 406 'sl-a nth must 2085.0 fmul fplus 438 'sl-a nth must 244.0 fmul fplus 470 'sl-a nth must 190.0 fmul fplus 502 'sl-a nth must 19.0 fmul fplus m3-pcm
+   24 'sl-a nth must -1.0 fmul 56 'sl-a nth must -38.0 fmul fplus 88 'sl-a nth must 225.0 fmul fplus 120 'sl-a nth must -645.0 fmul fplus 152 'sl-a nth must 1893.0 fmul fplus 184 'sl-a nth must -6237.0 fmul fplus 216 'sl-a nth must 4561.0 fmul fplus 248 'sl-a nth must -43006.0 fmul fplus 280 'sl-a nth must 74630.0 fmul fplus 312 'sl-a nth must 31947.0 fmul fplus 344 'sl-a nth must 8092.0 fmul fplus 376 'sl-a nth must 4063.0 fmul fplus 408 'sl-a nth must 2087.0 fmul fplus 440 'sl-a nth must 294.0 fmul fplus 472 'sl-a nth must 196.0 fmul fplus 504 'sl-a nth must 21.0 fmul fplus m3-pcm
+   26 'sl-a nth must -1.0 fmul 58 'sl-a nth must -35.0 fmul fplus 90 'sl-a nth must 222.0 fmul fplus 122 'sl-a nth must -581.0 fmul fplus 154 'sl-a nth must 1952.0 fmul fplus 186 'sl-a nth must -5879.0 fmul fplus 218 'sl-a nth must 5288.0 fmul fplus 250 'sl-a nth must -41176.0 fmul fplus 282 'sl-a nth must 74856.0 fmul fplus 314 'sl-a nth must 33791.0 fmul fplus 346 'sl-a nth must 7640.0 fmul fplus 378 'sl-a nth must 4425.0 fmul fplus 410 'sl-a nth must 2080.0 fmul fplus 442 'sl-a nth must 347.0 fmul fplus 474 'sl-a nth must 202.0 fmul fplus 506 'sl-a nth must 24.0 fmul fplus m3-pcm
+   28 'sl-a nth must -1.0 fmul 60 'sl-a nth must -31.0 fmul fplus 92 'sl-a nth must 218.0 fmul fplus 124 'sl-a nth must -519.0 fmul fplus 156 'sl-a nth must 2000.0 fmul fplus 188 'sl-a nth must -5517.0 fmul fplus 220 'sl-a nth must 5959.0 fmul fplus 252 'sl-a nth must -39336.0 fmul fplus 284 'sl-a nth must 74992.0 fmul fplus 316 'sl-a nth must 35640.0 fmul fplus 348 'sl-a nth must 7134.0 fmul fplus 380 'sl-a nth must 4788.0 fmul fplus 412 'sl-a nth must 2063.0 fmul fplus 444 'sl-a nth must 401.0 fmul fplus 476 'sl-a nth must 208.0 fmul fplus 508 'sl-a nth must 26.0 fmul fplus m3-pcm] cat sl-i 1 plus) while drop
+ sy-h 576 drop-n) 'm3-synth let
+
+-- m3-sgn: +1.0, or -1.0 at odd positions of odd bands.  The sign change after the IMDCT.
+0 576 range (dup 18 div 1 band swap 1 band mul 1 eq (-1.0) (1.0) if) each 'm3-sgn let
+
+-- m3-reorder: (x off sfb -- x').  Short blocks send their 3 windows in runs; from x[off] on, put the windows' values side by side per frequency.
+('ro-sfb let 'ro-off let 'ro-x let
+ ro-x ro-off drop-n m3-z576 cat 'ro-src let
+ [] 0 0 (over 3 mul 'ro-sfb nth must 0 neq) ('ro-o let 'ro-j let
+   ro-j 3 mul 'ro-sfb nth must 'ro-len let
+   0 ro-len range ('i-i let [ro-o i-i plus 'ro-src nth must  ro-o ro-len plus i-i plus 'ro-src nth must  ro-o ro-len 2 mul plus i-i plus 'ro-src nth must]) each flatten cat
+   ro-j 1 plus ro-o ro-len 3 mul plus) while drop drop 'ro-new let
+ ro-x ro-off take-n ro-new cat ro-x ro-off ro-new len plus drop-n cat 576 take-n) 'm3-reorder let
+
+-- m3-antialias: (x nb -- x').  Butterflies across the nb band edges, in place.
+('aa-nb let 'aa-x let
+ aa-nb 0 gt
+  (aa-x 10 take-n 0 (dup aa-nb lt) ('aa-e let
+     aa-e 18 mul 18 plus 'aa-b let
+     [aa-b 7 plus 'aa-x nth must 0.00369997 fmul aa-b 8 sub 'aa-x nth must 0.99999316 fmul fplus
+   aa-b 6 plus 'aa-x nth must 0.01419856 fmul aa-b 7 sub 'aa-x nth must 0.99989920 fmul fplus
+   aa-b 5 plus 'aa-x nth must 0.04096558 fmul aa-b 6 sub 'aa-x nth must 0.99916056 fmul fplus
+   aa-b 4 plus 'aa-x nth must 0.09457419 fmul aa-b 5 sub 'aa-x nth must 0.99551782 fmul fplus
+   aa-b 3 plus 'aa-x nth must 0.18191320 fmul aa-b 4 sub 'aa-x nth must 0.98331459 fmul fplus
+   aa-b 2 plus 'aa-x nth must 0.31337745 fmul aa-b 3 sub 'aa-x nth must 0.94962865 fmul fplus
+   aa-b 1 plus 'aa-x nth must 0.47173197 fmul aa-b 2 sub 'aa-x nth must 0.88174200 fmul fplus
+   aa-b 0 plus 'aa-x nth must 0.51449576 fmul aa-b 1 sub 'aa-x nth must 0.85749293 fmul fplus
+   aa-b 0 plus 'aa-x nth must 0.85749293 fmul aa-b 1 sub 'aa-x nth must 0.51449576 fmul fsub
+   aa-b 1 plus 'aa-x nth must 0.88174200 fmul aa-b 2 sub 'aa-x nth must 0.47173197 fmul fsub
+   aa-b 2 plus 'aa-x nth must 0.94962865 fmul aa-b 3 sub 'aa-x nth must 0.31337745 fmul fsub
+   aa-b 3 plus 'aa-x nth must 0.98331459 fmul aa-b 4 sub 'aa-x nth must 0.18191320 fmul fsub
+   aa-b 4 plus 'aa-x nth must 0.99551782 fmul aa-b 5 sub 'aa-x nth must 0.09457419 fmul fsub
+   aa-b 5 plus 'aa-x nth must 0.99916056 fmul aa-b 6 sub 'aa-x nth must 0.04096558 fmul fsub
+   aa-b 6 plus 'aa-x nth must 0.99989920 fmul aa-b 7 sub 'aa-x nth must 0.01419856 fmul fsub
+   aa-b 7 plus 'aa-x nth must 0.99999316 fmul aa-b 8 sub 'aa-x nth must 0.00369997 fmul fsub] cat
+     aa-e 1 plus aa-nb lt ([aa-b 8 plus 'aa-x nth must aa-b 9 plus 'aa-x nth must] cat) () if
+     aa-e 1 plus) while drop
+   aa-x aa-nb 18 mul 8 plus drop-n cat)
+  (aa-x) if) 'm3-antialias let
+
+-- m3-post: (x ov bt nlb ns sfb -- x' ov').  One channel of one granule after stereo: reorder short blocks, antialias, IMDCT and sign change.
+-- bt is the block type, nlb the number of leading long bands, ns the short band count (0 for long blocks) and sfb the band widths from the first short band.
+('po-sfb let 'po-ns let 'po-nlb let 'po-bt let 'po-ov let 'po-x let
+ po-x po-ns 0 neq (po-nlb 18 mul po-sfb m3-reorder) () if po-ns 0 neq (po-nlb 1 sub) (31) if m3-antialias 'po-a let
+ [] [] 0 (dup 32 lt) ('po-b let 'po-on let 'po-out let
+   po-a po-b 18 mul drop-n 18 take-n po-ov po-b 9 mul drop-n 9 take-n 'po-o let 'po-g let
+   po-b po-nlb lt (po-g po-o m3-win0 m3-imd36) (
+   po-bt 2 eq (po-g po-o m3-imds) (po-g po-o po-bt 3 eq (m3-win1) (m3-win0) if m3-imd36) if) if
+   'po-no let 'po-ng let
+   po-out po-ng cat po-on po-no cat po-b 1 plus) while drop 'po-ovn let 'po-xn let
+ 0 576 range (dup 'po-xn nth must swap 'm3-sgn nth must fmul) each po-ovn) 'm3-post let
+
+-- m3-ms: (l r -- l' r').  Mid/side to left/right over the whole granule.
+('ms-r let 'ms-l let
+ 0 576 range (dup 'ms-l nth must swap 'ms-r nth must fplus) each
+ 0 576 range (dup 'ms-l nth must swap 'ms-r nth must fsub) each) 'm3-ms let
+
+-- m3-stereo: (l r ist sfb nl ns mpeg1 tms msh -- l' r' ist').  Intensity stereo, and mid/side in the bands that are not intensity.
+-- sfb is the band widths ending in 0, nl and ns the long and short band counts, tms the header's MS bit, msh the right channel's scalefac_compress & 1.
+('st-msh let 'st-tms let 'st-m1 let 'st-ns let 'st-nl let 'st-sfb let 'st-ist0 let 'st-r let 'st-l let
+ st-nl st-ns plus 'st-n let
+ st-ns 0 neq (3) (1) if 'st-mb let
+ -- the highest band of each of the three windows that has a nonzero right value
+ [-1 -1 -1] 0 0 (over st-n lt) ('st-o let 'st-i let
+   st-i 'st-sfb nth must 'st-w let
+   0 st-w range (st-o plus 'st-r nth must dup 0.0 fgt swap 0.0 flt or) each 0 (or) fold
+   (st-i 3 mod st-i set must) () if
+   st-i 1 plus st-o st-w plus) while drop drop 'st-mx0 let
+ st-nl 0 neq (st-mx0 0 get must st-mx0 1 get must max st-mx0 2 get must max 'st-top let [st-top st-top st-top]) (st-mx0) if 'st-mx let
+ -- the top bands take the default position, or the one three bands down
+ st-ist0 0 (dup st-mb lt) ('st-k let
+   st-n st-mb sub st-k plus 'st-itop let
+   st-itop
+   st-k 'st-mx nth must st-itop st-mb sub ge (st-m1 0 neq (3) (0) if) (st-itop st-mb sub 'st-ist0 nth must) if
+   set must st-k 1 plus) while drop 'st-ist let
+ st-m1 0 neq (7) (64) if 'st-maxpos let
+ st-tms 0 neq (1.41421356) (1.0) if 'st-s let
+ [] [] 0 0 (over 'st-sfb nth must 0 neq) ('st-o let 'st-i let
+   st-i 'st-sfb nth must 'st-w let
+   st-i 'st-ist nth must 'st-pos let
+   st-i 3 mod 'st-mx nth must st-i lt st-pos st-maxpos lt and
+   (st-m1 0 neq (st-pos 2 mul 'm3-pan nth must st-s fmul st-pos 2 mul 1 plus 'm3-pan nth must st-s fmul) (
+     1.0 st-pos 1 plus 1 shr st-msh shl m3-ldexp 'st-kr let
+     st-pos 1 band 1 eq (st-kr st-s fmul 1.0 st-s fmul) (1.0 st-s fmul st-kr st-s fmul) if) if 'st-b let 'st-a let
+    0 st-w range (st-o plus 'st-l nth must st-a fmul) each
+    0 st-w range (st-o plus 'st-l nth must st-b fmul) each)
+   (st-tms 0 neq (
+      0 st-w range (st-o plus dup 'st-l nth must swap 'st-r nth must fplus) each
+      0 st-w range (st-o plus dup 'st-l nth must swap 'st-r nth must fsub) each) (
+      0 st-w range (st-o plus 'st-l nth must) each
+      0 st-w range (st-o plus 'st-r nth must) each) if) if
+   'st-nr let 'st-nl2 let 'st-ar let 'st-al let
+   st-al st-nl2 cat st-ar st-nr cat st-i 1 plus st-o st-w plus) while 'st-o3 let drop 'st-rr let 'st-ll let
+ st-ll st-l st-o3 drop-n cat st-rr st-r st-o3 drop-n cat st-ist) 'm3-stereo let
+
+-- m3-new: (-- S).  A decoder before its first frame. 'p is where the next frame is looked for, 'p0 where the played frames start, 'wn the file's length,
+-- 'at the sample that the next frame starts at, 'from the first sample played, and 'n the bytes played in this call.
+({'p 0 'p0 0 'wn 0 'hp -1 'ffb 0 'rsv [] 'ov m3-z576 'q m3-z576 m3-z576 cat 960 take-n 'ist m3-zi m3-zi cat 78 take-n
+  'rate 0 'nch 0 'spf 0 'delay 0 'from 0 'frames -1 'pad 0 'first 0 'at 0 'n 0 'err ""}) 'm3-new let
+
+-- m3-hna: (S -- msg).  Why a stream holds no audio.
+('hn-s let
+ hn-s 'frames at 'hn-f let
+ hn-f 0 ge (hn-f hn-s 'spf at mul) (-1) if 'hn-tot let
+ "mp3: holds no audio: expected at least 1 sample after the delay and padding are cut, received 0 of " hn-tot int-str cat " samples per channel (delay " cat hn-s 'delay at int-str cat ", padding " cat hn-s 'pad at int-str cat "); the stream holds only an Info frame or its LAME tag cuts all of it" cat) 'm3-hna let
+-- m3-emp: (S -- int).  1 when the frames the decoder has passed hold no audio past the delay and before the padding. 'at is where the next frame starts, and a seek past the end moves it to the last frame's end.
+('ep-s let ep-s 'at at 'ep-e let ep-s 'frames at 'ep-f let ep-f ep-s 'spf at mul ep-s 'pad at sub 'ep-t let
+ ep-f 0 ge ep-t 0 gt and (ep-t ep-e min) (ep-e) if ep-s 'delay at le) 'm3-emp let
+
+-- m3-go: (bytes S mode arg -- bytes S' res).  The one word behind mp3-open (mode 0), mp3-next (mode 1, arg sample frames wanted) and mp3-seek (mode 2, arg the sample frame).
+-- It gives the bytes back, and res is "" ok, pcm ok or msg no.
+('go-arg let 'go-mode let 'go-s let 'wb0 let
+ go-mode 0 eq (wb0 len) (go-s 'wn at) if 'wn let
+ wb0 0 32 range (drop 0) each cat 'wb let
+ -- m3-at: (i n -- bytes).  n bytes of the file from i.
+ ('at-n let 'at-i let at-i at-i at-n plus range ('wb nth must) each) 'm3-at let
+ -- m3-le: (i n -- int).  n bytes from i, little-endian.
+ ('le-n let 'le-i let 0 le-n range (le-i plus 'wb nth must) each reverse 0 (swap 8 shl swap bor) fold) 'm3-le let
+ -- m3-be: (i n -- int).  n bytes from i, big-endian.
+ ('be-n let 'be-i let 0 be-n range (be-i plus 'wb nth must) each 0 (swap 8 shl swap bor) fold) 'm3-be let
+ -- The stream ends before an ID3v1 tag, and before an APE tag in front of that.
+ -- dr_mp3 reads the APE tag's size from the footer's reserved bytes (offset 24), not its size field, so this does too.
+ wn 128 gt (wn 128 sub 3 m3-at "TAG" eq) (0) if 128 mul wn swap sub 'we1 let
+ we1 32 gt (we1 32 sub 8 m3-at "APETAGEX" eq) (0) if
+   (we1 32 sub 24 plus 4 m3-le 'ape-n let 32 ape-n plus we1 lt (we1 32 sub ape-n sub) (we1) if) (we1) if 'we let
+ -- an ID3v2 tag at the start is skipped
+ 0 3 m3-at "ID3" eq
+   (6 'wb nth must 127 band 21 shl 7 'wb nth must 127 band 14 shl bor 8 'wb nth must 127 band 7 shl bor 9 'wb nth must 127 band bor
+    5 'wb nth must 16 band 0 neq (10) (0) if plus 10 plus) (0) if 'ws let
+
+ -- m3-hv: (p -- int).  Four bytes at p are a valid header.
+ ('hv-p let
+  hv-p 'wb nth must 255 eq
+  hv-p 1 plus 'wb nth must 'hv-1 let hv-1 240 band 240 eq hv-1 254 band 226 eq or and
+  hv-1 1 shr 3 band 0 neq and
+  hv-p 2 plus 'wb nth must 'hv-2 let hv-2 4 shr 15 neq and
+  hv-2 2 shr 3 band 3 neq and) 'm3-hv let
+ -- m3-cmp: (a b -- int).  b is a valid header of the stream a belongs to.
+ ('cm-b let 'cm-a let
+  cm-b m3-hv
+  cm-a 1 plus 'wb nth must cm-b 1 plus 'wb nth must bxor 254 band 0 eq and
+  cm-a 2 plus 'wb nth must cm-b 2 plus 'wb nth must bxor 12 band 0 eq and
+  cm-a 2 plus 'wb nth must 240 band 0 eq cm-b 2 plus 'wb nth must 240 band 0 eq eq and) 'm3-cmp let
+ -- m3-pad: (p -- n).  The padding bytes of the frame at p.
+ ('hp-p let hp-p 2 plus 'wb nth must 2 band 0 neq (hp-p 1 plus 'wb nth must 6 band 6 eq (4) (1) if) (0) if) 'm3-pad let
+ -- m3-fb: (p ffb -- n).  The frame's bytes without padding; ffb when its bitrate is free.
+ ('fb-f let 'fb-p let
+  fb-p 1 plus 'wb nth must 'fb-1 let fb-p 2 plus 'wb nth must 'fb-2 let
+  fb-1 1 shr 3 band 'fb-l let
+  fb-l 3 eq (384) (fb-1 14 band 2 eq (576) (1152) if) if
+  fb-1 8 band 0 neq (45) (0) if fb-l 1 sub 15 mul plus fb-2 4 shr plus 'm3-halfrate nth must 2 mul mul 125 mul
+  fb-2 2 shr 3 band 'm3-hz nth must fb-1 8 band 0 eq fb-1 16 band 0 eq plus shr div
+  fb-l 3 eq (dup 3 band sub) () if
+  dup 0 eq (drop fb-f) () if) 'm3-fb let
+ -- m3-match: (p mb fb -- int).  Up to 10 more headers follow p, a frame apart.
+ ('mf-fb let 'mf-mb let 'mf-p let
+  0 0 -1 (dup -1 eq) (drop 'mf-n let 'mf-i let
+    mf-p mf-i plus 'mf-q let mf-q mf-fb m3-fb mf-q m3-pad plus mf-i plus 'mf-i2 let
+    mf-i2 4 plus mf-mb gt
+      (mf-n 0 gt)
+      (mf-p mf-p mf-i2 plus m3-cmp not (0) (mf-n 9 ge (1) (-1) if) if) if
+    'mf-r let mf-i2 mf-n 1 plus mf-r) while 'mf-res let drop drop mf-res) 'm3-match let
+ -- m3-free: (q i mb -- fb fap ffb).  Look for the next header a frame away, for a header with a free bitrate.
+ ('fs-mb let 'fs-i let 'fs-q let
+  0 4 0 (dup 0 eq) (drop 'fs-k let 'fs-ffb let
+    fs-k 2304 lt fs-i 2 fs-k mul plus fs-mb 4 sub lt and not (fs-ffb fs-k -1) (
+      fs-q fs-q fs-k plus m3-cmp (
+        fs-k fs-q m3-pad sub 'fs-fb let
+        fs-fb fs-q fs-k plus m3-pad plus 'fs-nx let
+        fs-i fs-k plus fs-nx plus 4 plus fs-mb gt  fs-q fs-q fs-k plus fs-nx plus m3-cmp not  or
+          (fs-ffb fs-k 1 plus 0) (fs-fb fs-k fs-fb) if) (fs-ffb fs-k 1 plus 0) if) if) while
+  'fs-fbr let 'fs-kr let 'fs-ffbr let
+  fs-fbr -1 eq (0 fs-q m3-pad fs-ffbr) (fs-fbr fs-kr fs-ffbr) if) 'm3-free let
+ -- m3-find: (p mb -- i fs ffb).  The first frame from p that the headers after it confirm; fs is 0 when none.
+ ('ff-mb let 'ff-p let
+  0 0 0 (dup 0 eq) (drop 'ff-ffb let 'ff-i let
+    ff-i ff-mb 4 sub ge (ff-i ff-ffb -1) (
+      ff-p ff-i plus 'ff-q let
+      ff-q m3-hv (
+        ff-q ff-ffb m3-fb 'ff-fb let
+        ff-fb ff-q m3-pad plus 'ff-fap let
+        ff-fb 0 eq (ff-q ff-i ff-mb m3-free) (ff-fb ff-fap ff-ffb) if
+        'ff-ffb2 let 'ff-fap2 let 'ff-fb2 let
+        ff-fb2 0 neq ff-i ff-fap2 plus ff-mb le and (ff-q ff-mb ff-i sub ff-fb2 m3-match) (0) if
+          ff-i 0 eq ff-fap2 ff-mb eq and or
+        (ff-i ff-ffb2 ff-fap2) (ff-i 1 plus 0 0) if) (ff-i 1 plus ff-ffb 0) if) if) while
+  'ff-fs let 'ff-ffbr let 'ff-ir let
+  ff-fs -1 eq (ff-mb 0 0) (ff-ir ff-fs ff-ffbr) if) 'm3-find let
+
+ -- m3-sync: (p hp ffb -- i fs ffb' reset).  The next frame at or after p: its offset i from p and its bytes fs, 0 when none.
+ -- A frame right after the last one needs only a header that fits the last and one that follows it. Anything else restarts the decoder (reset 1).
+ ('sy-ffb let 'sy-hp let 'sy-p let
+  we sy-p sub 'sy-mb let
+  sy-mb 4 gt sy-hp 0 ge and (
+    sy-hp sy-p m3-cmp (
+      sy-p sy-ffb m3-fb sy-p m3-pad plus 'sy-fs let
+      sy-fs sy-mb eq (sy-fs) (sy-fs 4 plus sy-mb gt (0) (sy-p sy-p sy-fs plus m3-cmp (sy-fs) (0) if) if) if) (0) if) (0) if 'sy-fs0 let
+  sy-fs0 0 neq (0 sy-fs0 sy-ffb 0) (
+    sy-p sy-mb m3-find 'sy-ffb2 let 'sy-f let 'sy-i let
+    sy-f 0 eq sy-i sy-f plus sy-mb gt or (sy-mb 0 0 1) (sy-i sy-f sy-ffb2 1) if) if) 'm3-sync let
+
+ -- rb: (ap n -- ap' v).  n bits at the absolute bit position ap, the position after them and the value.
+ ('rb-n let 'rb-p let
+  rb-p 3 shr 'rb-i let
+  rb-i 'wb nth must 16 shl rb-i 1 plus 'wb nth must 8 shl bor rb-i 2 plus 'wb nth must bor
+  24 rb-p 7 band sub rb-n sub shr 1 rb-n shl 1 sub band 'rb-v let
+  rb-p rb-n plus rb-v) 'rb let
+
+ -- m3-side: (p -- mdb grs bits).  The side information of the layer III frame at p: the main data begin (-1 when the frame is refused), the granule records and the bits the side information ends at, counted from the first byte after the header.
+ ('sd-p let
+  sd-p 1 plus 'wb nth must 'sd-h1 let sd-p 2 plus 'wb nth must 'sd-h2 let sd-p 3 plus 'wb nth must 'sd-h3 let
+  sd-h1 8 band 0 neq 'sd-m1 let
+  sd-h3 192 band 192 eq 'sd-mono let
+  sd-mono (1) (2) if 'sd-nch let
+  sd-h1 1 band 0 eq (16) (0) if sd-p 4 plus 8 mul plus 'sd-ap0 let
+  sd-h2 2 shr 3 band sd-h1 3 shr 1 band sd-h1 4 shr 1 band plus 3 mul plus 'sd-mysr let
+  sd-mysr sd-mysr 0 neq (1) (0) if sub 'sd-sri let
+  sd-m1 (sd-nch 2 mul) (sd-nch) if 'sd-gc let
+  sd-m1
+    (sd-ap0 9 rb 'sd-mdb1 let sd-gc 7 plus rb 'sd-sf1 let sd-mdb1 sd-sf1)
+    (sd-ap0 8 sd-gc plus rb sd-gc shr 0) if
+  'sd-sf0 let 'sd-mdb let 'sd-apx let
+  [] sd-apx sd-sf0 0 0 (dup sd-gc lt) ('sd-k let 'sd-bad let 'sd-sf let 'sd-ap let
+    sd-mono (sd-sf 4 shl) (sd-sf) if 'sd-sfa let
+    sd-ap 12 rb 'sd-p23 let 9 rb 'sd-big let 8 rb 'sd-gain let
+    sd-m1 (4) (9) if rb 'sd-comp let
+    1 rb 'sd-flag let
+    sd-flag
+      (2 rb 'sd-bt let 1 rb 'sd-mx let 10 rb 5 shl 'sd-tab let 3 rb 'sd-s0 let 3 rb 'sd-s1 let 3 rb 'sd-s2 let
+       sd-bt sd-mx sd-tab sd-s0 sd-s1 sd-s2 sd-bt 2 eq sd-mx 0 eq and (8) (7) if 255)
+      (15 rb 'sd-tab2 let 4 rb 'sd-r0 let 3 rb 'sd-r1 let 0 0 sd-tab2 0 0 0 sd-r0 sd-r1) if
+    'g-r1 let 'g-r0 let 'g-s2 let 'g-s1 let 'g-s0 let 'g-tab let 'g-mx let 'g-bt let
+    g-bt 2 eq (sd-sfa 3855 band) (sd-sfa) if 'sd-sfb let
+    sd-m1 (1 rb) (sd-comp 500 ge) if 'g-pre let
+    1 rb 'g-ss let 1 rb 'g-c1 let
+    'g-ap let
+    g-bt 2 eq
+      (g-mx 0 eq (m3-sfbs sd-sri 40 mul drop-n 40 take-n 0 39) (m3-sfbm sd-sri 40 mul drop-n 40 take-n sd-m1 (8) (6) if 30) if)
+      (m3-sfbl sd-sri 23 mul drop-n 23 take-n 22 0) if 'g-ns let 'g-nl let 'g-sfb let
+    {'p23 sd-p23 'big sd-big 'gain sd-gain 'comp sd-comp 'bt g-bt 'mx g-mx 'nl g-nl 'ns g-ns
+     'tsel [g-tab 10 shr g-tab 5 shr 31 band g-tab 31 band] 'rc [g-r0 g-r1] 'sbg [g-s0 g-s1 g-s2]
+     'pre g-pre 'sscale g-ss 'c1 g-c1 'scfsi sd-sfb 12 shr 15 band 'sfb g-sfb} push
+    g-ap sd-sfb 4 shl
+    sd-bad sd-big 288 gt or sd-flag 1 eq g-bt 0 eq and or
+    sd-k 1 plus) while
+  drop 'sd-badf let drop 'sd-apf let 'sd-grs let
+  sd-badf (-1) (sd-mdb) if sd-grs sd-apf sd-p 4 plus 8 mul sub) 'm3-side let
+
+ -- m3-frame: (S p fs -- S' ok pcm).  Decode the layer III frame at p, fs bytes long: the new decoder state, whether it gave audio, and the audio as bytes.
+ ('fr-fs let 'fr-p let 'fr-s let
+  fr-p m3-side 'fr-pos let 'fr-grs let 'fr-mdb let
+  fr-p 1 plus 'wb nth must 'fr-h1 let fr-p 2 plus 'wb nth must 'fr-h2 let fr-p 3 plus 'wb nth must 'fr-h3 let
+  fr-h1 8 band 0 neq 'fr-m1 let
+  fr-h3 192 band 192 eq (1) (2) if 'fr-nch let
+  fr-h3 16 band 0 neq 'fr-ist let
+  fr-h3 224 band 96 eq 'fr-ms let
+  fr-h3 32 band 0 neq 'fr-tms let
+  fr-h2 2 shr 3 band fr-h1 3 shr 1 band fr-h1 4 shr 1 band plus 3 mul plus 'fr-mysr let
+  fr-fs 4 sub 8 mul 'fr-lim let
+  fr-grs 0 ('p23 at plus) fold 'fr-sum let
+  fr-mdb 0 lt fr-pos fr-lim gt or fr-sum fr-pos plus fr-lim fr-mdb 8 mul plus gt or
+  (fr-s -1 'hp into 0 []) (
+   fr-s 'rsv at 'fr-rsv let
+   fr-rsv len 'fr-rn let
+   fr-rn fr-mdb min 'fr-have let
+   fr-lim fr-pos sub 8 div 'fr-fbm let
+   fr-rsv fr-rn fr-have sub drop-n fr-p 4 plus fr-pos 8 div plus fr-fbm m3-at cat 'fr-md let
+   fr-have fr-fbm plus 8 mul 'fr-mlim let
+   fr-md 0 4 range (drop 0) each cat 'fr-md2 let
+   0 fr-md2 len 2 sub range ('i-i let i-i 'fr-md2 nth must 16 shl i-i 1 plus 'fr-md2 nth must 8 shl bor i-i 2 plus 'fr-md2 nth must bor) each 'fr-m24 let
+   fr-m24 len 1 sub 'fr-m24n let
+
+   -- fr-pk: (p w -- v).  w bits at bit p of the main data.
+   ('pk-w let 'pk-p let
+    pk-p 3 shr fr-m24n min 'fr-m24 nth must 24 pk-p 7 band sub pk-w sub shr 1 pk-w shl 1 sub band) 'fr-pk let
+   -- fr-bits: (p n -- v).  As fr-pk, 0 past the end of the main data.
+   ('b-n let 'b-p let b-p b-n plus fr-mlim gt (0) (b-p b-n fr-pk) if) 'fr-bits let
+   -- fr-rd: (p bits cnt -- p' list).  cnt fields of the given width.
+   ('rd-cnt let 'rd-bits let 'rd-p let
+    [] rd-p 0 (dup rd-cnt lt) ('rd-k let 'rd-q let rd-q rd-bits fr-bits push rd-q rd-bits plus rd-k 1 plus) while drop swap) 'fr-rd let
+
+   -- fr-scf: (bp gr ch ist -- bp' scf ist').  Read one channel's scale factors; scf holds the gain of each band, ist the 39 intensity positions.
+   ('sf-ist let 'sf-ch let 'sf-gr let 'sf-bp let
+    sf-gr 'nl at 'sf-nl let sf-gr 'ns at 'sf-ns let sf-gr 'comp at 'sf-comp let sf-gr 'gain at 'sf-gain let
+    sf-gr 'pre at 'sf-pre let sf-gr 'sscale at 'sf-ss let sf-gr 'sbg at 'sf-sbg let sf-gr 'scfsi at 'sf-scfsi1 let
+    sf-ss 1 plus 'sf-sh let
+    sf-ns 0 neq (1) (0) if sf-nl 0 eq (1) (0) if plus 28 mul 'sf-row let
+    fr-m1
+      (sf-comp 'm3-scfc nth must 'sf-part let
+       [sf-part 2 shr sf-part 2 shr sf-part 3 band sf-part 3 band] sf-row sf-scfsi1)
+      (fr-ist sf-ch 0 neq and (1) (0) if 'sf-i2 let
+       sf-comp sf-i2 shr sf-i2 12 mul
+       (over 0 ge) ('sf-k let 'sf-sfc let
+          sf-k 'm3-mod nth must sf-k 1 plus 'm3-mod nth must mul sf-k 2 plus 'm3-mod nth must mul sf-k 3 plus 'm3-mod nth must mul 'sf-mp let
+          sf-sfc sf-mp sub sf-k 4 plus) while 'sf-kf let 'sf-sfcf let
+       sf-kf 4 sub 'sf-kl let
+       sf-kl 'm3-mod nth must 'sf-m0 let sf-kl 1 plus 'm3-mod nth must 'sf-m1b let sf-kl 2 plus 'm3-mod nth must 'sf-m2 let sf-kl 3 plus 'm3-mod nth must 'sf-m3 let
+       sf-sfcf sf-m0 sf-m1b mul sf-m2 mul sf-m3 mul plus 'sf-sl let
+       [sf-sl sf-m1b sf-m2 mul sf-m3 mul div sf-m0 mod  sf-sl sf-m2 sf-m3 mul div sf-m1b mod  sf-sl sf-m3 div sf-m2 mod  sf-sl sf-m3 mod]
+       sf-row sf-kf plus -16) if
+    'sf-fl0 let 'sf-off let 'sf-sizes let
+    [] [] sf-bp sf-fl0 0 (dup 4 lt) ('sf-gi let 'sf-fl let 'sf-p let 'sf-n let 'sf-a let
+       sf-gi sf-off plus 'm3-parts nth must 'sf-cnt let
+       sf-cnt 0 eq (sf-a sf-n sf-p sf-fl 4) (
+         sf-a len 'sf-pos let
+         sf-fl 8 band 0 neq
+           (sf-ist sf-pos drop-n sf-cnt take-n 'sf-grpa let sf-a sf-grpa cat sf-n sf-grpa cat sf-p)
+           (sf-gi 'sf-sizes nth must 'sf-bits let
+            sf-bits 0 eq
+              (0 sf-cnt range (drop 0) each 'sf-grpb let sf-a sf-grpb cat sf-n sf-grpb cat sf-p)
+              (sf-p sf-bits sf-cnt fr-rd 'sf-grpc let 'sf-p2 let
+               sf-fl 0 lt (1 sf-bits shl 1 sub) (-1) if 'sf-max let
+               sf-a sf-grpc cat sf-n sf-grpc (dup sf-max eq (drop 255) () if) each cat sf-p2) if) if
+         sf-fl 2 mul sf-gi 1 plus) if) while
+    drop drop 'sf-bp2 let 'sf-newn let 'sf-iscf0 let
+    sf-iscf0 m3-zi cat 45 take-n 'sf-iscf1 let
+    sf-ns 0 neq
+      (0 45 range ('j-j let j-j 'sf-iscf1 nth must j-j sf-nl ge j-j sf-nl sf-ns plus lt and
+         (j-j sf-nl sub 3 mod 'sf-sbg nth must 3 sf-sh sub shl plus 255 band) () if) each)
+      (sf-pre 0 neq
+        (0 45 range ('j-j let j-j 'sf-iscf1 nth must j-j 11 ge j-j 21 lt and (j-j 11 sub 'm3-preamp nth must plus 255 band) () if) each)
+        (sf-iscf1) if) if 'sf-iscf let
+    fr-ms (2) (0) if 'sf-ms2 let
+    2048.0 44 sf-gain 214 sub sf-ms2 sub sub m3-ldexp 'sf-g let
+    0 sf-nl sf-ns plus range ('j-j let sf-g j-j 'sf-iscf nth must sf-sh shl m3-ldexp) each m3-z576 45 take-n cat
+    sf-newn sf-ist sf-newn len drop-n cat 39 take-n
+    'sf-istr let 'sf-scfr let sf-bp2 sf-scfr sf-istr) 'fr-scf let
+
+   -- fr-val: (p lsb lb one -- p' v).  One value of a pair, its sign bit and linbits read.
+   ('vl-one let 'vl-lb let 'vl-lsb let 'vl-p let
+    vl-lsb 15 eq vl-lb 0 neq and
+      (vl-p vl-lb fr-pk 15 plus 'vl-x let
+       vl-p vl-lb plus 'vl-p2 let
+       vl-p2 1 plus vl-x m3-pow43 vl-one fmul vl-p2 1 fr-pk 0 neq (fneg) () if)
+      (vl-lsb 0 eq (vl-p 0.0) (
+         vl-p 1 plus vl-lsb 'm3-p43 nth must vl-one fmul vl-p 1 fr-pk 0 neq (fneg) () if) if) if) 'fr-val let
+   -- fr-pair: (dst p cb lb one -- dst' p').  Decode one pair of big values and push it on dst.
+   ('pr-one let 'pr-lb let 'pr-cb let 'pr-p let 'pr-dst let
+    pr-p 5 pr-cb pr-p 5 fr-pk plus 'm3-tabs nth must
+    (dup 0 lt) ('pr-l let 'pr-w let 'pr-q let
+       pr-q pr-w plus 'pr-q2 let pr-l 7 band 'pr-w2 let
+       pr-q2 pr-w2 pr-cb pr-q2 pr-w2 fr-pk plus 7 pr-l sub 3 shr plus 'm3-tabs nth must) while
+    'pr-leaf let drop 'pr-p1 let
+    pr-p1 pr-leaf 8 shr plus pr-leaf 15 band pr-lb pr-one fr-val 'pr-v0 let
+    pr-leaf 4 shr 15 band pr-lb pr-one fr-val 'pr-v1 let
+    pr-dst pr-v0 push pr-v1 push swap) 'fr-pair let
+   -- fr-dq: (p leaf bit one -- p' v).  One value of a count1 quad.
+   ('dq-one let 'dq-bit let 'dq-leaf let 'dq-p let
+    dq-leaf dq-bit band 0 neq (dq-p 1 plus dq-p 1 fr-pk 0 neq (dq-one fneg) (dq-one) if) (dq-p 0.0) if) 'fr-dq let
+
+   -- fr-huf: (bp gr scf limit -- xr).  Decode one channel's 576 values from bit bp to bit limit.
+   ('hf-lim let 'hf-scf let 'hf-gr let 'hf-bp let
+    hf-gr 'sfb at 'hf-sfb let hf-gr 'tsel at 'hf-tsel let hf-gr 'rc at 'hf-rc let
+    0 'hf-rc nth must 1 plus 'hf-e0 let
+    hf-e0 1 'hf-rc nth must 1 plus plus 'hf-e1 let
+    hf-gr 'c1 at 28 mul 'hf-co let
+    -- reload: (np b one -- np' b' one' stop).  Count1 values take the next band's gain when the band is used up.
+    ('rl-one let 'rl-b let 'rl-np let
+     rl-np 1 sub 'rl-n1 let
+     rl-n1 0 eq
+       (rl-b 'hf-sfb nth must 2 div 'rl-n2 let
+        rl-n2 0 eq (0 rl-b rl-one 1) (rl-n2 rl-b 1 plus rl-b 'hf-scf nth must 0) if)
+       (rl-n1 rl-b rl-one 0) if) 'hf-reload let
+    -- the big values: dst p one b remaining
+    [] hf-bp 0.0 0 hf-gr 'big at (dup 0 gt) ('hf-bc let 'hf-b let 'hf-one0 let 'hf-p let
+       hf-b 'hf-sfb nth must 2 div 'hf-np let
+       hf-np 0 eq (hf-p hf-one0 hf-b) (
+         hf-bc hf-np min 'hf-pairs let
+         hf-b 'hf-scf nth must 'hf-one let
+         hf-b hf-e0 lt (0 'hf-tsel nth must) (hf-b hf-e1 lt (1 'hf-tsel nth must) (2 'hf-tsel nth must) if) if 'hf-t let
+         hf-t 'm3-tabindex nth must 'hf-cb let hf-t 'm3-linbits nth must 'hf-lb let
+         hf-p 0 (dup hf-pairs lt) ('hf-k let hf-cb hf-lb hf-one fr-pair hf-k 1 plus) while drop
+         hf-one hf-b 1 plus) if
+       hf-np 0 eq (0) (hf-bc hf-np sub) if) while
+    'hf-bcf let 'hf-bf let 'hf-onef let 'hf-pf let
+    -- the count1 quads: dst p np b one go
+    hf-pf 1 hf-bcf sub hf-bf hf-onef 1 (dup 0 neq) (drop 'hq-one let 'hq-b let 'hq-np let 'hq-p let
+       dup len 576 lt (
+         hq-p 4 fr-pk hf-co plus 'm3-c1 nth must 'hq-l0 let
+         hq-l0 8 band 0 eq (hf-co hq-l0 3 shr plus hq-p 4 plus hq-l0 3 band fr-pk plus 'm3-c1 nth must) (hq-l0) if 'hq-leaf let
+         hq-p hq-leaf 7 band plus 'hq-p1 let
+         hq-p1 hf-lim gt (hq-p1 hq-np hq-b hq-one 0) (
+           hq-np hq-b hq-one hf-reload 'hq-s1 let 'hq-one1 let 'hq-b1 let 'hq-np1 let
+           hq-s1 1 eq (hq-p1 hq-np1 hq-b1 hq-one1 0) (
+             hq-p1 hq-leaf 128 hq-one1 fr-dq 'hq-v0 let 'hq-p2 let
+             hq-p2 hq-leaf 64 hq-one1 fr-dq 'hq-v1 let 'hq-p3 let
+             hq-v0 push hq-v1 push
+             hq-np1 hq-b1 hq-one1 hf-reload 'hq-s2 let 'hq-one2 let 'hq-b2 let 'hq-np2 let
+             hq-s2 1 eq (hq-p3 hq-np2 hq-b2 hq-one2 0) (
+               hq-p3 hq-leaf 32 hq-one2 fr-dq 'hq-v2 let 'hq-p4 let
+               hq-p4 hq-leaf 16 hq-one2 fr-dq 'hq-v3 let 'hq-p5 let
+               hq-v2 push hq-v3 push hq-p5 hq-np2 hq-b2 hq-one2 1) if) if) if)
+       (hq-p hq-np hq-b hq-one 0) if) while
+    drop drop drop drop drop m3-z576 cat 576 take-n) 'fr-huf let
+
+   -- fr-gran: (G gi -- G').  Decode granule gi: both channels' values, stereo, IMDCT and synthesis; G is {'bp 'ist 'ov 'q 'pcm}.
+   ('gn-gi let 'gn-g let
+    gn-gi fr-nch mul 'gn-base let
+    -- gn-chan: (G ch -- G' xr).  Scale factors and values of one channel.
+    ('ch-ch let 'ch-g let
+     ch-g 'bp at 'ch-bp let
+     gn-base ch-ch plus 'fr-grs nth must 'ch-gr let
+     ch-bp ch-gr 'p23 at plus 'ch-lim let
+     ch-g 'ist at ch-ch 39 mul drop-n 39 take-n 'ch-ist0 let
+     ch-bp ch-gr ch-ch ch-ist0 fr-scf 'ch-ist1 let 'ch-scf let 'ch-bp2 let
+     ch-bp2 ch-gr ch-scf ch-lim fr-huf 'ch-xr let
+     ch-g 'ist at ch-ch 39 mul take-n ch-ist1 cat ch-g 'ist at ch-ch 1 plus 39 mul drop-n cat 'ch-ist2 let
+     ch-g ch-lim 'bp into ch-ist2 'ist into ch-xr) 'gn-chan let
+    gn-g 0 gn-chan 'gn-xr0 let 'gn-g1 let
+    fr-nch 2 eq (gn-g1 1 gn-chan) (gn-g1 m3-z576) if 'gn-xr1 let 'gn-g2 let
+    gn-base 'fr-grs nth must 'gn-gr0 let
+    gn-base fr-nch 1 sub plus 'fr-grs nth must 'gn-gr1 let
+    gn-g2 'ist at 39 drop-n 39 take-n 'gn-ist1 let
+    fr-ist
+      (gn-xr0 gn-xr1 gn-ist1 gn-gr0 'sfb at gn-gr0 'nl at gn-gr0 'ns at fr-m1 fr-tms gn-gr1 'comp at 1 band m3-stereo)
+      (fr-ms (gn-xr0 gn-xr1 m3-ms) (gn-xr0 gn-xr1) if gn-ist1) if
+    'gn-ist1b let 'gn-xr1b let 'gn-xr0b let
+    gn-g2 'ov at 'gn-ov let gn-g2 'q at 'gn-q let
+    -- gn-post: (xr gr ch -- xr' ov'), then the synthesis with the saved rows q
+    ('po2-ch let 'po2-gr let 'po2-x let
+     po2-gr 'mx at (2) (0) if fr-mysr 2 eq (1 shl) () if 'po2-nlb let
+     po2-x gn-ov po2-ch 288 mul drop-n 288 take-n po2-gr 'bt at po2-nlb po2-gr 'ns at po2-gr 'sfb at po2-gr 'nl at drop-n m3-post) 'gn-post let
+    gn-xr0b gn-gr0 0 gn-post 'gn-ov0 let 'gn-xo0 let
+    gn-xo0 gn-q 480 take-n m3-synth 'gn-q0 let 'gn-s0 let
+    fr-nch 2 eq
+      (gn-xr1b gn-gr1 1 gn-post 'gn-ov1 let 'gn-xo1 let
+       gn-xo1 gn-q 480 drop-n m3-synth 'gn-q1 let 'gn-s1 let gn-s1 gn-q0 gn-q1 gn-ov1)
+      (gn-s0 gn-q0 gn-q 480 drop-n gn-ov 288 drop-n) if
+    'gn-ov1x let 'gn-q1x let 'gn-q0x let 'gn-s1x let
+    gn-g2 gn-g2 'ist at 39 take-n gn-ist1b cat 'ist into
+    gn-ov0 gn-ov1x cat 'ov into gn-q0x gn-q1x cat 'q into
+    'gn-g3 let
+    0 576 range gn-g3 'pcm at
+      ('pc-i let
+       pc-i 'gn-s0 nth must 'pc-l let
+       pc-i 'gn-s1x nth must 'pc-r let
+       pc-l 255 band push pc-l 8 shr 255 band push pc-r 255 band push pc-r 8 shr 255 band push) fold
+    gn-g3 swap 'pcm into) 'fr-gran let
+
+   -- the granules, when the reservoir holds the main data begin
+   fr-rn fr-mdb ge
+     ({'bp 0 'ist fr-s 'ist at 'ov fr-s 'ov at 'q fr-s 'q at 'pcm []}
+      0 (dup fr-m1 (2) (1) if lt) ('gi-i let gi-i fr-gran gi-i 1 plus) while drop)
+     ({'bp 0 'ist fr-s 'ist at 'ov fr-s 'ov at 'q fr-s 'q at 'pcm []}) if
+   'fr-gf let
+   -- the reservoir for the next frame: what the last granule left unread, and at most 511 bytes
+   fr-gf 'bp at 7 plus 8 div 'fr-rp0 let
+   fr-have fr-fbm plus fr-rp0 sub 'fr-rem0 let
+   fr-rem0 511 gt (fr-rp0 fr-rem0 511 sub plus 511) (fr-rp0 fr-rem0 0 max) if 'fr-rem let 'fr-rp let
+   fr-s fr-md fr-rp drop-n fr-rem take-n 'rsv into
+   fr-rn fr-mdb ge
+     (fr-gf 'ist at 'ist into fr-gf 'ov at 'ov into fr-gf 'q at 'q into fr-p 'hp into 1 fr-gf 'pcm at)
+     (fr-p 'hp into 0 []) if) if) 'm3-frame let
+
+ -- m3-xing: (S fp fs -- S' tag).  Is the first frame a Xing or Info tag? If so, tag is 1 and S holds the encoder delay, padding and frame count it names.
+ -- A tag that is cut short in the middle is not a tag, but a frame count read before the cut stays.
+ ('xg-fs let 'xg-p let 'xg-s let
+  xg-p m3-side 'xg-pos let drop drop
+  xg-p 4 plus xg-pos 8 div plus 'xg-beg let
+  -- xg-skip: (alive cur n -- alive' cur').  Step over n bytes when the frame holds them.
+  ('sk-n let 'sk-c let 'sk-a let
+   sk-a xg-fs sk-c xg-p sub sk-n plus ge and (1 sk-c sk-n plus) (0 sk-c) if) 'xg-skip let
+  xg-fs xg-beg xg-p sub 8 plus lt (xg-s 0) (
+    xg-beg 4 m3-at 'xg-id let
+    xg-id "Xing" eq xg-id "Info" eq or not (xg-s 0) (
+      xg-beg 7 plus 'wb nth must 'xg-fl let
+      1 xg-beg 8 plus xg-fl 1 band 0 neq (4 xg-skip) () if 'xg-c1 let 'xg-a1 let
+      xg-a1 xg-fl 1 band 0 neq and (xg-c1 4 sub 4 m3-be) (-1) if 'xg-frames let
+      xg-a1 xg-c1 xg-fl 2 band 0 neq (4 xg-skip) () if 'xg-c2 let 'xg-a2 let
+      xg-a2 xg-c2 xg-fl 4 band 0 neq (100 xg-skip) () if 'xg-c3 let 'xg-a3 let
+      xg-a3 xg-c3 xg-fl 8 band 0 neq (4 xg-skip) () if 'xg-c4 let 'xg-a4 let
+      xg-a4 xg-fs xg-c4 xg-p sub 1 plus ge and 'xg-a5 let
+      xg-s xg-frames 'frames into 'xg-s1 let
+      xg-a5 0 eq (xg-s1 0) (
+        xg-c4 'wb nth must 0 eq (xg-s1 1) (
+          xg-fs xg-c4 xg-p sub 36 plus lt (xg-s1 0) (
+            xg-c4 21 plus 'xg-lc let
+            xg-lc 'wb nth must 4 shl xg-lc 1 plus 'wb nth must 4 shr bor 529 plus 'xg-dl let
+            xg-lc 1 plus 'wb nth must 15 band 8 shl xg-lc 2 plus 'wb nth must bor 529 sub 0 max 'xg-pd let
+            xg-s1 xg-dl 'delay into xg-pd 'pad into 1) if) if) if) if) if) 'm3-xing let
+
+ -- m3-hzp: (p -- hz).  The sample rate of the frame at p.
+ ('hz-p let hz-p 1 plus 'wb nth must 'hz-1 let hz-p 2 plus 'wb nth must 2 shr 3 band 'm3-hz nth must hz-1 8 band 0 eq hz-1 16 band 0 eq plus shr) 'm3-hzp let
+
+ -- m3-lay: (fp -- msg).  The refusal for the frame at fp when it is not layer 3.
+ ('ly-p let "mp3: layer " 4 ly-p 1 plus 'wb nth must 1 shr 3 band sub int-str cat " frame at byte " cat ly-p int-str cat "; mp3-decode reads layer 3" cat) 'm3-lay let
+ -- m3-none: (-- msg).  The refusal when no frame is played.
+ ("mp3: not an MP3 stream: no header repeats at its frame length in the " we ws sub 0 max int-str cat " bytes from byte " cat ws int-str cat) 'm3-none let
+ -- m3-main: (fp fs -- bytes).  The main data of the frame at fp, which is fs bytes long.
+ ('mn-fs let 'mn-p let
+  mn-p m3-side 'mn-bits let drop drop
+  mn-bits 3 shr 4 plus 'mn-o let
+  mn-p mn-o plus mn-fs mn-o sub 0 max m3-at) 'm3-main let
+ -- m3-emit: (out S pcm -- out' S').  Append the part of a frame's samples that lies in [from, lim) to out. The frame starts at sample 'at.
+ ('em-pcm let 'em-s let
+  em-s 'at at 'em-a let
+  em-a em-pcm len 2 shr plus 'em-b let
+  em-a em-s 'delay at max em-s 'from at max 'em-lo let
+  em-s 'frames at 'em-f let em-f em-s 'spf at mul 'em-t let em-s 'pad at 'em-pd let
+  em-f 0 ge em-t em-pd gt and (em-t em-pd sub em-b min) (em-b) if 'em-hi let
+  em-lo em-a eq em-hi em-b eq and
+    (em-pcm)
+    (em-lo em-hi lt (em-pcm em-lo em-a sub 2 shl drop-n em-hi em-lo sub 2 shl take-n) ("") if) if cat
+  em-s em-b 'at into (em-hi em-lo sub 0 max 2 shl plus) 'n edit) 'm3-emit let
+
+ -- m3-loop: (out S want upto -- out' S').  Decode frames while fewer than want bytes of audio are in this call's out and the next frame starts before sample upto (-1: no bound).
+ ('lp-up let 'lp-want let
+  1
+ (dup 0 neq) (drop 'dr-s let
+   dr-s 'p at dr-s 'hp at dr-s 'ffb at m3-sync 'dr-reset let 'dr-ffb let 'dr-fs let 'dr-i let
+   dr-reset 1 eq (dr-s -1 'hp into m3-z576 'ov into m3-z576 m3-z576 cat 960 take-n 'q into m3-zi m3-zi cat 78 take-n 'ist into [] 'rsv into) (dr-s) if
+   dr-ffb 'ffb into 'dr-s0 let
+   dr-fs 0 eq (dr-s0 we 'p into 0) (
+     dr-s 'p at dr-i plus 'dr-fp let
+     dr-fp 1 plus 'wb nth must 1 shr 3 band 1 neq
+       (dr-s0 dr-fp m3-lay 'err into 0)
+       (dr-s0 dr-fp dr-fs plus 'p into dr-fp 'hp into dr-fp dr-fs m3-frame 'dr-pcm let 'dr-ok let 'dr-s1 let
+        dr-fp 3 plus 'wb nth must 192 band 192 eq (1) (2) if 'dr-ch let
+        dr-ok 0 eq (dr-s1 1) (
+          dr-s1 'first at 0 neq dr-s1 'nch at dr-ch neq and
+          (dr-s1 "mp3: the frame at byte " dr-fp int-str cat " has " cat dr-ch int-str cat " channel" cat dr-ch 1 neq ("s") ("") if cat "; the first frame has " cat dr-s1 'nch at int-str cat " and a stream keeps its channel count" cat 'err into 0) (
+          dr-s1 'first at 0 eq
+            (dr-s1 1 'first into dr-ch 'nch into dr-fp m3-hzp 'rate into dr-fp 1 plus 'wb nth must 8 band 0 neq (1152) (576) if 'spf into
+             dr-s 'p at dr-i dr-fs plus m3-xing 'dr-tag let 'dr-s2 let
+             dr-tag 1 eq (dr-s2 -1 'hp into 1) (dr-s2 dr-pcm m3-emit 1) if)
+            (dr-s1 dr-pcm m3-emit 1) if) if) if) if) if
+   -- the limits: the string a result holds, the wanted bytes, the bound
+   'lm-go let 'lm-s let
+   lm-s 'n at 'lm-n let
+   lm-n 1073741824 gt
+     (lm-s "mp3: decodes to more than 1073741824 bytes of audio, the most a string holds" 'err into 0)
+     (lm-s lm-go lm-n lp-want lt and lp-up 0 lt lm-s 'at at lp-up lt or and) if) while drop) 'm3-loop let
+
+ -- m3-seek: (S f -- S').  Place the decoder so that the next chunk starts at sample f of the audio.
+ ('sk-f let 'sk-s let
+  -- 2^60 bounds the sum: a frame far past the end must clamp to the end, not wrap around
+  sk-s 'delay at sk-f 0 max 1152921504606846976 min plus 'sk-t let
+  sk-s 'spf at 'sk-spf let
+  sk-t sk-spf div 'sk-n let
+  -- walk the headers up to frame sk-n, as fp fs ffb triples, and note the last frame that restarts the decoder
+  [] sk-s 'p0 at -1 0 0 0 1
+  (dup 0 neq) (drop 'wk-r let 'wk-k let 'wk-ffb let 'wk-hp let 'wk-p let
+    wk-p wk-hp wk-ffb m3-sync 'wk-reset let 'wk-ffb2 let 'wk-fs let 'wk-i let
+    wk-p wk-i plus 'wk-fp let
+    wk-fs 0 eq wk-fp 1 plus 'wb nth must 1 shr 3 band 1 neq or
+      (wk-p wk-hp wk-ffb wk-k wk-r 0)
+      (wk-fp push wk-fs push wk-ffb2 push wk-fp wk-fs plus wk-fp wk-ffb2 wk-k 1 plus wk-reset 1 eq (wk-k) (wk-r) if wk-k sk-n lt) if) while
+  drop 'sk-r let 'sk-k let drop drop drop 'sk-l let
+  sk-k sk-n le
+    (sk-s we 'p into -1 'hp into 1 'first into sk-k sk-spf mul 'at into)
+    (sk-r sk-n 2 sub max 'sk-a let
+     -- the decoder restarts two frames before sk-f: the second granule before it fixes the overlap and the filter rows
+     sk-a 0 eq
+       (sk-s sk-s 'p0 at 'p into -1 'hp into 0 'ffb into)
+       (sk-a 1 sub 3 mul 'sk-b let
+        sk-b 'sk-l nth must sk-b 1 plus 'sk-l nth must plus 'sk-pe let
+        sk-s sk-pe 'p into sk-b 'sk-l nth must 'hp into sk-b 2 plus 'sk-l nth must 'ffb into) if
+     -- the reservoir: the main data of the frames before it, 511 bytes at most
+     sk-a 1 sub [] (over sk-r ge over len 511 lt and) (swap 'rg-j let rg-j 3 mul 'sk-l nth must rg-j 3 mul 1 plus 'sk-l nth must m3-main swap cat rg-j 1 sub swap) while swap drop
+     dup len 511 sub 0 max drop-n 'rsv into
+     m3-new 'ov at 'ov into m3-new 'q at 'q into m3-new 'ist at 'ist into
+     sk-a sk-spf mul 'at into 4611686018427387904 'from into 0 'n into
+     sk-a sk-n lt
+       ([] swap 4611686018427387904 sk-n sk-spf mul m3-loop swap drop)
+       () if
+     sk-t 'from into 0 'n into 1 'first into) if) 'm3-seek let
+
+ go-mode 0 eq
+  (wn 10 lt (go-s "mp3: not an MP3 stream: " wn int-str cat " bytes; the ID3 check alone reads 10" cat no) (
+   go-s ws 'p into 'op-s let
+   ws -1 0 m3-sync drop 'op-ffb let 'op-fs let 'op-i let
+   op-fs 0 eq (go-s m3-none no) (
+    ws op-i plus 'op-fp let
+    op-fp 1 plus 'wb nth must 1 shr 3 band 1 neq (go-s op-fp m3-lay no) (
+     op-s op-fp 3 plus 'wb nth must 192 band 192 eq (1) (2) if 'nch into op-fp m3-hzp 'rate into
+       op-fp 1 plus 'wb nth must 8 band 0 neq (1152) (576) if 'spf into wn 'wn into ws op-i op-fs plus m3-xing
+     (op-fp op-fs plus 'p into -1 'hp into op-ffb 'ffb into 1 'first into) () if
+     dup 'p at 'p0 into "" ok) if) if) if)
+  (go-mode 1 eq
+   ([] go-s 0 'n into go-arg 4 mul -1 m3-loop 'lp-s let 'lp-out let
+    lp-s 'err at len 0 neq (lp-s lp-s 'err at no) (
+     lp-s 'first at 0 eq (lp-s m3-none no) (
+      lp-out len 0 eq lp-s m3-emp and (lp-s dup m3-hna no) (lp-s lp-out ok) if) if) if)
+   (go-s go-arg m3-seek "" ok) if) if
+ 'go-res let 'go-sf let wb0 go-sf go-res) 'm3-go let
+
+-- mp3-open: (bytes -- bytes res).  res is dec ok, or msg no. dec holds the decoder's state and no bytes of the file.
+(m3-new 0 0 m3-go {'ok (drop ok) 'no (nip no)} case) 'mp3-open let
+-- mp3-next: (bytes dec -- bytes dec chunk).  chunk is the next frames' pcm, about 8192 sample frames, ok; "" ok after the last; msg no when the stream fails.
+(1 8192 m3-go) 'mp3-next let
+-- mp3-seek: (bytes dec frame -- bytes dec).  The next chunk starts at that sample frame, or at the end past it.
+(2 swap m3-go {'ok (drop) 'no (fail)} case) 'mp3-seek let
+-- m3-fin: (S pcm -- res).  The result of a whole decode, or why there is no audio.
+('fn-pcm let 'fn-s let fn-pcm len 0 eq (fn-s m3-hna no) ({'rate fn-s 'rate at 'pcm fn-pcm} ok) if) 'm3-fin let
+(m3-new 0 0 m3-go {'ok (drop 1 1152921504606846976 m3-go {'ok (rot drop m3-fin) 'no (nip swap drop no)} case) 'no (nip swap drop no)} case) 'mp3-decode let
+-- ===== tests =====
+-- mt-hex: (str -- bytes).  Hex text, white space ignored, as bytes.
+((32 gt) filter 2 0 m3-hex) 'mt-hex let
+(mp3-decode {'ok (drop "") 'no ()} case) 'mt-err let
+-- mt-fp: (bytes -- int).  h = h * 31 + byte over the bytes, modulo 2^32.
+(0 (swap 31 mul plus 4294967295 band) fold) 'mt-fp let
+-- mt-is: (bytes rate frames hash -- pcm).  The file decodes to what read-mp3 gives for it: this rate, frame count and hash of the pcm.
+('mt-h let 'mt-n let 'mt-r let mp3-decode must dup 'rate at mt-r eq assert 'pcm at dup len 4 div mt-n eq assert dup mt-fp mt-h eq assert) 'mt-is let
+(mp3-decode must 'pcm at) 'mt-pcm let
+-- mt-no: (bytes msg --).  The file is refused with this message.
+('mt-m let mt-err mt-m eq assert) 'mt-no let
+-- mt-z: (n -- bytes).  n zero bytes.
+(0 swap range (drop 0) each) 'mt-z let
+-- The streams are cut from LAME and ffmpeg output; every expected frame count and hash is what read-mp3 gives.
+-- MPEG-1 stereo: an Info frame that names 2 frames, a delay of 1105 and a padding of 303, then 2 frames; 896 samples play
+"
+fffb58440000000000000000000000000000000000000000000000000000000000000000496e666f0000000f00000002
+000005a00040404040404040404040404040404040404040404040404080808080808080808080808080808080808080
+808080808080c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0ffffffffffffffffffffffffffffffffff
+ffffffffffffffff000000394c414d45342e302000016e000000002ccc000014402403404e000040000005a0f0a55a06
+000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+fffb58640009125105d3d026083e2360ba76046303070c75384cb5ecb0da0ea930f60a17000060296590094402040180
+c9a0b844ffcf000771dff9fff1dfff000c7fff80000000230f0f0f0f000000337bff0f00000000030f0f0f0f00000000
+030f0f0f1e0000002371c3c7fba00027fc0081110200516800700808066b3e5c10c10760f83e080211000cff77e5c3e1
+8e9581be8e5b8d0e94652a14e4bfcc9a525c58d4a999144816817f311f4527ae40b069d6b9abd611e5190e7cf9f3e412
+cff9ad54a96b7ff1094688081a539b19b7a7b21e0af0741fa9e51d72d819651cefff5d284f56adaa91e813ecb52cd177
+9fad6b5fd5cd4d01931590505053fc9a8a8808914dc735000009751c27cc41be20e094809e1415edb46858cc97485f76
+fffb58440f8112281d5269f86a1c48842a3d3f0d6587987532cc6a4570f49069b4f6a9e673413b1620159395b2d10258
+3e85f0f3d31254fe88bfaf330b2072b6cd973e61a3c924e6949220044355a935a000c35f16e1e82861e9fd03aa6e8811
+11c45361fa6c2e23bb4d94217d8d20a623be13959673a060afe3416fd85e67ec99a6f6be709b5c95a8d8864808272830
+7a392888362ce500d4808566db102b1bb115e16de2bed19365653d99e751b1b2eeb1bc6a0c82d3965eb19330222da846
+07fe3e062a293544688303586d5bc5d80213056eed49aa73d97d3836504fd5e4a7591a04d40ec2a37cb0827d8970e418
+02a5aadc1545467d412429745421125a4d12809ce22f2aeda3b23f5d158003f0002c05957d765826d419048c458a0149" mt-hex 'mt-a let
+-- MPEG-1 mono, 32 kHz: 4 frames of 144 bytes, the last cut short at 388
+"
+fffb18c40000468c4f2a4c3d2880ee0eaab4c7a13e07000c9f46189506271c8842d3ccc0cf2de190c84801c868887b4d
+34b86e4284081d4d004021020879a82b6e60f811d87e5c3fc312109392cdb0011171f322f08241b2ad3a6d09140f0270
+7dff0572576f55c98960d3ad735569fa0725a274a2572b93c288f1f5ac57a4f4ae6fe0a05e008d91200035b999a9322b
+fffb18c405824848772ced664720e68ea4c5bcb59a0be70bef0e694f5802d3994e3080daa4065361bc146dd25dca838c
+5e8612339d65b0139234430f3ccc2dc9bab797055fd66dffffbebffad0eaa4264e9154dc469831460ec494cac2c5ed46
+6481001c3a2a713016f740f0911967bcaebf2582e4c23b33da60bc4c2ef50490a5f1602dbf3d0c31b0013e5dafa75701
+fffb18c4050347b4692a6d65a780ff0ca50ab78000bf4c05d1f81490608208a5521a022b5de8b3ddd67a148e1de5a62e
+c280c5dac77dc3226437d85b143d42a14bafb7ffffeab3ff4b00a531e6f5d80619196a498ab29c20106023e0050b6ace
+80e0e00a" mt-hex 'mt-b let
+-- MPEG-2 stereo, 22.05 kHz
+"
+fff3406400055415607ca18c0105f8468801460001c4bf76ee888889ee00080625c31587f04010f07c1c0401004383e0
+f810e6a07c1f07fa810fc4008021977c4447f77ed8c0400104303001c1e3fff800061e1e1e1ec0856b52cfe7c0d100ac
+b803012c08ca453afff342441005885f5400c7b4000ae8f6a801985000b53aa385dc82e0c29c4f45facb6b5651c9af51
+31f2f35d654fd1dcaa2bcc5f832dc7972a4eb594012ba124bff4b0f75cce083670649e483b42a6c76a991f2cf8cb437a
+3f97afeed071020cadcd404a2eea55a595" mt-hex 'mt-c let
+-- MPEG-2.5 mono, 11.025 kHz
+"
+ffe320c40014695a74054f4000c01e3c78f1e3c78f1e3f57abd5ecf1e017c16c033819c1ce21e42ceb67df4ae5c5c5c3
+b06e028028000014058648b8b8a0a0a2222577feeeee8889ffffc256e8282828808060f83f583808063fd4087fe0fa57
+b2b952da6187e0edffe322c40916726a94018f9800b871093110b09d7417020a5842803b81b10b1021d073042a3e48a9
+74c89acc88ae8037b96d68c30012fc3d62436c9c5f926af2a2fa8e8ef451e60411bdca3f51aff9bff5abf5fd487bfe8f
+feb3fffdffa271c4" mt-hex 'mt-d let
+-- a free bitrate: the frame length comes from the next header
+"
+fffb08440000000000000000000000000000000000000000000000000000000000000000496e666f0000000f00000004
+000005a0000205070a0c0f111416191c1e212326282b2d303335383a3d3f424447494c4f515456595b5e606366686b6d
+707275777a7c7f828487898c8e919396999b9ea0a3a5a8aaadafb2b5b7babcbfc1c4c6c9ccced1d3d6d8dbdde0e2e5e8
+eaedeff2f4f7f9fc000000394c414d45342e302000016e000000002ccc000014402403404e000040000005a04adfcfcc
+000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+fffb08640009125105d3d026083e2360ba76046303070c75384cb5ecb0da0ea930f60a17000060296590094402040180
+c9a0b844ffcf000771dff9fff1dfff000c7fff80000000230f0f0f0f000000337bff0f00000000030f0f0f0f00000000
+030f0f0f1e0000002371c3c7fba00027fc0081110200516800700808066b3e5c10c10760f83e080211000cff77e5c3e1
+8e9581be8e5b8d0e94652a14e4bfcc9a525c58d4a999144816817f311f4527ae40b069d6b9abd611e5190e7cf9f3e412
+cff9ad54a96b7ff1094688081a539b19b7a7b21e0af0741fa9e51d72d819651cefff5d284f56adaa91e813ecb52cd177
+9fad6b5fd5cd4d01931590505053fc9a8a8808914dc735000009751c27cc41be20e094809e1415edb46858cc97485f76
+fffb08440f8112281d5269f86a1c48842a3d3f0d6587987532cc6a4570f49069b4f6a9e673413b1620159395b2d10258
+3e85f0f3d31254fe88bfaf330b2072b6cd973e61a3c924e6949220044355a935a000c35f16e1e82861e9fd03aa6e8811
+11c45361fa6c2e23bb4d94217d8d20a623be13959673a060afe3416fd85e67ec99a6f6be709b5c95a8d8864808272830
+7a392888362ce500d4808566db102b1bb115e16de2bed19365653d99e751b1b2eeb1bc6a0c82d3965eb19330222da846
+07fe3e062a293544688303586d5bc5d80213056eed49aa73d97d3836504fd5e4a7591a04d40ec2a37cb0827d8970e418
+02a5aadc1545467d412429745421125a4d12809ce22f2aeda3b23f5d158003f0002c05957d765826d419048c458a0149
+fffb08640981120920ccb35869bc3ee3ba4d3d6d8387ec754b54f68030f58ee9b6b0d0064e5525c095dcb569ed21f02c
+50b1b08b106003336df05c4c6f7d85b143d42a14a93d64e22fbcebf23438888c63c7c00426b6dc9a800002325fda0a10
+5402551914b0cf81b2d44c14507e0b3454fd8d4440218d1bac27470c7acdcf7c882feacc04a507cf13ad08631a25ccc5
+29e026e94da93d91c5e1d84ac738788981f6ea86604d867b8fa858099a751a0f013f09120d74dc4ed3326d61c95f5202
+a328d0c750ca36e22e9aba814b241e493000caae276eadda7ff952056c8c56212f6b5aae9de8d00223049c547d0a4283
+20602f38dcfba8c04a58b5f89ea7e6020822d3ade440bf9b9eb5fd5ecfa596123a0456ead6840169a0a329b4a6ad89c8" mt-hex 'mt-e let
+-- frames with a CRC
+"
+fffa586480e9000000000000000000000000000000000000000000000000000000000000496e666f0000000f00000004
+000005a00040404040404040404040404040404040404040404040404080808080808080808080808080808080808080
+808080808080c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0ffffffffffffffffffffffffffffffffff
+ffffffffffffffff000000394c414d45342e302000016e000000002c7c000014402403404e000040000005a0b0a4ff0d
+000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+fffa58641ca30000022007d19d2460042220ca49a30c000a007d3e19b78000da0f288332b00104a72500502814204c2e
+01c130db1968d1a33e0983e0f83ef88010040133f07dfa831f7063e5cf8c04010f83e08020080200307c1f07f04031ff
+e5c1f78c040107560f9f000240bb0022222221cf001041c6ca03f83e0e02008063e51d280803e1f583e1eff424e98120
+a678e172e221133424a3080335a5903249ce8318b0218f144f18c810d040c20c367ba70a9218be2b301068a61014663e
+41171d4eaedb51b2b1a7152a5719aaf3d85ab6517a93fee1bc4eb2b6382143b148f9e68c2662d9094d9e161a62e84891
+22b420a80d298032400d22c2312413e8901e33e097aab74837b305fbd0e1bf7c7e8f2a7000422ca53580000a33765743" mt-hex 'mt-g let
+mt-a 32000 896 1430588079 mt-is drop
+mt-b 288 take-n 32000 2304 3350373602 mt-is 'mt-b1 let
+mt-c 104 take-n 22050 576 3223048303 mt-is drop
+mt-d 11025 576 1473678006 mt-is drop
+mt-e 32000 2351 1506881008 mt-is drop
+mt-g 32000 2304 388419004 mt-is drop
+-- the mode extension 3, intensity and mid/side stereo, set in the frame after the Info frame
+mt-a 576 take-n 291 peek must 207 band 48 bor 'ib-v let 291 ib-v set must 32000 47 2957104693 mt-is drop
+-- tags around the stream do not change it: ID3v2 in front, APE and ID3v1 behind
+"ID3" [3 0 0 0 0 2 44] cat 300 mt-z cat mt-b 288 take-n cat 64 mt-z cat "APETAGEX" cat [208 7 0 0 0 0 0 0 1 0 0 0 0 0 0 160 64 0 0 0 0 0 0 0] cat "TAG" cat 125 mt-z cat mt-pcm mt-b1 eq assert
+-- bytes before the first header are skipped, and the Info frame behind them plays as audio
+0 100 range (drop 85) each mt-a 576 take-n cat 32000 2304 2929211667 mt-is drop
+-- a frame cut short at the end does not hide the frames before it
+mt-b 32000 2304 3350373602 mt-is drop
+-- junk that is no tag after the last frame hides it from a short file; a gap does not
+mt-b 288 take-n 128 mt-z cat "mp3: not an MP3 stream: no header repeats at its frame length in the 416 bytes from byte 0" mt-no
+mt-b 100 take-n mt-b 150 drop-n cat "mp3: not an MP3 stream: no header repeats at its frame length in the 338 bytes from byte 0" mt-no
+-- a file too short or without a run of headers
+"" "mp3: not an MP3 stream: 0 bytes; the ID3 check alone reads 10" mt-no
+20 mt-z "mp3: not an MP3 stream: no header repeats at its frame length in the 20 bytes from byte 0" mt-no
+-- layer II frames, three of 522 bytes: refused by name
+[255 253 144 0] 518 mt-z cat dup dup cat cat "mp3: layer 2 frame at byte 0; mp3-decode reads layer 3" mt-no
+-- a stream keeps its channel count: a stereo frame after a mono frame
+mt-b 144 take-n mt-a 288 drop-n 576 take-n cat "mp3: the frame at byte 144 has 2 channels; the first frame has 1 and a stream keeps its channel count" mt-no
+-- an Info frame alone holds no audio
+mt-a 288 take-n "mp3: holds no audio: expected at least 1 sample after the delay and padding are cut, received 0 of 2304 samples per channel (delay 1105, padding 303); the stream holds only an Info frame or its LAME tag cuts all of it" mt-no
+-- the stream and its Info frame cut after the Info frame: mp3-open succeeds, and the first chunk and a seek then refuse it as mp3-decode does
+mt-a 288 take-n 'mt-i let
+mt-i mt-err 'mt-m let
+mt-i mp3-open must mp3-next {'ok (drop "") 'no ()} case mt-m eq assert drop drop
+mt-i mp3-open must 5 mp3-seek mp3-next {'ok (drop "") 'no ()} case mt-m eq assert drop drop
+-- chunks: 4 frames of 576 samples come as one chunk, then "". A seek starts the next chunk at its sample, one frame after the 2 that rebuild the filter; a seek past the end gives "".
+mt-d 104 take-n 'mt-d1 let
+mt-d1 mt-d1 cat dup cat 'mt-d4 let
+mt-d4 mp3-open must mp3-next must dup len 9216 eq assert mt-fp 1398251394 eq assert mp3-next must "" eq assert drop drop
+mt-d4 mp3-open must 1828 mp3-seek mp3-next must dup len 1904 eq assert mt-fp 3787455122 eq assert drop drop
+mt-d4 mp3-open must 99999 mp3-seek mp3-next must "" eq assert drop drop
+-- rounding: ARM minimp3 cuts x + 1/2 toward zero and takes 1 more when that sum is below 0; the 4 samples per slot it converts one by one take the 1 when the cut result is below 0
+0.4 m3-pcm 0 eq assert -0.3 m3-pcm 0 eq assert -0.7 m3-pcm -1 eq assert -1.5 m3-pcm -2 eq assert 40000.0 m3-pcm 32767 eq assert -40000.0 m3-pcm -32768 eq assert
+-0.7 m3-pcm0 0 eq assert -1.7 m3-pcm0 -2 eq assert 32767.0 m3-pcm0 32767 eq assert -40000.0 m3-pcm0 -32768 eq assert
+-- the tables: x^(4/3) by interpolation, and a power of two by quarter steps
+8 m3-pow43 16.0 fsub fabs 0.000001 flt assert 1000 m3-pow43 10000.0 fsub fabs 0.02 flt assert 8206 m3-pow43 8206.0 4.0 3.0 fdiv fpow fsub fabs 1.0 flt assert
+1.0 4 m3-ldexp 0.5 fsub fabs 0.0000001 flt assert

@@ -1,32 +1,46 @@
 -- wav.slap: RIFF WAVE files as the audio record play takes. Requires strings.slap.
 
--- wav-decode: (bytes -- {'rate 'pcm} ok | msg no).  'pcm holds 16-bit
--- little-endian stereo frames, as read-wav gives them, and mono plays on both
--- sides. It reads PCM of 8, 16, 24 or 32 bits and float of 32 or 64 bits,
--- plain or WAVE_FORMAT_EXTENSIBLE, and turns each sample into 16 bits as
--- dr_wav does: 8-bit PCM is unsigned, wider PCM keeps its top 16 bits, and a
--- float times 32768 is cut toward zero, with -1 and below at -32768, 1 and
--- above at 32767, and NaN at 0. A data chunk that claims more bytes than the
--- file holds gives what is left. A refusal names the reason:
+-- A WAV plays as it decodes, a chunk at a time, so the first sound waits only
+-- for the header. The file's bytes travel apart from the decoder's state: a
+-- lookup of a bound record copies all of it, the bytes too.
+-- wav-open: (bytes -- bytes res).  res is dec ok, or msg no. dec is {'rate
+--   'dp 'k 'f 'c 'n 'at}: the rate, where the data starts, the bytes in a
+--   sample, the format, the channels, the frames, and the next frame.
+-- wav-next: (bytes dec -- bytes dec chunk).  chunk is the next 8192 frames or
+--   fewer as pcm, ok; "" ok after the last frame. A WAV gives no 'no here,
+--   since wav-open checked the whole file.
+-- wav-seek: (bytes dec frame -- bytes dec).  The next chunk starts at that
+--   frame, or at the end past it.
+-- wav-decode: (bytes -- {'rate 'pcm} ok | msg no).  The whole file at once, as
+--   read-wav gives it.
+-- pcm holds 16-bit little-endian stereo frames, and mono plays on both sides.
+-- wav.slap reads PCM of 8, 16, 24 or 32 bits and float of 32 or 64 bits, plain
+-- or WAVE_FORMAT_EXTENSIBLE, and turns each sample into 16 bits as dr_wav
+-- does: 8-bit PCM is unsigned, wider PCM keeps its top 16 bits, and a float
+-- times 32768 is cut toward zero, with -1 and below at -32768, 1 and above at
+-- 32767, and NaN at 0. A data chunk that claims more bytes than the file holds
+-- gives what is left. A refusal names the reason:
 -- "wav: format 2 is not PCM (1) or float (3)".
 -- REVIEW: Refuse RF64, W64, RIFX, AIFF, ADPCM, a-law and mu-law, which dr_wav reads. Alternative: port them. It costs about 400 lines for formats no file under ~/Music uses.
+-- REVIEW: Decode 8192 frames a chunk. Alternative: a smaller chunk. wav-next copies the file once when it gives the bytes back, and a chunk of 186 ms at 44.1 kHz keeps that copy small beside the decode.
+-- wv-f32, wv-f64: (bits -- v).  A float's bits as dr_wav's 16-bit sample, in
+-- integers: x times 32768 is the mantissa shifted by the exponent.
+('f-x let f-x 23 shr 255 band 'f-e let f-x 8388607 band 'f-m let
+ f-e 255 eq f-m 0 eq not and (0) (
+ f-e 127 ge (f-x 31 shr 1 eq (-32768) (32767) if) (
+ 135 f-e sub 'f-sh let f-sh 23 gt (0) (f-m 8388608 bor f-sh shr) if 'f-v let
+ f-x 31 shr 1 eq (f-v neg) (f-v) if) if) if) 'wv-f32 let
+('d-x let d-x 52 shr 2047 band 'd-e let d-x 4503599627370495 band 'd-m let
+ d-e 2047 eq d-m 0 eq not and (0) (
+ d-e 1023 ge (d-x 0 lt (-32768) (32767) if) (
+ 1060 d-e sub 'd-sh let d-sh 52 gt (0) (d-m 4503599627370496 bor d-sh shr) if 'd-v let
+ d-x 0 lt (d-v neg) (d-v) if) if) if) 'wv-f64 let
+(int-str) 'wv-s let
 ('wb let wb len 'wn let
  -- wv-u: (i k -- n).  k bytes from i, little-endian; the caller checked they are there.
  ('wu-k let 'wu-i let wu-i wu-i wu-k plus range reverse 0 ('wu-j let 8 shl wu-j 'wb nth must bor) fold) 'wv-u let
  (dup 4 plus range ('wb nth must) each) 'wv-id let
- (int-str) 'wv-s let
- -- wv-f32, wv-f64: (bits -- v).  A float's bits as dr_wav's 16-bit sample, in
- -- integers: x times 32768 is the mantissa shifted by the exponent.
- ('f-x let f-x 23 shr 255 band 'f-e let f-x 8388607 band 'f-m let
-  f-e 255 eq f-m 0 eq not and (0) (
-  f-e 127 ge (f-x 31 shr 1 eq (-32768) (32767) if) (
-  135 f-e sub 'f-sh let f-sh 23 gt (0) (f-m 8388608 bor f-sh shr) if 'f-v let
-  f-x 31 shr 1 eq (f-v neg) (f-v) if) if) if) 'wv-f32 let
- ('d-x let d-x 52 shr 2047 band 'd-e let d-x 4503599627370495 band 'd-m let
-  d-e 2047 eq d-m 0 eq not and (0) (
-  d-e 1023 ge (d-x 0 lt (-32768) (32767) if) (
-  1060 d-e sub 'd-sh let d-sh 52 gt (0) (d-m 4503599627370496 bor d-sh shr) if 'd-v let
-  d-x 0 lt (d-v neg) (d-v) if) if) if) 'wv-f64 let
+ wb
  wn 12 lt ("wav: " wn wv-s cat " bytes; the RIFF header alone holds 12" cat no) (
  0 wv-id "RIFF" eq 8 wv-id "WAVE" eq and not ("wav: not a WAV file: it starts " 0 wv-id cat " ... " cat 8 wv-id cat ", not RIFF ... WAVE" cat no) (
  -- the chunks, as p fp fl dp dl: the next chunk, the last fmt chunk's data and
@@ -71,22 +85,30 @@
  w-dl wn w-dp sub min w-fb div 'w-n let
  w-n 0 eq ("wav: holds no audio" no) (
  w-n 4 mul 1073741824 gt ("wav: decodes to " w-n 4 mul wv-s cat " bytes of audio; a string holds 1073741824" cat no) (
+ {'rate w-rate 'dp w-dp 'k w-k 'f w-f 'c w-c 'n w-n 'at 0} ok) if) if) if) if) if) if) if) if) if) if) if) if) if) 'wav-open let
+-- wv-take: (bytes dec k -- bytes dec chunk).  The next k frames or fewer.
+('wn-k let 'wn-d let 'wb let
+ ('wu-k let 'wu-i let wu-i wu-i wu-k plus range reverse 0 ('wu-j let 8 shl wu-j 'wb nth must bor) fold) 'wv-u let
+ wn-d 'k at 'w-k let wn-d 'f at 'w-f let wn-d 'c at 'w-c let w-c w-k mul 'w-fb let
+ wn-d 'at at 'w-at let w-at wn-k plus wn-d 'n at min 'w-to let
+ wn-d 'dp at w-at w-fb mul plus 'w-from let wn-d 'dp at w-to w-fb mul plus 'w-end let
  -- wv-px: (out i -- out).  The 8-bit or float sample at byte i as two bytes, low first.
  ('px-i let
   w-k 1 eq (0 push px-i 'wb nth must 128 bxor push) (
   w-k 4 eq (px-i 4 wv-u wv-f32) (px-i 8 wv-u wv-f64) if 'px-v let px-v 255 band push px-v 8 shr 255 band push) if) 'wv-px let
  -- the right channel's sample is w-r bytes after the left's; mono plays it twice
  w-c 2 eq (w-k) (0) if 'w-r let
- w-dp w-n w-fb mul plus 'w-end let
- -- 16-bit stereo is play's own layout. Wider PCM keeps its top two bytes,
- -- w-k minus 2 bytes into each sample: one loop, with no test per sample.
- w-k 2 eq w-c 2 eq and (wb w-dp drop-n w-n 4 mul take-n) (
+ wb wn-d w-to 'at into
+ -- PCM keeps the top two bytes of each sample, w-k minus 2 bytes into it: one loop, with no test per sample
  w-f 1 eq w-k 1 gt and (
    w-k 2 sub 'w-o let
-   [] w-dp w-o plus (dup w-end lt) ('fr-j let fr-j 'wb nth must push fr-j 1 plus 'wb nth must push
+   [] w-from w-o plus (dup w-end lt) ('fr-j let fr-j 'wb nth must push fr-j 1 plus 'wb nth must push
      fr-j w-r plus 'wb nth must push fr-j w-r plus 1 plus 'wb nth must push fr-j w-fb plus) while drop) (
-   [] w-dp (dup w-end lt) ('fr-i let fr-i wv-px fr-i w-r plus wv-px fr-i w-fb plus) while drop) if) if 'w-pcm let
- {'rate w-rate 'pcm w-pcm} ok) if) if) if) if) if) if) if) if) if) if) if) if) if) 'wav-decode let
+   [] w-from (dup w-end lt) ('fr-i let fr-i wv-px fr-i w-r plus wv-px fr-i w-fb plus) while drop) if ok) 'wv-take let
+(8192 wv-take) 'wav-next let
+('sk-f let 'sk-d let sk-d 0 sk-f max sk-d 'n at min 'at into) 'wav-seek let
+-- one chunk of every frame: each chunk copies the file once
+(wav-open {'ok (dup 'n at wv-take must 'wd-pcm let 'wd-d let drop {'rate wd-d 'rate at 'pcm wd-pcm} ok) 'no (nip no)} case) 'wav-decode let
 
 -- ===== tests =====
 (wav-decode {'ok (drop "") 'no ()} case) 'wt-err let
@@ -120,6 +142,12 @@
 "RIFF" [0 0 0 0] cat "WAVEfmt " cat 40 4 wt-le cat 65534 2 wt-le cat 1 2 wt-le cat 44100 4 wt-le cat 88200 4 wt-le cat
   2 2 wt-le cat 16 2 wt-le cat 22 2 wt-le cat 16 2 wt-le cat 4 4 wt-le cat 1 2 wt-le cat 0 14 range (drop 0) each cat
   "data" cat 2 4 wt-le cat [7 8] cat wt-pcm [7 8 7 8] eq assert
+-- 20000 frames come in chunks of 8192, then ""; a seek starts the next chunk at its frame, and stops at the end
+0 80000 range (255 band) each 'wt-big let
+1 2 16 wt-big wt-wav wav-open must wav-next must len 32768 eq assert wav-next must len 32768 eq assert
+  wav-next must len 14464 eq assert wav-next must "" eq assert drop drop
+1 2 16 wt-big wt-wav wav-open must 19999 wav-seek wav-next must wt-big 79996 drop-n eq assert wav-next must "" eq assert drop drop
+1 2 16 wt-big wt-wav wav-open must 99999 wav-seek wav-next must "" eq assert -5 wav-seek wav-next must 16 take-n wt-big 16 take-n eq assert drop drop
 "RIFF" wt-err "wav: 4 bytes; the RIFF header alone holds 12" eq assert
 "RIFF0000WAVX" wt-err "wav: not a WAV file: it starts RIFF ... WAVX, not RIFF ... WAVE" eq assert
 "RIFF0000WAVE" wt-err "wav: no data chunk" eq assert

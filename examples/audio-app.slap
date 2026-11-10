@@ -23,40 +23,74 @@
 -- plays, in byte order.
 ((track-ext 'tx-e let tx-e "mp3" eq tx-e "flac" eq or tx-e "wav" eq or) filter sort-strs) 'audio-tracks let
 
--- load-track: (path -- {'rate 'pcm} ok | msg no).  By the extension. A
--- rate play refuses is refused here, so the app shows it and keeps running.
-('lt-p let lt-p track-ext 'lt-e let
- lt-e "mp3" eq (lt-p read-mp3) (lt-e "flac" eq (lt-p read-flac) (
-   lt-p read-wav) if) if
- ('lt-a let lt-a 'rate at 'lt-r let lt-r 8000 lt lt-r 384000 gt or
-   (lt-p ": " cat lt-r int-str cat " Hz; play takes 8000 to 384000" cat no) (lt-a ok) if) then) 'load-track let
+-- ===== decoders =====
+-- A track's file bytes and its decoder travel on the stack under the model, never in it: show copies the
+-- model each frame, and a lookup of a bound value copies it. dec is one tagged value: 'wav, 'flac and
+-- 'mp3 hold the decoder's state, 'none holds {} when no track is open.
+-- REVIEW: One tagged dec, dispatched by case. Alternative: a record of the three words per format. It needs a body in the dec, and a body in the model's stack breaks show's copy.
+
+-- rate-err: (dec path -- dec err).  err is [] or [msg]. A rate play refuses is refused at open, so the app shows it and keeps running.
+('re-p let dup 'rate at 're-r let re-r 8000 lt re-r 384000 gt or
+ (re-p ": " cat re-r int-str cat " Hz; play takes 8000 to 384000" cat [] swap push) ([]) if) 'rate-err let
+
+-- open-no: (msg path -- dec err).  The refusal, led by the path.
+('on-p let 'on-m let {} 'none tag [] on-p ": " cat on-m cat push) 'open-no let
+
+-- open-track: (path -- bytes dec err).  The file's bytes and its decoder, by the extension. err is [] or [msg].
+('ot-p let ot-p track-ext 'ot-e let
+ ot-p read {
+  'ok (ot-e "mp3" eq
+        (mp3-open {'ok (ot-p rate-err swap 'mp3 tag swap) 'no (ot-p open-no)} case)
+        (ot-e "flac" eq
+          (flac-open {'ok (ot-p rate-err swap 'flac tag swap) 'no (ot-p open-no)} case)
+          (wav-open {'ok (ot-p rate-err swap 'wav tag swap) 'no (ot-p open-no)} case) if) if)
+  'no ([] swap push 'ot-x let "" {} 'none tag ot-x)} case) 'open-track let
+
+-- seek-dec: (bytes dec frame -- bytes dec).
+(swap {'wav (swap wav-seek 'wav tag) 'flac (swap flac-seek 'flac tag) 'mp3 (swap mp3-seek 'mp3 tag) 'none (swap drop 'none tag)} case) 'seek-dec let
+
+-- next-dec: (bytes dec -- bytes dec chunk).  chunk is pcm ok, "" ok after the last, or msg no.
+({'wav (wav-next swap 'wav tag swap) 'flac (flac-next swap 'flac tag swap) 'mp3 (mp3-next swap 'mp3 tag swap) 'none ('none tag "" ok)} case) 'next-dec let
+
+-- dec-rate: (dec -- dec rate).
+(dup {'wav ('rate at) 'flac ('rate at) 'mp3 ('rate at) 'none (drop 0)} case) 'dec-rate let
+
+-- dec-total: (dec -- dec frames).  0 when the format does not say: an MP3, or a FLAC whose header gives no length.
+(dup {'wav ('n at) 'flac ('total at) 'mp3 (drop 0) 'none (drop 0)} case) 'dec-total let
+
+-- seek-frame: (rate ms -- frame).  The frame at ms. A place past 10^12 ms (31 years) is past any file, and
+-- its product with the rate could wrap, so it maps to a frame past any file.
+('sf-ms let 'sf-r let sf-ms 1000000000000 gt (1000000000000000) (sf-ms sf-r mul 1000 div) if) 'seek-frame let
 
 -- ===== model, places and keys =====
 -- A model: {'w 'h 'tracks 'sel 'at 'ms 'run 'total 'err 'saved 'shown}.
 -- 'sel is the highlighted row and 'at the track that plays. 'ms is where
 -- the track last started or paused. 'run is [] while paused, or
--- [{'rate 'sent}] while playing: the rate and the bytes play took. 'total
--- holds the track's length in ms once it loaded, 'err the message of a track
+-- [{'rate 'sent 'done}] while playing: the rate, the bytes play took since the
+-- track started at 'ms, and 1 once the decoder gave its last chunk. 'total
+-- holds the track's length in ms when its file says, 'err the message of a track
 -- that would not load, and 'saved the place last written.
 ('mm-ms let 'mm-at let 'mm-tracks let
  {'w 0 'h 0 'tracks mm-tracks 'sel mm-at 'at mm-at 'ms mm-ms 'run [] 'total [] 'err [] 'saved mm-ms 'shown []}) 'audio-model let
 
--- audio-pos: (m queued -- ms).  Where the track is: while playing, the bytes
--- play took less those still queued, at 4 bytes a frame.
+-- audio-pos: (m queued -- ms).  Where the track is: while playing, its start
+-- plus the bytes play took less those still queued, at 4 bytes a frame.
 ('mp-q let 'mp-m let mp-m 'ms at
  mp-m 'run at dup len 0 eq (drop) (0 get must 'mp-r let mp-r 'sent at mp-q sub 1000 mul mp-r 'rate at 4 mul div plus) if) 'audio-pos let
 
--- audio-started: (m rate bytes from -- m).  The model once play took a
--- track of bytes from byte from: playing, with the track's length known.
-('ms-from let 'ms-n let 'ms-r let
- [{'rate ms-r 'sent ms-n ms-from sub}] 'run into
- [ms-n 1000 mul ms-r 4 mul div] 'total into [] 'err into) 'audio-started let
+-- audio-started: (m rate frames -- m).  The model once a track opened and
+-- play's queue is empty: playing, with the track's length known when frames is
+-- not 0.
+('as-n let 'as-r let
+ [{'rate as-r 'sent 0 'done 0}] 'run into
+ as-n 0 eq ([]) ([as-n 1000 mul as-r div]) if 'total into [] 'err into) 'audio-started let
 
--- from-byte: (rate bytes ms -- byte).  The first byte of the frame at ms
--- in a track of bytes, or bytes for a place at or past its end. The test
--- comes first, since rate times a place from a state file can overflow.
-('fb-ms let 'fb-n let 'fb-r let
- fb-ms fb-n 1000 mul fb-r 4 mul div ge (fb-n) (fb-r fb-ms mul 1000 div 4 mul) if) 'from-byte let
+-- run-add: (m n -- m).  play took n more bytes.
+('ra-n let 'ra-m let ra-m 'run at 0 get must 'ra-r let
+ ra-m [ra-r ra-r 'sent at ra-n plus 'sent into] 'run into) 'run-add let
+
+-- run-done: (m -- m).  The decoder gave its last chunk.
+('rd-m let rd-m 'run at 0 get must 'rd-r let rd-m [rd-r 1 'done into] 'run into) 'run-done let
 
 -- audio-key: (m keycode -- m).  j and down move the highlight down, k and
 -- up move it up; it stops at the ends.
@@ -100,26 +134,36 @@ isheadless (
   ["b.mp3" "notes.txt" "A.FLAC" "a.wav" "mp3" "c.Mp3" "cover.jpg"] audio-tracks ["A.FLAC" "a.wav" "b.mp3" "c.Mp3"] eq assert
   [] sort-strs [] eq assert
   "x.tar.gz" track-ext "gz" eq assert  "README" track-ext "" eq assert
-  -- each format loads; the FLAC and the WAV hold the same tone
-  "tests/audio/tone.flac" load-track must 'ts-fl let
-  ts-fl "tests/audio/tone.wav" load-track must eq assert
-  ts-fl 'rate at 44100 eq assert  ts-fl 'pcm at len 17640 eq assert
-  "tests/audio/tone.mp3" load-track must 'rate at 44100 eq assert
-  "tests/audio/mono48.flac" load-track must 'rate at 48000 eq assert
-  "tests/audio/nope.wav" load-track {'ok (drop "") 'no ()} case "tests/audio/nope.wav: No such file or directory" eq assert
-  "tests/audio/bad/rate4k.wav" load-track {'ok (drop "") 'no ()} case "tests/audio/bad/rate4k.wav: 4000 Hz; play takes 8000 to 384000" eq assert
-  "readme.md" load-track {'ok (drop "") 'no ()} case "readme.md: not a WAV file" eq assert
-  -- a place: 50 ms into a 100 ms track at 44100 Hz is frame 2205
-  44100 17640 50 from-byte 8820 eq assert
-  -- a place past the end, however far, is the end
-  44100 17640 100 from-byte 17640 eq assert  44100 17640 4611686018427387904 from-byte 17640 eq assert
+  -- each format opens and gives its chunks; the FLAC and the WAV hold the same tone
+  "tests/audio/tone.wav" open-track 'ts-e let dec-rate 'ts-r let drop drop ts-e [] eq assert ts-r 44100 eq assert
+  "tests/audio/tone.wav" open-track drop next-dec must dup len 17640 eq assert 'ts-v1 let next-dec must "" eq assert drop drop
+  "tests/audio/tone.flac" open-track drop next-dec must ts-v1 eq assert next-dec must "" eq assert drop drop
+  -- a FLAC with one flipped byte near its end gives a chunk, then refuses
+  "tests/audio/tone.flac" read must 'ts-b let
+  ts-b ts-b len 8 sub ts-b ts-b len 8 sub get must 255 bxor set must flac-open must 'flac tag next-dec drop next-dec 'ts-c let drop drop
+  ts-c {'ok (drop "") 'no ()} case "flac: cut short: 4096 of 4410 frames" eq assert
+  "tests/audio/tone.mp3" open-track drop dec-rate 44100 eq assert next-dec must len "tests/audio/tone.mp3" read must mp3-decode must 'pcm at len eq assert drop drop
+  "tests/audio/mono48.flac" open-track drop dec-rate 48000 eq assert dec-total 2400 eq assert next-dec must "tests/audio/mono48.flac" read-flac must 'pcm at eq assert drop drop
+  -- 50 ms in is frame 2205: the rest of the tone follows
+  "tests/audio/tone.wav" open-track drop dec-total 4410 eq assert 44100 50 seek-frame seek-dec next-dec must len 8820 eq assert drop drop
+  "tests/audio/tone.flac" open-track drop 2205 seek-dec next-dec must len 8820 eq assert drop drop
+  "tests/audio/tone.wav" open-track drop 99999 seek-dec next-dec must "" eq assert drop drop
+  -- a place past the end, however far, is past every frame
+  44100 100 seek-frame 4410 eq assert  44100 4611686018427387904 seek-frame 1000000000000000 eq assert
+  "tests/audio/nope.wav" open-track nip nip ["tests/audio/nope.wav: No such file or directory"] eq assert
+  "tests/audio/bad/rate4k.wav" open-track nip nip ["tests/audio/bad/rate4k.wav: 4000 Hz; play takes 8000 to 384000"] eq assert
+  "tests/audio/pizzicato.sf2" open-track nip nip ["tests/audio/pizzicato.sf2: wav: not a WAV file: it starts RIFF ... sfbk, not RIFF ... WAVE"] eq assert
   ["a.mp3" "b.mp3" "c.mp3"] 1 0 audio-model 'ts-m let
   ts-m 0 audio-pos 0 eq assert
-  ts-m 44100 17640 8820 audio-started 'ts-p let
-  ts-p 'run at [{'rate 44100 'sent 8820}] eq assert  ts-p 'total at [100] eq assert
-  -- all 8820 bytes queued is the place play started; none queued is the end
-  ts-p 8820 audio-pos 0 eq assert  ts-p 0 audio-pos 50 eq assert
-  ts-m 44100 17640 17640 audio-started 'run at [{'rate 44100 'sent 0}] eq assert
+  ts-m 44100 4410 audio-started 'ts-p let
+  ts-p 'run at [{'rate 44100 'sent 0 'done 0}] eq assert  ts-p 'total at [100] eq assert
+  ts-m 44100 0 audio-started 'total at [] eq assert
+  -- play took 8820 bytes: all still queued is the place the track started at; none queued is 50 ms on
+  ts-p 8820 run-add 'ts-w let
+  ts-w 'run at [{'rate 44100 'sent 8820 'done 0}] eq assert
+  ts-w 8820 audio-pos 0 eq assert  ts-w 0 audio-pos 50 eq assert
+  ts-w 1000 'ms into 0 audio-pos 1050 eq assert
+  ts-w run-done 'run at [{'rate 44100 'sent 8820 'done 1}] eq assert
   ts-m 106 audio-key 'sel at 2 eq assert  ts-m 106 audio-key 106 audio-key 'sel at 2 eq assert
   ts-m 107 audio-key 107 audio-key 'sel at 0 eq assert  ts-m 120 audio-key 'sel at 1 eq assert
   61000 clock "1:01" eq assert  0 clock "0:00" eq assert  600000 clock "10:00" eq assert
@@ -129,8 +173,8 @@ isheadless (
   ts-v 0 audio-view 'rows at [{'text "a.mp3" 'sel 0 'at 0} {'text "b.mp3" 'sel 1 'at 1} {'text "c.mp3" 'sel 0 'at 0}] eq assert
   ["a" "b" "c" "d" "e"] 0 61000 audio-model 640 'w into 18 6 mul 'h into 4 'sel into 0 audio-view 'rows at
     [{'text "d" 'sel 0 'at 0} {'text "e" 'sel 1 'at 0}] eq assert
-  ts-p 640 'w into 18 6 mul 'h into 4410 audio-pos 'ts-q let ts-q 25 eq assert
-  ts-p 640 'w into 18 6 mul 'h into ts-q audio-view 'status at "playing 0:00 / 0:00" eq assert
+  ts-w 640 'w into 18 6 mul 'h into 4410 audio-pos 'ts-q let ts-q 25 eq assert
+  ts-w 640 'w into 18 6 mul 'h into ts-q audio-view 'status at "playing 0:00 / 0:00" eq assert
   ts-v [ "a.mp3: not an MP3 stream" ] 'err into 0 audio-view 'status at "a.mp3: not an MP3 stream" eq assert
   -- the state file round-trips
   {'dir "m" 'track "b.mp3" 'ms 1234} 'ts-s let

@@ -1,0 +1,505 @@
+-- flac.slap: native FLAC files as the audio record play takes. Requires strings.slap.
+
+-- A FLAC plays as it decodes, a chunk at a time, so the first sound waits only
+-- for the headers. The file's bytes travel apart from the decoder's state: a
+-- lookup of a bound record copies all of it, the bytes too.
+-- flac-open: (bytes -- bytes res).  res is dec ok, or msg no. dec is {'rate 'ch
+--   'bps 'total 'fz 'f0 'bs 'bm 'p 'ic 'at 'skip}: the STREAMINFO fields, the
+--   file's length, where the frames start, the fixed block size (0 when it
+--   varies) and the largest block size, then the next byte to scan, the
+--   frames in the current ask (see "the frames" below), the next sample
+--   frame to give, and the sample frames still to drop. The bytes it gives back
+--   hold 1 MiB of zero bytes after the file; pass them on as they are.
+-- flac-next: (bytes dec -- bytes dec chunk).  chunk is the next whole frames of
+--   the file, 8192 sample frames or more unless the file ends, as pcm, ok; ""
+--   ok after the last. A file that fails at its end gives msg no, as
+--   flac-decode refuses it.
+-- flac-seek: (bytes dec frame -- bytes dec).  The next chunk starts at that
+--   sample frame, or at the end past it. A frame counts as the frame headers
+--   number it, so a damaged file seeks as if it were whole. A seek to 0 or less starts at the first frame. A frame at or past
+--   STREAMINFO's total, when it gives one, is the end.
+-- flac-decode: (bytes -- {'rate 'pcm} ok | msg no).  The whole file at once, as
+--   read-flac gives it.
+-- pcm holds 16-bit little-endian stereo frames, and mono plays on both sides.
+-- flac.slap reads native FLAC of 1 or 2 channels and 1 to 32 bits a sample,
+-- after an ID3v2 tag or not. It makes each sample 16 bits as dr_flac does: the
+-- top 16 bits of the sample, or the sample shifted up when it has fewer. Where
+-- a file is damaged it does what dr_flac does. It checks the CRC-8 of each frame
+-- header and the CRC-16 of each frame, and a frame with a bad CRC gives no
+-- audio. It scans for the next sync code after a bad header, and after a frame
+-- it cannot decode (see "the frames" below). It refuses a file whose STREAMINFO
+-- gives a length and that decodes to fewer frames. A refusal names the reason:
+-- "flac: 6 channels; flac-decode reads mono or stereo".
+-- REVIEW: Refuse Ogg FLAC, which dr_flac reads. Alternative: unwrap the Ogg pages. It costs about 100 lines for a container no file under ~/Music uses.
+-- REVIEW: Check both CRCs and skip a bad frame, as dr_flac does. Alternative: refuse a file with a bad CRC. It is simpler, but it refuses files that dr_flac reads when STREAMINFO gives no length.
+-- REVIEW: Give the bytes back with the padding, so the bit reader reads past the last byte without a test. Alternative: pad in each flac-next. It copies the file a second time in each chunk.
+-- REVIEW: End a chunk at the first frame that reaches 8192 sample frames. Alternative: cut at exactly 8192. It splits a frame, and the next chunk would decode it again.
+-- REVIEW: flac-seek bisects the file's bytes: it scans for a sync code with str-find, accepts a CRC-8 header that fits STREAMINFO, and keeps the last header whose sample number is at most the target. Alternative: read the SEEKTABLE block. It misses files without one, and it leaves up to 10 s of frames to decode and drop.
+-- REVIEW: Frames are numbered by block when the first sync code in the file is fff8, and then the block size is STREAMINFO's maximum (the last block alone is shorter, and some writers set the minimum from it). Alternative: read the first frame's header. It costs a header parse at open, and the scan for the sync code is cheaper.
+-- fq-lz: leading zero bits of a byte, 8 for 0.
+ 0 256 range (0 swap (dup 0 eq not) (1 shr swap 1 plus swap) while drop 8 swap sub) each 'fq-lz let
+ 0 256 range (8 (dup 128 band (1 shl 7 bxor 255 band) (1 shl 255 band) if) repeat) each 'fq-c8 let
+ 0 256 range (8 shl 8 (dup 32768 band (1 shl 32773 bxor 65535 band) (1 shl 65535 band) if) repeat) each 'fq-c16 let
+-- flac-open: (bytes -- bytes res).
+('fi let fi len 'fz let
+ -- the input, then 1 MiB of zero bytes: the bit reader reads past the last byte without a test, and every frame ends with a check that it stayed inside the file
+ fi [0] 20 (dup cat) repeat cat 'fb let
+ (int-str) 'fv-s let
+ (dup 4 plus range ('fb nth must) each) 'fv-id let
+ -- fv-u: (i k -- n).  k bytes from i, big-endian.
+ ('fu-k let 'fu-i let fu-i fu-i fu-k plus range 0 ('fu-j let 8 shl fu-j 'fb nth must bor) fold) 'fv-u let
+ -- fv-open: (-- {'mp 'last 'rate 'ch 'bps 'total} ok | msg no).  The ID3v2 tags, fLaC and STREAMINFO.
+ -- mp is the byte after STREAMINFO; last is nonzero when STREAMINFO ends the metadata.
+ -- a tag that runs past the end leaves o-p past fz, so the loop stops and the message below names the tag
+ (0 (dup 4 plus fz le (dup 'fb nth must 73 eq over 1 plus 'fb nth must 68 eq and over 2 plus 'fb nth must 51 eq and) (0) if) (
+    'id-p let
+    id-p 10 plus fz gt (id-p 10 plus) (
+      id-p 6 plus 'fb nth must 127 band 21 shl id-p 7 plus 'fb nth must 127 band 14 shl bor
+      id-p 8 plus 'fb nth must 127 band 7 shl bor id-p 9 plus 'fb nth must 127 band bor
+      id-p 5 plus 'fb nth must 16 band 0 eq (0) (10) if plus id-p plus 10 plus) if) while
+  'o-p let
+  o-p 4 plus fz gt (o-p fz gt ("flac: an ID3v2 tag ends at byte " o-p fv-s cat ", but the file holds " cat fz fv-s cat " bytes" cat no)
+    ("flac: the file holds " fz fv-s cat " bytes, but fLaC starts at byte " cat o-p fv-s cat no) if) (
+  o-p fv-id "fLaC" eq not (
+    o-p fv-id "OggS" eq ("flac: an Ogg FLAC file; flac-decode reads native FLAC" no)
+      ("flac: not a FLAC file: it starts " o-p fv-id cat ", not fLaC" cat no) if) (
+  o-p 8 plus fz gt ("flac: the file ends at byte " fz fv-s cat ", before the STREAMINFO block header at byte " cat o-p 4 plus fv-s cat no) (
+  o-p 4 plus 'fb nth must 'o-h let o-p 5 plus 3 fv-u 'o-z let
+  o-h 127 band 0 eq not o-z 34 eq not or
+    ("flac: the first metadata block is type " o-h 127 band fv-s cat " of " cat o-z fv-s cat " bytes; a FLAC file starts with STREAMINFO, type 0 of 34 bytes" cat no) (
+  o-p 42 plus fz gt ("flac: STREAMINFO holds 34 bytes, but " fz o-p 8 plus sub fv-s cat " remain" cat no) (
+  o-p 18 plus 8 fv-u 'o-i let
+  o-i 41 shr 7 band 1 plus 'o-c let
+  o-c 2 gt ("flac: " o-c fv-s cat " channels; flac-decode reads mono or stereo" cat no) (
+  {'mp o-p 42 plus 'last o-h 128 band 'rate o-i 44 shr 1048575 band 'ch o-c 'bps o-i 36 shr 31 band 1 plus 'total o-i 68719476735 band} ok) if) if) if) if) if) if) 'fv-open let
+ fv-open (
+  'g-r let
+  g-r 'rate at 'gr let g-r 'ch at 'gc let g-r 'bps at 'gb let g-r 'total at 'gn let
+  -- the metadata blocks, as mp rp go: the next block's byte, the byte dr_flac thinks that is (it counts from 42 even
+  -- after an ID3 tag), and 1 to go on, 0 when done, 2 when a block is bad, 3 when the file ends in a block header.
+  -- A bad block sends dr_flac to scan from byte 42 for the first frame.
+  g-r 'mp at 42 g-r 'last at 0 eq (1) (0) if
+  (dup 1 eq) (
+    'w-go let 'w-rp let 'w-mp let
+    w-mp 4 plus fz gt (w-mp w-rp 3) (
+    w-mp 'fb nth must 'w-h let w-mp 1 plus 3 fv-u 'w-z let
+    w-h 127 band 'w-t let w-rp 4 plus 'w-r2 let w-mp 4 plus 'w-m2 let
+    w-r2 fz gt w-z fz w-r2 sub gt or w-t 127 eq or
+      w-t 2 eq w-z 4 lt and or w-t 3 eq w-z 18 mod 0 eq not and or w-t 5 eq w-z 396 lt and or w-t 6 eq w-z 32 lt and or
+      (w-m2 w-z plus w-r2 w-z plus 2) (w-m2 w-z plus w-r2 w-z plus w-h 128 band 0 eq (1) (0) if) if) if) while
+  'w-go let drop 'w-mp let
+  w-go 3 eq ("flac: the file ends inside a metadata block header, where 4 bytes were expected, at byte " w-mp fv-s cat no) (
+  g-r 'mp at 34 sub 2 fv-u 'o-bmin let g-r 'mp at 32 sub 2 fv-u 'o-bmax let
+  w-go 2 eq (42) (w-mp) if fz min 'o-start let
+  -- the first sync code says how the frames number themselves: fff8 by block, fff9 by sample
+  -- fi, not fb: a search of the padding copies a MiB and finds nothing
+  fi o-start drop-n [255 248] str-find {'ok () 'no (drop fz)} case 'o-xf let
+  fi o-start drop-n [255 249] str-find {'ok () 'no (drop fz)} case 'o-xv let
+  o-xf o-xv lt (o-bmin o-bmax eq (o-bmin) (o-bmax) if) (0) if 'o-bs let
+  {'rate gr 'ch gc 'bps gb 'total gn 'fz fz 'f0 o-start 'bs o-bs 'bm o-bmax 'p o-start 'ic 0 'at 0 'skip 0} ok) if) then
+ fb swap) 'flac-open let
+-- fx-end: (dec -- res).  "" ok at the end of a whole file, or why the file is refused.
+('en-d let en-d 'p at 'en-p let en-d 'at at 'en-n let en-d 'total at 'en-t let
+ en-p -2 eq ("flac: decodes to more than 1073741824 bytes of audio, the most a string holds" no) (
+ en-t 0 eq not en-n en-t lt and ("flac: cut short: " en-n int-str cat " of " cat en-t int-str cat " frames" cat no) (
+ en-n 0 eq ("flac: holds no audio" no) ("" ok) if) if) if) 'fx-end let
+-- fx: (bytes dec k mode -- bytes dec chunk).  Mode 0 decodes whole frames until the chunk holds k sample frames, after the dec's skip, or the
+-- file ends. Mode 1 points dec at the frame that holds sample frame k, with the sample frames before k to skip, and the chunk is "".
+('x-m let 'x-k let 'x-d let 'fb let
+ x-d 'rate at 'gr let x-d 'ch at 'gc let x-d 'bps at 'gb let x-d 'total at 'gn let x-d 'fz at 'fz let x-d 'bs at 'sk-bs let x-d 'bm at 'sk-bm let
+ -- where a scan for zero bits gives up inside the padding
+ fz 262144 plus 'fe let
+ -- BIAS makes a prediction positive before the shift: shr is logical
+ 1 58 shl 'fk let
+ -- fv-u: (i k -- n).  k bytes from i, big-endian.
+ ('fu-k let 'fu-i let fu-i fu-i fu-k plus range 0 ('fu-j let 8 shl fu-j 'fb nth must bor) fold) 'fv-u let
+ ('c8-j let 'c8-i let c8-i c8-j range 0 ('c8-x let c8-x 'fb nth must bxor 'fq-c8 nth must) fold) 'fv-c8 let
+ -- fv-c16 takes its range in pieces: a frame of huge Rice codes can pass the 2097152 values a list holds.
+ ('c6-j let 'c6-i let 0 c6-i (dup c6-j lt) ('c6-p let c6-p c6-p 65536 plus c6-j min range swap
+   ('c6-x let dup 8 shr c6-x 'fb nth must bxor 'fq-c16 nth must swap 8 shl 65535 band bxor) fold c6-p 65536 plus) while drop) 'fv-c16 let
+  -- fv-sy: (p -- s).  The first byte at or after p that starts a sync code, or -1.
+  (('sy-p let sy-p sy-p fz 1 sub lt sy-p 'fb nth must 255 eq sy-p 1 plus 'fb nth must 2 shr 62 eq and not and) (1 plus) while
+   dup fz 1 sub lt () (drop -1) if) 'fv-sy let
+  -- fv-hv: (s bc rc ca bpc -- kind x bsz ca bps).  A frame header from its UTF-8 number on.
+  -- kind 0: a good header, and x is the first byte after it. kind 1: a bad one, and x is where the scan goes on.
+  -- kind 2: the file ends in it, or dr_flac gives up on the frame there, and x is where it goes on.
+  ('hv-bpc let 'hv-ca let 'hv-rc let 'hv-bc let 'hv-s let
+   hv-s 4 plus 'fb nth must 255 bxor 'fq-lz nth must 'hv-l let
+   hv-l 1 eq hv-l 8 eq or (1 hv-s 5 plus 0 0 0) (
+   hv-s 4 plus hv-l 0 eq (1) (hv-l) if plus 'hv-p let
+   hv-p fz gt (2 fz 0 0 0) (
+   hv-bc 6 eq (hv-p 'fb nth must 1 plus hv-p 1 plus) (
+   hv-bc 7 eq (hv-p 2 fv-u 1 plus hv-p 2 plus) (
+   hv-bc 1 eq (192 hv-p) (hv-bc 6 lt (576 hv-bc 2 sub shl hv-p) (256 hv-bc 8 sub shl hv-p) if) if) if) if 'hv-q let 'hv-z let
+   hv-z 65536 eq hv-q fz gt or (2 hv-q 0 0 0) (
+   hv-rc 15 eq (1 hv-q 0 0 0) (
+   hv-q hv-rc 12 eq (1 plus) (hv-rc 13 eq hv-rc 14 eq or (2 plus) () if) if 'hv-r let
+   hv-r fz ge (2 fz 0 0 0) (
+   [0 8 12 0 16 20 24 32] hv-bpc get must 'hv-f let
+   hv-f 0 eq (gb) (hv-f) if 'hv-b let
+   gb 32 lt hv-b 32 eq and gb 32 lt not hv-b 32 eq not and or (2 hv-r 0 0 0) (
+   hv-s hv-r fv-c8 hv-r 'fb nth must eq not (1 hv-r 1 plus 0 0 0) (0 hv-r 1 plus hv-z hv-ca hv-b) if) if) if) if) if) if) if) 'fv-hv let
+  -- fv-hd: (s -- kind x bsz ca bps).  The frame header at s, an 0xFF whose next byte starts 111110.
+  -- Each bad field sends the scan on from the byte dr_flac has read to when it finds it.
+  ('hd-s let
+   hd-s 1 plus 'fb nth must 'hd-b1 let
+   hd-b1 2 band 0 eq not (1 hd-s 2 plus 0 0 0) (
+   hd-s 2 plus fz lt not (2 fz 0 0 0) (
+   hd-s 2 plus 'fb nth must 'hd-b2 let
+   hd-b2 4 shr 0 eq (1 hd-s 3 plus 0 0 0) (
+   hd-s 3 plus fz lt not (2 fz 0 0 0) (
+   hd-s 3 plus 'fb nth must 'hd-b3 let
+   hd-b3 4 shr 'hd-ca let hd-b3 1 shr 7 band 'hd-bp let
+   hd-ca 10 gt hd-bp 3 eq or hd-b3 1 band or (1 hd-s 4 plus 0 0 0) (
+   hd-s 4 plus fz lt not (2 fz 0 0 0) (
+   hd-s hd-b2 4 shr hd-b2 15 band hd-ca hd-bp fv-hv) if) if) if) if) if) if) 'fv-hd let
+  -- The bit reader holds a and s: a has the bits of the bytes read so far, and s is the next byte's
+  -- index times 64 plus the count of bits in a that are still unread, 63 at most.
+  -- fv-rf: (a s -- a s).  Reads bytes until at least 40 bits are unread.
+  ((dup 63 band 40 lt) (swap 8 shl over 6 shr 'fb nth must bor swap 72 plus) while) 'fv-rf let
+  -- fv-rd, fv-sg: (a s k -- a s v).  The next k bits as an unsigned or a two's-complement number; k is 1 to 40 for fv-sg.
+  ('rd-k let fv-rf 'rd-s let 'rd-a let rd-a rd-s rd-k sub rd-a rd-s 63 band rd-k sub shr 1 rd-k shl 1 sub band) 'fv-rd let
+  ('sg-k let sg-k fv-rd 'sg-v let sg-v 1 sg-k 1 sub shl lt not (sg-v 1 sg-k shl sub) (sg-v) if) 'fv-sg let
+  -- fv-uz: (a s -- a s q).  Counts q zero bits, then reads the one bit that ends them. In the padding it gives up.
+  (0 rot rot
+   ((dup 63 band 40 lt) (swap 8 shl over 6 shr 'fb nth must bor swap 72 plus) while
+    over over 63 band 8 sub shr 255 band 0 eq over 6 shr fe lt and)
+   ('uz-s let 'uz-a let 8 plus uz-a uz-s 8 sub) while
+   'uz-s let 'uz-a let uz-a uz-s 63 band 8 sub shr 255 band 'fq-lz nth must 'uz-z let uz-z plus uz-a uz-s uz-z 1 plus sub rot) 'fv-uz let
+  -- fv-sr: (out a s order cf shift bsz q -- out a s ok).  The residual of a fixed or LPC subframe, and the samples it makes.
+  -- out stays at the bottom of the stack and the loops keep their state above it: moving a list moves every element,
+  -- and dup copies it, so a loop that did either per sample would take time in proportion to the square of the block.
+  -- An order over 8 carries the last 8, 16 or 32 samples as a window w, newest first, so a prediction reads them by name: a bound list reads in place.
+  -- An order of 8 or less carries the last 8 samples as eight stack values instead (see the REVIEW at its loop).
+  -- q is the bits of a sample. A 32-bit stream decodes in 64 bits in dr_flac, which refuses a frame in two cases: a sample
+  -- outside q bits, and a Rice code past 32 bits (a unary count over 0xFFFFFFFF >> k, or the value 0xFFFFFFFF). Here such
+  -- a sample becomes 2^40, which no q bits hold, and the subframe ends with a scan for it.
+  ('sr-q let 'sr-z let 'sr-h let 'sr-c let 'sr-o let
+   gb 32 eq 'sr-big let 1 sr-q 1 sub shl 'sr-hw let
+   2 fv-rd 'sr-m let
+   sr-m 1 gt (0) (
+   4 fv-rd 'sr-po let 1 sr-po shl 'sr-np let
+   sr-z sr-np 1 sub band 0 eq not sr-z sr-po shr sr-o lt or (0) (
+   sr-z sr-po shr 'sr-ps let
+   sr-m 0 eq (4) (5) if 'sr-kb let
+   sr-m 0 eq (15) (31) if 'sr-esc let
+   fk sr-h shr 'sr-bs let
+   -- the coefficients, with zeros past the order, as k1 to k32
+   -- REVIEW: Name the 32 coefficients and keep the last 32 samples in a window that a prediction reads by name, with a branch per tier of taps. Alternative: one loop over the taps that peeks at the output list. It is much less code and about a quarter slower on a real track.
+   -- REVIEW: Size the window to the tier of taps: 8, 16 or 32. Alternative: always 32. Each sample copies the window, so it costs about four times the copying for the common orders up to 8.
+   sr-o 8 gt (sr-o 16 gt (32) (16) if) (8) if 'sr-wl let
+   sr-c [0] 5 (dup cat) repeat cat 32 take-n 'sr-cp let
+   0 'sr-cp nth must 'k1 let 1 'sr-cp nth must 'k2 let 2 'sr-cp nth must 'k3 let 3 'sr-cp nth must 'k4 let 4 'sr-cp nth must 'k5 let 5 'sr-cp nth must 'k6 let 6 'sr-cp nth must 'k7 let 7 'sr-cp nth must 'k8 let 8 'sr-cp nth must 'k9 let 9 'sr-cp nth must 'k10 let 10 'sr-cp nth must 'k11 let 11 'sr-cp nth must 'k12 let 12 'sr-cp nth must 'k13 let 13 'sr-cp nth must 'k14 let 14 'sr-cp nth must 'k15 let 15 'sr-cp nth must 'k16 let 16 'sr-cp nth must 'k17 let 17 'sr-cp nth must 'k18 let 18 'sr-cp nth must 'k19 let 19 'sr-cp nth must 'k20 let 20 'sr-cp nth must 'k21 let 21 'sr-cp nth must 'k22 let 22 'sr-cp nth must 'k23 let 23 'sr-cp nth must 'k24 let 24 'sr-cp nth must 'k25 let 25 'sr-cp nth must 'k26 let 26 'sr-cp nth must 'k27 let 27 'sr-cp nth must 'k28 let 28 'sr-cp nth must 'k29 let 29 'sr-cp nth must 'k30 let 30 'sr-cp nth must 'k31 let 31 'sr-cp nth must 'k32 let
+   -- sr-sm: (out e w -- out w).  Adds the sample with residual e, and gives the window with it.
+   -- REVIEW: Predict with exact 64-bit sums and never wrap a sample to 32 bits. Alternative: wrap as dr_flac does. It costs two operations a sample and changes only a corrupt file whose samples overflow their declared width.
+   ('ps-w let 'ps-e let
+    sr-o 0 eq (0) (0 'ps-w nth must k1 mul 1 'ps-w nth must k2 mul plus 2 'ps-w nth must k3 mul plus 3 'ps-w nth must k4 mul plus sr-o 4 gt (4 'ps-w nth must k5 mul plus 5 'ps-w nth must k6 mul plus 6 'ps-w nth must k7 mul plus 7 'ps-w nth must k8 mul plus sr-o 8 gt (8 'ps-w nth must k9 mul plus 9 'ps-w nth must k10 mul plus 10 'ps-w nth must k11 mul plus 11 'ps-w nth must k12 mul plus sr-o 12 gt (12 'ps-w nth must k13 mul plus 13 'ps-w nth must k14 mul plus 14 'ps-w nth must k15 mul plus 15 'ps-w nth must k16 mul plus sr-o 16 gt (16 'ps-w nth must k17 mul plus 17 'ps-w nth must k18 mul plus 18 'ps-w nth must k19 mul plus 19 'ps-w nth must k20 mul plus 20 'ps-w nth must k21 mul plus 21 'ps-w nth must k22 mul plus 22 'ps-w nth must k23 mul plus 23 'ps-w nth must k24 mul plus sr-o 24 gt (24 'ps-w nth must k25 mul plus 25 'ps-w nth must k26 mul plus 26 'ps-w nth must k27 mul plus 27 'ps-w nth must k28 mul plus 28 'ps-w nth must k29 mul plus 29 'ps-w nth must k30 mul plus 30 'ps-w nth must k31 mul plus 31 'ps-w nth must k32 mul plus) () if) () if) () if) () if) () if) if fk plus sr-h shr sr-bs sub ps-e plus 'ps-x0 let
+    sr-big (ps-x0 0 sr-hw sub lt ps-x0 sr-hw 1 sub gt or (1099511627776) (ps-x0) if) (ps-x0) if 'ps-x let
+    ps-x push [] ps-x push ps-w sr-wl 1 sub take-n cat) 'sr-sm let
+   'sr-s0 let 'sr-a0 let
+   dup reverse [0] 5 (dup cat) repeat cat sr-wl take-n 'sr-w0 let
+   sr-o 8 gt (
+   sr-a0 sr-s0 sr-w0 0
+   (dup sr-np lt) (
+     'sr-pi let 'sr-w let
+     sr-kb fv-rd 'sr-k let
+     sr-pi 1 plus sr-ps mul 'sr-e let
+     sr-pi 0 eq (sr-o) (sr-pi sr-ps mul) if 'sr-i0 let
+     sr-k sr-esc eq (
+       5 fv-rd 'sr-eb let
+       sr-i0 sr-w (over sr-e lt) (
+         'r-w let 'r-i let 'r-s let 'r-a let
+         r-a r-s sr-eb 0 eq (0) (sr-eb fv-sg) if 'r-v let 'r-s2 let 'r-a2 let
+         r-v r-w sr-sm 'r-w2 let
+         r-a2 r-s2 r-i 1 plus r-w2) while) (
+       -- a Rice parameter past 24 can need more than the 32 bits the fast path keeps
+       sr-k 24 gt 'sr-ks let sr-k 1 plus 'sr-k1 let
+       sr-i0 sr-w (over sr-e lt) (
+         'h-w let 'h-i let 'h-s let 'h-a let
+         h-s 63 band 32 lt
+           (h-s 6 shr 'h-bp let
+            h-a 32 shl h-bp 'fb nth must 24 shl bor h-bp 1 plus 'fb nth must 16 shl bor h-bp 2 plus 'fb nth must 8 shl bor h-bp 3 plus 'fb nth must bor
+            h-s 288 plus)
+           (h-a h-s) if 'h-s2 let 'h-a2 let
+         h-s2 63 band 'h-n let
+         h-a2 h-n 8 sub shr 255 band 'fq-lz nth must 'h-q let
+         h-q 8 eq sr-ks or (
+           h-a2 h-s2 fv-uz 'h-q2 let sr-k fv-rd 'h-lo let sr-big h-q2 4294967295 sr-k shr gt and (4294967295) (h-q2 sr-k shl h-lo bor) if) (
+           h-q sr-k1 plus 'h-u let
+           h-a2 h-s2 h-u sub h-a2 h-n h-u sub shr 1 h-u shl 1 sub band h-q 1 sub sr-k shl plus) if
+         'h-m let 'h-s5 let 'h-a5 let
+         h-m 4294967295 band 'h-mm let
+         sr-big h-mm 4294967295 eq and (4611686018427387904) (h-mm 1 shr 0 h-mm 1 band sub bxor) if h-w sr-sm 'h-w2 let
+         h-a5 h-s5 h-i 1 plus h-w2) while) if
+     'sr-wn let drop sr-wn sr-pi 1 plus) while drop drop
+   )
+   -- REVIEW: For orders up to 8, which flac -0 to -6 write, carry the samples as stack values and bind them once a sample, in a second copy of the loops. Alternative: one window loop for every order. It builds and copies a list a sample and is about 15% slower on a real track.
+   (7 'sr-w0 nth must 6 'sr-w0 nth must 5 'sr-w0 nth must 4 'sr-w0 nth must 3 'sr-w0 nth must 2 'sr-w0 nth must 1 'sr-w0 nth must 0 'sr-w0 nth must sr-a0 sr-s0 0
+   (dup sr-np lt) (
+     'sr-pi let
+     sr-kb fv-rd 'sr-k let
+     sr-pi 1 plus sr-ps mul 'sr-e let
+     sr-pi 0 eq (sr-o) (sr-pi sr-ps mul) if 'sr-i0 let
+     sr-k sr-esc eq 'j-esc let
+     j-esc (5 fv-rd) (0) if 'sr-eb let
+     -- a Rice parameter past 24 can need more than the 32 bits the fast path keeps
+     sr-k 24 gt 'sr-ks let sr-k 1 plus 'sr-k1 let
+     sr-i0 (dup sr-e lt) (
+       'j-i let 'j-s let 'j-a let 'j-1 let 'j-2 let 'j-3 let 'j-4 let 'j-5 let 'j-6 let 'j-7 let 'j-8 let
+       j-esc (
+         j-a j-s sr-eb 0 eq (0) (sr-eb fv-sg) if)
+         (j-s 63 band 32 lt
+           (j-s 6 shr 'j-bp let
+            j-a 32 shl j-bp 'fb nth must 24 shl bor j-bp 1 plus 'fb nth must 16 shl bor j-bp 2 plus 'fb nth must 8 shl bor j-bp 3 plus 'fb nth must bor
+            j-s 288 plus)
+           (j-a j-s) if 'j-s2 let 'j-a2 let
+          j-s2 63 band 'j-n let
+          j-a2 j-n 8 sub shr 255 band 'fq-lz nth must 'j-q let
+          j-q 8 eq sr-ks or (
+            j-a2 j-s2 fv-uz 'j-q2 let sr-k fv-rd 'j-lo let sr-big j-q2 4294967295 sr-k shr gt and (4294967295) (j-q2 sr-k shl j-lo bor) if) (
+            j-q sr-k1 plus 'j-u let
+            j-a2 j-s2 j-u sub j-a2 j-n j-u sub shr 1 j-u shl 1 sub band j-q 1 sub sr-k shl plus) if
+          'j-m let 'j-s5 let 'j-a5 let
+          j-m 4294967295 band 'j-mm let
+          j-a5 j-s5 sr-big j-mm 4294967295 eq and (4611686018427387904) (j-mm 1 shr 0 j-mm 1 band sub bxor) if) if
+       'j-e let 'j-s9 let 'j-a9 let
+       j-1 k1 mul j-2 k2 mul plus j-3 k3 mul plus j-4 k4 mul plus sr-o 4 gt (j-5 k5 mul plus j-6 k6 mul plus j-7 k7 mul plus j-8 k8 mul plus) () if fk plus sr-h shr sr-bs sub j-e plus
+       sr-big (dup 0 sr-hw sub lt over sr-hw 1 sub gt or (drop 1099511627776) () if) () if 'j-x let
+       j-x push
+       j-7 j-6 j-5 j-4 j-3 j-2 j-1 j-x j-a9 j-s9 j-i 1 plus) while
+     drop sr-pi 1 plus) while
+   drop 'sr-s9 let 'sr-a9 let drop drop drop drop drop drop drop drop sr-a9 sr-s9)
+ if
+     'sr-ns let 'sr-na let sr-big (dup 0 ('sr-x let sr-x 1099511627776 eq or) fold 0 eq) (1) if 'sr-ok let sr-na sr-ns sr-ok) if) if) 'fv-sr let
+  -- fv-sub: (a s sb bsz -- a s out w st).  One subframe of sb bits a sample, as out and its wasted bits w; st 0 ends the audio.
+  ('sf-z let 'sf-b let
+   8 fv-rd 'sf-h let
+   sf-h 128 band 0 eq not ([] 0 0) (
+   sf-h 1 shr 63 band 'sf-t let
+   sf-t 0 eq (0 0) (sf-t 1 eq (1 0) (sf-t 32 band 0 eq not (3 sf-t 31 band 1 plus) (
+     sf-t 8 band 0 eq not (sf-t 7 band 'sf-x let sf-x 4 gt (4 0) (2 sf-x) if) (4 0) if) if) if) if 'sf-o let 'sf-ky let
+   sf-ky 4 eq ([] 0 0) (
+   sf-h 1 band (fv-uz 1 plus) (0) if 'sf-w let
+   sf-b sf-w sub 'sf-q let
+   sf-q 1 lt sf-q gb 32 lt (32) (33) if gt or sf-z sf-o lt or ([] 0 0) (
+   sf-ky 0 eq (sf-q fv-sg 'sf-v let 0 sf-z range (drop sf-v) each sf-w 1) (
+   [] rot rot 0 (dup sf-ky 1 eq (sf-z) (sf-o) if lt) ('v-j let sf-q fv-sg 'v-v let 'v-s let 'v-a let v-v push v-a v-s v-j 1 plus) while drop
+   sf-ky 1 eq (rot sf-w 1) (
+   sf-ky 3 eq (
+     4 fv-rd 'sf-p0 let
+     sf-p0 15 eq (rot 0 0) (
+     5 fv-rd 'sf-sh let
+     sf-sh 15 gt (rot 0 0) (
+     [] (dup len sf-o lt) ((sf-p0 1 plus fv-sg) dip swap push) while 'sf-cf let
+     sf-o sf-cf sf-sh sf-z sf-q fv-sr 'sf-ok let rot sf-w sf-ok) if) if) (
+     [[] [1] [2 -1] [3 -3 1] [4 -6 4 -1]] sf-o get must 'sf-cf let
+     sf-o sf-cf 0 sf-z sf-q fv-sr 'sf-ok let rot sf-w sf-ok) if) if) if) if) if) if) 'fv-sub let
+  -- fv-fr: (ob n s ds bsz ca bps -- ob n pos d).  The frame whose header starts at s and whose subframes start at ds, added to ob, which holds n bytes.
+  -- pos is where the scan for the next frame goes on. d is the frames the frame gave: 0 when its CRC-16 was bad, -1 when
+  -- dr_flac gives up on it, -2 when the audio passes the string limit.
+  ('fr-b let 'fr-ca let 'fr-z let 'fr-ds let 'fr-s let 'fr-n let
+   fr-ca 0 eq (1) (fr-ca 8 lt (fr-ca 1 plus) (2) if) if 'fr-nc let
+   fr-nc gc eq not (fr-n fr-ds -1) (
+   0 fr-ds 6 shl
+   fr-b fr-ca 9 eq (1 plus) () if fr-z fv-sub 'fr-t0 let 'fr-w0 let 'fr-o0 let
+   fr-nc 2 eq (fr-t0 (fr-b fr-ca 8 eq fr-ca 10 eq or (1 plus) () if fr-z fv-sub) ([] 0 0) if) ([] 0 1) if 'fr-t1 let 'fr-w1 let 'fr-o1 let
+   'fr-s2 let 'fr-a2 let
+   fr-s2 6 shr fr-s2 63 band 3 shr sub 'fr-q let
+   fr-t0 fr-t1 and not fr-q 2 plus fz gt or (fr-n fr-q fz min -1) (
+   fr-s fr-q fv-c16 fr-q 'fb nth must 8 shl fr-q 1 plus 'fb nth must bor eq not (fr-n fr-q 2 plus 0) (
+   fr-n fr-z 4 mul plus 1073741824 gt (fr-n -2 -2) (
+   fr-w0 0 gt (fr-o0 (fr-w0 shl) each) (fr-o0) if 'fr-x0 let
+   fr-w1 0 gt (fr-o1 (fr-w1 shl) each) (fr-o1) if 'fr-x1 let
+   [] 0 (dup fr-z lt) (
+     'o-j let
+     o-j 'fr-x0 nth must 'o-x let
+     fr-nc 1 eq (o-x o-x) (
+       o-j 'fr-x1 nth must 'o-y let
+       fr-ca 10 eq (o-y 1 band o-x 1 shl bor 'o-m let o-m o-y plus 2 div o-m o-y sub 2 div) (
+       fr-ca 8 eq (o-x o-x o-y sub) (
+       fr-ca 9 eq (o-x o-y plus o-y) (o-x o-y) if) if) if) if
+     'o-r let 'o-l let
+     o-l 16 shl fr-b shr 65535 band 'o-u let o-u 255 band push o-u 8 shr push
+     o-r 16 shl fr-b shr 65535 band 'o-v let o-v 255 band push o-v 8 shr push
+     o-j 1 plus) while drop cat fr-n fr-z 4 mul plus fr-q 2 plus fr-z) if) if) if) if) 'fv-fr let
+  -- fx-sn: (s -- n).  The sample number of the frame header at s: its UTF-8 number, times the block size when that is fixed.
+  ('sn-s let sn-s 4 plus 'fb nth must 'sn-b let sn-b 255 bxor 'fq-lz nth must 'sn-l let
+   sn-l 0 eq (sn-b) (sn-s 5 plus sn-s 4 plus sn-l plus range sn-b 1 7 sn-l sub shl 1 sub band ('sn-x let 6 shl sn-x 'fb nth must 63 band bor) fold) if
+   sk-bs 0 eq () (sk-bs mul) if) 'fx-sn let
+  -- fx-chk: (s -- sn).  The sample number of the frame header at s, or -1 when s holds no header that fits this stream:
+  -- a CRC-8 header with the channels and the sample rate of STREAMINFO, a block size within its maximum, and a sample number inside the file.
+  ('ck-s let
+   ck-s fv-hd 'ck-b let 'ck-ca let 'ck-z let 'ck-x let 'ck-k let
+   ck-s 2 plus 'fb nth must 15 band 'ck-rc let
+   ck-k 0 eq not (-1) (
+   ck-ca 0 eq (1) (ck-ca 8 lt (ck-ca 1 plus) (2) if) if gc eq not (-1) (
+   ck-z sk-bm gt (-1) (
+   ck-rc 0 eq ck-rc 11 gt or (1) ([0 88200 176400 192000 8000 16000 22050 24000 32000 44100 48000 96000] ck-rc get must gr eq) if not (-1) (
+   ck-s fx-sn 'ck-n let
+   gn 0 eq not ck-n gn ge and (-1) (ck-n) if) if) if) if) if) 'fx-chk let
+  -- fx-hs: (x hi -- s sn).  The first frame header that starts at x or after and before hi, or -1.
+  -- a scan gives up after 4096 sync codes that are no header
+  ('hs-hi let 'hs-x let
+   sk-bs 0 eq ([255 249]) ([255 248]) if 'hs-sync let
+   hs-x 0 -1 0
+   ('c-sn let 'c-s let 'c-n let 'c-x let c-x c-n c-s c-sn c-s 0 lt c-x hs-hi lt and c-n 4096 lt and) (
+     'b-sn let 'b-s let 'b-n let 'b-x let
+     fb b-x drop-n hs-sync str-find
+     {'ok ('b-i let b-x b-i plus 'b-c let
+           b-c hs-hi lt not (b-c b-n -1 0) (
+           b-c fx-chk 'b-v let
+           b-v 0 lt (b-c 1 plus b-n 1 plus -1 0) (b-c 1 plus b-n 1 plus b-c b-v) if) if)
+      'no (drop hs-hi b-n -1 0)} case) while
+   'r-sn let 'r-s let 'r-n let 'r-x let
+   r-s 0 lt r-x hs-hi lt and ("flac: seek: " r-n int-str cat " sync codes in a row from byte " cat hs-x int-str cat " are no frame header; expected one within 4096 of them" cat fail) () if
+   r-s r-sn) 'fx-hs let
+  x-m 0 eq (
+   x-d 'p at 'x-p0 let x-d 'ic at 'x-ic0 let x-d 'skip at 'x-sk0 let
+   x-k x-sk0 plus 4 mul 'x-lim let
+   -- the stack holds ob n ic p go: go is 0 once p ends the file or the chunk is full
+   [] 0 x-ic0 x-p0 x-p0 0 lt not
+   (dup) (
+    drop 'p let 'ic let
+    p fv-sy 'sy let
+    sy 0 lt (fz -1) (
+      sy fv-hd 'hd-b let 'hd-c let 'hd-z let 'hd-x let 'hd-k let
+      hd-k 0 eq (sy hd-x hd-z hd-c hd-b fv-fr) (hd-k 1 eq (hd-x 0) (hd-x -1) if) if) if
+    'f-d let 'f-pos let
+    -- dr_flac's reader asks for 4096 frames at a time and stops when one ask gives none. A frame it gives up on ends an ask
+    -- that already holds frames, and the next ask scans on from there: one retry, then the end. ic counts the frames
+    -- in the ask, mod 4096.
+    -- REVIEW: Copy those asks, so a damaged frame in mid-file is skipped once, as in read-flac. Alternative: end the audio at the first frame that fails. It is simpler, but a file whose frames are not 4096 samples long then gives less audio than read-flac.
+    f-d -2 eq (ic -2) (f-d -1 eq (ic 0 eq (ic -1) (0 f-pos) if) (ic f-d plus 4096 mod f-pos) if) if
+    'np let 'nic let 'nn let
+    nn nic np nn x-lim lt np 0 lt not and) while
+   drop 'x-p let 'x-ic let 'x-n let
+   x-sk0 4 mul x-n min 'x-dr let
+   x-dr 0 eq () (x-dr drop-n) if
+   fb x-d x-p 'p into x-ic 'ic into x-n x-dr sub 4 div x-d 'at at plus 'at into x-sk0 x-dr 4 div sub 'skip into
+   rot) (
+   x-d 'f0 at fz fx-hs 'lo-n let 'lo-s let
+   lo-s 0 lt (fb x-d -1 'p into x-k 'at into 0 'skip into "") (
+    -- lo is a header whose sample number is at most k, and all headers from hi on are past k
+    lo-s lo-n fz 0
+    ('cq-c let 'cq-h let 'cq-n let 'cq-s let cq-s cq-n cq-h cq-c cq-s 1 plus cq-h lt cq-c 64 lt and) (
+      'q-c let 'q-h let 'q-n let 'q-s let
+      q-s q-h plus 2 div 'q-x let
+      q-x q-h fx-hs 'q-hn let 'q-hs let
+      q-hs 0 lt (q-s q-n q-x q-c 1 plus) (
+      q-hn x-k gt (q-s q-n q-hs q-c 1 plus) (q-hs q-hn q-h q-c 1 plus) if) if) while
+    'z-c let 'z-h let 'z-n let 'z-s let
+    z-s 1 plus z-h lt ("flac: seek: " z-c int-str cat " halvings did not find the frame of sample " cat x-k int-str cat "; expected at most 64" cat fail) () if
+    x-k z-n sub 0 max 'z-k let
+    fb x-d z-s 'p into 0 'ic into z-n z-k plus 'at into z-k 'skip into "") if) if) 'fx let
+(flac-open {
+  'ok (1099511627776 0 fx 'fd-c let 'fd-d let drop
+       fd-d fx-end {'ok (drop {'rate fd-d 'rate at 'pcm fd-c} ok) 'no (no)} case)
+  'no (nip no)} case) 'flac-decode let
+(dup 'p at 0 lt (dup fx-end) (8192 0 fx dup len 0 eq (drop dup fx-end) (ok) if) if) 'flac-next let
+('fs-t let 'fs-d let
+ fs-t 0 le (fs-d dup 'f0 at 'p into 0 'ic into 0 'at into 0 'skip into) (
+ fs-d 'total at 0 eq not fs-t fs-d 'total at ge and
+  (fs-d fs-d 'total at 'at into -1 'p into 0 'skip into) (fs-d fs-t 1 fx drop) if) if) 'flac-seek let
+
+-- ===== tests =====
+(flac-decode {'ok (drop "") 'no ()} case) 'ft-err let
+(flac-decode must 'pcm at) 'ft-pcm let
+-- ft-t0: (bytes -- bytes).  The STREAMINFO length becomes 0, which means unknown.
+(dup 22 take-n [0 0 0 0] cat swap 26 drop-n cat) 'ft-t0 let
+-- Four small files made by an independent FLAC writer and checked against read-flac. ft-f1 is stereo 16-bit in four frames
+-- of 8 samples: independent channels (verbatim, constant), mid/side (fixed 2, LPC 3 in Rice2 with an escape partition),
+-- left/side (LPC 2, fixed 1) and right/side (fixed 3 in two partitions, verbatim). ft-f2 is mono 8-bit with one wasted bit,
+-- ft-f3 stereo 24-bit with escape partitions, ft-f4 stereo 12-bit (header code 2) in mid/side.
+[102 76 97 67 128 0 0 34 0 16 0 16 0 0 0 0 0 0 10 196 66 240 0 0 0 32 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 105 24 0 7 170 2 7 225 9 62 9 36 7 151 4 216 1 79 253 154 250 65 0 5 177 12 253 255 248 105 168 0 7 64 20 249 179 242 0 71 235 70 76 93 77 208 211 74 105 195 17 2 144 192 218 48 36 202 136 95 66 71 237 168 34 206 1 43 5 140 248 90 179 166 255 248 105 136 0 7 3 66 196 19 207 179 64 143 224 99 93 142 50 51 12 148 6 41 37 70 37 209 40 3 59 175 50 36 232 8 127 25 36 53 200 87 16 49 95 255 248 105 152 0 7 161 22 232 148 114 143 57 121 160 179 221 113 245 55 102 86 223 2 242 235 5 119 23 44 37 49 45 95 46 99 40 14 27 104 140 155] 'ft-f1 let
+[225 7 177 5 62 9 177 5 36 9 177 5 151 7 177 5 216 4 177 5 79 1 177 5 154 253 177 5 65 250 177 5 246 3 112 239 210 248 47 235 204 238 51 234 123 231 175 236 13 228 49 242 9 229 228 249 69 234 138 2 241 242 204 10 19 196 235 242 179 207 119 5 249 226 44 23 206 250 49 37 123 19 95 45 17 41 99 46 46 56 14 40 106 62 104 27 19 196 235 242 179 207 119 5 249 226 44 23 206 250 49 37 123 19 95 45 17 41 99 46 46 56 14 40 106 62 104 27] 'ft-p1 let
+[102 76 97 67 128 0 0 34 0 16 0 16 0 0 0 0 0 0 1 244 0 112 0 0 0 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 100 2 0 15 73 19 153 5 18 212 85 101 119 209 223 206 75 48 225 0 86 191] 'ft-f2 let
+[0 50 0 50 0 68 0 68 0 78 0 78 0 76 0 76 0 54 0 54 0 28 0 28 0 4 0 4 0 228 0 228 0 198 0 198 0 182 0 182 0 178 0 178 0 180 0 180 0 202 0 202 0 226 0 226 0 254 0 254 0 30 0 30] 'ft-p2 let
+[102 76 97 67 128 0 0 34 0 16 0 16 0 0 0 0 0 0 23 112 3 112 0 0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 105 28 0 7 1 2 72 115 68 62 149 224 42 214 104 16 80 144 243 57 76 216 42 88 195 91 0 184 37 20 20 20 30 200 1 54 40 72 31 159 205 56 90 135 31 162 177 216 56 245 68 222 226 64 226 69 0 131 106] 'ft-f3 let
+[115 72 30 20 149 62 54 1 214 42 26 238 80 16 211 221 57 243 240 210 42 216 43 207 91 195 30 211 37 184 36 222] 'ft-p3 let
+[102 76 97 67 128 0 0 34 0 16 0 16 0 0 0 0 0 0 10 196 66 176 0 0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 105 164 0 7 186 18 205 176 33 9 145 40 196 208 226 31 35 64 4 19 79 197 247 255 151 188 3 223 63 28 187 22 80 168] 'ft-f4 let
+[80 215 16 196 192 193 16 201 112 182 128 214 144 182 192 234 96 194 48 2 160 215 48 25 128 243 96 44 80 17 160 56] 'ft-p4 let
+ft-f1 ft-pcm ft-p1 eq assert
+ft-f1 flac-decode must 'rate at 44100 eq assert
+ft-f2 ft-pcm ft-p2 eq assert
+ft-f2 flac-decode must 'rate at 8000 eq assert
+ft-f3 ft-pcm ft-p3 eq assert
+ft-f4 ft-pcm ft-p4 eq assert
+-- an ID3v2 tag before fLaC, junk between frames, and bytes after the last one
+"ID3" [4 0 0 0 0 0 5 1 2 3 4 5] cat ft-f1 cat ft-pcm ft-p1 eq assert
+ft-f1 71 take-n [7 255 7] cat ft-f1 71 drop-n cat ft-pcm ft-p1 eq assert
+ft-f1 [0 0 255 7 1] cat ft-pcm ft-p1 eq assert
+-- a padding block, and an invalid block that sends the scan for frames to byte 42, as in dr_flac
+ft-f1 4 0 set must 42 take-n [129 0 0 2 0 0] cat ft-f1 42 drop-n cat ft-pcm ft-p1 eq assert
+ft-f1 4 0 set must 42 take-n [255 0 0 0] cat ft-f1 42 drop-n cat ft-pcm ft-p1 eq assert
+-- a frame with a bad CRC-16 gives no audio: the file is cut short, or when STREAMINFO gives no length, it is the shorter audio
+ft-f1 100 ft-f1 100 get must 255 bxor set must 'ft-bad let
+ft-bad ft-err "flac: cut short: 24 of 32 frames" eq assert
+ft-bad ft-t0 ft-pcm ft-p1 32 take-n ft-p1 64 drop-n cat eq assert
+-- a frame dr_flac cannot decode ends an ask for 4096 frames that already holds frames, and the next ask scans on: one retry, then the end
+ft-f1 78 128 set must ft-t0 ft-pcm ft-p1 32 take-n ft-p1 64 drop-n cat eq assert
+ft-f1 78 128 set must 125 128 set must ft-t0 ft-pcm ft-p1 32 take-n eq assert
+ft-f1 dup len 10 sub take-n ft-err "flac: cut short: 24 of 32 frames" eq assert
+ft-f1 dup len 10 sub take-n ft-t0 ft-pcm ft-p1 96 take-n eq assert
+ft-f1 42 take-n ft-err "flac: cut short: 0 of 32 frames" eq assert
+ft-f1 42 take-n ft-t0 ft-err "flac: holds no audio" eq assert
+[] ft-err "flac: the file holds 0 bytes, but fLaC starts at byte 0" eq assert
+"RIFF" ft-err "flac: not a FLAC file: it starts RIFF, not fLaC" eq assert
+"OggS" ft-err "flac: an Ogg FLAC file; flac-decode reads native FLAC" eq assert
+"fLaC" ft-err "flac: the file ends at byte 4, before the STREAMINFO block header at byte 4" eq assert
+"fLaC" [1 0 0 4 0 0 0 0] cat ft-err "flac: the first metadata block is type 1 of 4 bytes; a FLAC file starts with STREAMINFO, type 0 of 34 bytes" eq assert
+ft-f1 40 take-n ft-err "flac: STREAMINFO holds 34 bytes, but 32 remain" eq assert
+ft-f1 20 68 set must ft-err "flac: 3 channels; flac-decode reads mono or stereo" eq assert
+-- the CRC-8 of a frame header, a reserved header bit, block size code 0 and a frame bps that STREAMINFO does not give: each skips the header, and the file is cut short as in read-flac
+ft-f1 77 ft-f1 77 get must 1 bxor set must 'ft-c8 let
+ft-c8 ft-err "flac: cut short: 24 of 32 frames" eq assert
+ft-c8 ft-t0 ft-pcm ft-p1 32 take-n ft-p1 64 drop-n cat eq assert
+ft-f1 72 250 set must ft-err "flac: cut short: 24 of 32 frames" eq assert
+ft-f1 73 9 set must ft-err "flac: cut short: 24 of 32 frames" eq assert
+ft-f1 74 174 set must ft-err "flac: cut short: 24 of 32 frames" eq assert
+-- an ID3v2 tag that runs past the end of the file
+"ID3" [4 0 0 127 127 127 127 120 120 120 120] cat ft-err "flac: an ID3v2 tag ends at byte 268435465, but the file holds 14 bytes" eq assert
+-- a 32-bit stream decodes in 64 bits, so dr_flac refuses a frame whose sample passes its width (fixed 1 with a warm-up of 2^31-1 and residual +1; LPC; an escape partition) or whose Rice code is past 32 bits (unary count 256 at parameter 24)
+[102 76 97 67 128 0 0 34 0 16 255 255 0 0 0 0 0 0 1 244 1 240 0 0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 96 14 0 7 211 18 127 255 255 255 0 9 36 146 147 9] 'ft-s1 let
+[102 76 97 67 128 0 0 34 0 16 255 255 0 0 0 0 0 0 10 196 65 240 0 0 0 32 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 96 14 0 15 235 70 105 204 246 33 41 246 87 152 72 221 255 169 39 75 84 39 180 114 21 13 52 215 11 128 218 190 193 211 219 237 42 25 63 249 218 52 251 255 248 96 14 1 15 254 70 105 204 246 33 41 246 87 152 72 221 255 169 39 75 84 39 180 114 21 13 52 215 11 128 213 120 71 201 127 133 168 191 38 193 254 123 245] 'ft-s2 let
+[102 76 97 67 128 0 0 34 0 16 255 255 0 0 0 0 0 0 1 244 1 240 0 0 0 16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 96 14 0 15 235 20 0 0 0 1 255 255 255 255 7 255 93 192 12 24 134 147 106 108 33 107 65 64 15 196 151 74 232 111 43 83 82 94 248 255 237 50 146 81 59 21 189 206 253 248 141 78 253 209 72 14 143 112 197 204 168 198 35 74 33 177 61 130 152 235 74 64 80 1] 'ft-s3 let
+[102 76 97 67 128 0 0 34 0 16 255 255 0 0 0 0 0 0 1 244 1 240 0 0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 96 14 0 7 211 16 67 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 16 0 0 24 0 0 4 0 0 2 0 0 1 0 0 0 128 0 0 64 0 0 32 0 0 0 161 60] 'ft-s4 let
+[102 76 97 67 128 0 0 34 0 16 255 255 0 0 0 0 0 0 1 244 1 240 0 0 0 8 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 96 14 0 7 211 18 127 255 255 240 0 9 36 146 145 161] 'ft-s5 let
+ft-s1 ft-err "flac: cut short: 0 of 8 frames" eq assert
+ft-s2 ft-err "flac: cut short: 0 of 32 frames" eq assert
+ft-s3 ft-err "flac: cut short: 0 of 16 frames" eq assert
+ft-s4 ft-err "flac: cut short: 0 of 8 frames" eq assert
+ft-s5 ft-pcm len 32 eq assert
+-- chunks. ft-r1 and ft-r2 hold 20000 sample frames in 5 blocks (the last holds 3616): the left channel is n - 10000 and the right 3n - 30000.
+-- ft-r1 numbers its blocks and ft-r2 numbers its samples, as a stream with a variable block size does.
+[102 76 97 67 128 0 0 34 16 0 16 0 0 0 0 0 0 0 10 196 66 240 0 0 78 32 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 248 201 24 0 194 20 216 240 216 241 3 192 41 21 161 21 166 7 128 12 152 255 248 201 24 1 197 20 232 240 232 241 3 192 41 117 161 117 166 7 128 249 193 255 248 201 24 2 204 20 248 240 248 241 3 192 41 213 161 213 166 7 128 86 112 255 248 201 24 3 203 20 8 240 8 241 3 192 40 53 160 53 166 7 128 242 20 255 248 121 24 4 14 31 38 20 24 240 24 241 3 192 40 149 160 149 166 7 128 210 84] 'ft-r1 let
+[102 76 97 67 128 0 0 34 14 32 16 0 0 0 0 0 0 0 10 196 66 240 0 0 78 32 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 255 249 201 24 0 212 20 216 240 216 241 3 192 41 21 161 21 166 7 128 142 151 255 249 201 24 225 128 128 116 20 232 240 232 241 3 192 41 117 161 117 166 7 128 79 144 255 249 201 24 226 128 128 201 20 248 240 248 241 3 192 41 213 161 213 166 7 128 97 175 255 249 201 24 227 128 128 162 20 8 240 8 241 3 192 40 53 160 53 166 7 128 186 177 255 249 121 24 228 128 128 14 31 104 20 24 240 24 241 3 192 40 149 160 149 166 7 128 86 186] 'ft-r2 let
+0 20000 range [] ('rn let rn 10000 sub 'rl let rn 3 mul 30000 sub 'rr let rl 255 band push rl 8 shr 255 band push rr 255 band push rr 8 shr 255 band push) fold 'ft-x let
+-- ft-from: (bytes k -- bool).  The chunk after a seek to k is the pcm from k, as far as it goes, and holds audio.
+('fs-k let flac-open must fs-k flac-seek flac-next must 'fs-c let drop drop fs-c len 0 eq not fs-c ft-x fs-k 4 mul drop-n fs-c len take-n eq and) 'ft-from let
+ft-r1 ft-pcm ft-x eq assert
+ft-r2 ft-pcm ft-x eq assert
+ft-r1 flac-open must 'rate at 44100 eq assert drop
+-- chunks of two blocks, then the rest, then "" for good
+ft-r1 flac-open must flac-next must len 32768 eq assert flac-next must len 32768 eq assert
+  flac-next must len 14464 eq assert flac-next must "" eq assert flac-next must "" eq assert drop drop
+ft-r2 flac-open must flac-next must ft-x 32768 take-n eq assert drop drop
+-- a seek starts the next chunk at its sample frame, inside a block or at its start, or at the end past it
+ft-r1 flac-open must 19999 flac-seek flac-next must ft-x 79996 drop-n eq assert flac-next must "" eq assert drop drop
+ft-r1 10000 ft-from assert
+ft-r2 10000 ft-from assert
+ft-r2 4096 ft-from assert
+ft-r1 flac-open must 99999 flac-seek flac-next must "" eq assert -5 flac-seek flac-next must 16 take-n ft-x 16 take-n eq assert drop drop
+"ID3" [4 0 0 0 0 0 5 1 2 3 4 5] cat ft-r1 cat 15000 ft-from assert
+-- ft-s0: (bytes --).  The chunk after a seek to 0 is the chunk of a file that was never seeked.
+('s0-b let s0-b flac-open must flac-next must 's0-u let drop drop s0-b flac-open must 0 flac-seek flac-next must s0-u eq assert drop drop) 'ft-s0 let
+-- STREAMINFO gives a minimum block size below the maximum, but the frames number their blocks: the first frame's sync code decides
+ft-r1 8 8 set must 'ft-mm let
+ft-mm 10000 ft-from assert  ft-mm 0 ft-from assert  ft-mm ft-s0
+-- STREAMINFO gives a total below the frames the file holds: a seek to 0 still plays them all
+ft-r1 24 0 set must 25 8 set must ft-s0
+-- a first frame twice: a seek to 0 plays both
+ft-r1 44 drop-n [255 248] str-find must 'ft-i let
+ft-r1 44 ft-i plus take-n ft-r1 42 drop-n cat ft-s0
+-- a block with a bad CRC gives no audio, and the chunk that reaches the end of the file refuses it
+ft-r1 107 ft-r1 107 get must 255 bxor set must 'ft-bad2 let
+ft-bad2 flac-open must flac-next must len 32768 eq assert flac-next must len 30848 eq assert flac-next {'ok (drop "") 'no ()} case "flac: cut short: 15904 of 20000 frames" eq assert drop drop

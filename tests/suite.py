@@ -135,7 +135,34 @@ def midi_wav_ok(path):
 FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml rss cbor icn ufx ui".split())
 
 
-# A WAV past 64 MiB loads in the audio app. The file is sparse, so its 64 MiB of silence costs no disk.
+# A WAV past 64 MiB opens in the audio app and gives its first chunk. The file is sparse, so its 64 MiB of silence costs no disk.
+# A slap decoder against the C primitive it replaces, on each path: the same rate and length, and
+# each 16-bit sample within tol (0 for an exact match). Status passes tests/audio/chord, 5 s of a
+# chord, out of the audio app's sight; the suite passes the short files.
+def decoder_matches(fmt, tol, paths):
+    def check():
+        for path in paths:
+            mine, theirs = (os.path.join(SCRATCH, f"{fmt}-{w}.pcm") for w in ("mine", "theirs"))
+            prog = (
+                f'"{path}" read must {fmt}-decode must dup \'rate at print \'pcm at "{mine}" swap write must drop\n'
+                f'"{path}" read-{fmt} must dup \'rate at print \'pcm at "{theirs}" swap write must drop\n'
+            )
+            r = subprocess.run(
+                ["./slap"], input=open(lib("strings")).read() + open(lib(fmt)).read() + prog,
+                capture_output=True, text=True, timeout=TIMEOUT,
+            )
+            if r.returncode or len(set(r.stdout.split())) != 1:
+                return False, f"{path}: exit {r.returncode}, rates {r.stdout.split()}: {r.stderr[-1000:]}"
+            a, b = (memoryview(open(f, "rb").read()).cast("h") for f in (mine, theirs))
+            if len(a) != len(b):
+                return False, f"{path}: {len(a)} samples, read-{fmt} gives {len(b)}"
+            worst = max((abs(x - y) for x, y in zip(a, b)), default=0)
+            if worst > tol:
+                return False, f"{path}: a sample differs by {worst}; the most allowed is {tol}"
+        return True, ""
+    return check
+
+
 def big_wav():
     path = os.path.join(SCRATCH, "big.wav")
     n = (64 << 20) + 4
@@ -144,14 +171,14 @@ def big_wav():
         f.write(bytes([1, 0, 2, 0]) + (44100).to_bytes(4, "little") + (176400).to_bytes(4, "little") + bytes([4, 0, 16, 0]))
         f.write(b"data" + n.to_bytes(4, "little"))
         f.truncate(44 + n)
-    libs = " ".join(f"examples/lib/{x}.slap" for x in "strings cbor icn ufx ui".split())
+    libs = " ".join(f"examples/lib/{x}.slap" for x in "strings cbor icn ufx ui wav flac mp3".split())
     r = subprocess.run(
         ["bash", "-o", "pipefail", "-c", f"cat {libs} examples/audio-app.slap - | ./slap"],
-        input=f'"{path}" load-track must \'pcm at len print\n',
+        input=f'"{path}" open-track len print next-dec must len print\n',
         capture_output=True, text=True, timeout=TIMEOUT,
     )
     os.remove(path)
-    return r.returncode == 0 and r.stdout.split() == [str(n)], r.stdout[-2000:] + r.stderr[-2000:]
+    return r.returncode == 0 and r.stdout.split() == ["0", "32768"], r.stdout[-2000:] + r.stderr[-2000:]
 
 
 def headless_demo(files, ok, probe="", args=()):
@@ -816,6 +843,8 @@ def steps(slow):
             "codec": ("python3 tests/run_codec.py", None),
             "a WAV past 64 MiB loads": (big_wav, None),
             # wav.slap's own tests run as it loads; here a real file decodes as read-wav decodes it
+            "flac-decode matches read-flac": (decoder_matches("flac", 0, sorted(glob.glob("tests/audio/*.flac"))), None),
+            "mp3-decode matches read-mp3 within 1": (decoder_matches("mp3", 1, ["tests/audio/tone.mp3"]), None),
             "wav-decode matches read-wav": (
                 "echo '\"tests/audio/tone.wav\" read must wav-decode must \"tests/audio/tone.wav\" read-wav must eq print'"
                 f" | cat {lib('strings', 'wav')} - | ./slap",
@@ -918,9 +947,18 @@ def steps(slow):
         )
     for n in ["audio", "book", "cal", "clock", "midi"]:
         demos[f"{n}-app"] = (
-            [*lib("strings", "cbor", "icn", "ufx", "ui", *(["midi"] if n == "midi" else [])).split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
+            [*lib("strings", "cbor", "icn", "ufx", "ui", *(["midi"] if n == "midi" else []), *(["wav", "flac", "mp3"] if n == "audio" else [])).split(), f"examples/{n}-app.slap", *lib("ui-sdl").split(), f"examples/{n}-app-sdl.slap"],
             lambda o, n=n: f"{n}-selftest-ok" in o,
         )
+    # audio-bad: a FLAC with one flipped byte near its end. Its first chunk fails, and the app pauses and shows why.
+    demos["audio-bad"] = demos["audio-app"]
+    audio_bad = os.path.join(SCRATCH, "audio-bad")
+    os.makedirs(audio_bad)
+    with open("tests/audio/tone.flac", "rb") as f:
+        bad = bytearray(f.read())
+    bad[-8] ^= 255
+    with open(os.path.join(audio_bad, "a.flac"), "wb") as f:
+        f.write(bad)
     # Space at frame 2 starts the stopwatch, so its line shows from then on. In cal, n at frame 2
     # moves a month on from today, and enter, "Hi" and enter add an event, which the file then holds.
     cal_events = os.path.join(SCRATCH, "cal-events.cbor")
@@ -941,6 +979,7 @@ def steps(slow):
         "cal-app": [cal_events],
         "book-app": [book_state, "readme.md"],
         "audio-app": [audio_state, "tests/audio"],
+        "audio-bad": [os.path.join(SCRATCH, "audio-bad.cbor"), audio_bad],
         "midi-app": [midi_state, midi_mid, "tests/audio/pizzicato.sf2"],
     }
     probes = {
@@ -960,10 +999,17 @@ def steps(slow):
         ),
         "audio-app": (
             "test-frame 2 eq (106 test-keydown 13 test-keydown dup 'at at print dup 'run at len print) () if"
+            " test-frame 3 eq (32 test-keydown dup 'run at len print) () if"
+            " test-frame 4 eq (32 test-keydown dup 'run at len print) () if"
             " test-frame 14 eq (dup 'at at print dup 'run at len print) () if",
             lambda o: "audio-selftest-ok" in o
-            and o.split()[-4:] == ["1", "1", "0", "0"]
+            and o.split()[-6:] == ["1", "1", "0", "1", "0", "0"]
             and b"mono48.flac" in open(audio_state, "rb").read(),
+        ),
+        "audio-bad": (
+            "test-frame 2 eq (13 test-keydown) () if"
+            " test-frame 14 eq (dup 'err at 0 get must print dup 'run at len print) () if",
+            lambda o: o.split("\n")[-3:-1] == ['"a.flac: flac: cut short: 4096 of 4410 frames"', "0"],
         ),
         "midi-app": (
             "test-frame 2 eq (98 test-keydown) () if test-frame 14 eq (dup 'status at print) () if",
@@ -1128,6 +1174,50 @@ def status():
     )
     if r.returncode:
         print(f"status: wav-decode: exit {r.returncode}: {r.stderr[-500:]}", file=sys.stderr)
+    # The audio app decodes a chunk on a display tick while the speakers play, so flac.slap and
+    # mp3.slap must stay well ahead of the speakers on a loaded machine: a quarter of real time.
+    # Each is checked against its C primitive first, and the CPU count includes that decode.
+    for fmt, tol in (("flac", 0), ("mp3", 1)):
+        cpu = harness.child_cpu()
+        ok, detail = decoder_matches(fmt, tol, [f"tests/audio/chord/5s.{fmt}"])()
+        score[f"{fmt}-decode decodes 5 s of stereo in under 1.25 s of CPU."] = (
+            1.25 / (harness.child_cpu() - cpu) if ok else 0.0
+        )
+        if not ok:
+            print(f"status: {fmt}-decode: {detail}", file=sys.stderr)
+    # The audio app in real time: SDL's dummy drivers open no window and drain the queue at the
+    # rate. A probe tick handler starts the first track, prints the frame, track, run length,
+    # queued bytes and whether the decoder is done each tick, and stops the app with fail after
+    # both 5 s chord tracks. The probe runs after the app's tick, which refills the queue, so a gap
+    # rarely shows as an empty queue. The app fills the queue to a second (176400 bytes at 44.1
+    # kHz) before it waits; from then on, while the decoder has audio, a quarter second must stay.
+    probe = (
+        "('pf let pf 2 eq (play-at) () if dup 'run at len 'pr let dup 'at at 'pa let"
+        " pr 0 gt (dup 'run at 0 get must 'done at) (0) if 'pd let"
+        " pf int-str \" \" cat pa int-str cat \" \" cat pr int-str cat \" \" cat queued int-str cat \" \" cat pd int-str cat print"
+        " pf 1400 gt (\"probe-done\" fail) () if) 'tick on\n"
+    )
+    app = open("examples/audio-app-sdl.slap").read().replace("(drop) show", probe + "(drop) show")
+    src = "".join(open(lib(n)).read() for n in "strings cbor icn ufx ui wav flac mp3".split())
+    src += open("examples/audio-app.slap").read() + open(lib("ui-sdl")).read() + app
+    state = os.path.join(SCRATCH, "realtime-state.cbor")
+    if os.path.exists(state):
+        os.remove(state)
+    env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", SDL_AUDIO_DRIVER="dummy")
+    r = subprocess.run(["./slap-sdl", state, "tests/audio/chord"], input=src, capture_output=True, text=True, timeout=120, env=env) if sdl else None
+    rows = [list(map(int, l.strip('"').split())) for l in (r.stdout.splitlines() if r else []) if l.startswith('"')]
+    gaps, filled = [], set()
+    for row in rows:
+        if row[2] == 1 and row[3] >= 176400:
+            filled.add(row[1])
+        if row[2] == 1 and row[4] == 0 and row[1] in filled and row[3] < 44100:
+            gaps.append(row)
+    played = {row[1] for row in rows if row[2] == 1}
+    # a track that never fills plays chunk by chunk, with a gap between each
+    rt_ok = r and "probe-done" in r.stderr and played == filled == {0, 1} and not gaps
+    score["The audio app plays two tracks with no gap inside either."] = 1.0 if rt_ok else 0.0
+    if not rt_ok:
+        print(f"status: audio app in real time: sdl {sdl}, tracks played {sorted(played)}, filled {sorted(filled)}, gaps at {gaps[:3]}, stderr {r.stderr[-300:] if r else ''}", file=sys.stderr)
     # The network is outside the suite, so tls-connect meets the system's CA store here. Refusals are
     # tested offline in run_serve.py, so status depends on one outside host. A failure prints why.
     try:
