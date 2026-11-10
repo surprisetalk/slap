@@ -1,0 +1,146 @@
+-- wav.slap: RIFF WAVE files as the audio record play takes. Requires strings.slap.
+
+-- wav-decode: (bytes -- {'rate 'pcm} ok | msg no).  'pcm holds 16-bit
+-- little-endian stereo frames, as read-wav gives them, and mono plays on both
+-- sides. It reads PCM of 8, 16, 24 or 32 bits and float of 32 or 64 bits,
+-- plain or WAVE_FORMAT_EXTENSIBLE, and turns each sample into 16 bits as
+-- dr_wav does: 8-bit PCM is unsigned, wider PCM keeps its top 16 bits, and a
+-- float times 32768 is cut toward zero, with -1 and below at -32768, 1 and
+-- above at 32767, and NaN at 0. A data chunk that claims more bytes than the
+-- file holds gives what is left. A refusal names the reason:
+-- "wav: format 2 is not PCM (1) or float (3)".
+-- REVIEW: Refuse RF64, W64, RIFX, AIFF, ADPCM, a-law and mu-law, which dr_wav reads. Alternative: port them. It costs about 400 lines for formats no file under ~/Music uses.
+('wb let wb len 'wn let
+ -- wv-u: (i k -- n).  k bytes from i, little-endian; the caller checked they are there.
+ ('wu-k let 'wu-i let wu-i wu-i wu-k plus range reverse 0 ('wu-j let 8 shl wu-j 'wb nth must bor) fold) 'wv-u let
+ (dup 4 plus range ('wb nth must) each) 'wv-id let
+ (int-str) 'wv-s let
+ -- wv-f32, wv-f64: (bits -- v).  A float's bits as dr_wav's 16-bit sample, in
+ -- integers: x times 32768 is the mantissa shifted by the exponent.
+ ('f-x let f-x 23 shr 255 band 'f-e let f-x 8388607 band 'f-m let
+  f-e 255 eq f-m 0 eq not and (0) (
+  f-e 127 ge (f-x 31 shr 1 eq (-32768) (32767) if) (
+  135 f-e sub 'f-sh let f-sh 23 gt (0) (f-m 8388608 bor f-sh shr) if 'f-v let
+  f-x 31 shr 1 eq (f-v neg) (f-v) if) if) if) 'wv-f32 let
+ ('d-x let d-x 52 shr 2047 band 'd-e let d-x 4503599627370495 band 'd-m let
+  d-e 2047 eq d-m 0 eq not and (0) (
+  d-e 1023 ge (d-x 0 lt (-32768) (32767) if) (
+  1060 d-e sub 'd-sh let d-sh 52 gt (0) (d-m 4503599627370496 bor d-sh shr) if 'd-v let
+  d-x 0 lt (d-v neg) (d-v) if) if) if) 'wv-f64 let
+ wn 12 lt ("wav: " wn wv-s cat " bytes; the RIFF header alone holds 12" cat no) (
+ 0 wv-id "RIFF" eq 8 wv-id "WAVE" eq and not ("wav: not a WAV file: it starts " 0 wv-id cat " ... " cat 8 wv-id cat ", not RIFF ... WAVE" cat no) (
+ -- the chunks, as p fp fl dp dl: the next chunk, the last fmt chunk's data and
+ -- length, and the data chunk's. dp is -1 until the data chunk, which ends the
+ -- walk, and -2 for a bad fmt chunk, which ends it too. The walk stops where
+ -- fewer than 8 bytes remain, so a chunk that claims too much ends it.
+ 12 -1 0 -1 0
+ ('wc-dl let 'wc-dp let 'wc-fl let 'wc-fp let 'wc-p let
+  wc-p wc-fp wc-fl wc-dp wc-dl wc-dp -1 eq wc-p 8 plus wn le and)
+ ('wk-dl let 'wk-dp let 'wk-fl let 'wk-fp let 'wk-p let
+  wk-p 4 plus 4 wv-u 'wk-n let wk-p 8 plus 'wk-q let
+  wk-p wv-id "data" eq (wk-p wk-fp wk-fl wk-q wk-n) (
+  -- a chunk's data is padded to an even length
+  wk-q wk-n plus wk-n 1 band plus 'wk-next let
+  wk-p wv-id "fmt " eq (
+    -- past 16 bytes, two hold the size of an extension that must fit after them
+    wk-n 16 lt wk-q wk-n plus wn gt or (1) (wk-n 16 gt (wk-n 18 lt (1) (wk-q 16 plus 2 wv-u wk-n 18 sub gt) if) (0) if) if
+      (wk-p wk-fp wk-fl -2 wk-p) (wk-next wk-q wk-n wk-dp wk-dl) if) (
+  wk-next wk-fp wk-fl wk-dp wk-dl) if) if) while
+ 'w-dl let 'w-dp let 'w-fl let 'w-fp let drop
+ w-dp -1 eq ("wav: no data chunk" no) (
+ w-dp -2 eq (w-dl 4 plus 4 wv-u 'w-bn let "wav: the fmt chunk at byte " w-dl wv-s cat
+   w-bn 16 lt (" says " w-bn wv-s cat " bytes; it holds at least 16" cat) (
+   w-dl 8 plus w-bn plus wn gt (" says " w-bn wv-s cat " bytes, but " cat wn w-dl 8 plus sub wv-s cat " remain" cat) (
+   w-bn 18 lt (" says 17 bytes; past 16 it holds at least 18, two naming its extension's size") (
+   " says its extension holds " w-dl 24 plus 2 wv-u wv-s cat " bytes, but " cat w-bn 18 sub wv-s cat " remain in it" cat) if) if) if cat no) (
+ w-fp 0 lt ("wav: no fmt chunk before the data chunk" no) (
+ w-fp 2 wv-u 'w-tag let w-fp 2 plus 2 wv-u 'w-c let w-fp 4 plus 4 wv-u 'w-rate let w-fp 14 plus 2 wv-u 'w-bits let
+ w-tag 65534 eq w-fl 40 lt w-fl 40 lt (0) (w-fp 16 plus 2 wv-u) if 22 eq not or and
+   ("wav: a WAVE_FORMAT_EXTENSIBLE fmt chunk holds 40 bytes, 22 of them its extension, but this one holds " w-fl wv-s cat
+     w-fl 18 lt ("") (", " w-fp 16 plus 2 wv-u wv-s cat " of them its extension" cat) if cat no) (
+ -- an extensible format names its own in the first two bytes of its GUID
+ w-tag 65534 eq (w-fp 24 plus 2 wv-u) (w-tag) if 'w-f let
+ w-rate 0 eq w-rate 384000 gt or ("wav: " w-rate wv-s cat " Hz; a WAV holds 1 to 384000" cat no) (
+ w-fp 12 plus 2 wv-u 0 eq ("wav: block align 0; a frame holds at least one byte" no) (
+ w-c 1 eq w-c 2 eq or not ("wav: " w-c wv-s cat " channels; wav-decode reads mono or stereo" cat no) (
+ w-f 1 eq w-f 3 eq or not ("wav: format " w-f wv-s cat " is not PCM (1) or float (3)" cat no) (
+ w-f 1 eq w-bits 8 eq w-bits 16 eq or w-bits 24 eq or w-bits 32 eq or and
+ w-f 3 eq w-bits 32 eq w-bits 64 eq or and or not
+   ("wav: " w-bits wv-s cat "-bit " cat w-f 1 eq ("PCM; wav-decode reads 8, 16, 24 or 32 bits") ("float; wav-decode reads 32 or 64 bits") if cat no) (
+ w-bits 8 div 'w-k let w-c w-k mul 'w-fb let
+ w-dl wn w-dp sub min w-fb div 'w-n let
+ w-n 0 eq ("wav: holds no audio" no) (
+ w-n 4 mul 1073741824 gt ("wav: decodes to " w-n 4 mul wv-s cat " bytes of audio; a string holds 1073741824" cat no) (
+ -- wv-px: (out i -- out).  The 8-bit or float sample at byte i as two bytes, low first.
+ ('px-i let
+  w-k 1 eq (0 push px-i 'wb nth must 128 bxor push) (
+  w-k 4 eq (px-i 4 wv-u wv-f32) (px-i 8 wv-u wv-f64) if 'px-v let px-v 255 band push px-v 8 shr 255 band push) if) 'wv-px let
+ -- the right channel's sample is w-r bytes after the left's; mono plays it twice
+ w-c 2 eq (w-k) (0) if 'w-r let
+ w-dp w-n w-fb mul plus 'w-end let
+ -- 16-bit stereo is play's own layout. Wider PCM keeps its top two bytes,
+ -- w-k minus 2 bytes into each sample: one loop, with no test per sample.
+ w-k 2 eq w-c 2 eq and (wb w-dp drop-n w-n 4 mul take-n) (
+ w-f 1 eq w-k 1 gt and (
+   w-k 2 sub 'w-o let
+   [] w-dp w-o plus (dup w-end lt) ('fr-j let fr-j 'wb nth must push fr-j 1 plus 'wb nth must push
+     fr-j w-r plus 'wb nth must push fr-j w-r plus 1 plus 'wb nth must push fr-j w-fb plus) while drop) (
+   [] w-dp (dup w-end lt) ('fr-i let fr-i wv-px fr-i w-r plus wv-px fr-i w-fb plus) while drop) if) if 'w-pcm let
+ {'rate w-rate 'pcm w-pcm} ok) if) if) if) if) if) if) if) if) if) if) if) if) if) 'wav-decode let
+
+-- ===== tests =====
+(wav-decode {'ok (drop "") 'no ()} case) 'wt-err let
+-- wt-le: (n k -- bytes).  n as k bytes, little-endian.
+('wl-k let 'wl-n let 0 wl-k range (8 mul wl-n swap shr 255 band) each) 'wt-le let
+-- wt-wav: (tag channels bits data -- bytes).  A 44.1 kHz WAV: a fmt chunk, then the data.
+('wt-d let 'wt-b let 'wt-c let 'wt-t let
+ "RIFF" wt-d len 36 plus 4 wt-le cat "WAVEfmt " cat 16 4 wt-le cat wt-t 2 wt-le cat wt-c 2 wt-le cat
+ 44100 4 wt-le cat 44100 wt-c mul wt-b mul 8 div 4 wt-le cat wt-c wt-b mul 8 div 2 wt-le cat wt-b 2 wt-le cat
+ "data" cat wt-d len 4 wt-le cat wt-d cat) 'wt-wav let
+(wav-decode must 'pcm at) 'wt-pcm let
+-- 16-bit stereo passes through; mono plays on both sides
+1 2 16 [1 2 3 4 5 6 7 8] wt-wav wav-decode must {'rate 44100 'pcm [1 2 3 4 5 6 7 8]} eq assert
+1 1 16 [1 2 3 4] wt-wav wt-pcm [1 2 1 2 3 4 3 4] eq assert
+-- 8-bit is unsigned: 128 is silence, 0 the lowest, 255 the highest
+1 1 8 [128 0 255] wt-wav wt-pcm [0 0 0 0 0 128 0 128 0 127 0 127] eq assert
+-- 24 and 32 bits keep their top 16
+1 2 24 [1 2 3 4 5 6] wt-wav wt-pcm [2 3 5 6] eq assert
+1 2 32 [1 2 3 4 5 6 7 8] wt-wav wt-pcm [3 4 7 8] eq assert
+-- float32: 0.5, -0.5, 1.0, -2.0, NaN, the smallest step above 0, and 0.99999994
+[1056964608 3204448256 1065353216 3221225472 2143289344 1 1065353215] ([] swap 4 wt-le cat) each flatten 'wt-f let
+3 1 32 wt-f wt-wav wt-pcm 4 chunks (2 take-n) each flatten
+  [0 64  0 192  255 127  0 128  0 0  0 0  255 127] eq assert
+-- float64: 0.25 and -1.0
+3 2 64 4598175219545276416 8 wt-le -4616189618054758400 8 wt-le cat wt-wav wt-pcm [0 32 0 128] eq assert
+-- an odd-length chunk before fmt is padded
+"RIFF" [0 0 0 0] cat "WAVE" cat "LIST" cat [1 0 0 0 9 0] cat 1 2 16 [9 9 9 9] wt-wav 12 drop-n cat wt-pcm [9 9 9 9] eq assert
+-- a data chunk that claims more than the file gives what is left, in whole frames
+1 2 16 [1 2 3 4 5 6 7 8] wt-wav dup len 2 sub take-n wt-pcm [1 2 3 4] eq assert
+-- an extensible fmt chunk names PCM in its GUID
+"RIFF" [0 0 0 0] cat "WAVEfmt " cat 40 4 wt-le cat 65534 2 wt-le cat 1 2 wt-le cat 44100 4 wt-le cat 88200 4 wt-le cat
+  2 2 wt-le cat 16 2 wt-le cat 22 2 wt-le cat 16 2 wt-le cat 4 4 wt-le cat 1 2 wt-le cat 0 14 range (drop 0) each cat
+  "data" cat 2 4 wt-le cat [7 8] cat wt-pcm [7 8 7 8] eq assert
+"RIFF" wt-err "wav: 4 bytes; the RIFF header alone holds 12" eq assert
+"RIFF0000WAVX" wt-err "wav: not a WAV file: it starts RIFF ... WAVX, not RIFF ... WAVE" eq assert
+"RIFF0000WAVE" wt-err "wav: no data chunk" eq assert
+"RIFF0000WAVEdata" [0 0 0 0] cat wt-err "wav: no fmt chunk before the data chunk" eq assert
+"RIFF0000WAVEfmt " [8 0 0 0] cat [0 0 0 0 0 0 0 0] cat wt-err "wav: the fmt chunk at byte 12 says 8 bytes; it holds at least 16" eq assert
+-- a fmt chunk past 16 bytes holds its extension's size, and the extension fits in it
+"RIFF0000WAVEfmt " [17 0 0 0 1 0 2 0 68 172 0 0 16 177 2 0 4 0 16 0 0 0] cat "data" cat [4 0 0 0 1 2 3 4] cat wt-err
+  "wav: the fmt chunk at byte 12 says 17 bytes; past 16 it holds at least 18, two naming its extension's size" eq assert
+"RIFF0000WAVEfmt " [18 0 0 0 1 0 2 0 68 172 0 0 16 177 2 0 4 0 16 0 1 0] cat "data" cat [4 0 0 0 1 2 3 4] cat wt-err
+  "wav: the fmt chunk at byte 12 says its extension holds 1 bytes, but 0 remain in it" eq assert
+"RIFF0000WAVEfmt " [16 0 0 0 1 0 2 0] cat wt-err "wav: the fmt chunk at byte 12 says 16 bytes, but 4 remain" eq assert
+"RIFF0000WAVEfmt " [18 0 0 0 1 0 2 0 68 172 0 0 16 177 2 0 4 0 16 0 0 0] cat "data" cat [4 0 0 0 1 2 3 4] cat wt-pcm [1 2 3 4] eq assert
+"RIFF0000WAVEfmt " [16 0 0 0 1 0 2 0 68 172 0 0 16 177 2 0 0 0 16 0] cat "data" cat [4 0 0 0 1 2 3 4] cat wt-err
+  "wav: block align 0; a frame holds at least one byte" eq assert
+1 2 16 [] wt-wav wt-err "wav: holds no audio" eq assert
+"RIFF" [0 0 0 0] cat "WAVEfmt " cat 16 4 wt-le cat [1 0 2 0 0 0 0 0 0 0 0 0 4 0 16 0] cat "data" cat [4 0 0 0 1 2 3 4] cat wt-err
+  "wav: 0 Hz; a WAV holds 1 to 384000" eq assert
+1 2 16 [1 2 3] wt-wav wt-err "wav: holds no audio" eq assert
+1 3 16 [1 2 3 4 5 6] wt-wav wt-err "wav: 3 channels; wav-decode reads mono or stereo" eq assert
+2 2 4 [1 2 3 4] wt-wav wt-err "wav: format 2 is not PCM (1) or float (3)" eq assert
+1 2 12 [1 2 3 4] wt-wav wt-err "wav: 12-bit PCM; wav-decode reads 8, 16, 24 or 32 bits" eq assert
+3 2 16 [1 2 3 4] wt-wav wt-err "wav: 16-bit float; wav-decode reads 32 or 64 bits" eq assert
+"RIFF" [0 0 0 0] cat "WAVEfmt " cat 18 4 wt-le cat 65534 2 wt-le cat 0 16 range (drop 0) each cat "data" cat [2 0 0 0 7 8] cat wt-err
+  "wav: a WAVE_FORMAT_EXTENSIBLE fmt chunk holds 40 bytes, 22 of them its extension, but this one holds 18, 0 of them its extension" eq assert

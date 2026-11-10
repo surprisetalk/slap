@@ -1357,8 +1357,8 @@ static int ty_in_prelude;
 /* The end of the program's tokens, for a look ahead past the range being checked. */
 static int ty_tok_end;
 static void ty_err(int line, const char *fmt, ...);
-/* A read past this dies: 64 MiB is far more than any app here reads, and a test of the limit stays cheap. */
-#define READ_MAX (64 << 20)
+/* A read past this dies: a string holds no more. A regular file past it dies before any byte is read. */
+#define READ_MAX BYTES_MAX
 /* Error path only: names the first examples/lib file that defines `'word let`, so the message can say what to cat.
    Any failure (no directory, unreadable file, file past READ_MAX, past 256 files) just finds nothing.
    The hint is a text search for `'word let` under examples/lib in the working directory. Alternative: an index built by make, which costs a build step and a generated file. */
@@ -3050,19 +3050,21 @@ static void prim_read(Frame *e) {
     (void)e; int plen;char *path=pop_path("read",&plen); if(!path) return;
     FILE *f=fopen(path,"rb");
     if(!f) { push_path_fail(path,plen,strerror(errno)); free(path); return; }
+    struct stat st;
+    if(!fstat(fileno(f),&st)&&S_ISREG(st.st_mode)&&st.st_size>READ_MAX) die("read: %s holds more than %d bytes, the most read returns. Split the file into smaller files.", path, READ_MAX);
     size_t n=0,cap=65536,got; unsigned char *buf=malloc(cap); errno=0;
     while(buf&&(got=fread(buf+n,1,cap-n,f))>0){ n+=got;
         if(n>READ_MAX) die("read: %s holds more than %d bytes, the most read returns. Split the file into smaller files.", path, READ_MAX);
-        if(n==cap){ cap*=2; buf=realloc(buf,cap); } }
+        /* a pipe or device has no size to check first, so the buffer stops one byte past the cap */
+        if(n==cap){ cap=cap>READ_MAX/2?READ_MAX+1:cap*2; buf=realloc(buf,cap); } }
     if(!buf) die("read: out of memory reading %s", path);
     int bad=ferror(f), er=errno; fclose(f);
     if(bad) { free(buf); push_path_fail(path,plen,er?strerror(er):"the read did not finish"); free(path); return; }
     push_byte_list(buf,n);free(buf);free(path); push_ok();
 }
 /* read-mp3, read-flac and read-wav decode a whole file to an audio record, {'rate 'pcm}: 'pcm holds
-   16-bit little-endian stereo frames, as play takes them, and mono plays on both sides. The decoders
-   stream from the file, so read's 64 MiB limit does not apply; the pcm stops at BYTES_MAX, about 100
-   minutes at 44.1 kHz. */
+   16-bit little-endian stereo frames, as play takes them, and mono plays on both sides. The pcm stops
+   at BYTES_MAX, about 100 minutes at 44.1 kHz. */
 typedef enum { AUDIO_MP3, AUDIO_FLAC, AUDIO_WAV } AudioKind;
 /* dr_wav skips a chunk in seeks of at most 2 GiB, and stdio seeks past a file's end, so a chunk that
    claims 2^64 bytes kept it seeking for minutes. These callbacks refuse a seek past the end, which

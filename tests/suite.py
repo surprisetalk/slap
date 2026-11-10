@@ -135,8 +135,7 @@ def midi_wav_ok(path):
 FEED_LIBS = " ".join(f"examples/lib/{n}.slap" for n in "strings parse http xml rss cbor icn ufx ui".split())
 
 
-# A WAV past read's 64 MiB limit loads in the audio app: read-wav streams the file. The file is
-# sparse, so its 64 MiB of silence costs no disk.
+# A WAV past 64 MiB loads in the audio app. The file is sparse, so its 64 MiB of silence costs no disk.
 def big_wav():
     path = os.path.join(SCRATCH, "big.wav")
     n = (64 << 20) + 4
@@ -741,10 +740,10 @@ def steps(slow):
             ),
             # A file one byte past the limit, never an endless one: a read without the bound
             # allocates until the disk fills with swap, since macOS ignores ulimit -v.
-            # A sparse file costs no disk: read refuses it at the cap, after 64 MiB of zeros.
+            # A sparse file costs no disk, and read refuses a regular file past the cap before it reads.
             "read past its cap": (
-                f"python3 -c \"open('{SCRATCH}/big.bin', 'wb').truncate(64 * 2**20 + 1)\"; out=$(echo '\"{SCRATCH}/big.bin\" read must len print' | ./slap 2>&1);"
-                " test $? -eq 1 && grep -q 'holds more than 67108864 bytes' <<<\"$out\"",
+                f"python3 -c \"open('{SCRATCH}/big.bin', 'wb').truncate(2**30 + 1)\"; out=$(echo '\"{SCRATCH}/big.bin\" read must len print' | ./slap 2>&1);"
+                " test $? -eq 1 && grep -q 'holds more than 1073741824 bytes' <<<\"$out\"",
                 None,
             ),
             "program past 16 MiB": (
@@ -815,7 +814,13 @@ def steps(slow):
                 lambda out: "feed-selftest-ok" in out,
             ),
             "codec": ("python3 tests/run_codec.py", None),
-            "a WAV past read's 64 MiB limit loads": (big_wav, None),
+            "a WAV past 64 MiB loads": (big_wav, None),
+            # wav.slap's own tests run as it loads; here a real file decodes as read-wav decodes it
+            "wav-decode matches read-wav": (
+                "echo '\"tests/audio/tone.wav\" read must wav-decode must \"tests/audio/tone.wav\" read-wav must eq print'"
+                f" | cat {lib('strings', 'wav')} - | ./slap",
+                lambda o: o.split() == ["1"],
+            ),
             # midi.slap's tests cannot open a font: it loads from any directory. Here a decoded file
             # plays: middle C on Florestan Pizzicato for half a second, then its release.
             "a MIDI file decodes and renders": (
@@ -1107,6 +1112,22 @@ def status():
         if r.stdout.rstrip().endswith("4100 items")
         else 0.0
     )
+    # Five minutes of 44.1 kHz 24-bit stereo, the widest WAV under ~/Music, through wav.slap.
+    wav = os.path.join(SCRATCH, "5min.wav")
+    n = 44100 * 300 * 6
+    with open(wav, "wb") as f:
+        f.write(b"RIFF" + (n + 36).to_bytes(4, "little") + b"WAVEfmt " + (16).to_bytes(4, "little"))
+        f.write(bytes([1, 0, 2, 0]) + (44100).to_bytes(4, "little") + (44100 * 6).to_bytes(4, "little") + bytes([6, 0, 24, 0]))
+        f.write(b"data" + n.to_bytes(4, "little") + bytes(range(256)) * (n // 256) + bytes(n % 256))
+    src = open(lib("strings")).read() + open(lib("wav")).read() + f'"{wav}" read must wav-decode must \'pcm at len print\n'
+    cpu = harness.child_cpu()
+    r = subprocess.run(["./slap"], input=src, capture_output=True, text=True, timeout=60)
+    os.remove(wav)
+    score["wav-decode decodes 5 minutes of 24-bit stereo in under 5 s of CPU."] = (
+        5 / (harness.child_cpu() - cpu) if r.returncode == 0 and r.stdout.split() == [str(44100 * 300 * 4)] else 0.0
+    )
+    if r.returncode:
+        print(f"status: wav-decode: exit {r.returncode}: {r.stderr[-500:]}", file=sys.stderr)
     # The network is outside the suite, so tls-connect meets the system's CA store here. Refusals are
     # tested offline in run_serve.py, so status depends on one outside host. A failure prints why.
     try:

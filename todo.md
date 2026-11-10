@@ -34,8 +34,9 @@
       WAV beside it, each part on the font you chose for that work; audio
       plays the WAV. midi bounces now and becomes an editor later. Decided:
       audio stays audio-only; TinySoundFont, settings inside the .mid, fonts
-      outside the repo, a font per part, render a whole movement. Later:
-      stream in chunks; far off, synthesize in slap.
+      outside the repo, a font per part, render a whole movement (BWV 582's
+      12 min take 4.1 s at most); stream in chunks only past 10 s, which
+      needs `play` to append. Far off, synthesize in slap.
   1. Per part, store settings as the standard events at tick 0 of the
      part's track, which every player obeys: bank select CC0/CC32 and
      program change (preset), CC7 (gain), CC10 (pan), CC91 (reverb send,
@@ -50,31 +51,28 @@
      track, so one font.
   4. A channel that two tracks with different fonts share stops the work
      with both track names; tsf renders by channel.
-  5. Render whole: BWV 582 (12 min) decodes in 59 ms and renders in 1.7 s
-     on MuseScore_General, 4.1 s on Jeux's principal chorus. Stream only
-     if a movement takes past 10 s; that needs `play` to append.
-  6. Figure out reverb: tsf has none, and a dry orchestra or organ sounds
+  5. Figure out reverb: tsf has none, and a dry orchestra or organ sounds
      wrong. Candidates: Freeverb in C (about 200 lines, public domain),
      driven by each channel's CC91; or convolution with a hall's impulse
      response. Decide where the room lives: per work, or per font.
-  7. Figure out space and panning: tsf pans each channel by CC10 only, so
+  6. Figure out space and panning: tsf pans each channel by CC10 only, so
      a quartet sits on one line. Weigh seating presets (orchestra, quartet,
      organ loft), distance as reverb send plus a low-pass, and whether
      headphones want HRTF.
-  8. Add a compressor, done correctly: each render now scales to a -1 dBFS
+  7. Add a compressor, done correctly: each render now scales to a -1 dBFS
      peak (`MIDI_PEAK_DB`), so a piano work with one sharp hit sounds
      quieter than an organ at the same peak. Weigh a loudness target (EBU
      R128) with a look-ahead limiter against a compressor inside a work.
-  9. Add humanization: a score typed in note by note (Mutopia, OpenScore)
+  8. Add humanization: a score typed in note by note (Mutopia, OpenScore)
      plays every note on the grid at one velocity. Weigh small random
      shifts of timing and velocity, a seed kept with the work so a bounce
      repeats, and rubato from phrase shape; piano-midi.de shows the target.
- 10. Decode piano-roll expression: scanned rolls (kunstderfuge's
+  9. Decode piano-roll expression: scanned rolls (kunstderfuge's
      "(nc)smythe", ~/Music/midi/kunstderfuge/piano-rolls) encode dynamics
      and pedal as notes outside the keyboard; 9 play key 1, which
      render-midi refuses. Identify each roll's system (Ampico, Duo-Art,
      Welte) and map its codes to velocity and CC64.
- 11. Then the editor: a parts view (track, font, preset name, gain) with
+ 10. Then the editor: a parts view (track, font, preset name, gain) with
      keys to change them, which rewrites the work's events.
 
 - [ ] You play a render and it moves at a tempo a pianist would take.
@@ -107,24 +105,21 @@
       `make slap` builds no vendored decoder. Decided: decoders move from
       dr_mp3, dr_flac and dr_wav (C) into examples/lib, one library per
       format, each `bytes -- {'rate 'pcm} ok | msg no` like the primitive it
-      replaces. They parse untrusted files by hand, against the house rule:
-      you chose it, since slap bounds every read, so bad input gives `'no`
-      or a crash with a message, never memory damage.
-  1. wav.slap: PCM 8/16/24/32-bit and float, mono and stereo, to the
-     primitive's `'pcm`. Diff it against `read-wav` on tests/audio and every
-     WAV under ~/Music. A test in expect.slap per format path.
-  2. flac.slap: frames, subframes (constant, verbatim, fixed, LPC), Rice
+      replaces; wav.slap is the model. They parse untrusted files by hand,
+      against the house rule: you chose it, since slap bounds every read,
+      so bad input gives `'no` or a crash with a message, never memory
+      damage.
+  1. flac.slap: frames, subframes (constant, verbatim, fixed, LPC), Rice
      residuals, stereo decorrelation, CRC checked. Diff against
      `read-flac` on tests/audio and a sample of ~/Music.
-  3. mp3.slap: MPEG-1/2 layer III (Huffman tables, requantize, joint
+  2. mp3.slap: MPEG-1/2 layer III (Huffman tables, requantize, joint
      stereo, IMDCT, polyphase filter), ID3 and Xing skipped. Diff against
      `read-mp3` sample by sample; dr_mp3 is the reference.
-  4. Time each on a 5-minute track in `./slap`. Goal: a decode under 5 s,
-     as a status condition. Past it, profile first; then weigh decoding
-     in chunks, which needs `play` to append.
-  5. Fuzz each library against its primitive with mutated files from
+  3. Time flac and mp3 on a 5-minute track, as status conditions like
+     wav-decode's (under 5 s of CPU). Past it, profile first.
+  4. Fuzz each library against its primitive with mutated files from
      tests/audio: same `'ok` result, or `'no` where the primitive refuses.
-  6. Switch audio-app to the libraries. Delete `read-mp3`, `read-flac`,
+  5. Switch audio-app to the libraries. Delete `read-mp3`, `read-flac`,
      `read-wav`, the three vendor headers and their vendor/readme.md rows;
      update readme.md, claude.md and the Makefile's ASan and wasm lines.
 
