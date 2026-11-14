@@ -44,6 +44,7 @@ false 0 eq assert
 -- a body is equal to what was written: inlining a prelude word must not show
 (inc) (1 plus) eq not assert
 ((1 inc) (2) if) ((1 1 plus) (2) if) eq not assert
+(1 ok {'ok (inc) 'no (drop 0)} case) (1 ok {'ok (1 plus) 'no (drop 0)} case) eq not assert
 (9 3 max) 'm let m 9 eq assert
 
 -- ===== Symbols =====

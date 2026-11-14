@@ -438,7 +438,7 @@ static inline __attribute__((always_inline)) Binding *frame_lookup(Frame *f, uin
     }
     return NULL;
 }
-static void eval(Token *toks, int count, Frame *env);
+static void eval(Token *toks, int count, Frame *env, int run);
 static void eval_body(Value *body, int slots, Frame *env);
 static void eval_run(Value *body, int slots, Frame *ee);
 /* Runs a tuple body: in a frame of its own when it makes names, so they are its own, and in ee
@@ -2739,7 +2739,8 @@ static int tok_if_while(Token *t, int i, int end) { return tok_prim(t, i, end, p
 /* run: no program can see this body as a value, so a call in it may be inlined. A body is seen only when it
    is pushed: the top level, a word's body, `[...]` and `{...}` code, and the bodies of `(b) dip`, `(b) pthen`,
    `(a) (b) if` and `(p) (b) while` written in place are never pushed (eval_run's in-place forms), and a body
-   inside a pushed one is seen with it. A case clause's body is not inlined: eval builds the clauses. */
+   inside a pushed one is seen with it. run 2 is the code of `{clauses} case` in a run-only body: ty_case
+   allows only `'tag (body)` pairs there, and case_run runs each body in place, so every body in it is run-only. */
 static void build_tuple(Token *toks, int start, int end, int tc, Frame *env, int run) {
     int eb=sp,ec=0,binds=0; Token *ft = (start < end) ? &toks[start] : NULL;
     for(int j=start;j<end;j++){
@@ -2763,24 +2764,24 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env, int
             if(tt->as.str.len==0){ spush(with_tok(val_compound(VAL_LIST,0,1),tt)); ec++; break; }
             spush(with_tok(bytes_of(tt->as.str.b,tt->as.str.len),tt)); ec++; break;
         case TOK_LPAREN:{int nc=(j+toks[j].span),a=nc+1;
-            int r=run&&((a+1<end&&toks[a].tag==TOK_SYM&&toks[a+1].tag==TOK_WORD&&toks[a+1].as.sym==S_LET)
+            int r=run==2||(run&&((a+1<end&&toks[a].tag==TOK_SYM&&toks[a+1].tag==TOK_WORD&&toks[a+1].as.sym==S_LET)
                 ||tok_prim(toks,a,end,prim_dip)||tok_prim(toks,a,end,prim_pthen)
                 ||(a<end&&toks[a].tag==TOK_LPAREN&&tok_if_while(toks,a+toks[a].span+1,end))
-                ||(ec>0&&stack[sp-1].tag==VAL_TUPLE&&tok_if_while(toks,a,end)));
+                ||(ec>0&&stack[sp-1].tag==VAL_TUPLE&&tok_if_while(toks,a,end))));
             build_tuple(toks,j+1,nc,tc,env,r);stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col);ec++;j=nc;break;}
         case TOK_LBRACKET:{
             int bc=(j+toks[j].span);
             /* `[ins] [outs] effect` is a signature, which only the checker reads; so is a 'name before it */
             if(bc+1<tc&&toks[bc+1].tag==TOK_LBRACKET){int oc=bc+1+toks[bc+1].span;
                 if(oc+1<tc&&toks[oc+1].tag==TOK_WORD&&toks[oc+1].as.sym==S_EFFECT){if(ec>0&&stack[sp-1].tag==VAL_SYM){sp--;ec--;}j=oc+1;break;}}
-            build_tuple(toks,j+1,bc,tc,env,run); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_LIST; ec++; j=bc; break;
+            build_tuple(toks,j+1,bc,tc,env,run>0); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_LIST; ec++; j=bc; break;
         }
         case TOK_LBRACE:{
             int bc=(j+toks[j].span);
             if(!(bc+1<tc&&toks[bc+1].tag==TOK_WORD&&toks[bc+1].as.sym==S_CASE)){
-                build_tuple(toks,j+1,bc,tc,env,run); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_REC; ec++; j=bc; break; }
+                build_tuple(toks,j+1,bc,tc,env,run>0); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_REC; ec++; j=bc; break; }
             /* `{clauses} case` is built once, when the program is read, so case runs its clauses from this body */
-            int lb=sp; eval(toks+j+1,bc-j-1,env); int ts=sp-lb,nf=0,p=sp;
+            int lb=sp; eval(toks+j+1,bc-j-1,env,run?2:0); int ts=sp-lb,nf=0,p=sp;
             while(p>lb){p-=val_slots(stack[p-1])+1;nf++;}
             spush(with_tok(val_compound(VAL_RECORD,nf,ts+1),tt));
             /* --profile pushes this record as a value for the case primitive, so a copy must own its strings */
@@ -2804,8 +2805,8 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env, int
     }
     spush(hdr); stack[sp-1].as.compound.env=env;
 }
-static void eval(Token *toks, int count, Frame *env) {
-    int base=sp; build_tuple(toks,0,count,count,env,1);
+static void eval(Token *toks, int count, Frame *env, int run) {
+    int base=sp; build_tuple(toks,0,count,count,env,run);
     int s=val_slots(stack[sp-1]); Value *body=malloc(s*sizeof(Value));
     VCPY(body,&stack[base],s); sp=base; eval_run(body,s,env);
     /* the body's packed strings are its own: every copy it pushed, bound or stored has clones */
@@ -3729,7 +3730,7 @@ static int shell(Token *table, int table_count, Token *combined, int prelude_n) 
             else {
                 refuse_missing_words(&combined[prelude_n + hist_toks], toks - hist_toks);
                 current_loc = LOC_PACK(FID_STDIN, 0, 0);
-                eval(&combined[prelude_n + hist_toks], toks - hist_toks, global_frame);
+                eval(&combined[prelude_n + hist_toks], toks - hist_toks, global_frame, 1);
                 ok = 1;
             }
         } else died = 1;
@@ -3788,7 +3789,7 @@ int main(int argc, char **argv) {
     global_frame=frame_new(NULL);
     store_source_lines(PRELUDE, FID_PRELUDE);
     static Token combined[TOK_MAX], table[TOK_MAX]; int cpos=0;
-    lex(PRELUDE, FID_PRELUDE); memcpy(combined,tokens,tok_count*sizeof(Token)); cpos=tok_count; eval(combined,cpos,global_frame);
+    lex(PRELUDE, FID_PRELUDE); memcpy(combined,tokens,tok_count*sizeof(Token)); cpos=tok_count; eval(combined,cpos,global_frame,1);
     store_source_lines(TYPES, FID_BUILTIN); lex(TYPES, FID_BUILTIN);
     int table_count=tok_count; memcpy(table,tokens,table_count*sizeof(Token));
     current_loc=LOC_PACK(FID_STDIN,0,0);
@@ -3826,6 +3827,6 @@ int main(int argc, char **argv) {
     current_loc=LOC_PACK(FID_STDIN,0,0);
     /* Registered after stdout_check, so it runs first, on die too. */
     if(profile){ prof_last=prof_now(); atexit(prof_report); }
-    eval(&combined[user_start],user_tok_count,global_frame);
+    eval(&combined[user_start],user_tok_count,global_frame,1);
     return 0;
 }
