@@ -101,6 +101,39 @@
   4. Show tic80 carts in lua-sdl.slap.
   5. Then duskos and decker.
 
+- [ ] You read a smaller slap, with one fewer crash.
+  1. Fix wiki.slap's `ends-with`: a name shorter than its suffix gives
+     `drop-n` a negative count, and the index page dies. Assert
+     `"a" ".txt" ends-with` first. Move serve.slap's guarded copy into
+     strings.slap and delete both copies.
+  2. Share the decoder combinators: json, cbor and xml each define the same
+     map, one-of, succeed and fail (`jd-`, `cd-`, `xd-`); json and xml share
+     and-then. Put one copy in examples/lib/dec.slap and rename the sites.
+     Cost: one more file to prepend.
+  3. Delete dead names: mp3.slap's `m3-ca m3-cb m3-sec m3-aa0 m3-aa1
+     m3-twid9`, euler 43's `is-prime`, euler 50's `pcount`. Replace unused
+     lets with `drop` in flac.slap (`fr-a2 ck-b ck-x b-s b-sn`) and
+     raycast.slap (`hit0 side0`).
+  4. Add `say` and `die` to strings.slap. Delete the copies in banner,
+     fetch, kv-client, plasma and todo, and their `'LF` lets; write `"\n"`
+     instead. Cost: each script then needs strings.slap prepended.
+  5. Delete prim_on's `handler_count` check: the checker already refuses a
+     17th handler. Size the `ty_on` arrays with MAX_HANDLERS, and make the
+     checker message name the fix: merge the handlers for one event into
+     one body.
+  6. Add `ty_var()` and `ty_svar()` beside `ty_new`. Replace the 28
+     `ty_new(K_VAR, 0, 0, 0)` and `ty_new(K_SVAR, 0, 0, 0)` calls.
+  7. Add `cat(*paths)` to tests/harness.py. Replace the 15
+     `"".join(open(...))` sites in tests/run_*.py and suite.py, which leak
+     their file handles. Name suite.py's slap-sdl guard once and replace
+     its 5 copies.
+  8. Delete assets/zoom.gif: nothing names it. Untrack events.cbor and add
+     `/events.cbor` to .gitignore beside `/state.cbor`: it is cal-app's
+     state, and cal-app starts empty without it.
+  9. Fix readme.md's hook sentence: .githooks/pre-commit runs gitleaks,
+     shellcheck and `make test`, and needs jj, gitleaks and shellcheck on
+     PATH.
+
 ## Blocked on you
 
 - [ ] You read a post series on slap: 001 why I built it; 002 API,

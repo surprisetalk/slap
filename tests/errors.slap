@@ -263,6 +263,9 @@ nip
 
 -- ===== Uncovered die() sites =====
 -- EXPECT: out of bounds
+-- EXPECT-LINE: 2
+-- EXPECT-COL: 4
+5 inc drop
 [] first
 
 -- EXPECT: out of bounds

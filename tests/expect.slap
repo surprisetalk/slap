@@ -41,6 +41,10 @@ false 0 eq assert
 3 3 eq assert
 3 5 lt assert
 5 3 lt not assert
+-- a body is equal to what was written: inlining a prelude word must not show
+(inc) (1 plus) eq not assert
+((1 inc) (2) if) ((1 1 plus) (2) if) eq not assert
+(9 3 max) 'm let m 9 eq assert
 
 -- ===== Symbols =====
 'hello 'hello eq assert

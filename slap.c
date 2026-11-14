@@ -2699,7 +2699,48 @@ static void eval_run(Value *body, int slots, Frame *ee) {
     }
     asp=a0; eval_depth--;
 }
-static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
+/* REVIEW: Inline small prelude words at build time, only in bodies that no program sees as a value.
+   Alternative: inline in every body. It makes `(inc) (1 plus) eq` true and changes what a pushed body
+   prints. Alternative: new primitives for not neq gt ge le max min. They ran euler/14 a few percent faster
+   still, but add seven primitive names.
+   A prelude word whose body holds only literals, primitives, such words, and bodies of these is copied
+   into the body that calls it: `over 1 neq` builds as `over 1 eq 0 eq`, with no lookup and no nested run.
+   A body inside it is copied whole, so a word in that body is still looked up when it runs. The copies
+   carry the call's location, so an error names the caller's line. The prelude is bound before the
+   program builds, and the checker refuses a binding that shadows it. The depth bound only stops a cycle;
+   the prelude's deepest chain (neq, not) is 2. */
+static int inline_ok(uint32_t s, int depth) {
+    if (prim_fns[s] || depth > 8) return 0;
+    int i = frame_find(global_frame, s); if (i < 0) return 0;
+    Binding *b = &global_frame->bindings[i]; Value *v = b->vals; int n = b->slots - 1;
+    /* a copy that ends in a body would turn `word 'x let` into a word binding */
+    if (!b->word || LOC_FID(v[n].loc) != FID_PRELUDE || (v[n].flags & VF_BINDS) || (n && v[n-1].tag == VAL_TUPLE)) return 0;
+    for (int k = 0; k < n; k++) {
+        if (v[k].tag <= VAL_SYM) continue;
+        if (v[k].tag == VAL_TUPLE) { if (v[k].flags & (VF_BINDS | VF_LIST | VF_REC | VF_BYTES)) return 0; continue; }
+        if (v[k].tag != VAL_XT || v[k].as.xt.sym == S_LET || v[k].as.xt.sym == S_NTH) return 0;
+        if (!v[k].as.xt.fn && !inline_ok(v[k].as.xt.sym, depth + 1)) return 0;
+    }
+    return 1;
+}
+static int inline_emit(uint32_t s, uint64_t loc) {
+    Binding *b = &global_frame->bindings[frame_find(global_frame, s)]; Value *v = b->vals; int ec = 0;
+    int len = (int)v[b->slots-1].as.compound.len, *st = body_starts[v[b->slots-1].flags>>8];
+    for (int k = 0; k < len; k++) {
+        int eo = st ? st[k] : k, es = st ? st[k+1]-st[k] : 1;
+        if (es == 1 && v[eo].tag == VAL_XT && !v[eo].as.xt.fn) { ec += inline_emit(v[eo].as.xt.sym, loc); continue; }
+        for (int j = eo; j < eo+es; j++) { Value c = v[j]; c.loc = loc; spush(c); }
+        ec++;
+    }
+    return ec;
+}
+static int tok_prim(Token *t, int i, int end, PrimFn f) { return i < end && t[i].tag == TOK_WORD && prim_fns[t[i].as.sym] == f; }
+static int tok_if_while(Token *t, int i, int end) { return tok_prim(t, i, end, prim_if) || tok_prim(t, i, end, prim_while); }
+/* run: no program can see this body as a value, so a call in it may be inlined. A body is seen only when it
+   is pushed: the top level, a word's body, `[...]` and `{...}` code, and the bodies of `(b) dip`, `(b) pthen`,
+   `(a) (b) if` and `(p) (b) while` written in place are never pushed (eval_run's in-place forms), and a body
+   inside a pushed one is seen with it. A case clause's body is not inlined: eval builds the clauses. */
+static void build_tuple(Token *toks, int start, int end, int tc, Frame *env, int run) {
     int eb=sp,ec=0,binds=0; Token *ft = (start < end) ? &toks[start] : NULL;
     for(int j=start;j<end;j++){
         Token *tt=&toks[j]; current_loc=LOC_PACK(tt->fid,tt->line,tt->col);
@@ -2714,24 +2755,30 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
                 /* A fused `X must` runs directly even under --profile, so a body holds the same values either way. */
                 if(prim_must_fns[s] && j+1<end && toks[j+1].tag==TOK_WORD && toks[j+1].as.sym==S_MUST){spush(with_tok(val_xt(s,prim_must_fns[s]),tt));ec++;j++;break;}
                 if(prof_on){spush(with_tok(val_xt(s,NULL),tt));ec++;break;}
+                if(run&&inline_ok(s,0)){ec+=inline_emit(s,LOC_PACK(tt->fid,tt->line,tt->col));break;}
                 spush(with_tok(val_xt(s,prim_fns[s]),tt));ec++;
             }
             break;
         case TOK_STRING:
             if(tt->as.str.len==0){ spush(with_tok(val_compound(VAL_LIST,0,1),tt)); ec++; break; }
             spush(with_tok(bytes_of(tt->as.str.b,tt->as.str.len),tt)); ec++; break;
-        case TOK_LPAREN:{int nc=(j+toks[j].span);build_tuple(toks,j+1,nc,tc,env);stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col);ec++;j=nc;break;}
+        case TOK_LPAREN:{int nc=(j+toks[j].span),a=nc+1;
+            int r=run&&((a+1<end&&toks[a].tag==TOK_SYM&&toks[a+1].tag==TOK_WORD&&toks[a+1].as.sym==S_LET)
+                ||tok_prim(toks,a,end,prim_dip)||tok_prim(toks,a,end,prim_pthen)
+                ||(a<end&&toks[a].tag==TOK_LPAREN&&tok_if_while(toks,a+toks[a].span+1,end))
+                ||(ec>0&&stack[sp-1].tag==VAL_TUPLE&&tok_if_while(toks,a,end)));
+            build_tuple(toks,j+1,nc,tc,env,r);stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col);ec++;j=nc;break;}
         case TOK_LBRACKET:{
             int bc=(j+toks[j].span);
             /* `[ins] [outs] effect` is a signature, which only the checker reads; so is a 'name before it */
             if(bc+1<tc&&toks[bc+1].tag==TOK_LBRACKET){int oc=bc+1+toks[bc+1].span;
                 if(oc+1<tc&&toks[oc+1].tag==TOK_WORD&&toks[oc+1].as.sym==S_EFFECT){if(ec>0&&stack[sp-1].tag==VAL_SYM){sp--;ec--;}j=oc+1;break;}}
-            build_tuple(toks,j+1,bc,tc,env); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_LIST; ec++; j=bc; break;
+            build_tuple(toks,j+1,bc,tc,env,run); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_LIST; ec++; j=bc; break;
         }
         case TOK_LBRACE:{
             int bc=(j+toks[j].span);
             if(!(bc+1<tc&&toks[bc+1].tag==TOK_WORD&&toks[bc+1].as.sym==S_CASE)){
-                build_tuple(toks,j+1,bc,tc,env); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_REC; ec++; j=bc; break; }
+                build_tuple(toks,j+1,bc,tc,env,run); stack[sp-1].loc=LOC_PACK(tt->fid,tt->line,tt->col); stack[sp-1].flags|=VF_REC; ec++; j=bc; break; }
             /* `{clauses} case` is built once, when the program is read, so case runs its clauses from this body */
             int lb=sp; eval(toks+j+1,bc-j-1,env); int ts=sp-lb,nf=0,p=sp;
             while(p>lb){p-=val_slots(stack[p-1])+1;nf++;}
@@ -2758,7 +2805,7 @@ static void build_tuple(Token *toks, int start, int end, int tc, Frame *env) {
     spush(hdr); stack[sp-1].as.compound.env=env;
 }
 static void eval(Token *toks, int count, Frame *env) {
-    int base=sp; build_tuple(toks,0,count,count,env);
+    int base=sp; build_tuple(toks,0,count,count,env,1);
     int s=val_slots(stack[sp-1]); Value *body=malloc(s*sizeof(Value));
     VCPY(body,&stack[base],s); sp=base; eval_run(body,s,env);
     /* the body's packed strings are its own: every copy it pushed, bound or stored has clones */
