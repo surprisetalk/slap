@@ -2708,7 +2708,10 @@ static void eval_run(Value *body, int slots, Frame *ee) {
    A body inside it is copied whole, so a word in that body is still looked up when it runs. The copies
    carry the call's location, so an error names the caller's line. The prelude is bound before the
    program builds, and the checker refuses a binding that shadows it. The depth bound only stops a cycle;
-   the prelude's deepest chain (neq, not) is 2. */
+   the prelude's deepest chain (neq, not) is 2.
+   Cost: build_tuple's `run` rules name, as tokens, the primitives that run a body and drop it: dip, pthen,
+   if, while, case. A body that a primitive keeps, returns or prints must never join that list, or the
+   program sees the expansion. expect.slap's body-equality asserts cover a plain body, if and case. */
 static int inline_ok(uint32_t s, int depth) {
     if (prim_fns[s] || depth > 8) return 0;
     int i = frame_find(global_frame, s); if (i < 0) return 0;
