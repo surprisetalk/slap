@@ -1187,15 +1187,17 @@ def status():
             print(f"status: {fmt}-decode: {detail}", file=sys.stderr)
     # The audio app in real time: SDL's dummy drivers open no window and drain the queue at the
     # rate. A probe tick handler starts the first track, prints the frame, track, run length,
-    # queued bytes and whether the decoder is done each tick, and stops the app with fail after
-    # both 5 s chord tracks. The probe runs after the app's tick, which refills the queue, so a gap
-    # rarely shows as an empty queue. The app fills the queue to a second (176400 bytes at 44.1
-    # kHz) before it waits; from then on, while the decoder has audio, a quarter second must stay.
+    # queued bytes and whether the decoder is done each tick, and stops the app with fail when the
+    # run empties after frame 2: the last track ended, or a track did not open. A fixed frame count
+    # cost 25 s, and 136 s under the background QoS of snitch's LaunchAgent, past the timeout.
+    # The probe runs after the app's tick, which refills the queue, so a gap rarely shows as an
+    # empty queue. The app fills the queue to a second (176400 bytes at 44.1 kHz) before it waits;
+    # from then on, while the decoder has audio, a quarter second must stay.
     probe = (
         "('pf let pf 2 eq (play-at) () if dup 'run at len 'pr let dup 'at at 'pa let"
         " pr 0 gt (dup 'run at 0 get must 'done at) (0) if 'pd let"
         " pf int-str \" \" cat pa int-str cat \" \" cat pr int-str cat \" \" cat queued int-str cat \" \" cat pd int-str cat print"
-        " pf 1400 gt (\"probe-done\" fail) () if) 'tick on\n"
+        " pf 2 gt pr 0 eq and (\"probe-done\" fail) () if) 'tick on\n"
     )
     app = open("examples/audio-app-sdl.slap").read().replace("(drop) show", probe + "(drop) show")
     src = "".join(open(lib(n)).read() for n in "strings cbor icn ufx ui wav flac mp3".split())
@@ -1204,7 +1206,14 @@ def status():
     if os.path.exists(state):
         os.remove(state)
     env = dict(os.environ, SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy", SDL_AUDIO_DRIVER="dummy")
-    r = subprocess.run(["./slap-sdl", state, "tests/audio/chord"], input=src, capture_output=True, text=True, timeout=120, env=env) if sdl else None
+    cmd = ["./slap-sdl", state, "tests/audio/chord"]
+    t = time.time()
+    try:
+        r = subprocess.run(cmd, input=src, capture_output=True, text=True, timeout=120, env=env) if sdl else None
+    except subprocess.TimeoutExpired as e:
+        r = None
+        tail = (e.stderr or b"")[-300:].decode(errors="replace")
+        print(f"status: audio app in real time: {' '.join(cmd)} did not end within {time.time() - t:.0f} s; the probe stops it when the last track ends, about 11 s in. stderr tail {tail!r}", file=sys.stderr)
     rows = [list(map(int, l.strip('"').split())) for l in (r.stdout.splitlines() if r else []) if l.startswith('"')]
     gaps, filled = [], set()
     for row in rows:

@@ -1,11 +1,5 @@
 ## Open
 
-- [ ] `make status` finishes with every condition scored, so the audio app's real-time check never aborts the run.
-  Cause: unknown. `status()` in tests/suite.py runs `./slap-sdl state tests/audio/chord` with dummy SDL drivers and a 120 s timeout. The process does not end, and the `TimeoutExpired` traceback kills the whole status. The probe fails by itself at frame 1400, about 25 s, so the process hangs inside one tick. Ruled out: a stale `slap-sdl` (same mtime as slap.c), a stray process, a Homebrew SDL upgrade after 5 Nov.
-  1. Run `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy ./slap-sdl /tmp/s.cbor tests/audio/chord < probe.slap` by hand, with the program that `status()` builds. Find where it blocks: `play`, `SDL_QueueAudio`, or an mp3 or flac chunk decode.
-  2. Write a failing test in tests/suite.py that runs the same program and ends in under 40 s. Fix the hang in slap.c or in examples/audio-app.slap.
-  3. Catch `subprocess.TimeoutExpired` in `status()`. Score "The audio app plays two tracks with no gap inside either." 0.0, and print the elapsed time, the command and the stderr tail. One failed condition never hides the other conditions.
-
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps
       only, a launcher like iOS's; later, apps take partial width (full
