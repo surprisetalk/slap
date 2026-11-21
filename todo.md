@@ -1,5 +1,9 @@
 ## Open
 
+- [ ] `make status` finishes in under 100 s, so snitch's condition "Every status command finishes in under 100 s." passes for slap.
+  Fact: in the 3 days to 20 Nov, it took 120 s on average and 132 s at most. The `status` target depends on the `slap` build.
+  1. Time the build and each condition before you change one. Fix the slowest first.
+
 - [ ] You run sauce: your own collection of lofi slap apps, fullscreen in a
       row you slide through, with home leftmost. Decided: fullscreen apps
       only, a launcher like iOS's; later, apps take partial width (full
